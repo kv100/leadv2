@@ -37,6 +37,26 @@
 #       command itself — cases 7, 8. NC: insert `cmd | head -3` then a
 #       following `rc=$?` inside a real function body on a scratch copy ->
 #       scanner must name file:line.
+#   T5  static (SCANNER-MISSES-PS-SUBSTRING-01, 2026-09-04): the T3 idioms
+#       (`pgrep -f`, `ps | grep`) are two spellings of a CLASS — "a liveness
+#       decision made by enumerating the process table and selecting rows by
+#       TEXT membership instead of by a numeric pid taken from a record".
+#       A third spelling — `ps -axo` + `if worktree not in line` — was live
+#       in lib/leadv2-lane-state.sh reconcile() and T3 stayed green over it;
+#       the recovered rows it fabricates resurrected closed lanes twice in
+#       one evening (see docs/handoff/SCANNER-MISSES-PS-SUBSTRING-01/).
+#       T5 scans the same two files for the class: (a) any process-table
+#       ENUMERATION (`pgrep` with any flags; `ps` with table-wide flags
+#       -e/-A/-a/-ax/-axo/-eo/-ef/aux/ax; listing /proc), then (b) a TEXT
+#       row-select within the same function (`not in`, `x in line`, grep,
+#       `=~`, `case`, `.find(`, `== *...*`). Per-pid lookups (`ps -p <pid>
+#       -o ...`, reading /proc/<pid>/stat for a recorded pid) are NOT
+#       enumeration and stay green by design — wl_cmdline_match() in
+#       watch-lifecycle.sh is the sanctioned per-pid form.
+#       DELIBERATE RED: this check currently FAILS on the live lane-state.sh
+#       violator; lane-mission.md forbids fixing lib/ in this lane, so the
+#       red stands until the reconcile() fix lands and then goes green. The
+#       findings census repo-wide lives in report.md, not in this suite.
 #
 # Known real violators OUTSIDE this suite's two-file scan scope
 # (leadv2-fanout.sh:1244 `pgrep -f "/leadv2 ${tid}"`, leadv2-spawn-rate.sh:119
@@ -376,6 +396,169 @@ test_4nc_mutation_caught() {
   fi
 }
 
+# ── T5: static -- no text-matched process-table liveness decision ────────────
+# Class check (see header). Detects: (a) the two locked T3 idioms verbatim,
+# (b) process-table enumeration followed within a 15-line window by a TEXT
+# row-select (`not in`, `x in line`, grep, `=~`, `case`, `.find(`, `== *..*`),
+# (c) /proc LISTING (listdir/iterdir/scandir, /proc/[0-9]* glob) followed by a
+# text row-select. Per-pid ps (`ps -p`, `ps -o ... -p`) and per-pid
+# /proc/<pid>/stat reads are not enumeration and never open a window.
+
+_scan_text_matched_process_table() { # <file>...
+  python3 - "$@" <<'PY'
+import re, sys
+IDIOM = re.compile(r'pgrep\s+-f|ps\b[^\n]*\|\s*grep')
+ENUM  = re.compile(r'\bps\b[^|;&\n]*')
+# table-wide ps flags: -e/-A/-a/-ax/-axo/-eo/-ef/-Ao/... ('a'/'A'/'e' anywhere
+# in a dash-token). (?<![a-zA-Z]) not \b: '-axo' after a quote has no \b.
+ENUM_FLAG = re.compile(r'(?<![a-zA-Z])-[a-zA-Z]*[eEaA][a-zA-Z]*\b|(?<!\S)(?:ax|aux)\b')
+PROC_LIST = re.compile(r"(?:listdir|scandir|iterdir)\s*\(\s*['\"]/proc|/proc/\[[0-9]\*?\]")
+TEXT  = re.compile(r"\bnot\s+in\s+\w+"
+                   r"|\b(?:if|elif|while)\b[^:\n]*\b\w+\s+in\s+\w+"
+                   r"|\bgrep\b|\.find\(|=~|\bcase\s+\S+\s+in\b|==\s*['\"]?\*")
+WINDOW = 15
+bad = 0
+for path in sys.argv[1:]:
+    with open(path, encoding='utf-8') as f:
+        lines = f.readlines()
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith('#'):
+            continue
+        hit = None
+        if IDIOM.search(line):
+            hit = 'named idiom (pgrep -f / ps|grep)'
+        else:
+            m = ENUM.search(line)
+            if m and ENUM_FLAG.search(line[m.start():m.end()]):
+                hit = 'ps table-wide enumeration'
+            elif PROC_LIST.search(line):
+                hit = '/proc listing'
+        if hit:
+            for w in lines[i:i + WINDOW + 1]:
+                if w.lstrip().startswith('#'):
+                    continue
+                tm = TEXT.search(w)
+                if tm:
+                    print("%s:%d: liveness by process-table enumeration + TEXT row-select (%s; text select: %s)"
+                          % (path, i + 1, hit, w.strip()))
+                    bad += 1
+                    break
+sys.exit(1 if bad else 0)
+PY
+}
+
+test_5_no_text_matched_process_table() {
+  log "T5: static scan -- no ps/pgrep//proc enumeration + text row-select in the two canonical liveness libs"
+  local out rc
+  out="$(_scan_text_matched_process_table "$LANE_STATE_SH" "$WATCH_LIFECYCLE_SH")"
+  rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    pass "T5: no text-matched process-table liveness decision found in scan scope"
+  else
+    # DELIBERATE RED: the known live violator (lane-state.sh reconcile) is
+    # expected here until the fix lane lands; every finding must be a real
+    # class member, not scanner noise. Findings census: report.md.
+    fail "T5: text-matched process-table liveness decision(s) found (expected: the known lane-state.sh reconcile violator; any OTHER line is a new finding for the report):\n${out}"
+  fi
+}
+
+# T5-NC (a): the form T3 missed — `ps -axo` enumeration + `not in` text
+# select, inserted INSIDE a real function body of a scratch copy of a CLEAN
+# file (watch-lifecycle.sh scans green at baseline). Scanner must name file:line.
+test_5nc_substring_caught() {
+  log "T5-NC: inserting ps -axo + 'not in' row-select inside a real function body must be caught"
+  local scratch out rc
+  scratch="${SCRIPTS_ROOT}/lib/.nc-substr-leadv2-watch-lifecycle.sh"
+  SCRATCH_FILES+=("$scratch")
+  awk '
+    { print }
+    /^wl_cmdline_match\(\) \{/ {
+      print "  ps -axo pid=,command= 2>/dev/null | while read -r _nc_line; do"
+      print "    if [[ \"$1\" not in \"$_nc_line\" ]]; then continue; fi  # NC-MUTATION: substring row-select"
+      print "  done"
+    }
+  ' "$WATCH_LIFECYCLE_SH" > "$scratch"
+  if cmp -s "$WATCH_LIFECYCLE_SH" "$scratch"; then
+    fail "T5-NC: insertion anchor not found -- update this NC"
+    return
+  fi
+  out="$(_scan_text_matched_process_table "$scratch")"
+  rc=$?
+  log "T5-NC: baseline_rc=0 (watch-lifecycle.sh unmutated) mutated_rc=${rc}"
+  if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q "${scratch}:"; then
+    pass "T5-NC: scanner caught the injected ps -axo + not-in row-select and named file:line -- $(printf '%s' "$out" | head -1)"
+  else
+    fail "T5-NC: scanner did not flag the injected substring row-select (rc=$rc, out=$out)"
+  fi
+}
+
+# T5-NC (b): backward compatibility — the OLD `pgrep -f` control must still
+# bite under the class scanner (it is a class member: pgrep always selects by
+# name pattern).
+test_5ncb_pgrep_f_caught() {
+  log "T5-NCb: injected pgrep -f must still be caught by the class scanner"
+  local scratch out rc
+  scratch="${SCRIPTS_ROOT}/lib/.nc-pgrepf-leadv2-watch-lifecycle.sh"
+  SCRATCH_FILES+=("$scratch")
+  awk '
+    { print }
+    /^wl_cmdline_match\(\) \{/ { print "  pgrep -f \"$2\" >/dev/null 2>&1 && return 0  # NC-MUTATION" }
+  ' "$WATCH_LIFECYCLE_SH" > "$scratch"
+  if cmp -s "$WATCH_LIFECYCLE_SH" "$scratch"; then
+    fail "T5-NCb: insertion anchor not found -- update this NC"
+    return
+  fi
+  out="$(_scan_text_matched_process_table "$scratch")"
+  rc=$?
+  log "T5-NCb: baseline_rc=0 mutated_rc=${rc}"
+  if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q "${scratch}:"; then
+    pass "T5-NCb: class scanner still catches pgrep -f -- $(printf '%s' "$out" | head -1)"
+  else
+    fail "T5-NCb: scanner did not flag the injected pgrep -f (rc=$rc, out=$out)"
+  fi
+}
+
+# T5-NC (c): backward compatibility — the OLD `ps | grep` control must still
+# bite under the class scanner.
+test_5ncc_pipe_grep_caught() {
+  log "T5-NCc: injected ps | grep must still be caught by the class scanner"
+  local scratch out rc
+  scratch="${SCRIPTS_ROOT}/lib/.nc-pipegrep-leadv2-watch-lifecycle.sh"
+  SCRATCH_FILES+=("$scratch")
+  awk '
+    { print }
+    /^wl_cmdline_match\(\) \{/ { print "  ps -Ao command= | grep -q \"$2\"  # NC-MUTATION" }
+  ' "$WATCH_LIFECYCLE_SH" > "$scratch"
+  if cmp -s "$WATCH_LIFECYCLE_SH" "$scratch"; then
+    fail "T5-NCc: insertion anchor not found -- update this NC"
+    return
+  fi
+  out="$(_scan_text_matched_process_table "$scratch")"
+  rc=$?
+  log "T5-NCc: baseline_rc=0 mutated_rc=${rc}"
+  if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q "${scratch}:"; then
+    pass "T5-NCc: class scanner still catches ps | grep -- $(printf '%s' "$out" | head -1)"
+  else
+    fail "T5-NCc: scanner did not flag the injected ps | grep (rc=$rc, out=$out)"
+  fi
+}
+
+# T5-FP guard: the sanctioned per-pid forms must NOT be flagged — wl_cmdline_match
+# (ps -p <pid> -o command= + glob) is exactly the pattern the class check must
+# leave green. Inserted nothing; scan the pristine file for this function only
+# by checking the whole file stays green (it does at baseline).
+test_5fp_per_pid_lookup_stays_green() {
+  log "T5-FP: per-pid ps -p/-o lookups in watch-lifecycle.sh must stay green"
+  local out rc
+  out="$(_scan_text_matched_process_table "$WATCH_LIFECYCLE_SH")"
+  rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    pass "T5-FP: no false positive on wl_cmdline_match / wl_pidfile_live (per-pid ps -p ... -o command= + == *needle*)"
+  else
+    fail "T5-FP: scanner flagged a sanctioned per-pid form in watch-lifecycle.sh:\n${out}"
+  fi
+}
+
 # ── syntax guard on everything this suite touches ────────────────────────────
 
 test_0_syntax() {
@@ -396,6 +579,11 @@ test_3_no_process_name_pattern
 test_3nc_mutation_caught
 test_4_no_pipeline_rc_after_filter
 test_4nc_mutation_caught
+test_5_no_text_matched_process_table
+test_5nc_substring_caught
+test_5ncb_pgrep_f_caught
+test_5ncc_pipe_grep_caught
+test_5fp_per_pid_lookup_stays_green
 
 echo ""
 echo "=== test-liveness-tristate-01.sh: ${PASS} passed, ${FAIL} failed ==="

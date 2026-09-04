@@ -14,6 +14,14 @@
 # itself evidence of a broken arm (e.g. jq missing) — never block dispatch on
 # our own bug. FREEPOOL_SKIP_GATE=1 bypasses entirely (parity with
 # FREEPOOL_SKIP_GATE in freepool-coder.sh / GLM_SKIP_QUOTA_GATE).
+#
+# FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01 (2026-09-04): "proxy dead" and
+# "quota exhausted" used to be the SAME observable (refusal rc -> the arbiter
+# rendered both as util_freepool=100), so a dead arm read as a busy one for a
+# full day. Every arm_down path now (a) names the observed http code loudly,
+# (b) says explicitly that this is NOT quota exhaustion, and (c) the new
+# `liveness` subcommand reports the full proxy state (health + /v1/models)
+# with a named reason per refusal.
 set -euo pipefail
 
 leadv2_freepool_gate_script_dir() {
@@ -89,12 +97,70 @@ check_pin_drift() {
   return 0
 }
 
-# check_liveness -> 0 healthy, 1 unreachable/non-2xx.
+# check_liveness -> 0 healthy, 1 unreachable/non-2xx. The observed HTTP code
+# is left in FREEPOOL_LAST_HEALTH_CODE so callers can NAME the failure mode:
+# 000 = no listener at all (the proxy process is gone — dead arm), anything
+# else non-2xx = the port answers but the proxy is unhealthy.
 check_liveness() {
   local code
+  # FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01: on connection-refused curl
+  # exits non-zero AND still writes %{http_code} (=000) — a bare
+  # `|| echo 000` appends a second 000 ("000000"). Normalize instead: take
+  # whatever -w printed, coerce anything that is not a 3-digit code to 000.
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${FREEPOOL_HEALTH_TIMEOUT_S}" \
-    "${FREEPOOL_HEALTH_URL}" 2>/dev/null || echo "000")"
+    "${FREEPOOL_HEALTH_URL}" 2>/dev/null || true)"
+  [[ "${code}" =~ ^[0-9][0-9][0-9]$ ]] || code="000"
+  FREEPOOL_LAST_HEALTH_CODE="${code}"
   [[ "${code}" =~ ^2[0-9][0-9]$ ]]
+}
+
+readonly FREEPOOL_MODELS_URL="${FREEPOOL_PROXY_URL:-http://127.0.0.1:8317}/v1/models"
+
+# freepool_model_count -> model count (>=1) on stdout, or empty when the
+# endpoint is unreachable, unparseable, or serves an empty roster. Empty (not
+# 0) so the liveness report can distinguish "asked, got nothing servable".
+freepool_model_count() {
+  curl -s --max-time "${FREEPOOL_HEALTH_TIMEOUT_S}" "${FREEPOOL_MODELS_URL}" 2>/dev/null \
+    | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+    n = len(d.get("data") or [])
+except Exception:
+    sys.exit(0)
+print(n) if n > 0 else None' || true
+}
+
+# freepool_liveness_report — FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01.
+# Full proxy liveness as ONE named line on stdout:
+#   ok          [freepool-liveness] ok health=200 models=<N> url=...
+#   dead        [freepool-liveness] arm_down health=000 reason=unreachable url=...
+#   dead        [freepool-liveness] arm_down health=503 reason=health_non_2xx url=...
+#   sick        [freepool-liveness] gate_broken health=200 reason=models_empty models_url=...
+# Refusals also emit the standard LEADV2_DISPATCH_REFUSED marker on stderr, so
+# a dead proxy can never masquerade as a busy/exhausted one: the reason is a
+# WORD, never a bare number. `check` keeps its own contract; this is the
+# observable the liveness suite grades and a lead can run by hand.
+freepool_liveness_report() {
+  local models
+  if ! check_liveness; then
+    if [[ "${FREEPOOL_LAST_HEALTH_CODE:-000}" == "000" ]]; then
+      printf '[freepool-liveness] arm_down health=000 reason=unreachable url=%s\n' "${FREEPOOL_HEALTH_URL}"
+    else
+      printf '[freepool-liveness] arm_down health=%s reason=health_non_2xx url=%s\n' \
+        "${FREEPOOL_LAST_HEALTH_CODE:-000}" "${FREEPOOL_HEALTH_URL}"
+    fi
+    printf 'LEADV2_DISPATCH_REFUSED: arm_down\n' >&2
+    return 1
+  fi
+  models="$(freepool_model_count)"
+  if [[ -z "${models}" ]]; then
+    printf '[freepool-liveness] gate_broken health=%s reason=models_empty models_url=%s\n' \
+      "${FREEPOOL_LAST_HEALTH_CODE:-200}" "${FREEPOOL_MODELS_URL}"
+    printf 'LEADV2_DISPATCH_REFUSED: gate_broken\n' >&2
+    return 1
+  fi
+  printf '[freepool-liveness] ok health=%s models=%s url=%s\n' \
+    "${FREEPOOL_LAST_HEALTH_CODE:-200}" "${models}" "${FREEPOOL_HEALTH_URL}"
 }
 
 # check_rolling_window -> 0 within thresholds, 1 breached, 4 window empty
@@ -191,6 +257,13 @@ main() {
     check|"")
       [[ "${FREEPOOL_SKIP_GATE:-0}" == "1" ]] && exit 0
       if ! check_liveness; then
+        # FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01: say DEAD loudly. Before
+        # this, arm_down reached the arbiter as a bare rc that rendered as
+        # util_freepool=100 — indistinguishable from quota exhaustion — and
+        # the only human-visible trace lived in this script's own stderr,
+        # which the arbiter discarded. NOT auto-restarting the proxy here:
+        # observability is this lane's scope (founder decision 2026-09-04).
+        log_err "ARM DOWN: proxy unreachable at ${FREEPOOL_HEALTH_URL} (http_code=${FREEPOOL_LAST_HEALTH_CODE:-000}) — NOT quota exhaustion; freepool stays dead until the proxy is restarted (plugins/leadv2/scripts/freepool-proxy.sh start)"
         refuse "arm_down"
       fi
       if ! check_pin_drift; then
@@ -214,8 +287,17 @@ main() {
       fi
       exit 0
       ;;
+    liveness)
+      # FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01: the observable liveness
+      # report (health + models, named reasons) — see freepool_liveness_report.
+      [[ "${FREEPOOL_SKIP_GATE:-0}" == "1" ]] && exit 0
+      if freepool_liveness_report; then
+        exit 0
+      fi
+      exit 1
+      ;;
     *)
-      echo "usage: leadv2-freepool-gate.sh [check|record <ok> <latency_s>]" >&2
+      echo "usage: leadv2-freepool-gate.sh [check|record <ok> <latency_s>|liveness]" >&2
       exit 64
       ;;
   esac

@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-lane-verdict-three-states.sh
+file=plugins/leadv2/scripts/leadv2-lane-liveness.sh
+anchor=s/sessions_all.get(tid) or (\[session\] if session else \[\])/[session] if session else []/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: Test 13: verdict=dead:no_log_artifact (must be finished_unlanded:<age>s — last-row-wins hid the dispatch pointer)
+diff_hash=1204132b517a382a1fc0b03f8236f08d3d7a9039f070c7e50699c2b1c2038c1e
+lane_diff_hash=e638cf9cf600790fa1d105cffec5634f2622802ccdd267f4901dc9ffbe0fe26a

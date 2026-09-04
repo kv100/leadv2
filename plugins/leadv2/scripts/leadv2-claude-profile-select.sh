@@ -70,13 +70,21 @@
 #   default_token_expired / default_token_absent  the inherited slot's
 #                      credential is dead/missing (the lane runs on it
 #                      whenever the selector fails open)
-# A credential whose `claudeAiOauth.expiresAt` is in the past is flagged
-# `WARN token_expired` and excluded from candidate scoring; if that leaves
-# zero live candidates, the selector refuses outright (reason=all_expired)
-# rather than silently picking a dead credential.  Only parsed metadata
-# (subscriptionType/email/expiresAt) ever leaves this function -- the raw
-# credential JSON (which carries accessToken/refreshToken) is never printed,
-# logged, or journalled.
+#   expiresAt_stale    the credential's `claudeAiOauth.expiresAt` is in the
+#                      past -- NOT treated as proof the slot is dead (D3,
+#                      TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01: measured
+#                      live 2026-09-03, this field was stale on all six
+#                      registered keychain entries, including one actively
+#                      serving a running session -- the CLI refreshes
+#                      in-process without rewriting it back to Keychain).
+#                      The slot stays a candidate; only the live probe
+#                      (leadv2-quota-read.py's actual API call) decides
+#                      whether it still yields a working token -- a genuinely
+#                      dead one simply scores unknown, same as any other
+#                      probe failure.
+# Only parsed metadata (subscriptionType/email/expiresAt) ever leaves this
+# function -- the raw credential JSON (which carries accessToken/refreshToken)
+# is never printed, logged, or journalled.
 # M1 (fix-round 2026-08-27) bucket-key migration: a slot whose email half is
 # unresolved (`<sub>/na`) now keys its quota cache on the config_dir instead
 # of the shared `<sub>_na` identity -- old shared bucket dirs are abandoned
@@ -98,7 +106,6 @@ warn() {
   fi
 }
 single_profile() { printf 'profile=- reason=single_profile\n'; exit 0; }
-refuse_all_expired() { printf 'profile=- reason=all_expired\n'; exit 0; }
 
 # read_cred_json <credential_source> -> raw credential JSON on stdout, empty
 # on any failure. keychain: goes through $SECURITY_BIN (overridable for
@@ -252,13 +259,22 @@ while IFS=$'\t' read -r label config_dir cred expect || [[ -n "${label:-}" ]]; d
   if [[ -n "${expect:-}" && "$expect" != "$identity" ]]; then
     warn "WARN: label_mismatch label=${label} expected=${expect} identity=${identity} -- bucketing by identity (fail-open)"
   fi
+  # D3 (TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01): a stale expiresAt is NOT
+  # proof this slot is dead -- measured live 2026-09-03, all six registered
+  # keychain entries showed a past expiresAt, including the one actively
+  # serving a running session (the CLI refreshes in-process without ever
+  # rewriting expiresAt back to Keychain). Warn for visibility only; the slot
+  # stays a candidate, and the live probe below is the only thing allowed to
+  # decide whether it still yields a working token. This also closes a
+  # same_account coverage hole: previously a stale-looking sibling of a live
+  # slot was dropped HERE, before ever reaching the same-account comparison
+  # below, so a real same-account pair could silently present as a single
+  # candidate with no warning at all.
   if [[ "$id_exp" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
     now_ms=$(( $(date +%s) * 1000 ))
     id_exp_i="${id_exp%%.*}"
     if (( id_exp_i <= now_ms )); then
-      warn "WARN: registry line ${lineno} skipped: token_expired label=${label} identity=${identity}"
-      expired_count=$((expired_count + 1))
-      continue
+      warn "WARN: registry line ${lineno}: expiresAt_stale label=${label} identity=${identity} -- probing live anyway"
     fi
   fi
   LABELS+=("$label"); DIRS+=("$config_dir"); SOURCES+=("$cred"); IDENTITIES+=("$identity")
@@ -331,15 +347,12 @@ if (( SAME_ACCOUNT_HIT )); then
 fi
 
 # <2 valid entries => multi-profile is inert; caller keeps its inherited
-# CLAUDE_CONFIG_DIR (single-profile fallback preserved). But if every entry
-# that would otherwise have been a candidate was excluded specifically for
-# being expired, that is not "just run single-profile" -- it means the one
-# live credential this lane would have picked is dead, so refuse by name
-# instead of silently falling back onto a possibly-also-dead inherited one.
+# CLAUDE_CONFIG_DIR (single-profile fallback preserved). A registry row is no
+# longer excluded here for looking expired (D3 above), so "zero candidates"
+# now only means zero syntactically-valid rows -- a row whose credential
+# turns out to be genuinely dead still reaches the probe below and scores
+# unknown there (reason=all_unknown), never a silent pick.
 n=${#LABELS[@]}
-if (( n == 0 )) && (( ${expired_count:-0} > 0 )); then
-  refuse_all_expired
-fi
 (( n >= 2 )) || single_profile
 [[ -r "$PROBE" ]] || single_profile
 [[ -r "$PICK" ]] || single_profile

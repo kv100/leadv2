@@ -355,6 +355,13 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         # diagnose/po-feedback-loop) are js carriers — the R5 map rows were
         # dead because the loop continued before any non-.sh reached here.
         stem="$(basename "${cf}")"
+      elif [[ "${cf}" == ".claude/leadv2-overrides/status-collector-facts.sh" ]]; then
+        # CODE-INTEL-IS-INSTALLED-AND-UNUSED-01 item 5: the repo_facts hook
+        # lives under .claude/leadv2-overrides/, not plugins/leadv2/scripts/,
+        # so the generic scripts/*.sh allowlist below never reaches it and a
+        # hook-only change would otherwise select zero suites under
+        # --scope changed (same shape as .gitignore below).
+        stem="status-collector-facts"
       elif [[ "${cf}" == ".gitignore" ]]; then
         # HANDOFF-ARTIFACTS-GITIGNORED-01: .gitignore isn't a plugins/leadv2
         # script, so it needs its own synthetic stem to reach EXTRA_SUITE_MAP

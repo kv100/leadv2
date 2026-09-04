@@ -21,6 +21,19 @@ set -uo pipefail
 # BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
 # ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
 export LEADV2_BURN_GOVERNOR=0
+# A lead session can export its own lane worktree.  This fixture dispatches into
+# a separate repository, so inheriting that value would key its ledger to the
+# caller's checkout instead of the hermetic test repository.
+unset LEADV2_LANE_WORK_ROOT
+# This test invokes the dispatcher from a lane worktree but its fixture owns the
+# target repository.  Do not let a caller's pre-exported lane root redirect the
+# fixture ledger into the caller's checkout.
+unset LEADV2_LANE_WORK_ROOT
+# The suite supplies a fake Sonnet launcher.  Refuse the other providers so a
+# hermetic fixture can never turn into a real provider job before that fallback.
+export LEADV2_DISPATCH_GLM_BIN=/usr/bin/false
+export LEADV2_DISPATCH_CODEX_BIN=/usr/bin/false
+export LEADV2_DISPATCH_KIMI_BIN=/usr/bin/false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -47,11 +60,29 @@ TMPDIR_ROOT="$(lv2_mktemp_dir "${RUN_ID}")"
 ROOT="${TMPDIR_ROOT}/repo"
 CACHE_DIR="${TMPDIR_ROOT}/cache"
 FAKE_SUBSESSION="${TMPDIR_ROOT}/fake-claude-subsession.sh"
+FAKE_GLM="${TMPDIR_ROOT}/fake-glm.sh"
 trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 
 mkdir -p "${ROOT}/.claude/ref" "${ROOT}/docs/leadv2/.bus-offsets" "${ROOT}/platform"
 ( cd "${ROOT}" && git init -q && git config user.email test@example.com && git config user.name test \
   && printf 'seed\n' > seed.txt && git add seed.txt && git commit -qm seed )
+
+# This suite dispatches against its isolated repository.  A parent lead session can
+# export LEADV2_LANE_WORK_ROOT for its own linked worktree; without overriding it,
+# the dispatcher keys the reservation ledger to that inherited checkout instead of
+# this fixture's repo, making the assertions below read a different ledger.
+export LEADV2_LANE_WORK_ROOT="${ROOT}"
+# The fake launcher only proves its PID is alive; there is no provider adapter
+# for it to report an early verdict.  Skip the production-only 20s probe so
+# every fixture exercises its assertions within the test runner's timeout.
+export LEADV2_ARM_EARLY_VERDICT_S=0
+
+# The dispatcher derives its authoritative project root from its working directory
+# (and deliberately rejects a foreign environment root).  Run the remaining
+# fixture dispatches from the fixture repository so that guard and the explicit
+# lane-work-root override agree; otherwise a parent session's worktree becomes
+# the reservation target and a later fixture dispatch can wait on its lock.
+cd "${ROOT}"
 
 cat > "${ROOT}/.claude/ref/leadv2-routing.yaml" <<'YAML'
 router:
@@ -76,10 +107,29 @@ exit 0
 EOF
 chmod +x "${FAKE_SUBSESSION}"
 
+# The current routing fixture selects GLM.  It must satisfy the launcher's
+# bg/status protocol locally; stubbing only the Sonnet subsession launcher
+# allows the dispatcher to fall back to the real GLM provider launcher.
+cat > "${FAKE_GLM}" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  bg)     printf 'fake-glm-handle\n' ;;
+  status) exit 0 ;;
+  log|tail) : ;;
+  *)      exit 2 ;;
+esac
+EOF
+chmod +x "${FAKE_GLM}"
+export LEADV2_DISPATCH_GLM_BIN="${FAKE_GLM}"
+
 TASK_ID="N4-TESTRUNNER-FALSE-RED"
 mission="docs-only: dispatch-ledger-task-id $$ $(date +%s)"
 
 out="$(
+  # The dispatcher deliberately rejects a foreign env-root/cwd pair.  Keep this
+  # fixture's process rooted in its hermetic repository so its ledger writes
+  # remain under CACHE_DIR rather than the caller's checkout.
+  cd "${ROOT}" || exit 1
   CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
   LEADV2_DISPATCH_CACHE_DIR="${CACHE_DIR}" \
   LEADV2_DISPATCH_SUBSESSION_BIN="${FAKE_SUBSESSION}" \
@@ -160,6 +210,7 @@ body text, deliberately no --task-id on this dispatch
 EOF
 
 out_c1="$(
+  cd "${ROOT}" || exit 1
   CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
   LEADV2_DISPATCH_CACHE_DIR="${CACHE_DIR}" \
   LEADV2_DISPATCH_SUBSESSION_BIN="${FAKE_SUBSESSION}" \
@@ -188,6 +239,7 @@ fi
 # invented name -- never a hash, filename, or prose fragment).
 c2_mission="plain mission body, no heading line, dispatch-ledger-task-id c2 $$ $(date +%s 2>/dev/null || echo 0)"
 out_c2="$(
+  cd "${ROOT}" || exit 1
   CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
   LEADV2_DISPATCH_CACHE_DIR="${CACHE_DIR}" \
   LEADV2_DISPATCH_SUBSESSION_BIN="${FAKE_SUBSESSION}" \
@@ -217,6 +269,7 @@ body text, dispatch-ledger-task-id c3 $$ $(date +%s 2>/dev/null || echo 0)
 EOF
 C3_TASK_ID="N7F-C3-BOUND-ID"
 out_c3="$(
+  cd "${ROOT}" || exit 1
   CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
   LEADV2_DISPATCH_CACHE_DIR="${CACHE_DIR}" \
   LEADV2_DISPATCH_SUBSESSION_BIN="${FAKE_SUBSESSION}" \
@@ -324,14 +377,17 @@ cat > "${f4a_mission}" <<EOF
 # OPS-42 — cleanup, N1B-F4 no-task-id $$ $(date +%s 2>/dev/null || echo 0)
 body: display label must not collide with the tasks.yaml OPS-42 identity
 EOF
-LEADV2_DISPATCH_CACHE_DIR="${F4A_CACHE}" \
-  CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
-  LEADV2_DISPATCH_SUBSESSION_BIN="${FAKE_SUBSESSION}" \
-  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
-  LEADV2_JOURNAL_BIN=/bin/true LEADV2_ROUTER_V2=0 \
-  LEADV2_EXCLUDED_ARMS="__none__" LEADV2_LANE_SHAPE=off \
-  "${DISPATCH_SH}" "@${f4a_mission}" --protected --spawn --kind docs >/dev/null 2>&1
+(
+  cd "${ROOT}" || exit 1
+  LEADV2_DISPATCH_CACHE_DIR="${F4A_CACHE}" \
+    CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
+    LEADV2_DISPATCH_SUBSESSION_BIN="${FAKE_SUBSESSION}" \
+    LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+    LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
+    LEADV2_JOURNAL_BIN=/bin/true LEADV2_ROUTER_V2=0 \
+    LEADV2_EXCLUDED_ARMS="__none__" LEADV2_LANE_SHAPE=off \
+    "${DISPATCH_SH}" "@${f4a_mission}" --protected --spawn --kind docs
+) >/dev/null 2>&1
 f4a_name="$(_f4_render_name "${F4A_LDIR}" "${F4A_STATE}" "${F4A_RUNS}")"
 if [[ "${f4a_name}" == "OPS-42" ]]; then
   pass "F4: no --task-id, mission H1 `# OPS-42 — cleanup` -> renders OPS-42 (not the tasks.yaml title)"
@@ -351,14 +407,17 @@ cat > "${f4b_mission}" <<EOF
 # OPS-42 — cleanup, N1B-F4b with-task-id $$ $(date +%s 2>/dev/null || echo 0)
 body: bound --task-id OPS-42 must still resolve via tasks.yaml
 EOF
-LEADV2_DISPATCH_CACHE_DIR="${F4B_CACHE}" \
-  CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
-  LEADV2_DISPATCH_SUBSESSION_BIN="${FAKE_SUBSESSION}" \
-  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
-  LEADV2_JOURNAL_BIN=/bin/true LEADV2_ROUTER_V2=0 \
-  LEADV2_EXCLUDED_ARMS="__none__" LEADV2_LANE_SHAPE=off \
-  "${DISPATCH_SH}" "@${f4b_mission}" --protected --spawn --kind docs --task-id OPS-42 >/dev/null 2>&1
+(
+  cd "${ROOT}" || exit 1
+  LEADV2_DISPATCH_CACHE_DIR="${F4B_CACHE}" \
+    CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
+    LEADV2_DISPATCH_SUBSESSION_BIN="${FAKE_SUBSESSION}" \
+    LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+    LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
+    LEADV2_JOURNAL_BIN=/bin/true LEADV2_ROUTER_V2=0 \
+    LEADV2_EXCLUDED_ARMS="__none__" LEADV2_LANE_SHAPE=off \
+    "${DISPATCH_SH}" "@${f4b_mission}" --protected --spawn --kind docs --task-id OPS-42
+) >/dev/null 2>&1
 f4b_name="$(_f4_render_name "${F4B_LDIR}" "${F4B_STATE}" "${F4B_RUNS}")"
 if [[ "${f4b_name}" == "Totally unrelated record" ]]; then
   pass "F4b: --task-id OPS-42 -> renders the tasks.yaml title (identity lookup preserved)"

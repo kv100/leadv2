@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-leadv2-land.sh
+file=plugins/leadv2/scripts/leadv2-land.sh
+anchor=239s/-gt/-lt/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL - b: refusal names lane-salvage (missing [leadv2-lane-salvage.sh] in [leadv2-land: REFUSED reason=safety_gate_refused (mirror written to docs/handoff/lane-b/merge-blocker.flag)])
+diff_hash=4d6f026ed7cb8fc245f90a8757130d40c1d25803def5aab0d4c900ef70cf50c6
+lane_diff_hash=99f4ea618985b5b41242a9a3fd531ba9884b56682e38a59ba75e8bdda82d12f5

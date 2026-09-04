@@ -715,11 +715,16 @@ _pump_classify() {
   estimate="$(PROJECT_ROOT="${CANONICAL_ROOT}" bash "${TASK_JUDGE_BIN}" \
     --mission-file "${mfile}" --task-id "${tid}" 2>/dev/null)"
   local jrc=$?
-  rm -f "${mfile}" 2>/dev/null || true
   pair=""
   if [[ ${jrc} -eq 0 && -n "${estimate}" ]]; then
-    pair="$(leadv2_admission_class "" 0 "${estimate}")"
+    # ADMISSION-CLASS-FALLS-BACK-TO-LIGHT-01: same observable-feature
+    # derivation as the dispatch door — mission text plus the task's own
+    # cost-estimate.yaml when a prior cycle already wrote one. Without the
+    # mission file the lib's strict default would flip EVERY fallback Light
+    # here, not just the knows-nothing ones.
+    pair="$(leadv2_admission_class "" 0 "${estimate}" "${mfile}" "${CANONICAL_ROOT}/docs/handoff/${tid}/cost-estimate.yaml")"
   fi
+  rm -f "${mfile}" 2>/dev/null || true
   if [[ -n "${pair}" ]]; then
     IFS=$'\t' read -r cls src <<<"${pair}"
     wk="$(printf '%s' "$estimate" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("work_kind",""))' 2>/dev/null || true)"

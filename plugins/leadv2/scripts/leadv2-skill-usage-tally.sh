@@ -11,6 +11,17 @@
 # Also reports last-modified date as a proxy for recency. Invoked weekly by
 # lead-reflect §7.5; can also run standalone:  bash leadv2-skill-usage-tally.sh
 #
+# NOTE (SKILL-USAGE-IS-UNMEASURED-01): `refs` and `dispatch` below are STATIC
+# TEXT counts, not runtime signals -- `refs` counts files whose prose mentions
+# a skill's name, `dispatch` counts files hard-coding the literal string
+# Skill(skill="X"). A skill fired via description-matching (the dominant
+# invocation path) leaves no source-text trace at all, so it stays
+# dispatch=0 forever no matter how often it actually runs. Neither column can
+# move on an invocation. For actual invocation counts, buckets, and
+# per-skill lane-success correlation, see
+# `bash leadv2-skill-rollup.sh` (docs/leadv2/skill-usage-rollup.md), backed
+# by `leadv2-skill-telemetry-collect.sh` scanning session transcripts.
+#
 # Options:
 #   --consumer-root <path>   Also grep <path> tree for `leadv2:<name>` or `<name>`
 #                            refs (repeatable). A skill appearing here = WIRED.

@@ -252,14 +252,22 @@ _age_short() {  # <seconds> -> "12s" | "3m" | "2h"
 _compute_age_suffix() {
   _AGE_SUFFIX=""; _TITLE_OVERRIDE=""
   [ "$CACHED" -eq 1 ] || return
-  if [ "$PAYLOAD_AGE" -ge 600 ]; then
+  # STATUS-SURFACE-SHOWS-STALE-TRUTH-01: the stale threshold was 600s (10 min),
+  # which let a frozen bar look healthy for far too long. With a 5s refresh
+  # cadence and a ~4s renderer wall time, the worst-case healthy payload age
+  # is ~12s (TTL 8s + render 4s). 30s is 2.5x that — it absorbs jitter and a
+  # single slow refresh, but catches a genuinely stuck refresher (stale lock,
+  # zero-byte tmp loop) in half a minute instead of 10 minutes.
+  STALE_THRESHOLD="${LEADV2_STATUS_STALE_THRESHOLD_S:-30}"
+  case "$STALE_THRESHOLD" in ''|*[!0-9]*) STALE_THRESHOLD=30 ;; esac
+  if [ "$PAYLOAD_AGE" -ge "$STALE_THRESHOLD" ]; then
     _TITLE_OVERRIDE="$(printf '⚠️ кэш устарел (%s)' "$(_age_short "$PAYLOAD_AGE")")"
     return
   fi
   # A payload that is stale AND the last refresh attempt errored is a
   # stronger stale signal than age alone (the refresher has been failing,
   # not just running behind cadence) -- surface it well before the generic
-  # 600s threshold instead of waiting it out silently.
+  # threshold instead of waiting it out silently.
   if [ -s "$ERRFILE" ] && [ "$PAYLOAD_AGE" -gt $(( TTL * 3 )) ]; then
     _TITLE_OVERRIDE="$(printf '⚠️ кэш устарел (%s)' "$(_age_short "$PAYLOAD_AGE")")"
     return

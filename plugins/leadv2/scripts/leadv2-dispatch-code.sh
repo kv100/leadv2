@@ -3941,11 +3941,20 @@ _admission_classify() {
   estimate="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${TASK_JUDGE_BIN}" \
     --mission-file "${mfile}" --task-id "dispatch-${sig8}" 2>/dev/null)"
   local jrc=$?
-  rm -f "${mfile}" 2>/dev/null || true
   pair=""
   if [[ ${jrc} -eq 0 && -n "${estimate}" ]]; then
-    pair="$(leadv2_admission_class "${explicit}" "${flagged}" "${estimate}")"
+    # ADMISSION-CLASS-FALLS-BACK-TO-LIGHT-01: a fallback estimate (judge
+    # never saw the task) is re-derived from observables before it may
+    # decide the phase mode — the mission text itself (size + touched
+    # paths) and, on a re-entry, the task's own cost-estimate.yaml
+    # classification (same docs/handoff/<id>/ layout leadv2-cost-estimate.sh
+    # writes further down; founder id, else sig8 — mirror _cost_task_id).
+    local _cost_task_id _cost_yaml
+    _cost_task_id="${founder_task_id:-${sig8}}"
+    _cost_yaml="${PROJECT_ROOT}/docs/handoff/${_cost_task_id}/cost-estimate.yaml"
+    pair="$(leadv2_admission_class "${explicit}" "${flagged}" "${estimate}" "${mfile}" "${_cost_yaml}")"
   fi
+  rm -f "${mfile}" 2>/dev/null || true
   if [[ -n "${pair}" ]]; then
     IFS=$'\t' read -r ADMISSION_CLASS ADMISSION_SOURCE <<<"${pair}"
     ADMISSION_WORK_KIND="$(printf '%s' "${estimate}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("work_kind",""))' 2>/dev/null || true)"
@@ -4534,8 +4543,10 @@ _release_registered_lane() {  # <reg_id> <sig8> <where> -- owner-verified, idemp
     emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=registry_unreadable"
     return 0
   fi
-  python3 - "${lf}" "${yf}" "${rid}" "${DISPATCH_SLOT_SESSION}" "${DISPATCH_SLOT_PID}" <<'PY' 2>/dev/null
-import fcntl, os, sys, tempfile
+  local rel_out _prlr_tmp
+  _prlr_tmp="$(mktemp "${TMPDIR:-/tmp}/leadv2-prlr-out.XXXXXX")"
+  python3 - "${lf}" "${yf}" "${rid}" "${DISPATCH_SLOT_SESSION}" "${DISPATCH_SLOT_PID}" <<'PY' 2>/dev/null > "${_prlr_tmp}"
+import fcntl, os, subprocess, sys, tempfile
 try:
     import yaml
 except Exception:
@@ -4552,13 +4563,57 @@ try:
     if not isinstance(data, dict) or not isinstance(data.get("sessions"), list):
         sys.exit(3)
     rows = [row for row in data["sessions"] if isinstance(row, dict) and row.get("task_id") == task_id]
-    if len(rows) != 1:
-        sys.exit(2)
-    row = rows[0]
-    if (row.get("pid_role") == "worker" or not session or row.get("session_id") != session
-            or not pid or str(row.get("pid")) != pid):
-        sys.exit(2)
-    data["sessions"].remove(row)
+    # PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01: duplicate rows for one task_id
+    # used to make release permanently impossible (silent exit 2 indistinguishable
+    # from "foreign row"), so a phase-refused lane stayed registered forever.
+    # Now: the duplicate count is journaled (shell emits active_lane_duplicate_rows
+    # from our stdout summary) and release proceeds per-row instead of failing whole.
+    # Liveness is not just "PID alive": the recorded PID may belong to an
+    # interactive claude session, not a worker (`claude -p`). Kind is read from
+    # the LIVE process argv, so a mislabelled row is still protected.
+    def _prlr_alive(p):
+        try:
+            os.kill(int(p), 0)
+            return True
+        except (TypeError, ValueError, ProcessLookupError, PermissionError, OSError):
+            return False
+    def _prlr_kind(p):
+        try:
+            out = subprocess.run(["ps", "-p", str(int(p)), "-o", "args="],
+                                 capture_output=True, text=True, timeout=5).stdout.strip()
+        except Exception:
+            return "unknown"
+        if not out:
+            return "dead"
+        if ("claude" in out or "codex" in out) and (" -p" in out or "--print" in out):
+            return "worker"
+        if "claude" in out or "--dangerously-skip-permissions" in out:
+            return "interactive"
+        return "other"
+    removed = 0
+    kept_worker = 0
+    removed_ids = set()
+    for row in list(rows):
+        rpid = row.get("pid")
+        if row.get("pid_role") == "worker":
+            kept_worker += 1
+            continue
+        # defence in depth: even a MISLABELLED row whose PID is actually a live
+        # worker process is never released by this dispatcher.
+        if _prlr_alive(rpid) and _prlr_kind(rpid) == "worker":
+            kept_worker += 1
+            continue
+        ours = bool(session) and row.get("session_id") == session \
+            and rpid and str(rpid) == str(pid)
+        stale = not _prlr_alive(rpid)
+        if ours or stale:
+            rows.remove(row)
+            removed_ids.add(id(row))
+            removed += 1
+    print(f"rows={len(rows) + removed} removed={removed} live_worker_kept={kept_worker}", flush=True)
+    if removed == 0:
+        sys.exit(2 if len(rows) <= 1 else 4)
+    data["sessions"] = [s for s in data["sessions"] if id(s) not in removed_ids]
     fd, tmp = tempfile.mkstemp(prefix=".active-release-", dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as out:
@@ -4579,9 +4634,23 @@ finally:
 sys.exit(0)
 PY
   release_rc=$?
+  rel_out="$(tr -d '\n' < "${_prlr_tmp}")"
+  rm -f "${_prlr_tmp}"
+  # PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01: duplicate rows for one task_id
+  # must be VISIBLE -- a silent exit 2 is indistinguishable from "foreign row"
+  # and made the release path permanently unreachable for that lane.
+  case "${rel_out}" in
+    rows=*)
+      _prlr_rows="${rel_out#rows=}"; _prlr_rows="${_prlr_rows%% *}"
+      if [[ "${_prlr_rows}" -gt 1 ]]; then
+        emit decision "active_lane_duplicate_rows task=${s8:-} id=${rid} where=${where} found=${_prlr_rows} ${rel_out}"
+      fi
+      ;;
+  esac
   case "${release_rc}" in
-    0) emit decision "active_lane_released task=${s8:-} id=${rid} where=${where}" ;;
-    2) emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=not_owner_row_intact" ;;
+    0) emit decision "active_lane_released task=${s8:-} id=${rid} where=${where} ${rel_out}" ;;
+    2) emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=not_owner_row_intact ${rel_out}" ;;
+    4) emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=duplicate_rows_unresolvable ${rel_out}" ;;
     *) emit decision "active_lane_release_failed task=${s8:-} id=${rid} where=${where} reason=registry_compare_delete_error" ;;
   esac
   return 0
@@ -5227,6 +5296,28 @@ _glm_effort_for_class() { # <raw task class> -> stdout: "<effort> <source>"
   esac
 }
 
+# DEEPTHINK-MODE-IS-NOT-WIRED-01 (founder order 2026-09-04): the deepthink
+# decision, by WORK KIND (class), never a name list. At z.ai there is no
+# second switch to wire — glm-5.3/5.3-flash always reason, `thinking.type`
+# collapses into the effort vocabulary (disabled->low, enabled->max when no
+# explicit effort), `budget_tokens` is dropped, and `max` IS the documented
+# "Deep Reasoning" level (probes + doc, 2026-09-04:
+# docs/handoff/DEEPTHINK-MODE-IS-NOT-WIRED-01/report.md). So `deep` rides the
+# SAME GLM_EFFORT variable to the runner (which already appends --effort max)
+# instead of minting a dead second flag. heavy|strategic = architecture /
+# safety / root-cause / heavy-diff review; trivial|light|bulk = mechanical,
+# docs; standard = routine dev. Unknown class -> off via fallback: never pay
+# deep quota on a class the admission classifier did not name.
+_glm_think_for_class() { # <raw task class> -> stdout: "<deep|off> <source>"
+  local _cls
+  _cls="$(printf '%s' "${1:-standard}" | tr '[:upper:]' '[:lower:]')"
+  case "${_cls}" in
+    heavy|strategic)             printf '%s %s' 'deep' 'class_map' ;;
+    trivial|light|bulk|standard) printf '%s %s' 'off'  'class_map' ;;
+    *)                           printf '%s %s' 'off'  'fallback' ;;
+  esac
+}
+
 _spawn_worker_body() {
   local arm="$1" mission="$2" sig8="$3" errf="$4"
   local out rc handle err
@@ -5286,12 +5377,41 @@ _spawn_worker_body() {
   # block after the pin prepend (as WORKER-MCP-ALL-ARMS-01 originally did)
   # silently demoted the pin line to wherever the code-intel text ends,
   # breaking that invariant on every dispatch whose MCP attach succeeded.
-  local _ci_txt="" _ci_rc=0
-  _ci_txt="$(worker_mcp_preamble_for_arm "${arm}" "${WORK_ROOT}" "")" || _ci_rc=$?
+  # CODE-INTEL-SKIPPED-FIFTEEN-TIMES-01 (2026-09-04): every sonnet dispatch
+  # journaled mode=skipped reason=fail_open (15/15 that day, 78 historically)
+  # while glm/glm-flash attached 3/3 — a structural gate asymmetry, not
+  # flakiness. The sonnet launcher (claude-subsession.sh) resolves role MCP
+  # only under opt-in LEADV2_SUBSESSION_SLIM_MCP=1 (default 0), while
+  # glm/kimi/freepool gate on LEADV2_WORKER_MCP (default 1), and NOTHING ever
+  # set the sonnet gate for dispatched workers — the population glm's
+  # default-1 already covers. Fix is HERE, not in claude-subsession.sh: the
+  # launcher's 0 default stays for the LEAD-side escalation path, but a
+  # DISPATCHED sonnet worker defaults the gate to 1. One local computed once
+  # drives BOTH the prediction call below and the sonnet spawn line (its
+  # prefix assignment uses the same :-1 default), so prediction and spawn
+  # cannot disagree. Explicit env still wins: LEADV2_SUBSESSION_SLIM_MCP=0
+  # restores the old spawn — loudly, see the cause= journal field.
+  local _ci_slim="${LEADV2_SUBSESSION_SLIM_MCP:-}"
+  if [[ "${arm}" == "sonnet" && -z "${_ci_slim}" ]]; then
+    _ci_slim=1
+  fi
+  # Loud fail-open (same lane): capture the lib's stderr so the journal line
+  # names WHICH gate was off / WHICH call failed with WHICH rc, instead of a
+  # bare reason=fail_open the lead cannot act on. A missing cause line is
+  # itself surfaced (no_cause_reported) — silence is never an acceptable
+  # skip explanation again.
+  local _ci_txt="" _ci_rc=0 _ci_errf="" _ci_cause=""
+  _ci_errf="$(mktemp "${TMPDIR:-/tmp}/leadv2-ci-cause.XXXXXX")" || _ci_errf=""
+  _ci_txt="$(LEADV2_SUBSESSION_SLIM_MCP="${_ci_slim}" worker_mcp_preamble_for_arm "${arm}" "${WORK_ROOT}" "" 2>"${_ci_errf:-/dev/null}")" || _ci_rc=$?
+  if [[ -n "${_ci_errf}" ]]; then
+    _ci_cause="$(sed -n 's/^.*preamble_skip_cause=\([^[:space:]]*\).*$/\1/p' "${_ci_errf}" | head -1)"
+    rm -f "${_ci_errf}"
+  fi
+  [[ -n "${_ci_cause}" ]] || _ci_cause="no_cause_reported"
   case "${_ci_rc}" in
     0) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=attached" ;;
-    3) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=skipped reason=fail_open" ;;
-    *) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=none reason=arm_unwired" ;;
+    3) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=skipped reason=fail_open cause=${_ci_cause}" ;;
+    *) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=none reason=arm_unwired cause=${_ci_cause}" ;;
   esac
   [[ -z "${_ci_txt}" ]] || mission="${_ci_txt}"$'\n\n'"${mission}"
   [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
@@ -5317,12 +5437,25 @@ _spawn_worker_body() {
       # max, bulk -> low (mechanical). Review/verify roles would pay `high`
       # regardless of class — glm is in DEFAULT_REVIEW_EXCLUSIONS today, so
       # this row is contract-complete but currently unreachable.
-      local _glm_effort _glm_effort_source
+      local _glm_effort _glm_effort_source _glm_think _glm_think_source
       read -r _glm_effort _glm_effort_source <<<"$(_glm_effort_for_class "${DC_TASK_CLASS:-standard}")"
+      # DEEPTHINK-MODE-IS-NOT-WIRED-01: resolve the deepthink decision from
+      # the same raw class (see _glm_think_for_class). The think value is
+      # journaled on the effort_applied line next to effort= so a week from
+      # now the decision line itself proves deepthink travelled.
+      read -r _glm_think _glm_think_source <<<"$(_glm_think_for_class "${DC_TASK_CLASS:-standard}")"
       case "${LEADV2_WORKER_ROLE:-developer}" in
         review|verify|critic) _glm_effort=high; _glm_effort_source=role_override ;;
       esac
-      emit decision "effort_applied by=router arm=${arm} task=${sig8} effort=${_glm_effort} mechanism=flag source=${_glm_effort_source:-fallback} resolved=${RESOLVED_EFFORT:-unset}"
+      # think=deep pins effort=max AFTER the role override — a heavy-diff
+      # review must not be capped at high. Source becomes think_deep only
+      # when the pin actually changed the value; a heavy|strategic developer
+      # keeps source=class_map so the GLM-EFFICIENCY-01 suite's assertion
+      # (effort=max ... source=class_map) stays byte-identical.
+      if [[ "${_glm_think}" == "deep" && "${_glm_effort}" != "max" ]]; then
+        _glm_effort=max; _glm_effort_source=think_deep
+      fi
+      emit decision "effort_applied by=router arm=${arm} task=${sig8} effort=${_glm_effort} think=${_glm_think} think_source=${_glm_think_source:-class_map} mechanism=flag source=${_glm_effort_source:-fallback} resolved=${RESOLVED_EFFORT:-unset}"
       # FIX PASS 4: `9>&-` closes the lock fd for this call as defense-in-depth -- the
       # redesign already never holds the dispatch lock across spawn (spawn_worker runs
       # outside any lock this script itself opens), but a launcher spawns a DETACHED
@@ -5503,7 +5636,7 @@ _spawn_worker_body() {
       # empty RESOLVED_EFFORT (arbiter never ran) omits the flag, same as before.
       local -a _sonnet_effort_args=()
       [[ -n "${RESOLVED_EFFORT:-}" ]] && _sonnet_effort_args=(--effort "${RESOLVED_EFFORT}")
-      out="$(cd "${WORK_ROOT}" && PROJECT_ROOT="${PROJECT_ROOT}" bash "${SUBSESSION_BIN}" \
+      out="$(cd "${WORK_ROOT}" && PROJECT_ROOT="${PROJECT_ROOT}" LEADV2_SUBSESSION_SLIM_MCP="${LEADV2_SUBSESSION_SLIM_MCP:-1}" bash "${SUBSESSION_BIN}" \
              --role developer --model sonnet \
              --task-id "dispatch-${sig8}" --mission-file "${mfile}" "${_sonnet_effort_args[@]}" 2>"${errf}" 9>&-)"; rc=$?
       rm -f "${mfile}"

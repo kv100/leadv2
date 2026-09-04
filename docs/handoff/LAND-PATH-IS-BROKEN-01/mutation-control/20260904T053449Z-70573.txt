@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-leadv2-land.sh
+file=plugins/leadv2/scripts/leadv2-land.sh
+anchor=203s/land_ledger_finalize_row/:/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL - a: row landed (missing [landed] in [failed])
+diff_hash=ea391219c80e0a8206919851d2066a84b2ea62905d7ac8687e4106618fe7432a
+lane_diff_hash=99f4ea618985b5b41242a9a3fd531ba9884b56682e38a59ba75e8bdda82d12f5
