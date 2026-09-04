@@ -95,6 +95,11 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-gate-quoted.sh\"",
             "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/fx-scriptsdir.sh\"",
+            "timeout": 6
           }
         ]
       }

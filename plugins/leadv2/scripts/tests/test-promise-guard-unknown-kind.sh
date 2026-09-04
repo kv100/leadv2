@@ -228,6 +228,49 @@ expect_silent_row "18a «разбор» noun clause stays kind=None (not diagnos
 expect_fully_silent "18b bare noun «разбор причин» is vetoed prose" \
   "T:Разбор причин закончен, отчёт ниже"
 
+# --- 19. NEGATIVE CONTROL: mutate the diagnose branch INSIDE the function body,
+# prove cases 2/5 (currently silent) flip to FIRE against the mutant. A rule this
+# suite could not redden by breaking its own guarded branch would be theater, not
+# a control (GUARD-AUDIT-FINDINGS-NEVER-REACHED-THE-CODE-01 mandate). The mutant
+# is a full mktemp copy of the REAL hook file with the `elif primary_kind ==
+# 'diagnose':` branch deleted, so `diagnose` falls through to the generic
+# `else: action_after_promise = primary_kind in action_kinds_seen` arm — which is
+# always False for kind=diagnose (action_kinds_seen only ever holds
+# test/commit/dispatch/write strings), so a diagnose promise kept by a Write or a
+# test run would incorrectly FIRE. Never touches the real hook file.
+MUTANT="${WORK}/leadv2-promise-guard.mutant.sh"
+python3 - "${HOOK}" "${MUTANT}" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+needle = (
+    "elif primary_kind == 'diagnose':\n"
+    "    action_after_promise = bool(action_kinds_seen & (STATE_KINDS | {'test'}))\n"
+)
+if needle not in text:
+    sys.exit(3)  # anchor text moved -- refuse to fabricate a mutant
+open(dst, "w").write(text.replace(needle, "", 1))
+PY
+if [[ $? -ne 0 ]]; then
+  bad "19 negative control: mutation anchor not found in ${HOOK} -- cannot prove the control"
+else
+  chmod +x "${MUTANT}"
+  bash -n "${MUTANT}" 2>&1 || bad "19 negative control: mutant fails bash -n"
+  REAL_HOOK="${HOOK}"
+  HOOK="${MUTANT}"
+  out2="$(_run_hook "T:${ESCAPE} || TOOL:Write")"; rc2=$?
+  out5="$(_run_hook "T:${ESCAPE} || B:bash tests/run-all.sh --scope changed")"; rc5=$?
+  HOOK="${REAL_HOOK}"
+  if [[ ${rc2} -eq 2 || ${rc5} -eq 2 ]]; then
+    bad "19 negative control: mutant could-not-run (rc2=${rc2} rc5=${rc5})"
+  elif printf '%s' "${out2}" | grep -q '"decision": "block"' \
+    && printf '%s' "${out5}" | grep -q '"decision": "block"'; then
+    ok "19 negative control: mutant reddens (case 2 + case 5 now fire, as they must)"
+  else
+    bad "19 negative control: mutant stayed silent -- control is disarmed (case2='${out2:-<silent>}' case5='${out5:-<silent>}')"
+  fi
+fi
+
 # --- control: the real journal must be untouched ------------------------------
 REAL_JOURNAL_LINES_AFTER="${REAL_JOURNAL_LINES_BEFORE}"
 [[ -f "${REAL_JOURNAL}" ]] && REAL_JOURNAL_LINES_AFTER="$(wc -l < "${REAL_JOURNAL}" 2>/dev/null | tr -d ' ')"
