@@ -113,8 +113,26 @@ _leadv2_yaml_lockfile() {
   fi
 }
 
+# DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: this used to be a project-
+# root-relative literal (docs/LEAD_V2_STATE.md), which lands INSIDE whichever
+# lane worktree happens to be LEADV2_PROJECT_ROOT for this invocation. Every
+# lane's own render-index call then dirtied a file under its own worktree,
+# and the DoD gate's runtime_state_in_diff check killed the lane for a file
+# the harness itself wrote (six-for-six lanes, measured). LEAD_V2_STATE.md is
+# a rendered VIEW of active.yaml (see leadv2_active_render_index below) and
+# active.yaml already resolves OUTSIDE any worktree via leadv2-state-path.sh
+# (~/.claude/leadv2-state/<slug>/) — route this file through the identical
+# resolver so the view sits beside its source, never inside a lane checkout.
+# --no-link: LEAD_V2_STATE.md is not part of the docs/leadv2/* symlink set
+# leadv2-state-path.sh maintains, so skip that migration/symlink side effect.
 _leadv2_state_md() {
-  printf -- '%s/docs/LEAD_V2_STATE.md' "${LEADV2_PROJECT_ROOT}"
+  local resolver
+  resolver="$(_leadv2_state_path_sh)"
+  if [[ -x "$resolver" ]]; then
+    PROJECT_ROOT="${LEADV2_PROJECT_ROOT}" "$resolver" --no-link LEAD_V2_STATE.md
+  else
+    printf -- '%s/docs/LEAD_V2_STATE.md' "${LEADV2_PROJECT_ROOT}"
+  fi
 }
 
 # PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01 round 6: an interrupted/sandboxed
