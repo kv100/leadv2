@@ -179,6 +179,12 @@ create_salvage_branch() { # <main-tip>
     fi
   fi
   WT="$(mktemp -d "${TMPDIR:-/tmp}/lane-salvage.${LANE_ID}.XXXXXX")"
+  # Canonicalize BEFORE registering: git resolves symlinks (/tmp, /var), the
+  # repo runner's root-escape guard compares its own logical path against
+  # git's toplevel — on macOS TMPDIR lives under /var (a symlink), so an
+  # un-canonicalized path makes every run-all invocation die with
+  # root_escape rc=2 (measured live on the baseline worktree, 2026-09-04).
+  WT="$(cd "${WT}" && pwd -P)"
   if [[ "${FORCE}" -eq 1 ]]; then
     git worktree add --quiet -B "${SALVAGE_BRANCH}" "${WT}" "${main_tip}" >/dev/null \
       || _slv_fatal "git worktree add (-B) failed"
