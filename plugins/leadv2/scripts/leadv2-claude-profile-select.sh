@@ -67,15 +67,33 @@
 #   same_account      two slots resolve to ONE real account (the incident)
 #   label_mismatch    derived identity differs from the `expect` column
 #   identity_email_unresolved  no readable .claude.json -> email unverifiable
-#   default_token_expired / default_token_absent  the inherited slot's
+#   default_token_unrefreshable / default_token_absent  the inherited slot's
 #                      credential is dead/missing (the lane runs on it
 #                      whenever the selector fails open)
-# A credential whose `claudeAiOauth.expiresAt` is in the past is flagged
-# `WARN token_expired` and excluded from candidate scoring; if that leaves
-# zero live candidates, the selector refuses outright (reason=all_expired)
-# rather than silently picking a dead credential.  Only parsed metadata
-# (subscriptionType/email/expiresAt) ever leaves this function -- the raw
-# credential JSON (which carries accessToken/refreshToken) is never printed,
+#
+# CLAUDE-PROFILE-DEFAULT-TOKEN-EXPIRED-01 (corrected contract) -- two
+# independent bugs previously made this warn fire ~207 times on healthy
+# credentials:
+#   (A) wrong record: the CLI does not write the legacy unsuffixed
+#       "Claude Code-credentials" keychain service for a live default config
+#       dir -- it writes "Claude Code-credentials-<sha256(config_dir)[:8]>"
+#       (see keychain_service_for_dir()).  The unsuffixed service is a stale
+#       fallback, checked LAST now, never first.
+#   (B) wrong predicate: `claudeAiOauth.expiresAt` is the ACCESS-token expiry
+#       (~8h rolling) -- it is legitimately in the past very often and is NOT
+#       a liveness signal on its own.  The only proof a slot is dead is its
+#       REFRESH window: `refreshToken` absent, or `refreshTokenExpiresAt`
+#       (~3wk horizon) already past.  See credential_health().
+# A slot is flagged `WARN token_unrefreshable` / `default_token_unrefreshable`
+# and excluded from candidate scoring ONLY when credential_health() returns 1
+# (unrefreshable); if that leaves zero live candidates, the selector refuses
+# outright (reason=all_expired, stdout token unchanged for the caller) rather
+# than silently picking a dead credential.  An expired access token with a
+# still-live (or unrecorded) refresh window is normal steady state and is
+# silent -- not even an info line.  Only parsed metadata
+# (subscriptionType/email/expiresAt/refreshTokenExpiresAt/has_refresh) ever
+# leaves derive_identity() -- the raw credential JSON (which carries
+# accessToken/refreshToken) and the tokens themselves are never printed,
 # logged, or journalled.
 # M1 (fix-round 2026-08-27) bucket-key migration: a slot whose email half is
 # unresolved (`<sub>/na`) now keys its quota cache on the config_dir instead
@@ -111,13 +129,24 @@ read_cred_json() {
   esac
 }
 
+# keychain_service_for_dir <config_dir> -> "Claude Code-credentials-<8hex>"
+# <8hex> = sha256(config_dir)[:8], the live per-config-dir keychain service
+# name the CLI actually writes (verified: sha256("$HOME/.claude")[:8] ==
+# eb6c5b97, sha256("$HOME/.claude-work")[:8] == 5a3c2328 -- Defect A).
+# Hashed via python3 (already a hard dependency of derive_identity) -- no
+# shasum/sha256sum, bash-3.2 safe.
+keychain_service_for_dir() {
+  python3 -c 'import hashlib, sys; print("Claude Code-credentials-" + hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])' "$1"
+}
+
 # derive_identity <config_dir> <credential_source>
-#   -> "<sub>\t<email>\t<expiresAt_ms|->\t<cj_ok>\t<cred_ok>"
-# Email from <config_dir>/.claude.json oauthAccount.emailAddress, sub/expiry
-# from the credential's claudeAiOauth (see header: the sources are
-# complementary live shapes). Tab is IFS-whitespace, so the empty expiry
-# field uses the '-' sentinel to survive `IFS=$'\t' read` collapsing.
-# Never emits accessToken/refreshToken.
+#   -> "<sub>\t<email>\t<expiresAt|->\t<refreshTokenExpiresAt|->\t<has_refresh:0|1>\t<cj_ok>\t<cred_ok>"
+# Email from <config_dir>/.claude.json oauthAccount.emailAddress, sub/expiry/
+# refresh fields from the credential's claudeAiOauth (see header: the sources
+# are complementary live shapes). Tab is IFS-whitespace, so empty numeric
+# fields use the '-' sentinel to survive `IFS=$'\t' read` collapsing.
+# has_refresh is a BOOLEAN only -- the refreshToken value itself is never
+# emitted, printed, or journalled.
 derive_identity() {
   read_cred_json "$2" | CJ_PATH="${1}/.claude.json" python3 -c '
 import json, os, sys
@@ -138,8 +167,30 @@ sub = co.get("subscriptionType") or "unknown"
 email = oa.get("emailAddress") or co.get("email") or co.get("emailAddress") or "na"
 ea = co.get("expiresAt")
 ea = ea if isinstance(ea, (int, float)) else "-"
-print("%s\t%s\t%s\t%d\t%d" % (sub, email, ea, 1 if cj else 0, 1 if cred else 0))
+rte = co.get("refreshTokenExpiresAt")
+rte = rte if isinstance(rte, (int, float)) else "-"
+has_refresh = 1 if co.get("refreshToken") else 0
+print("%s\t%s\t%s\t%s\t%d\t%d\t%d" % (sub, email, ea, rte, has_refresh, 1 if cj else 0, 1 if cred else 0))
 ' 2>/dev/null
+}
+
+# credential_health <expiresAt|-> <refreshTokenExpiresAt|-> <has_refresh:0|1> <cred_ok:0|1>
+#   -> return 0 = refreshable, 1 = unrefreshable, 2 = unreadable
+# Honest predicate (Defect B fix): `expiresAt` (the access-token expiry, ~8h
+# rolling) is NEVER consulted here -- it is legitimately in the past often
+# and proves nothing about liveness.  The only proof a slot is dead is its
+# REFRESH window: no refreshToken at all, or a refreshTokenExpiresAt that has
+# already passed.  A record with a live refreshToken but no
+# refreshTokenExpiresAt field is NOT provably dead -- absence of the expiry
+# is not evidence of expiry, so it returns refreshable (0).
+credential_health() {
+  local exp="$1" rexp="$2" has_refresh="$3" cred_ok="$4"
+  local now_ms
+  now_ms=$(( $(date +%s) * 1000 ))
+  if [[ "$cred_ok" != "1" ]]; then return 2; fi
+  if [[ "$has_refresh" != "1" ]]; then return 1; fi
+  if [[ "$rexp" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( ${rexp%%.*} <= now_ms )); then return 1; fi
+  return 0
 }
 
 # Opt-in gate: unset or != 1 => print nothing, exit 0 (lane unchanged).
@@ -159,21 +210,30 @@ if (( timeout_s > 60 )); then warn "WARN: LEADV2_CLAUDE_PROFILE_TIMEOUT clamped 
 # --- default (inherited) slot health ----------------------------------------
 # Whenever this selector fails open, the lane runs on the inherited config
 # dir, so a dead default credential is worth shouting about even though it
-# changes nothing here (availability > purity).  On-disk credential first,
-# then the canonical keychain service (the production default keeps its
-# credential there -- verified live 2026-08-27).
+# changes nothing here (availability > purity).  Resolution order (Defect A
+# fix): on-disk credential first, then the LIVE per-config-dir suffixed
+# keychain service, then the legacy unsuffixed service as a last resort only
+# (frozen since 2026-08-25 -- never the first record consulted).  Both
+# keychain attempts are guarded by `command -v "$SECURITY_BIN"` so a
+# keychain-less host (e.g. a Linux container, where the on-disk credential
+# normally resolves on the very first attempt) costs zero failed execs.
 default_dir="${LEADV2_CLAUDE_PROFILE_DEFAULT_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
 def_line="$(derive_identity "$default_dir" "file:${default_dir}/.credentials.json")"
-IFS=$'\t' read -r d_sub d_email d_exp d_cj d_cred <<<"$def_line"
-if [[ "$d_cred" != "1" ]]; then
+IFS=$'\t' read -r d_sub d_email d_exp d_rexp d_has_refresh d_cj d_cred <<<"$def_line"
+if [[ "$d_cred" != "1" ]] && command -v "$SECURITY_BIN" >/dev/null 2>&1; then
+  def_line="$(derive_identity "$default_dir" "keychain:$(keychain_service_for_dir "$default_dir")")"
+  IFS=$'\t' read -r d_sub d_email d_exp d_rexp d_has_refresh d_cj d_cred <<<"$def_line"
+fi
+if [[ "$d_cred" != "1" ]] && command -v "$SECURITY_BIN" >/dev/null 2>&1; then
   def_line="$(derive_identity "$default_dir" "keychain:Claude Code-credentials")"
-  IFS=$'\t' read -r d_sub d_email d_exp d_cj d_cred <<<"$def_line"
+  IFS=$'\t' read -r d_sub d_email d_exp d_rexp d_has_refresh d_cj d_cred <<<"$def_line"
 fi
 if [[ "$d_cred" != "1" ]]; then
   warn "WARN: default_token_absent (inherited slot has no readable credential) -- fail-open"
-elif [[ "$d_exp" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-  if (( ${d_exp%%.*} <= $(date +%s) * 1000 )); then
-    warn "WARN: default_token_expired identity=${d_sub}/${d_email} -- fail-open"
+else
+  credential_health "$d_exp" "$d_rexp" "$d_has_refresh" "$d_cred"
+  if [[ $? -eq 1 ]]; then
+    warn "WARN: default_token_unrefreshable identity=${d_sub}/${d_email} dir=${default_dir} -- fail-open"
   fi
 fi
 
@@ -231,7 +291,7 @@ while IFS=$'\t' read -r label config_dir cred expect || [[ -n "${label:-}" ]]; d
   # the credential for sub/expiry), never from the label -- a re-logged-in
   # slot can silently start serving a different account.
   id_line="$(derive_identity "$config_dir" "$cred")"
-  IFS=$'\t' read -r id_sub id_email id_exp id_cj id_cred <<<"$id_line"
+  IFS=$'\t' read -r id_sub id_email id_exp id_rexp id_has_refresh id_cj id_cred <<<"$id_line"
   id_sub="${id_sub:-unknown}"; id_email="${id_email:-na}"
   identity="${id_sub}/${id_email}"
   if [[ "$id_cj" != "1" ]]; then
@@ -242,14 +302,11 @@ while IFS=$'\t' read -r label config_dir cred expect || [[ -n "${label:-}" ]]; d
   if [[ -n "${expect:-}" && "$expect" != "$identity" ]]; then
     warn "WARN: label_mismatch label=${label} expected=${expect} identity=${identity} -- bucketing by identity (fail-open)"
   fi
-  if [[ "$id_exp" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-    now_ms=$(( $(date +%s) * 1000 ))
-    id_exp_i="${id_exp%%.*}"
-    if (( id_exp_i <= now_ms )); then
-      warn "WARN: registry line ${lineno} skipped: token_expired label=${label} identity=${identity}"
-      expired_count=$((expired_count + 1))
-      continue
-    fi
+  credential_health "$id_exp" "$id_rexp" "$id_has_refresh" "$id_cred"
+  if [[ $? -eq 1 ]]; then
+    warn "WARN: registry line ${lineno} skipped: token_unrefreshable label=${label} identity=${identity}"
+    expired_count=$((expired_count + 1))
+    continue
   fi
   LABELS+=("$label"); DIRS+=("$config_dir"); SOURCES+=("$cred"); IDENTITIES+=("$identity")
 done < "$REGISTRY"
