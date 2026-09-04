@@ -75,3 +75,31 @@ lane's worker). It is out of this round's scope and must not be closed by it.
 **Accept this lane on fixture evidence plus a biting semantic control, and do not read the unchanged
 live verdict as a failure of the fix.** The live check becomes discriminating the moment M2 lands, or
 as soon as any live lane writes its first `*.full.md`.
+# bash-guard: allow
+
+---
+
+## CORRECTION, 2026-09-04 — the section above is wrong about D3, and the error is mine
+
+I wrote that no live lane could discriminate the fix, and that the remaining wrongness belonged to
+the process rung (M2). **That is wrong for `D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01`, and it was my own
+measurement error, not a limitation of the machine.**
+
+I counted D3's deliverables in `docs/handoff/D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01/` and found none.
+Its deliverable is in `docs/handoff/dispatch-57a94876/`: `developer.full.md` and
+`developer.summary.md`. I made by hand exactly the mistake this lane exists to fix — resolved a lane
+by its founder id and read the wrong directory. That row's "0 deliverables" should read 2.
+
+**So D3 does discriminate, and E4 still fails on it, for a cause inside this rung rather than M2.**
+The registry holds THREE rows for that lane (`docs/leadv2/active.yaml`): row 1 points at
+`docs/handoff/dispatch-57a94876/developer.stream.jsonl`, row 2 at the `pulse.md` default, row 3 at
+`None`. `sessions` is a dict keyed by task_id, so only the **last** row survives — `None`. The
+pointer naming the real handoff directory is discarded before E4 runs. Every re-armed lane is still
+blind, and re-armed lanes are precisely the population this rung was built for.
+
+The merged fix is correct as far as it goes and stays: a single-row lane resolves. It is
+**incomplete**, and the live acceptance I set — "if it still says `dead:*`, you are not done" — is
+now met by a real lane and is failing. Follow-up: `E4-KEEPS-ONLY-THE-LAST-REGISTRY-ROW-01`, whose
+acceptance is that lane, live — D3 must report `finished_unlanded:<age>s`.
+
+Do not read the merge of `b57ec9ab` as closing the rung, and do not close M2 with it.
