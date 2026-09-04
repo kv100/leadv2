@@ -104,3 +104,38 @@ So, for this lane only:
   and claiming otherwise is the exact lying-green shape this wave exists to remove.
 
 Everything else in this brief stands unchanged.
+
+---
+
+## LEAD ADDENDUM — the existing auto-checkpoint SWITCHES ITSELF OFF for the lanes that lose work
+
+Measured 2026-09-04 by reading the gate, `leadv2-dispatch-product-close.sh:1911`, the opening
+lines of `pc_stop_gate_autocommit`:
+
+```
+[[ "${LEADV2_STOP_GATE:-1}" != 0 ]] || return 0
+[[ -n "${_PC_SCOPE_WRITES_CSV:-}" ]] || return 0     <-- here
+```
+
+`_PC_SCOPE_WRITES_CSV` is built from the DECLARED write set (`:1831`, falling back to
+`LEADV2_DISPATCH_LANE_WRITES` at `:1860`). An empty set is a silent `return 0` — the mechanism
+reports success and does nothing.
+
+Evidence from two sibling lanes on the same night: a lane that declared `--writes` was saved by it
+(`44174d48 wip: auto-checkpoint on worker exit (STOP-GATE)` landed an uncommitted deliverable);
+a lane that did not declare one died with its work in the tree. **237 of 241 dispatches declared
+nothing.**
+
+So the existing mechanism is not merely inside the dying process tree — it is **disabled precisely
+for the lanes most likely to lose work**. That is the fifth and strongest argument for the external
+sweeper this lane builds:
+
+1. it runs outside the dying process tree;
+2. it does not depend on a declaration the lane may never have made;
+3. it cannot be silenced by an empty variable;
+4. its refusals are visible (`skipped_alive`, `skipped_clean`), never a bare `return 0`;
+5. it treats a missing write set as `unknown` — sweep nothing, report loudly — never as consent.
+
+**Requirement:** the sweeper must checkpoint a dirty lane tree whose write set is EMPTY, and say so
+in its output. A negative control for this: run it against a lane with no declared writes and dirty
+files — if nothing is committed, the suite goes red.
