@@ -90,11 +90,11 @@ expect_pool "prepass resume invalidation (LANE-OBSERVABILITY-02)" parallel "test
 # git-status check would misattribute between concurrent suites; last 2 kept
 # per round-1 findings that round 2 could not disprove) ---
 expect_pool "dispatch refusal fallback chain" serial "test-routing-enforcement-p1"
-expect_pool "product-close waits for worker exit" parallel "test-no-work-terminal"
-expect_pool "Codex full-cycle runner" parallel "test-codex-session-runner"
-expect_pool "lanes snapshot reconciliation" parallel "test-lanes-snapshot"
+expect_pool "product-close waits for worker exit" serial "test-no-work-terminal"
+expect_pool "Codex full-cycle runner" serial "test-codex-session-runner"
+expect_pool "lanes snapshot reconciliation" serial "test-lanes-snapshot"
 expect_pool "lane truth batch (log_path + quarantine convergence)" serial "test-lane-truth-batch-01"
-expect_pool "stop-gate autocommit on worker exit (V3-STOP-GATE-01)" parallel "test-stop-gate"
+expect_pool "stop-gate autocommit on worker exit (V3-STOP-GATE-01)" serial "test-stop-gate"
 expect_pool "burn governor (BURN-GOVERNOR-01: 24h burn gate)" serial "test-burn-governor"
 
 # A dump line the parser did not recognize means the runner's dump format
