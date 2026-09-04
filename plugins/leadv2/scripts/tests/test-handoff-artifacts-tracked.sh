@@ -130,5 +130,56 @@ else
   fail "RED control: mutation did NOT block git add — check 1 is not a real assertion"
 fi
 
+# ── 5: a NEW kind of lane document (never enumerated by name) is addable ──
+# HANDOFF-ARTIFACTS-ALLOWLIST-IS-NAME-BASED-01 (round 2): round 1's allowlist
+# matched exactly report.md / brief*.md / *.full.md / *.summary.md /
+# round*-red / fix-round*.md / continue-round*.md / architect-prepass.md /
+# divergence.md. report-e4-round.md, fix-round-1.md and mission-close.md are
+# each a lane document that finished a round exactly like report.md is, but
+# none of the three names above is a name any prior rule enumerated (fix-
+# round-1.md happens to also match the pre-existing fix-round*.md rule; it is
+# asserted here anyway because the property under test is "a document is
+# visible because it is a document", not "this specific name was remembered").
+# This must pass on the extension-scoped rule and must NOT require -f.
+d="$(new_fixture)"; seed_artifacts "${d}"
+printf '# report e4 round\n' > "${d}/docs/handoff/FIXTURE-ID/report-e4-round.md"
+printf '# fix round 1\n' > "${d}/docs/handoff/FIXTURE-ID/fix-round-1.md"
+printf '# mission close\n' > "${d}/docs/handoff/FIXTURE-ID/mission-close.md"
+add_err="$(cd "${d}" && git add \
+  docs/handoff/FIXTURE-ID/report-e4-round.md \
+  docs/handoff/FIXTURE-ID/fix-round-1.md \
+  docs/handoff/FIXTURE-ID/mission-close.md 2>&1)"
+staged="$(cd "${d}" && git diff --cached --name-only)"
+if [[ "${staged}" == *"report-e4-round.md"* && "${staged}" == *"fix-round-1.md"* && "${staged}" == *"mission-close.md"* ]]; then
+  pass "5: never-enumerated lane document names (report-e4-round.md, fix-round-1.md, mission-close.md) staged by plain git add (no -f)"
+else
+  fail "5: a never-enumerated lane document was not staged (git add said: ${add_err}; staged: ${staged})"
+fi
+
+# ── 6: the mirror — a non-document sibling in the SAME directory stays ─────
+#      ignored, proving the rule is scoped to documents, not to the directory.
+# context.yaml is deliberately NOT part of this mirror: it already has its
+# own, separately-motivated exception two lines below in .gitignore (the
+# 2026-08-31 fix, commit 6f6b55b, "the phase gate demanded artifacts
+# .gitignore forbade committing") that predates and is independent of this
+# round's document-visibility rule. Asserting context.yaml-must-stay-ignored
+# here would require deleting that exception and reintroduce the gate
+# failure it fixed — so this check uses siblings that were never carved out:
+# scratch state, a stray tarball, and an editor backup.
+d="$(new_fixture)"; seed_artifacts "${d}"
+printf 'scratch\n' > "${d}/docs/handoff/FIXTURE-ID/scratch.txt"
+printf 'tar\n' > "${d}/docs/handoff/FIXTURE-ID/stray-artifact.tar.gz"
+printf 'swap\n' > "${d}/docs/handoff/FIXTURE-ID/report.md.swp"
+( cd "${d}" && git add \
+  docs/handoff/FIXTURE-ID/scratch.txt \
+  docs/handoff/FIXTURE-ID/stray-artifact.tar.gz \
+  docs/handoff/FIXTURE-ID/report.md.swp ) 2>/dev/null
+staged="$(cd "${d}" && git diff --cached --name-only)"
+if [[ "${staged}" != *"scratch.txt"* && "${staged}" != *"stray-artifact.tar.gz"* && "${staged}" != *"report.md.swp"* ]]; then
+  pass "6: non-document siblings (scratch.txt, stray-artifact.tar.gz, report.md.swp) stay ignored by plain git add"
+else
+  fail "6: a non-document sibling got staged despite not being a lane document (staged: ${staged})"
+fi
+
 printf 'test-handoff-artifacts-tracked: %d passed, %d failed\n' "${PASS}" "${FAIL}"
 (( FAIL == 0 ))

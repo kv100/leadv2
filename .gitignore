@@ -46,17 +46,31 @@ plugins/leadv2/scripts/tests/.claude/
 # Allowlist the artifacts that are actual evidence; everything else under
 # docs/handoff/<id>/ (stream jsonl, session maps, locks, regenerated diffs,
 # stamps — per-run scratch) stays default-ignored.
-docs/handoff/*/*
-!docs/handoff/*/report.md
-!docs/handoff/*/brief*.md
+#
 # D2-UNBLIND-AND-THIRD-STATE-M0M1-01 (M0): the worker's own deliverable report
 # (*.full.md / *.summary.md) is evidence a round finished, not per-run scratch.
 # 184 of 281 on-disk reports were invisible to git (ignored at random — the 97
 # tracked ones merely predate the blanket rule), so a worker that finished
 # without committing read as "produced nothing" and was re-dispatched, each
 # dispatch erasing the previous round's report.
-!docs/handoff/*/*.full.md
-!docs/handoff/*/*.summary.md
+#
+# HANDOFF-ARTIFACTS-ALLOWLIST-IS-NAME-BASED-01 (round 2, 2026-09-04): the line
+# above (and the report.md/brief*.md/fix-round*.md/continue-round*.md/
+# architect-prepass.md/divergence.md lines that used to sit further down) each
+# enumerated one NAME. report-e4-round.md, fix-round-1.md and mission-close.md
+# are all lane documents that finished a round, exactly like report.md or
+# *.full.md, but none of them matched any enumerated name, so a brand-new kind
+# of document was invisible by default the day it was first written. A lane's
+# own documents are markdown; visibility keys on that extension, not on an
+# ever-growing name list, so ANY *.md written directly under docs/handoff/<id>/
+# is a document and stays visible. This does NOT widen to "everything in the
+# directory": non-.md siblings (context.yaml, .gate1-passed, round*-red/) are
+# not documents and keep their own, separately-motivated exceptions below —
+# a stray context.yaml-adjacent tarball, editor backup or scratch.txt must
+# still default-ignore (test-handoff-artifacts-tracked.sh RED control (b)
+# proves widening to `!docs/handoff/*/*` breaks exactly this mirror).
+docs/handoff/*/*
+!docs/handoff/*/*.md
 !docs/handoff/*/round*-red
 docs/leadv2/review-*
 docs/leadv2/status-snapshot.json
@@ -81,9 +95,16 @@ docs/leadv2/burn-deferred.d/
 # Local session config and a stray review artifact at the handoff root.
 .claude/cache/
 docs/handoff/dispatch-*-review-*.md
-!docs/handoff/*/fix-round*.md
-!docs/handoff/*/continue-round*.md
+# fix-round*.md, continue-round*.md, architect-prepass.md and divergence.md
+# used to each need their own !-line here; all four are *.md and now covered
+# by `!docs/handoff/*/*.md` above (HANDOFF-ARTIFACTS-ALLOWLIST-IS-NAME-BASED-01).
+# context.yaml and .gate1-passed are NOT documents (structured lead state /
+# gate marker, never authored prose) and are deliberately NOT part of that
+# extension rule; they keep their own exception because the 2026-08-31 fix
+# (commit 6f6b55b, "the phase gate demanded artifacts .gitignore forbade
+# committing") needs them trackable regardless of the document-visibility
+# rule above — do not fold them into a "non-.md siblings stay ignored" mirror
+# assertion, that would require deleting this line and reintroduce that gate
+# failure.
 !docs/handoff/*/context.yaml
-!docs/handoff/*/architect-prepass.md
 !docs/handoff/*/.gate1-passed
-!docs/handoff/*/divergence.md
