@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-leadv2-land.sh
+file=plugins/leadv2/scripts/leadv2-land.sh
+anchor=371s/==/!=/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL - a: rc=0 (expected [0], got [1])
+diff_hash=cd3c09400d5e725d8df3a1ec7faf9f7c1026028db9122637c0eda29900609ddd
+lane_diff_hash=99f4ea618985b5b41242a9a3fd531ba9884b56682e38a59ba75e8bdda82d12f5
