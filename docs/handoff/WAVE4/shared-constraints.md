@@ -266,3 +266,31 @@ isolated tree, `git status` before and after, a probe first shown able to answer
 > when you wrote the description yourself. A measurement of behaviour is evidence immediately.
 
 We spent the night applying this to other agents' reports and never once to our own.
+
+## Before believing a control, show it changed the thing its result is blamed on
+
+The zero rule has a twin, and it bit twice in one lane.
+
+> Before believing a control, show that it changed exactly the thing its result is attributed to.
+
+**A control that never writes cannot fail.** A suite's declared negative control reported GREEN
+having performed no write at all: `capture_ask` dedupes on the first 60 characters of a prompt, and
+the control prompt shared them with the case above it. The mutation applied, the mutant was
+byte-different, the suite ran — and the subject of the check simply never occurred. This is the
+cousin of "the mutation did not apply", one step further along: not the mutation missing, but the
+*event under test* missing, with green meaning "there was nothing to check".
+
+**A control that proves a different proposition.** Removing a suite's row from `EXTRA_SUITE_MAP`
+left it still selected, which read as "the row is unnecessary". It was selected because the suite
+file itself had changed — run-all selects changed tests directly. The honest form is to change
+**only the carrier** (the hook) with the suite already committed:
+
+```text
+hook-only change:  with the map row selected=1,  without it selected=0
+```
+
+The first version proved that an edited test runs. The second proves that CI selects this suite when
+the code it covers changes — which is the claim being made.
+
+Both failures share a shape with `borrowed justification`: something true was demonstrated, and it
+was not the thing that needed demonstrating.
