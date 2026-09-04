@@ -355,6 +355,16 @@ export LEADV2_STUB_GLM_RUNS="${E2E_STUB_RUNS}"
 mkdir -p "${E2E_STUB_RUNS}"
 export LEADV2_REQUIRE_PHASES=1
 MISSION_G2="PPC-G2: fix the integration test harness failure"
+# DISPATCH-PHASE-DEADLOCK-01 round 2: a lane with ZERO phase records is at
+# bootstrap and is admitted by design (that refusal was the deadlock this task
+# removes — every brand-new Standard/Heavy lane was refused for phases it had
+# no way to have). G2's contract is therefore "a STARTED lane that is missing
+# mandatory phases is refused": seed the classify record dispatch-code itself
+# writes (same sig pipeline as G1) so the lane has history, then expect the
+# refusal for the still-missing plan/gate1.
+SIG_G2="$(printf '%s' "${MISSION_G2}" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print $1}')"
+SIG8_G2="${SIG_G2:0:8}"
+bash "$PHASE_RECORD" record "${SIG8_G2}" classify --status done --owner test:test >/dev/null 2>&1
 rc_g2=0
 ( cd "${E2E_REPO}" && bash "$DISPATCH_BIN" --kind tooling "$MISSION_G2" ) >/dev/null 2>&1 || rc_g2=$?
 if [[ $rc_g2 -eq 3 ]]; then
