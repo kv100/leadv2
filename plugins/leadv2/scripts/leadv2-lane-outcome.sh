@@ -116,7 +116,14 @@ _derive_work_delta() {
   fi
 }
 
-# ---- 3. work: yes|no, resolving a "skip" delta via the persona-engine git probe ----
+# ---- 3. work: yes|no|unknown, resolving a "skip" delta via the persona-engine git probe ----
+# LANE-OUTCOME-CLASSIFIES-BY-WORDING-NOT-STATE-01 fix: a work state that
+# cannot be DETERMINED (no cwd on record, or cwd is not a git tree) used to
+# default to "no" -- the "conservative" label was backwards: silently
+# defaulting an undeterminable state to "no work" is exactly how died-clean
+# throws real work away downstream. Only an ACTUAL clean-tree, up-to-date
+# git probe may report "no"; every case where the probe itself could not run
+# reports "unknown" so the decision table (below) can refuse to guess.
 _resolve_work() {
   local delta="$1"
   case "${delta}" in
@@ -124,15 +131,16 @@ _resolve_work() {
     no) echo no; return 0 ;;
   esac
   # delta == skip: fall back to meta_get cwd -- dirty tracked tree OR commits ahead
-  # of upstream => yes; missing cwd / not a git tree => no (conservative).
+  # of upstream => yes; missing cwd / not a git tree => unknown (the probe
+  # itself could not run -- this is NOT the same fact as a clean tree).
   local cwd_dir
   cwd_dir="$(_lane_outcome_meta_get cwd)"
   if [[ -z "${cwd_dir}" || ! -d "${cwd_dir}" ]]; then
-    echo no
+    echo unknown
     return 0
   fi
   if ! git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo no
+    echo unknown
     return 0
   fi
   if [[ -n "$(git -C "${cwd_dir}" status --porcelain 2>/dev/null)" ]]; then
@@ -148,35 +156,88 @@ _resolve_work() {
   echo no
 }
 
+# ---- 0. verdict: highest-priority input, per
+# LANE-OUTCOME-CLASSIFIES-BY-WORDING-NOT-STATE-01 §2. A recorded gate verdict
+# (review/dod/e2e) outranks everything else when present.
+#
+# HONESTY NOTE (measured, not aspirational): as of this change, NO shipped
+# caller writes ${RUN_DIR}/.gate-verdict. leadv2-lane-outcome.sh is invoked
+# by glm-coder.sh/kimi-coder.sh/freepool-coder.sh from inside their own
+# finalize path, immediately at raw worker exit -- strictly BEFORE
+# leadv2-dispatch-product-close.sh's review_gate/dod-gate machinery ever
+# runs (grep 'leadv2-lane-outcome.sh' plugins/leadv2/scripts/*.sh shows all
+# three call sites are pre-review; review artifacts live under
+# docs/handoff/dispatch-<task>/, a path this script is never handed). So no
+# gate verdict CAN exist at the moment this script runs today. This hook is
+# a forward-compatible seam -- if a future caller (or a resumed
+# classification of the same run_dir) has a real verdict, it now wins
+# unconditionally; it is not a claim that one is available today.
+_resolve_verdict() { # -> outcome token, or empty if none recorded
+  local f="${RUN_DIR}/.gate-verdict" outcome
+  [[ -s "${f}" ]] || { printf ''; return 0; }
+  outcome="$(sed -n 's/^outcome=//p' "${f}" 2>/dev/null | head -1 | tr -d '[:space:]')"
+  case "${outcome}" in
+    completed|died-with-work|died-clean|parked|unknown) printf '%s' "${outcome}"; return 0 ;;
+  esac
+  printf ''
+}
+
+VERDICT="$(_resolve_verdict || true)"
 BOUND="$(_resolve_bound || echo none)"
 WORK_DELTA="$(_derive_work_delta || echo skip)"
-WORK="$(_resolve_work "${WORK_DELTA}" || echo no)"
+WORK="$(_resolve_work "${WORK_DELTA}" || echo unknown)"
+
+# Wording probe is LAST RESORT, subordinate to both the verdict and the work
+# state (LANE-OUTCOME-CLASSIFIES-BY-WORDING-NOT-STATE-01 §2): it may only be
+# consulted when there is no recorded verdict AND the work state was
+# actually determined (never asked to arbitrate an "unknown"), and it can
+# never be reached at all once a bound/died-* path is already decided
+# (EXIT_CODE==0 && BOUND==none guards that structurally, same as before).
 PARKED=0
-if [[ "${EXIT_CODE}" == "0" && "${BOUND}" == "none" ]] \
+if [[ -z "${VERDICT}" && "${WORK}" != "unknown" \
+   && "${EXIT_CODE}" == "0" && "${BOUND}" == "none" ]] \
    && declare -F lv2_parked_text_file >/dev/null 2>&1 \
    && lv2_parked_text_file "${RUN_DIR}/result.md"; then
   PARKED=1
 fi
 
-# ---- 4. outcome decision table, per §2.3 ----
+# ---- 4. outcome decision table, per §2.3, extended by
+# LANE-OUTCOME-CLASSIFIES-BY-WORDING-NOT-STATE-01: verdict first, then
+# state (bound + work), then wording last -- and an undetermined work state
+# is never silently resolved to the safer-sounding "died-clean"/"no".
 OUTCOME=""
-if [[ "${BOUND}" != "none" ]]; then
-  [[ "${WORK}" == "yes" ]] && OUTCOME="died-with-work" || OUTCOME="died-clean"
-elif [[ "${PARKED}" == "1" && -f "${RUN_DIR}/.deliverable" && -f "${RUN_DIR}/.no-deliverable" ]]; then
+if [[ -n "${VERDICT}" ]]; then
+  OUTCOME="${VERDICT}"
+elif [[ "${BOUND}" != "none" ]]; then
+  case "${WORK}" in
+    yes) OUTCOME="died-with-work" ;;
+    unknown) OUTCOME="unknown" ;;
+    *) OUTCOME="died-clean" ;;
+  esac
+elif [[ "${PARKED}" == "1" && "${WORK}" != "yes" \
+     && -f "${RUN_DIR}/.deliverable" && -f "${RUN_DIR}/.no-deliverable" ]]; then
   OUTCOME="parked"
 elif [[ -f "${RUN_DIR}/.no-deliverable" ]]; then
-  [[ "${WORK}" == "yes" ]] && OUTCOME="died-with-work" || OUTCOME="died-clean"
+  case "${WORK}" in
+    yes) OUTCOME="died-with-work" ;;
+    unknown) OUTCOME="unknown" ;;
+    *) OUTCOME="died-clean" ;;
+  esac
 elif [[ "${EXIT_CODE}" == "0" ]]; then
   OUTCOME="completed"
 else
-  [[ "${WORK}" == "yes" ]] && OUTCOME="died-with-work" || OUTCOME="died-clean"
+  case "${WORK}" in
+    yes) OUTCOME="died-with-work" ;;
+    unknown) OUTCOME="unknown" ;;
+    *) OUTCOME="died-clean" ;;
+  esac
 fi
 
 case "${OUTCOME}" in
   died-with-work) NEXT="continue" ;;
   parked) NEXT="continue" ;;
   died-clean) NEXT="respawn" ;;
-  *) NEXT="none" ;;
+  *) NEXT="none" ;;  # includes "unknown" and "completed" -- never auto-respawn an undetermined lane
 esac
 
 AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
