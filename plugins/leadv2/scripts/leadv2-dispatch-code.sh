@@ -3776,6 +3776,66 @@ _prepass_writes() { # <sig8> -> CSV writes or empty
   (IFS=','; printf '%s' "${kept[*]:-}")
 }
 
+# _emit_writeset_refusal <sig8> <lane_writes> <register_stderr> <founder_task_id>
+# WRITESET-REFUSAL-NEVER-NAMES-THE-BLOCKER-01: the registry already names the
+# blocking row on stderr -- "[registry] writeset conflict: other=<task_id>
+# reason=pending_resolution" (a row with no writes still inside its
+# LEADV2_WRITESET_PENDING_WINDOW_SEC window; refused before any path
+# comparison) or "[registry] writeset conflict: other=<task_id> paths=<a>,<b>"
+# (a real path intersection) -- but cmd_resolve used to discard that stderr,
+# so every refusal surfaced as the same bare writeset_conflict and a blocked
+# lead could not tell that narrowing their write set (works against overlap)
+# is useless against pending, where paths were never compared. Parse the two
+# shapes apart and refuse with a reason that names the case AND the incumbent.
+# On stderr that parses to neither shape (registry message drift), fall back
+# to the legacy writeset_conflict line: the worst case is today's behaviour,
+# never a wrong one.
+_emit_writeset_refusal() {
+  local sig8="$1" lane_writes="$2" reg_err="$3" founder_task_id="$4"
+  local line other reason paths ws_age
+  line="$(printf '%s\n' "${reg_err}" | grep -m1 'writeset conflict: other=' || true)"
+  other="$(printf '%s\n' "${line}" | sed -nE 's/.* other=([^[:space:]]+).*/\1/p' | head -n 1)"
+  reason="$(printf '%s\n' "${line}" | sed -nE 's/.* reason=([^[:space:]]+).*/\1/p' | head -n 1)"
+  paths="$(printf '%s\n' "${line}" | sed -nE 's/.* paths=(.*)$/\1/p' | head -n 1)"
+  if [[ -n "${other}" && "${reason}" == "pending_resolution" ]]; then
+    # Name how long the incumbent has held the window: read the row the
+    # registry just named (the same active.yaml the register call judged).
+    # Any read failure degrades to age_s=unknown -- never blocks the refusal.
+    ws_age="$(python3 - "$(_leadv2_yaml_file 2>/dev/null)" "${other}" <<'PYEOF' 2>/dev/null
+import sys, datetime
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+    row = next((r for r in (doc.get("sessions") or [])
+                if isinstance(r, dict) and str(r.get("task_id")) == sys.argv[2]), None)
+    started = (row.get("started_at") or "") if row else ""
+    ts = datetime.datetime.strptime(started, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=datetime.timezone.utc)
+    print(int((datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds()))
+except Exception:
+    pass
+PYEOF
+)" || ws_age=""
+    emit decision "dispatch_refused reason=writeset_pending task=${sig8} blocked_by=${other} age_s=${ws_age:-unknown} window_s=${LEADV2_WRITESET_PENDING_WINDOW_SEC:-900} writes=${lane_writes}"
+    _dl_note "${sig8}" refused writeset_pending "" "${founder_task_id}"
+    printf 'LEADV2_DISPATCH_REFUSED: writeset_pending\n'
+    return 0
+  fi
+  if [[ -n "${other}" && -n "${paths}" ]]; then
+    emit decision "dispatch_refused reason=writeset_overlap task=${sig8} blocked_by=${other} paths=${paths} writes=${lane_writes}"
+    _dl_note "${sig8}" refused writeset_overlap "" "${founder_task_id}"
+    printf 'LEADV2_DISPATCH_REFUSED: writeset_overlap\n'
+    return 0
+  fi
+  emit decision "dispatch_refused reason=writeset_conflict task=${sig8} writes=${lane_writes}"
+  _dl_note "${sig8}" refused writeset_conflict "" "${founder_task_id}"
+  printf 'LEADV2_DISPATCH_REFUSED: writeset_conflict\n'
+}
+
 # REPORT-ONLY-GATE-01: harvest the mission's own `LANE_DELIVERABLE:` declaration, using
 # the same tolerant matcher as _prepass_writes above (markdown emphasis / leading
 # indentation must not read as "absent"). Harvested from the MISSION, never from the
@@ -7305,7 +7365,7 @@ cmd_resolve() {
       # output is advisory, so collect and parse it with errexit explicitly
       # disabled.  A registrar error or chatter-only output is handled below
       # as active_register_miss, never as an unjournalled dispatcher exit.
-      local _register_out _register_rc
+      local _register_out _register_rc _register_errf _register_err
       set +e
       # LANE-WRITESET-REGISTRY-01 fix-round-1 H1: pass whatever `lane_writes`
       # is ALREADY resolved at this point (row-declared or CLI --writes,
@@ -7318,8 +7378,20 @@ cmd_resolve() {
       # concurrent lane that intersects it during that window instead of
       # silently admitting under the D7 unknown/warn path -- closing the
       # TOCTOU the second register call at ~:6015 alone could not.
-      _register_out="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" "" "" "" "${lane_writes}" 2>/dev/null)"
+      # WRITESET-REFUSAL-NEVER-NAMES-THE-BLOCKER-01: capture the registry's
+      # stderr instead of dropping it. The conflict line it prints there
+      # ("other=<task_id> reason=pending_resolution|paths=<a>,<b>") is the
+      # only place the blocking row is named; the 5) branch below refuses
+      # through _emit_writeset_refusal with it. Stdout contract (session_id)
+      # is unchanged; a failed mktemp degrades to the old 2>/dev/null.
+      _register_errf="$(mktemp "${TMPDIR:-/tmp}/leadv2-regerr.XXXXXX" 2>/dev/null)" || _register_errf=""
+      _register_out="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" "" "" "" "${lane_writes}" 2>"${_register_errf:-/dev/null}")"
       _register_rc=$?
+      _register_err=""
+      if [[ -n "${_register_errf}" ]]; then
+        _register_err="$(cat "${_register_errf}" 2>/dev/null)"
+        rm -f "${_register_errf}" 2>/dev/null || true
+      fi
       DISPATCH_SLOT_SESSION="$(printf '%s\n' "${_register_out}" | sed -nE '/^s-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/p' | tail -n 1)"
       set +e
       # H1 fix-round-1: when lane_writes is already known at this first call,
@@ -7327,9 +7399,7 @@ cmd_resolve() {
       # -- not fall through to active_register_miss and re-discover the same
       # conflict after a full (minutes-long) architect prepass at ~:6015.
       case "${_register_rc}" in
-        5) emit decision "dispatch_refused reason=writeset_conflict task=${sig8} writes=${lane_writes}"
-           _dl_note "${sig8}" refused writeset_conflict "" "${founder_task_id}"
-           printf 'LEADV2_DISPATCH_REFUSED: writeset_conflict\n'
+        5) _emit_writeset_refusal "${sig8}" "${lane_writes}" "${_register_err}" "${founder_task_id}"
            exit 2 ;;
         6) emit decision "dispatch_refused reason=writeset_unknown task=${sig8} writes=${lane_writes}"
            _dl_note "${sig8}" refused writeset_unknown "" "${founder_task_id}"
@@ -7501,15 +7571,16 @@ ${mission}"
   # already fail-close that case upstream, and D2 gives an empty candidate no
   # judgement.
   if [[ -n "${lane_writes}" ]] && declare -F leadv2_active_register >/dev/null 2>&1; then
-    local _ws_rc=0
-    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register \
+    local _ws_rc=0 _ws_err=""
+    # WRITESET-REFUSAL-NEVER-NAMES-THE-BLOCKER-01: `2>&1 >/dev/null` swaps the
+    # capture -- the registry's conflict line (stderr) is kept for
+    # _emit_writeset_refusal; stdout (session_id chatter, unused here) drops.
+    _ws_err="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register \
       "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" \
-      "" "" "" "${lane_writes}" >/dev/null 2>&1 || _ws_rc=$?
+      "" "" "" "${lane_writes}" 2>&1 >/dev/null)" || _ws_rc=$?
     case "${_ws_rc}" in
       0) : ;;
-      5) emit decision "dispatch_refused reason=writeset_conflict task=${sig8} writes=${lane_writes}"
-         _dl_note "${sig8}" refused writeset_conflict "" "${founder_task_id}"
-         printf 'LEADV2_DISPATCH_REFUSED: writeset_conflict\n'
+      5) _emit_writeset_refusal "${sig8}" "${lane_writes}" "${_ws_err}" "${founder_task_id}"
          # R5 §4: EXIT trap releases the registered row (no worker spawned).
          exit 2 ;;
       6) emit decision "dispatch_refused reason=writeset_unknown task=${sig8} writes=${lane_writes}"
