@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-lane-report-address.sh
+file=plugins/leadv2/scripts/lib/leadv2-lane-address.sh
+anchor=s|LA_RESULT="unknown"|LA_RESULT="none"|g
+baseline_rc=0
+mutated_rc=1
+red_line=  FAIL C6a rc=1 out=searched:
+diff_hash=f4379e39ccdff2de165d6903db11561d4f34a36a8b1fd10519dd3bde9a2e609b
+lane_diff_hash=2d3f3491e1974168bfbc8da217419e14845ca55cfd8c050dc1093d4bfbb6a556
