@@ -31,7 +31,7 @@ if command -v shellcheck >/dev/null 2>&1; then
   # human-readable gate messages, and array-index style in an unrelated
   # arm-tracking loop) -- predate this lane's change, same exclusion added to
   # test-review-round-exhaustive.sh so both suites gate on the same baseline.
-  if shellcheck -x -e SC1091,SC2034,SC2094,SC2016,SC2004 "${SCRIPTS_ROOT}/leadv2-review-run.sh" >/dev/null 2>&1; then
+  if shellcheck -x -e SC1091,SC2034,SC2094 "${SCRIPTS_ROOT}/leadv2-review-run.sh" >/dev/null 2>&1; then
     pass "shellcheck clean: leadv2-review-run.sh"
   else
     fail "shellcheck: leadv2-review-run.sh"

@@ -32,7 +32,7 @@ if command -v shellcheck >/dev/null 2>&1; then
   # SC2016 is pre-existing on backtick-in-single-quote human-readable gate
   # messages (not variable expansions); SC2004 is pre-existing array-index
   # style in an unrelated arm-tracking loop. Both predate this lane's change.
-  if shellcheck -x -e SC1091,SC2034,SC2094,SC2016,SC2004 "${SCRIPTS_ROOT}/leadv2-review-run.sh" >/dev/null 2>&1; then
+  if shellcheck -x -e SC1091,SC2034,SC2094 "${SCRIPTS_ROOT}/leadv2-review-run.sh" >/dev/null 2>&1; then
     pass "shellcheck clean: leadv2-review-run.sh"
   else
     fail "shellcheck: leadv2-review-run.sh"
