@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # leadv2-land.sh — LAND-PATH-IS-BROKEN-01
 #
-# The single landing runner. 94% of close attempts terminate in a state that
+# The single landing runner (registration proof edit). 94% of close attempts terminate in a state that
 # has no landing path by construction (blocked/fail never merge, never
 # enqueue, never write a land-failure record), and the one automated path
 # that does fire (the T11 block of leadv2-dispatch-product-close.sh) merges
