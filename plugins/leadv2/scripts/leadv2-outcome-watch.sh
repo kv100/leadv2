@@ -37,7 +37,14 @@ log()       { printf -- '[outcome-watch] %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ
 log_error() { log "ERROR: $*"; }
 
 WATCHES_DIR="${LEADV2_PROJECT_ROOT}/docs/leadv2/watches"
-STATE_MD="${LEADV2_PROJECT_ROOT}/docs/LEAD_V2_STATE.md"
+# DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: prefer the shared
+# control-plane copy; see leadv2-active-registry.sh's writer comment.
+if [[ -z "${LEADV2_LEAD_STATE_PATH:-}" ]]; then
+  _lv2_sp="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-state-path.sh"
+  [[ -x "$_lv2_sp" ]] && LEADV2_LEAD_STATE_PATH="$(PROJECT_ROOT="$LEADV2_PROJECT_ROOT" "$_lv2_sp" --no-link LEAD_V2_STATE.md 2>/dev/null || true)"
+  unset _lv2_sp
+fi
+STATE_MD="${LEADV2_LEAD_STATE_PATH:-${LEADV2_PROJECT_ROOT}/docs/LEAD_V2_STATE.md}"
 OVERRIDES_DIR="${LEADV2_PROJECT_ROOT}/.claude/leadv2-overrides"
 
 # Canonical soak config (D22): resolved relative to plugin canonical path.

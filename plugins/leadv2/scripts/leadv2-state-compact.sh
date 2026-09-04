@@ -18,6 +18,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="${1:-${CLAUDE_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
 
 # Allow .claude/leadv2-overrides/state-paths.yaml to redirect.
+# DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: prefer the shared control-plane
+# copy (~/.claude/leadv2-state/leadv2/) over the repo-relative literal, which
+# inside a lane worktree is only the stale tracked snapshot. Same pattern as
+# the other standalone readers; see leadv2-active-registry.sh's writer comment.
+if [[ -z "${LEADV2_LEAD_STATE_PATH:-}" ]]; then
+  _lv2_sp="$SCRIPT_DIR/leadv2-state-path.sh"
+  [[ -x "$_lv2_sp" ]] && LEADV2_LEAD_STATE_PATH="$(PROJECT_ROOT="$root" "$_lv2_sp" --no-link LEAD_V2_STATE.md 2>/dev/null || true)"
+  unset _lv2_sp
+fi
 state_md="${LEADV2_LEAD_STATE_PATH:-$root/docs/LEAD_V2_STATE.md}"
 leadv2_dir="${LEADV2_LEADV2_DIR:-$root/docs/leadv2}"
 active_yaml="$leadv2_dir/active.yaml"

@@ -48,6 +48,12 @@ QUEUE_DIR_DEFAULT="${LEADV2_TASK_QUEUE_DIR:-docs/leadv2/queue}"
 QUIET_HOURS="${LEADV2_QUIET_HOURS:-23-06}"
 MAX_FAILS="${LEADV2_MAX_CONSECUTIVE_FAILURES:-3}"
 PARALLEL="${LEADV2_MAX_PARALLEL:-1}"
+# DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: default moved off a
+# docs/-relative literal to the shared control-plane root (same file the
+# leadv2-active-registry.sh regenerator writes) — see that file's comment.
+if [[ -z "${LEADV2_STATE_FILE:-}" && -x "${_LV2_D}/leadv2-state-path.sh" ]]; then
+  LEADV2_STATE_FILE="$("${_LV2_D}/leadv2-state-path.sh" --no-link LEAD_V2_STATE.md 2>/dev/null || true)"
+fi
 STATE_MD="${LEADV2_STATE_FILE:-docs/LEAD_V2_STATE.md}"
 DRY_RUN=0
 MODE="run"

@@ -43,7 +43,16 @@ except Exception as e:
 "
 
 # Tail of LEAD_V2_STATE
-STATE="$PROJECT_ROOT/docs/LEAD_V2_STATE.md"
+# DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: prefer the shared
+# control-plane copy the regenerator now writes; fall back to the old
+# docs/-relative literal (and its no-docs-prefix sibling below) for
+# repos/fixtures that never resolved through leadv2-state-path.sh.
+if [[ -z "${LEADV2_LEAD_STATE_PATH:-}" ]]; then
+  _lv2_sp="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-state-path.sh"
+  [[ -x "$_lv2_sp" ]] && LEADV2_LEAD_STATE_PATH="$(PROJECT_ROOT="$PROJECT_ROOT" "$_lv2_sp" --no-link LEAD_V2_STATE.md 2>/dev/null || true)"
+  unset _lv2_sp
+fi
+STATE="${LEADV2_LEAD_STATE_PATH:-$PROJECT_ROOT/docs/LEAD_V2_STATE.md}"
 [[ -f "$STATE" ]] || STATE="$PROJECT_ROOT/LEAD_V2_STATE.md"
 if [[ -f "$STATE" ]]; then
   echo

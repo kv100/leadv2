@@ -23,6 +23,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: default moved from a
+# docs/-relative literal (inside whichever lane worktree REPO_ROOT resolves
+# to) to the shared control-plane root leadv2-active-registry.sh's
+# regenerator already writes to — same file, same resolver, so this writer
+# and the regenerator never disagree about where LEAD_V2_STATE.md lives.
+_LV2_STATE_RESOLVER="${SCRIPT_DIR}/leadv2-state-path.sh"
+if [[ -z "${LEADV2_STATE_FILE:-}" && -x "${_LV2_STATE_RESOLVER}" ]]; then
+  LEADV2_STATE_FILE="$(PROJECT_ROOT="${REPO_ROOT}" "${_LV2_STATE_RESOLVER}" --no-link LEAD_V2_STATE.md 2>/dev/null || true)"
+fi
 STATE_FILE="${LEADV2_STATE_FILE:-${REPO_ROOT}/docs/LEAD_V2_STATE.md}"
 HELPER_PY="${SCRIPT_DIR}/leadv2-backfill-entry.py"
 

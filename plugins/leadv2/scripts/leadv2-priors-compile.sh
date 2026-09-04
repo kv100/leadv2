@@ -44,7 +44,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Source files (some may be absent — handled gracefully)
-STATE_FILE="${PROJECT_ROOT}/docs/LEAD_V2_STATE.md"
+# DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: LEADV2_STATE (exported by
+# leadv2-helpers.sh, sourced above) resolves LEAD_V2_STATE.md at the shared
+# control-plane root rather than a lane-worktree-relative literal.
+STATE_FILE="${LEADV2_STATE:-${PROJECT_ROOT}/docs/LEAD_V2_STATE.md}"
 HISTORY_FILE="${PROJECT_ROOT}/docs/LEAD_HISTORY.md"
 PATTERNS_FILE="${PROJECT_ROOT}/.claude/ref/lead-patterns.md"
 NEG_MEM_FILE="${PROJECT_ROOT}/docs/leadv2-negative-memory.yaml"

@@ -36,7 +36,14 @@ PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-$(git rev-parse --path-format=absolute --gi
 
 NM_FILE="${PROJECT_ROOT}/docs/leadv2-negative-memory.yaml"
 NM_ARCHIVE="${PROJECT_ROOT}/docs/leadv2-negative-memory-archive.yaml"
-LEAD_STATE="${PROJECT_ROOT}/docs/LEAD_V2_STATE.md"
+# DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: prefer the shared
+# control-plane copy; see leadv2-active-registry.sh's writer comment.
+if [[ -z "${LEADV2_LEAD_STATE_PATH:-}" ]]; then
+  _lv2_sp="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-state-path.sh"
+  [[ -x "$_lv2_sp" ]] && LEADV2_LEAD_STATE_PATH="$(PROJECT_ROOT="$PROJECT_ROOT" "$_lv2_sp" --no-link LEAD_V2_STATE.md 2>/dev/null || true)"
+  unset _lv2_sp
+fi
+LEAD_STATE="${LEADV2_LEAD_STATE_PATH:-${PROJECT_ROOT}/docs/LEAD_V2_STATE.md}"
 LEAD_HISTORY="${PROJECT_ROOT}/docs/ops/LEAD_HISTORY.md"
 DECISIONS_DIR="${PROJECT_ROOT}/docs/leadv2-decisions"
 

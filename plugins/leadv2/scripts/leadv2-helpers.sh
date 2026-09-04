@@ -42,7 +42,35 @@ else
 fi
 unset _git_toplevel _git_dir
 
-LEADV2_STATE="$LEADV2_PROJECT_ROOT/docs/LEAD_V2_STATE.md"
+# ── DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01 ──────────────────────────
+# LEAD_V2_STATE.md is a markdown VIEW rendered from active.yaml (the
+# regenerator is leadv2-active-registry.sh:leadv2_active_render_index), and
+# active.yaml already lives outside any lane worktree at the control-plane
+# root resolved by leadv2-state-path.sh (~/.claude/leadv2-state/<slug>/).
+# Before this fix LEAD_V2_STATE.md was written INSIDE the lane worktree at
+# docs/LEAD_V2_STATE.md — every lane's own harness activity dirtied a path
+# the DoD gate's runtime_state_in_diff check then killed the lane for
+# (six-for-six lanes, measured). The derived view now sits beside its
+# source: resolve through the SAME leadv2-state-path.sh chokepoint the
+# control plane already uses, with a graceful fallback to the old
+# repo-relative path for callers with no git repo at all (sandboxes/tests
+# that never `git init`, mirroring leadv2-state-path.sh's own no-repo
+# degrade path). Do not re-hardcode docs/LEAD_V2_STATE.md anywhere else —
+# consume LEADV2_LEAD_STATE_PATH (below) or call this function.
+_lv2_state_md_default() {
+  local _resolver="${_LV2_D}/leadv2-state-path.sh"
+  local _out=""
+  if [[ -x "$_resolver" ]]; then
+    _out="$(PROJECT_ROOT="${LEADV2_PROJECT_ROOT}" "$_resolver" --no-link LEAD_V2_STATE.md 2>/dev/null)" || _out=""
+  fi
+  if [[ -n "$_out" ]]; then
+    printf -- '%s' "$_out"
+  else
+    printf -- '%s/docs/LEAD_V2_STATE.md' "${LEADV2_PROJECT_ROOT}"
+  fi
+}
+
+LEADV2_STATE="$(_lv2_state_md_default)"
 LEADV2_HISTORY="$LEADV2_PROJECT_ROOT/docs/ops/LEAD_HISTORY.md"
 LEADV2_LOCK="$LEADV2_PROJECT_ROOT/docs/.leadv2.lock"
 # shellcheck disable=SC2034  # exported for external callers that source this script
@@ -132,7 +160,7 @@ _lv2_load_paths() {
   # Inline Python as a string to avoid heredoc-in-command-substitution warnings.
   _py_script='
 import sys, yaml, os
-yaml_path = sys.argv[1]; project_root = sys.argv[2]
+yaml_path = sys.argv[1]; project_root = sys.argv[2]; state_md_default = sys.argv[3]
 def resolve(val, default, is_path=True):
     if val is None: return ""
     s = str(val).strip()
@@ -145,7 +173,10 @@ with open(yaml_path) as f:
 path_defaults = {
     "LEADV2_DIALOGUE_PATH":     project_root + "/docs/agents/product-owner/DIALOGUE.md",
     "LEADV2_QUEUE_PATH":        project_root + "/docs/agents/product-owner/QUEUE.md",
-    "LEADV2_LEAD_STATE_PATH":   project_root + "/docs/LEAD_V2_STATE.md",
+    # DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: default now comes from
+    # _lv2_state_md_default() (control-plane root), NOT a docs/-relative
+    # literal — see the comment on that function.
+    "LEADV2_LEAD_STATE_PATH":   state_md_default,
     "LEADV2_HANDOFF_DIR":       project_root + "/docs/handoff",
     "LEADV2_LEADV2_DIR":        project_root + "/docs/leadv2",
     "LEADV2_QUEUE_ARCHIVE_DIR": project_root + "/docs/agents/product-owner/queue/_archive",
@@ -181,7 +212,7 @@ for ek, val in out.items():
 '
   local _parsed=""
   if [[ -f "$_overrides_yaml" ]] && command -v python3 &>/dev/null; then
-    _parsed=$(python3 -c "$_py_script" "$_overrides_yaml" "$LEADV2_PROJECT_ROOT" 2>/dev/null || true)
+    _parsed=$(python3 -c "$_py_script" "$_overrides_yaml" "$LEADV2_PROJECT_ROOT" "$(_lv2_state_md_default)" 2>/dev/null || true)
   fi
 
   # Track which keys were produced by Python (including nullable="" ones).
@@ -199,7 +230,7 @@ for ek, val in out.items():
   # Hard defaults only for keys NOT produced by Python (no yaml / no python).
   [[ -z "${_lv2_produced[LEADV2_DIALOGUE_PATH]+x}"     ]] && : "${LEADV2_DIALOGUE_PATH:=${LEADV2_PROJECT_ROOT}/docs/agents/product-owner/DIALOGUE.md}"
   [[ -z "${_lv2_produced[LEADV2_QUEUE_PATH]+x}"        ]] && : "${LEADV2_QUEUE_PATH:=${LEADV2_PROJECT_ROOT}/docs/agents/product-owner/QUEUE.md}"
-  [[ -z "${_lv2_produced[LEADV2_LEAD_STATE_PATH]+x}"   ]] && : "${LEADV2_LEAD_STATE_PATH:=${LEADV2_PROJECT_ROOT}/docs/LEAD_V2_STATE.md}"
+  [[ -z "${_lv2_produced[LEADV2_LEAD_STATE_PATH]+x}"   ]] && : "${LEADV2_LEAD_STATE_PATH:=$(_lv2_state_md_default)}"
   [[ -z "${_lv2_produced[LEADV2_HANDOFF_DIR]+x}"       ]] && : "${LEADV2_HANDOFF_DIR:=${LEADV2_PROJECT_ROOT}/docs/handoff}"
   [[ -z "${_lv2_produced[LEADV2_LEADV2_DIR]+x}"        ]] && : "${LEADV2_LEADV2_DIR:=${LEADV2_PROJECT_ROOT}/docs/leadv2}"
   [[ -z "${_lv2_produced[LEADV2_QUEUE_ARCHIVE_DIR]+x}" ]] && : "${LEADV2_QUEUE_ARCHIVE_DIR:=${LEADV2_PROJECT_ROOT}/docs/agents/product-owner/queue/_archive}"

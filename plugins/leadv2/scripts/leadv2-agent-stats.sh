@@ -21,7 +21,14 @@ readonly SCRIPT_DIR
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 readonly PROJECT_ROOT
 
-STATE_FILE="$PROJECT_ROOT/docs/LEAD_V2_STATE.md"
+# DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: prefer the shared
+# control-plane copy; see leadv2-active-registry.sh's writer comment.
+if [[ -z "${LEADV2_LEAD_STATE_PATH:-}" ]]; then
+  _lv2_sp="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-state-path.sh"
+  [[ -x "$_lv2_sp" ]] && LEADV2_LEAD_STATE_PATH="$(PROJECT_ROOT="$PROJECT_ROOT" "$_lv2_sp" --no-link LEAD_V2_STATE.md 2>/dev/null || true)"
+  unset _lv2_sp
+fi
+STATE_FILE="${LEADV2_LEAD_STATE_PATH:-$PROJECT_ROOT/docs/LEAD_V2_STATE.md}"
 HISTORY_FILE="$PROJECT_ROOT/docs/LEAD_HISTORY.md"
 OUT_FILE="$PROJECT_ROOT/docs/agents/agent-stats.yaml"
 DAYS=30

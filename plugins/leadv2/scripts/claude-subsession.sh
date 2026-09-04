@@ -1005,7 +1005,12 @@ _write_85pct_decision() {
 # ---------------------------------------------------------------------------
 _write_auto_abort_decision() {
   local current_burn="${1:-?}" ceiling="${2:-?}"
-  local state_md="$PROJECT_ROOT/docs/LEAD_V2_STATE.md"
+  # DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: LEADV2_STATE (exported by
+  # leadv2-helpers.sh, sourced above) already resolves LEAD_V2_STATE.md at
+  # the shared control-plane root, not inside a lane worktree. Fall back to
+  # the old docs/-relative literal only when helpers.sh wasn't sourced
+  # (standalone invocation, per the comment on that source block above).
+  local state_md="${LEADV2_STATE:-$PROJECT_ROOT/docs/LEAD_V2_STATE.md}"
   local decisions_dir="$PROJECT_ROOT/docs/leadv2-decisions"
   mkdir -p "$decisions_dir" 2>/dev/null || true
   local decision_file="$decisions_dir/auto-abort-${TASK_ID}.yaml"
