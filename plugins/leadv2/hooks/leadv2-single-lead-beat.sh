@@ -156,7 +156,22 @@ if command -v leadv2_beat_role >/dev/null 2>&1; then
   [[ "$ROLE" == "owner" || "$ROLE" == "guest" ]] || ROLE="unresolved"
 fi
 
-FOUNDER_STATUS_PATH="${LEADV2_FOUNDER_STATUS_PATH:-${PROJECT_ROOT}/docs/leadv2/founder-status.md}"
+# LANE-STATE-LEAK-01 §0b: this was a raw ${PROJECT_ROOT}/docs/leadv2/... string,
+# independent of leadv2-broad-status.sh's own (already-routed) construction of
+# the same name -- two writers/readers of "the same file" that in practice
+# each got their own per-worktree copy. Route through the resolver; an env
+# override still wins outright (never even calls the resolver), and a
+# resolver failure degrades loudly to the pre-fix path rather than letting
+# `|| true` turn into a silently-empty relay path.
+if [[ -n "${LEADV2_FOUNDER_STATUS_PATH:-}" ]]; then
+  FOUNDER_STATUS_PATH="${LEADV2_FOUNDER_STATUS_PATH}"
+else
+  FOUNDER_STATUS_PATH="$(PROJECT_ROOT="$PROJECT_ROOT" "$RESOLVER" founder-status.md 2>/dev/null || true)"
+  if [[ -z "$FOUNDER_STATUS_PATH" ]]; then
+    printf -- '[single-lead-beat] WARN: leadv2-state-path unresolved for founder-status.md -- falling back to repo-relative path\n' >&2
+    FOUNDER_STATUS_PATH="${PROJECT_ROOT}/docs/leadv2/founder-status.md"
+  fi
+fi
 
 # ── 1. DELIVER ───────────────────────────────────────────────────────────
 CTX=""
