@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
-# run-all-triggers: leadv2-dispatch-code.sh leadv2-route-arbiter
+# run-all-triggers: leadv2-dispatch-code.sh leadv2-route-arbiter leadv2-routing.yaml
 # EFFORT-IS-NOT-WIRED-01: the route arbiter resolves an `effort` tier (data-
 # driven, config/leadv2-routing.yaml router_v2.effort_matrix) alongside the
 # arm it already picks, and leadv2-dispatch-code.sh forwards that value onto
@@ -102,6 +102,30 @@ if [[ "$out" == *' effort=medium '* || "$out" == *' effort=medium reason='* ]]; 
   pass 'unmodified routing.yaml still resolves medium (control for the anti-hardcode case)'
 else
   fail "anti-hardcode control output=$out"
+fi
+
+# (8) SMART-ARBITER-01 / EFFORT-FOLLOWS-THE-ARM-NOT-THE-TASK-01 (founder
+# 2026-09-04): effort is a property of the TASK, never of the winning arm's
+# tags. glm-flash (tags cheap+mechanical) still WINS an unprotected standard
+# code task on cost -- the task-keyed effort phase must pin build work to
+# medium regardless. Before the fix the arm's tags resolved effort=low for
+# writing code (43 live decisions at effort=low, 2026-09-03/04).
+out="$(run "$(quota 1 1 1)" 0 '{"kind":"code","size":"standard"}')"
+if [[ "$out" == *'arm=glm-flash '* && "$out" == *' effort=medium '* ]]; then
+  pass 'standard build won by glm-flash (cheap/mechanical tags) resolves effort=medium'
+else
+  fail "task-keyed build output=$out"
+fi
+
+# (8b) A judge-estimated complex build keeps effort=high even though the
+# winner (glm, tags bulk/background -- no adversarial tag) and the loser
+# (glm-flash, penalized +100 by the complexity rule) would both say
+# otherwise: effort follows the task's complexity estimate, not arm tags.
+out="$(run "$(quota 1 1 1)" 0 '{"kind":"code","size":"standard","complexity":"complex"}')"
+if [[ "$out" == *'arm=glm '* && "$out" == *' effort=high '* ]]; then
+  pass 'complex build resolves effort=high (task complexity, not arm tags)'
+else
+  fail "complex build output=$out"
 fi
 
 # ── Dispatch-level: resolved effort reaches the arm's OWN launch parameter ──

@@ -40,3 +40,36 @@ mutations:
     patch: |
       hits = [it for it in items if isinstance(it, dict) and row_matches(it, founder)][:1]
     expected: killed
+
+  # SMART-ARBITER-01 — three fixes, one control each (2026-09-04).
+  # Evidence base: 569 live `route_resolved by=arbiter` journal lines, 190
+  # from 2026-09-03/04 (census: docs/handoff/SMART-ARBITER-01/census.md).
+
+  - id: smart-arbiter-effort-task-first
+    product_flow: "effort follows the TASK: task-keyed effort_matrix rows (kinds/sizes/complexity/duration_class/protected) are evaluated before arm-tag rows, so a standard build won by glm-flash resolves medium, never low from the arm's cheap/mechanical tags (43 live build decisions at effort=low, 2026-09-03/04)"
+    file: plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+    anchor: |
+      for _row in (_task_rows+_arm_rows):
+    patch: |
+      for _row in (_arm_rows):
+    expected: killed
+
+  - id: smart-arbiter-canonical-protected-glm
+    product_flow: "canonical sonnet_exceptions carries no protected_path row: protected/safety tasks resolve glm primary (GLM-DOES-ANY-WORK-01, founder 2026-09-04) while every kept exception still fires sonnet (84 sonnet-at-cost-5 live decisions 2026-09-03/04 with glm idle)"
+    file: plugins/leadv2/config/leadv2-routing.yaml
+    anchor: |
+      sonnet_exceptions:
+    patch: |
+      sonnet_exceptions:
+        - id: safety_gate_publish_payments
+          when: protected_path
+    expected: killed
+
+  - id: smart-arbiter-route-reason-token
+    product_flow: "route_resolved journal keeps reason=cheapest_capable when floor tokens ride the same line: the capture is anchored on a space-prefixed reason=, not the greedy last reason= token (23 corrupted live decision lines on 2026-09-04)"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    anchor: |
+      _arb_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*[[:space:]]reason=\([^ ]*\).*/\1/p')"
+    patch: |
+      _arb_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*reason=\([^ ]*\).*/\1/p')"
+    expected: killed
