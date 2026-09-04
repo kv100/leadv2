@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-phase-gate-default-class.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s#emit decision "phase_precondition_pass task=${sig8} class=${cls} mode=${mode} scope=${scope}"#: pass_trace_removed#
+baseline_rc=0
+mutated_rc=1
+red_line=  FAIL: T4: pass trace expected (log=)
+diff_hash=040964c501a616a0f75623bdf71ad7ec116b3002aa44f2031f1493fe2c13c5e5
+lane_diff_hash=8c827a7260f703dbfe84720dfdafa9b99e61281bd5580287f2b73a607d40b0e9

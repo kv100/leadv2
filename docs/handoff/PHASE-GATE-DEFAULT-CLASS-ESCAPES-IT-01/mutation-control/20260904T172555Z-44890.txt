@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-phase-gate-default-class.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=/tmp/pgdc-patches/B-warn-trace.patch
+baseline_rc=0
+mutated_rc=1
+red_line=  FAIL: T5: warn line with class+missing expected (log=phase_precondition_nowarn task=s5 class=Light missing=build,test,review,close mode=warn )
+diff_hash=9b146241ffee24c07469d34d1c92a9f9f331e2330604bce5101f9f14814e2f20
+lane_diff_hash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

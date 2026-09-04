@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-phase-gate-default-class.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s#cls="$(_lv2_class_canonical "${cls}")"#cls="${cls}"#
+baseline_rc=0
+mutated_rc=1
+red_line=  FAIL: T1: refused line must carry canonical class=Heavy (log=phase_precondition_config_error task=s1 detail=[leadv2-phase-record.sh] ERROR: assert: invalid class 'heavy' )
+diff_hash=08e6b00d610de62f778afe9cbab9c8a1b6ddfba52232796634e7a457c49b7297
+lane_diff_hash=8c827a7260f703dbfe84720dfdafa9b99e61281bd5580287f2b73a607d40b0e9
