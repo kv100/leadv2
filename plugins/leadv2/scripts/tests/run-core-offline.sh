@@ -455,6 +455,12 @@ SUITE_DEFS=(
   "stop-gate autocommit on worker exit (V3-STOP-GATE-01)|||bash $TEST_DIR/test-stop-gate.sh|||SERIAL"
   "core-offline cross-run exclusive lock (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-lock-01.sh"
   "core-offline shard partition (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-shards-01.sh"
+  # parallel (round 3): pure introspection -- asserts SUITE_DEFS shard
+  # placement via LEADV2_SUITE_SHARDS_DUMP=1 (one runner parse, executes no
+  # suites). Locks both halves of the E2E-GATE-BROKE-TODAY-01 round-2
+  # decision: the 4 parallelized suites stay out of the serial tail, the 7
+  # justified ones stay in it.
+  "core-offline shard pool placement lock (E2E-GATE-BROKE-TODAY-01)|||bash $TEST_DIR/test-core-offline-shard-scope-01.sh"
   "core-offline per-suite TMPDIR isolation (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-tmpdir-01.sh"
   "silent-arm commits-ahead + live-worker guard (GATE-FALSE-SILENT-01)|||bash $TEST_DIR/test-silent-arm-commits-ahead.sh"
   "plugin sync .claude/scripts link classification|||bash $TEST_DIR/test-plugin-sync-claude-scripts.sh"
