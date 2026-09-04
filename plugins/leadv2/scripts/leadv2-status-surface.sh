@@ -360,6 +360,13 @@ TASKS_YAML  = os.environ.get("LEADV2_SS_TASKS_YAML", "")
 HANDOFF_DIR = os.environ.get("LEADV2_SS_HANDOFF_DIR", "")
 PS_SNAPSHOT = os.environ.get("LEADV2_SS_PS_SNAPSHOT", "")
 LEGACY_MODE = os.environ.get("LEADV2_SS_LEGACY_MODE", "0") == "1"
+# STATUS-SURFACE-SHOWS-STALE-TRUTH-01: the terminal ledger is a SEPARATE file
+# from the reservation ledger. Without reading it here, a lane with a terminal
+# record (landed/dead/parked) keeps its reservation state ("confirmed") which
+# is_terminal() does not fire on — the lane lingers forever as a non-terminal
+# stale row and can render as live in the single-lead section if a refresh
+# cached the payload before the terminal record was written.
+TERMINAL_FILE = os.environ.get("LEADV2_SS_TERMINAL_FILE", "")
 try:
     DONE_TTL = int(os.environ.get("LEADV2_SS_DONE_TTL", "900") or "900")
 except Exception:
@@ -1198,6 +1205,48 @@ if LEDGER_FILE and os.path.exists(LEDGER_FILE):
     except Exception:
         pass
 
+# STATUS-SURFACE-SHOWS-STALE-TRUTH-01: merge terminal records from the
+# separate write-once terminal ledger. The reservation ledger (read above)
+# and the terminal ledger are TWO DIFFERENT FILES written by two different
+# scripts. Without this merge, a lane whose terminal record outlived its
+# reservation keeps its non-terminal "confirmed" state and renders as live/
+# stale indefinitely. Terminal records carry task_sig (8-char sig8), terminal
+# (landed|dead|parked|refused), and optionally cause/task_id. The key-wise
+# merge mirrors the reservation path: only write non-empty values so a
+# terminal row never blanks a reservation row's fields.
+if TERMINAL_FILE and os.path.exists(TERMINAL_FILE):
+    try:
+        with open(TERMINAL_FILE, "r") as _tfh:
+            _tlines = _tfh.readlines()[-2000:]
+        import json as _tjson
+        for _tline in _tlines:
+            _tline = _tline.strip()
+            if not _tline:
+                continue
+            try:
+                _trow = _tjson.loads(_tline)
+            except Exception:
+                continue
+            _tsig = _trow.get("task_sig") or ""
+            if len(_tsig) < 2:
+                continue
+            _tsig8 = _tsig[:8]
+            _td = ledger.setdefault(_tsig8, {})
+            for _tk, _tv in (
+                ("task_id", _trow.get("task_id") or _trow.get("founder_task_id")),
+                ("tcause", _trow.get("cause")),
+            ):
+                if _tv not in (None, ""):
+                    _td[_tk] = _tv
+            # Terminal state mapping (mirrors R3.2 at :1368): a terminal row
+            # has no `state` field, but its `terminal` token (landed|dead|...)
+            # IS terminal-ness. Map it into state so is_terminal() fires.
+            _tterm = _trow.get("terminal")
+            if _tterm:
+                _td["state"] = _tterm
+    except Exception:
+        pass
+
 # ---- build rows --------------------------------------------------------
 rows = []        # each: dict(name, kind, display, model, age, cause, cls, max_mtime)
 seen_sig8 = set()
@@ -1542,15 +1591,16 @@ LANE_ROWS=""
 LANE_COUNT=0
 
 _run_lanes_for_project() {
-  # args: state_dir ledger_file tasks_yaml handoff_dir  -> prints raw LANES
-  # (control lines + TSV rows) for that one project, via the shared
-  # _ss_lanes_py block. Zero side effects on any global.
+  # args: state_dir ledger_file tasks_yaml handoff_dir terminal_file
+  # -> prints raw LANES (control lines + TSV rows) for that one project, via
+  # the shared _ss_lanes_py block. Zero side effects on any global.
   LEADV2_SS_STATE_DIR="$1" \
   LEADV2_SS_LEDGER_FILE="$2" \
   LEADV2_SS_RUNS_ROOT="$RUNS_ROOT" \
   LEADV2_SS_NOW="$NOW" \
   LEADV2_SS_TASKS_YAML="$3" \
   LEADV2_SS_HANDOFF_DIR="$4" \
+  LEADV2_SS_TERMINAL_FILE="$5" \
   LEADV2_SS_LEGACY_MODE="$LEGACY_MODE" \
   LEADV2_SS_DONE_TTL="$DONE_TTL" \
   LEADV2_SS_DEAD_TTL="$DEAD_TTL" \
@@ -1579,7 +1629,9 @@ elif [ "$MULTI_PROJECT" -eq 1 ]; then
     [ -f "${_mp_root}/docs/tasks.yaml" ] && _mp_tasks="${_mp_root}/docs/tasks.yaml"
     _mp_handoff=""
     [ -d "${_mp_root}/docs/handoff" ] && _mp_handoff="${_mp_root}/docs/handoff"
-    _mp_lanes="$(_run_lanes_for_project "$_mp_sd" "$_mp_ledger" "$_mp_tasks" "$_mp_handoff")"
+    _mp_terminal="${_mp_sd}/dispatch-ledger.jsonl"
+    [ -f "$_mp_terminal" ] || _mp_terminal=""
+    _mp_lanes="$(_run_lanes_for_project "$_mp_sd" "$_mp_ledger" "$_mp_tasks" "$_mp_handoff" "$_mp_terminal")"
 
     _mp_live="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#LIVE //p' | head -1)"
     _mp_dead="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#DEAD //p' | head -1)"
@@ -1612,7 +1664,7 @@ elif [ "$MULTI_PROJECT" -eq 1 ]; then
     QUEUED_N=$(( QUEUED_N + _mp_queued ))
     _mp_idx=$(( _mp_idx + 1 ))
   done
-  unset _mp_idx _mp_slug _mp_sd _mp_root _mp_ledger _mp_tasks _mp_handoff _mp_lanes \
+  unset _mp_idx _mp_slug _mp_sd _mp_root _mp_ledger _mp_tasks _mp_handoff _mp_terminal _mp_lanes \
         _mp_live _mp_dead _mp_done _mp_aged _mp_queued _mp_warn _mp_rows
   LANE_ROWS="$(printf '%s\n' "$LANE_ROWS" | grep -v '^ *$' || true)"
   LANE_COUNT=0
@@ -1620,7 +1672,9 @@ elif [ "$MULTI_PROJECT" -eq 1 ]; then
     LANE_COUNT="$(printf '%s\n' "$LANE_ROWS" | grep -c . || true)"
   fi
 else
-  LANES="$(_run_lanes_for_project "$STATE_DIR" "$LEDGER_FILE" "$TASKS_YAML" "$HANDOFF_DIR")"
+  _terminal_file="${STATE_DIR}/dispatch-ledger.jsonl"
+  [ -f "$_terminal_file" ] || _terminal_file=""
+  LANES="$(_run_lanes_for_project "$STATE_DIR" "$LEDGER_FILE" "$TASKS_YAML" "$HANDOFF_DIR" "$_terminal_file")"
 
   # parse the control lines + rows out of LANES
   if [ -n "$LANES" ]; then
