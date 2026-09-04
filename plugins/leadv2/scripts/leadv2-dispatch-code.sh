@@ -6995,6 +6995,30 @@ cmd_resolve() {
   if [[ -z "${sig}" ]] || ! sig_is_hex "${sig}"; then
     log_err "signature computation failed"; exit 1
   fi
+  # PLUGIN-REVIEW-ARMS-01 §3.2: provenance self-check. The 4c9ddb05 incident ran a
+  # whole dispatch out of a STALE real-copy tree (.claude/scripts/, pre-07-30 writers),
+  # which silently produced status: no_reviewer with no routing yaml and rc=127 phase
+  # records. A dispatch invoked from anywhere that is NOT a plugins/leadv2/scripts tree,
+  # while a real plugin tree IS discoverable next to this project, is that same incident
+  # reforming -- refuse loudly instead of proceeding blind. SUFFIX match only (R3/R4):
+  # a git worktree copy (.claude/worktrees/<id>/plugins/leadv2/scripts/...) and the
+  # plugin cache (~/.claude/plugins/local/.../plugins/leadv2/scripts/...) are legitimate
+  # run trees and must pass -- never match on an absolute prefix or require $PROJECT_ROOT.
+  # LEADV2_ALLOW_STALE_SCRIPT_TREE=1 downgrades to a journal warn for the transition;
+  # the default is refuse (a default-open tripwire is what produced the bug).
+  if [[ "${SCRIPT_DIR}" != *plugins/leadv2/scripts ]]; then
+    local _canonical_dispatch="${PROJECT_ROOT}/plugins/leadv2/scripts/leadv2-dispatch-code.sh"
+    if [[ -f "${_canonical_dispatch}" && "${_canonical_dispatch}" != "${SCRIPT_DIR}/leadv2-dispatch-code.sh" ]]; then
+      if [[ "${LEADV2_ALLOW_STALE_SCRIPT_TREE:-0}" == "1" ]]; then
+        emit decision "dispatch_stale_script_tree_warn task=${sig8} from=${SCRIPT_DIR} canonical=${PROJECT_ROOT}/plugins/leadv2/scripts"
+      else
+        emit decision "dispatch_refused reason=stale_script_tree task=${sig8} from=${SCRIPT_DIR} canonical=${PROJECT_ROOT}/plugins/leadv2/scripts"
+        log_err "dispatch refused: running from a stale script copy at ${SCRIPT_DIR}."
+        log_err "remedy: ln -sf ${PROJECT_ROOT}/plugins/leadv2/scripts/<file> ${SCRIPT_DIR}/<file>"
+        exit 4
+      fi
+    fi
+  fi
   # FOREIGN-PROJECT-ROOT-GUARD-01: journal the override now that JOURNAL_TASK exists
   # (the detection itself runs before sig8/JOURNAL_TASK are known -- see PROJECT_ROOT
   # resolution above).
