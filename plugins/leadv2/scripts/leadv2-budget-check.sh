@@ -106,16 +106,20 @@ except Exception as e:
 " 2>/dev/null || echo "0")"
 fi
 
-# Fallback: sum raw input/output tokens from any .stream.jsonl file in handoff dir
+# Fallback: sum raw input/output tokens from any .stream.jsonl file in handoff dir.
+# WORKER-STREAM-IS-OVERWRITTEN-BY-THE-NEXT-ATTEMPT-01: widened to the "all
+# attempts" reader — also walks attempts/*/*.stream.jsonl so a re-dispatched
+# lane's earlier attempts stop being invisible to the budget gate. Top-level
+# SYMLINKS are excluded from the walk: under attempt-scoping the flat name is
+# a newest-attempt pointer whose target is counted via attempts/, so counting
+# it too would double-count the newest attempt. Old-shape dirs (flat REGULAR
+# file, no attempts/) still count the flat file exactly as before.
 if [[ "${SPENT:-0}" -eq 0 && -d "$HANDOFF_DIR" ]]; then
   SPENT="$(python3 -c "
 import os, json
-total = 0
-hdir = '$HANDOFF_DIR'
-for fname in os.listdir(hdir):
-    if not fname.endswith('.stream.jsonl'):
-        continue
-    path = os.path.join(hdir, fname)
+
+def count_stream(path):
+    n = 0
     try:
         with open(path) as fh:
             for line in fh:
@@ -125,12 +129,32 @@ for fname in os.listdir(hdir):
                 try:
                     obj = json.loads(line)
                     usage = obj.get('usage') or obj.get('message', {}).get('usage') or {}
-                    total += (usage.get('input_tokens', 0) or 0)
-                    total += (usage.get('output_tokens', 0) or 0)
+                    n += (usage.get('input_tokens', 0) or 0)
+                    n += (usage.get('output_tokens', 0) or 0)
                 except Exception:
                     pass
     except Exception:
         pass
+    return n
+
+total = 0
+hdir = '$HANDOFF_DIR'
+for fname in sorted(os.listdir(hdir)):
+    if not fname.endswith('.stream.jsonl'):
+        continue
+    path = os.path.join(hdir, fname)
+    if os.path.islink(path):
+        continue  # newest-attempt pointer; its target is counted via attempts/
+    total += count_stream(path)
+att = os.path.join(hdir, 'attempts')
+if os.path.isdir(att):
+    for sub in sorted(os.listdir(att)):
+        sdir = os.path.join(att, sub)
+        if not os.path.isdir(sdir):
+            continue
+        for fname in sorted(os.listdir(sdir)):
+            if fname.endswith('.stream.jsonl'):
+                total += count_stream(os.path.join(sdir, fname))
 print(total)
 " 2>/dev/null || echo "0")"
 fi

@@ -418,7 +418,55 @@ ${MISSION_BODY}
 
 ${PER_TASK_BOILERPLATE}"
 
-STREAM_OUT="$HANDOFF_DIR/${ROLE}.stream.jsonl"
+# ---------------------------------------------------------------------------
+# WORKER-STREAM-IS-OVERWRITTEN-BY-THE-NEXT-ATTEMPT-01 — attempt-scoped streams.
+# The stream path used to be keyed by TASK_ID alone (itself the dispatch sig8
+# for dispatched lanes), so re-dispatching the same lane re-derived the SAME
+# filename and the second `claude` process's `> "$STREAM_OUT"` redirect
+# TRUNCATED the first attempt's transcript (measured 2026-09-03: one lane went
+# 463 lines/923548 bytes/0 result events → 449/671008/1 across a re-dispatch;
+# five workers believed dead, four re-dispatches, four streams destroyed
+# before the investigation could read them). Every attempt now writes an
+# immutable file under attempts/<epoch>-<pid>/ — the same shape as
+# dispatch-code's _dl_attempt_token, minus the redundant sig8 already in the
+# parent dir name — and the flat name becomes a symlink repointed ATOMICALLY
+# to the newest attempt on EVERY attempt (first included). All audited
+# readers keep working unmodified: os.stat/open/existence checks follow
+# symlinks, and the non-recursive top-level globs (budget-check fallback,
+# lanes-snapshot, worker-reason, cost-flush discovery) still see exactly one
+# match at the top level.
+#
+# Backfill: a dispatch dir with NO attempts/ subdirectory predates
+# attempt-scoping; if <role>.stream.jsonl exists there it is definitionally
+# the last (and only recoverable) attempt for that lane.
+_lv2_attempt_id() {
+  printf '%s-%s' "$(date +%s)" "$$"
+}
+
+# Repoint the flat <role>.stream.jsonl name at $2 atomically: create a
+# uniquely-named symlink, then same-directory `mv -f` (an atomic rename). A
+# bare `ln -sfn` over an existing name is unlink-then-link on some platforms,
+# which would leave readers a window with NO file at all. The repoint happens
+# the moment the attempt activates — before any content is written: a fresh,
+# empty target under a "starting" liveness verdict is a modeled state; a
+# pointer still aimed at the previous, finished attempt while a new one is
+# live is not. Non-fatal on failure: a missed repoint costs readers the
+# newest-pointer only — the real per-attempt stream still lands.
+_lv2_repoint_newest_pointer() {
+  local link_name="$1" target="$2" tmp_link
+  tmp_link="${link_name}.repoint.$$"
+  rm -f "$tmp_link" 2>/dev/null || true
+  if ln -s "$target" "$tmp_link" 2>/dev/null && mv -f "$tmp_link" "$link_name" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp_link" 2>/dev/null || true
+  echo "[claude-subsession] WARN: could not repoint newest-stream pointer ${link_name} -> ${target}" >&2
+  return 0
+}
+
+ATTEMPT_ID="$(_lv2_attempt_id)"
+ATTEMPT_DIR="$HANDOFF_DIR/attempts/$ATTEMPT_ID"
+STREAM_OUT="$ATTEMPT_DIR/${ROLE}.stream.jsonl"
 
 # Turn cap — captured once so the spawn arg and the post-run truncation detector
 # (SUBSESSION-MAXTURNS-TRUNCATION-01) compare against the SAME value. Default
@@ -1116,6 +1164,16 @@ if declare -f leadv2_dry_run_guard >/dev/null 2>&1; then
   fi
 fi
 
+# WORKER-STREAM-IS-OVERWRITTEN-BY-THE-NEXT-ATTEMPT-01: activate this attempt —
+# create its directory and repoint the flat newest-attempt pointer at it, on
+# EVERY attempt (first included) and BEFORE any content is written. Both
+# launch paths (--wait below and the detached arm) pass through this single
+# call site; it sits after the DRY_RUN chokepoint so a dry run still touches
+# nothing. A failed mkdir is fatal (set -e): the old code died equally loud at
+# the redirect itself, only later.
+mkdir -p "$ATTEMPT_DIR"
+_lv2_repoint_newest_pointer "$HANDOFF_DIR/${ROLE}.stream.jsonl" "$STREAM_OUT"
+
 if [[ "$WAIT" == "1" ]]; then
   _start_epoch=$(date +%s)
   run_subsession
@@ -1249,7 +1307,15 @@ else
   # W6-fix: async cost-recorder (was: background subshell may not fire if parent exits first).
   # Strategy: write a marker file so leadv2-cost-flush.sh can compute costs post-hoc even if
   # the parent shell exits before the background wait completes.
-  MARKER_FILE="$HANDOFF_DIR/${ROLE}.cost-pending.yaml"
+  # WORKER-STREAM-IS-OVERWRITTEN-BY-THE-NEXT-ATTEMPT-01: attempt-scoped sibling
+  # of the stream fix — a flat marker let a second attempt overwrite the first
+  # attempt's pending-cost record before leadv2-cost-flush.sh could process it.
+  # The id sits BEFORE the literal `.cost-pending.yaml` suffix on purpose:
+  # cost-flush discovers markers via `"$TARGET_DIR"/*.cost-pending.yaml` and
+  # `"$HANDOFF_ROOT"/*/*.cost-pending.yaml`, so an id AFTER that suffix would
+  # orphan every marker from discovery. flush_marker itself reads role/stream
+  # paths from the marker CONTENT, not the filename — no change needed there.
+  MARKER_FILE="$HANDOFF_DIR/${ROLE}.${ATTEMPT_ID}.cost-pending.yaml"
   printf -- 'session_id: %s\nrole: %s\nmodel: %s\nstream_file: %s\nstart_epoch: %s\nhandoff_dir: %s\nprompt_prefix_checksum: %s\n' \
     "$SESSION_ID" "$ROLE" "$MODEL" "$STREAM_OUT" "$_start_epoch" "$HANDOFF_DIR" "$PREFIX_CHECKSUM" > "$MARKER_FILE"
 
