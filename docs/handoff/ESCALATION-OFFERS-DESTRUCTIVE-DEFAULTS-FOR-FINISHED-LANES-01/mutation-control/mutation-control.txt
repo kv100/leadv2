@@ -1,0 +1,5 @@
+anchor=if _lv_verdict.startswith("finished") and _lv_source != "git_commit":
+anchor_matches=1
+baseline_rc=0
+mutated_rc=0
+red_line=finished lane offered abandon/restart: question=q-d23e00fc.yaml labels=inspect,restart,abandon

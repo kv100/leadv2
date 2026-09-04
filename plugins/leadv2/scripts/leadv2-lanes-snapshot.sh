@@ -900,6 +900,26 @@ for tid, s in list(current.items()):
         _commit_age = _commit_age_s(s.get("worktree"))
         if _commit_age is not None and _commit_age <= _LANE_FINISHED_WINDOW_S:
             reasons = []
+        # ESCALATION-OFFERS-DESTRUCTIVE-DEFAULTS-FOR-FINISHED-LANES-01: the
+        # same veto must also honour a finished verdict from the ladder
+        # itself (lane_liveness_by_id, the single oracle Change 1b already
+        # consults below). The commit-age arm above reads s["worktree"], and
+        # for lead-registered rows that field names the MAIN checkout, not
+        # the lane's own worktree -- so a worker that committed and exited
+        # escalates as soon as the main HEAD is older than the window (four
+        # finished lanes in one hour, 2026-09-04). The ladder's
+        # finished_unlanded rung (deliverable under docs/handoff/<tid>/)
+        # is the evidence that arm cannot see. Source-filtered: a
+        # source=git_commit verdict mirrors the arm above reading the same
+        # session worktree, so consulting it would only duplicate the rule
+        # and leave test-lane-finished-state.sh Test 5b's mutation vacuous.
+        # No second finished-check, no second window: one rule, and a lane
+        # whose ladder verdict starts with `finished` escalates nothing.
+        _lv_row = lane_liveness_by_id.get(tid) or {}
+        _lv_verdict = str(_lv_row.get("verdict") or "")
+        _lv_source = str(_lv_row.get("source") or "")
+        if _lv_verdict.startswith("finished") and _lv_source != "git_commit":
+            reasons = []
 
     # LANE-LIVENESS-LIES-01 Change 1b: a fresh stream/log mtime outranks the
     # pid heuristic before any escalation (memory
