@@ -200,6 +200,17 @@ PYEOF
 #                             mcp__* tools" is actually true)
 #   Every rc is a decision, never an error to propagate — the caller only
 #   picks the printed text (or its absence) and logs the mode.
+#
+#   CODE-INTEL-SKIPPED-FIFTEEN-TIMES-01: every rc!=0 branch additionally
+#   prints EXACTLY ONE machine-readable line to stderr:
+#     [worker-mcp] preamble_skip_cause=<token>
+#   so the dispatcher can journal WHY the preamble was skipped (which gate
+#   was off / which call failed with which rc) instead of a bare
+#   `reason=fail_open`. On 2026-09-04 all 15 sonnet skips of the day were
+#   byte-identical journal lines — gate-off, resolve-failure, and
+#   missing-preamble-file were indistinguishable. stdout stays exactly as
+#   documented above (empty on every skip) — the cause is metadata, not a
+#   claim the worker sees.
 worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir (optional)
   local arm="$1" project_root="$2" out_dir="${3:-}"
   local role="${LEADV2_WORKER_ROLE:-developer}"
@@ -210,6 +221,7 @@ worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir
       # codex-task.sh has NO MCP wiring (the companion spawns its own task
       # worker with fixed argv; probed 2026-09-02) — promising mcp__* tools
       # there is a falsehood the worker cannot satisfy.
+      printf '[worker-mcp] preamble_skip_cause=codex_no_mcp_wiring\n' >&2
       return 4
       ;;
     sonnet)
@@ -220,7 +232,9 @@ worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir
       if [[ "${LEADV2_SUBSESSION_SLIM_MCP:-0}" != "1" ]]; then
         # No --mcp-config is appended on this path (see doc block above) —
         # the child inherits the FULL default MCP set, so printing "MCP
-        # unavailable" here would be false. Say nothing.
+        # unavailable" here would be false. Say nothing (on stdout).
+        printf '[worker-mcp] preamble_skip_cause=gate:LEADV2_SUBSESSION_SLIM_MCP=%s\n' \
+          "${LEADV2_SUBSESSION_SLIM_MCP:-unset}" >&2
         return 3
       fi
       ;;
@@ -231,6 +245,8 @@ worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir
         # Same fail-open shape: worker_mcp_resolve() short-circuits, no
         # --strict-mcp-config is appended, the child inherits the FULL
         # default MCP set. Say nothing rather than claim it has none.
+        printf '[worker-mcp] preamble_skip_cause=gate:LEADV2_WORKER_MCP=%s\n' \
+          "${LEADV2_WORKER_MCP}" >&2
         return 3
       fi
       ;;
@@ -242,6 +258,7 @@ worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir
     if [[ -z "${scratch}" ]]; then
       # Can't run the prediction probe at all — unknown, not "unavailable".
       # The real launcher's own resolve call is unaffected by this failure.
+      printf '[worker-mcp] preamble_skip_cause=mktemp_scratch_failed\n' >&2
       return 3
     fi
     out_dir="${scratch}"
@@ -253,6 +270,11 @@ worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir
     # resolve_role_mcp_config() failed/returned nothing -- its own callers
     # (this same fail-open taxonomy) fall back to spawning with the FULL
     # default MCP set, never zero. Say nothing rather than claim otherwise.
+    # rc taxonomy: 11 no allowlist | 12 nothing resolved in the config chain
+    # | 13 malformed allowlist/round-trip | 14 python3 missing | 15 write
+    # failure | 0-but-empty (defensive — resolve never does that today).
+    printf '[worker-mcp] preamble_skip_cause=resolve_role_mcp_config_rc=%s\n' \
+      "${rc:-0_empty}" >&2
     return 3
   fi
 
@@ -270,6 +292,8 @@ worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir
     # the routing-text file is missing. "MCP unavailable" would be false in
     # the opposite direction from the other rc=3 branches (this one really
     # does attach); say nothing rather than assert either way.
+    printf '[worker-mcp] preamble_skip_cause=preamble_file_missing:%s\n' \
+      "${preamble_file}" >&2
     return 3
   fi
   cat "${preamble_file}"

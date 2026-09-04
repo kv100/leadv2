@@ -5377,12 +5377,41 @@ _spawn_worker_body() {
   # block after the pin prepend (as WORKER-MCP-ALL-ARMS-01 originally did)
   # silently demoted the pin line to wherever the code-intel text ends,
   # breaking that invariant on every dispatch whose MCP attach succeeded.
-  local _ci_txt="" _ci_rc=0
-  _ci_txt="$(worker_mcp_preamble_for_arm "${arm}" "${WORK_ROOT}" "")" || _ci_rc=$?
+  # CODE-INTEL-SKIPPED-FIFTEEN-TIMES-01 (2026-09-04): every sonnet dispatch
+  # journaled mode=skipped reason=fail_open (15/15 that day, 78 historically)
+  # while glm/glm-flash attached 3/3 — a structural gate asymmetry, not
+  # flakiness. The sonnet launcher (claude-subsession.sh) resolves role MCP
+  # only under opt-in LEADV2_SUBSESSION_SLIM_MCP=1 (default 0), while
+  # glm/kimi/freepool gate on LEADV2_WORKER_MCP (default 1), and NOTHING ever
+  # set the sonnet gate for dispatched workers — the population glm's
+  # default-1 already covers. Fix is HERE, not in claude-subsession.sh: the
+  # launcher's 0 default stays for the LEAD-side escalation path, but a
+  # DISPATCHED sonnet worker defaults the gate to 1. One local computed once
+  # drives BOTH the prediction call below and the sonnet spawn line (its
+  # prefix assignment uses the same :-1 default), so prediction and spawn
+  # cannot disagree. Explicit env still wins: LEADV2_SUBSESSION_SLIM_MCP=0
+  # restores the old spawn — loudly, see the cause= journal field.
+  local _ci_slim="${LEADV2_SUBSESSION_SLIM_MCP:-}"
+  if [[ "${arm}" == "sonnet" && -z "${_ci_slim}" ]]; then
+    _ci_slim=1
+  fi
+  # Loud fail-open (same lane): capture the lib's stderr so the journal line
+  # names WHICH gate was off / WHICH call failed with WHICH rc, instead of a
+  # bare reason=fail_open the lead cannot act on. A missing cause line is
+  # itself surfaced (no_cause_reported) — silence is never an acceptable
+  # skip explanation again.
+  local _ci_txt="" _ci_rc=0 _ci_errf="" _ci_cause=""
+  _ci_errf="$(mktemp "${TMPDIR:-/tmp}/leadv2-ci-cause.XXXXXX")" || _ci_errf=""
+  _ci_txt="$(LEADV2_SUBSESSION_SLIM_MCP="${_ci_slim}" worker_mcp_preamble_for_arm "${arm}" "${WORK_ROOT}" "" 2>"${_ci_errf:-/dev/null}")" || _ci_rc=$?
+  if [[ -n "${_ci_errf}" ]]; then
+    _ci_cause="$(sed -n 's/^.*preamble_skip_cause=\([^[:space:]]*\).*$/\1/p' "${_ci_errf}" | head -1)"
+    rm -f "${_ci_errf}"
+  fi
+  [[ -n "${_ci_cause}" ]] || _ci_cause="no_cause_reported"
   case "${_ci_rc}" in
     0) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=attached" ;;
-    3) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=skipped reason=fail_open" ;;
-    *) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=none reason=arm_unwired" ;;
+    3) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=skipped reason=fail_open cause=${_ci_cause}" ;;
+    *) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=none reason=arm_unwired cause=${_ci_cause}" ;;
   esac
   [[ -z "${_ci_txt}" ]] || mission="${_ci_txt}"$'\n\n'"${mission}"
   [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
@@ -5607,7 +5636,7 @@ _spawn_worker_body() {
       # empty RESOLVED_EFFORT (arbiter never ran) omits the flag, same as before.
       local -a _sonnet_effort_args=()
       [[ -n "${RESOLVED_EFFORT:-}" ]] && _sonnet_effort_args=(--effort "${RESOLVED_EFFORT}")
-      out="$(cd "${WORK_ROOT}" && PROJECT_ROOT="${PROJECT_ROOT}" bash "${SUBSESSION_BIN}" \
+      out="$(cd "${WORK_ROOT}" && PROJECT_ROOT="${PROJECT_ROOT}" LEADV2_SUBSESSION_SLIM_MCP="${LEADV2_SUBSESSION_SLIM_MCP:-1}" bash "${SUBSESSION_BIN}" \
              --role developer --model sonnet \
              --task-id "dispatch-${sig8}" --mission-file "${mfile}" "${_sonnet_effort_args[@]}" 2>"${errf}" 9>&-)"; rc=$?
       rm -f "${mfile}"
