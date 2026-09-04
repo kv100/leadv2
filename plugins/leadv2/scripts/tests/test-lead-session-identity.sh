@@ -198,5 +198,42 @@ else
   bad "legacy rows resolve: lane_count_live direct raised or returned non-numeric '${LEGACY_COUNT}'"
 fi
 
+# ── the zsh path, asserted explicitly ────────────────────────────────────────
+# ZSH-COLUMN-IS-A-BASH-RUN-01. Every identity case above resolves through
+# `bash -c` (deliberately: two real forks give two pids under either shell).
+# The consequence is that running THIS FILE with zsh measures the same bash:
+# the suite's "zsh column" is a bash run in a zsh wrapper, and the zsh
+# interpreter path of the resolver has zero coverage. Measured on main:
+# `bash -c 'source lib; leadv2_lead_session_id'` -> lead-<pid>-<birth>;
+# `zsh  -c 'source lib; leadv2_lead_session_id'` -> warning + `direct`,
+# i.e. exactly the collapse this lane exists to remove.
+#
+# That is documented fail-open, not a bug, and no production caller is zsh
+# (all seven files on the path carry `#!/usr/bin/env bash`). But a fail-open
+# that no assertion pins is indistinguishable from accidental green. Pinning
+# it gives a signal in BOTH directions: fix the zsh path and this case goes
+# red, forcing the expectation to be updated; break the bash path down to
+# `direct` and the two shells stop disagreeing, which is visible here. Before
+# trusting a column, prove it executed.
+if command -v zsh >/dev/null 2>&1; then
+  ZSH_ID="$(env -u LEADV2_LEAD_SESSION_ID -u LEADV2_PARENT_SESSION_ID \
+    zsh -c "source '${IDENTITY_SH}'; leadv2_lead_session_id" 2>/dev/null)"
+  BASH_ID="$(env -u LEADV2_LEAD_SESSION_ID -u LEADV2_PARENT_SESSION_ID \
+    bash -c "source '${IDENTITY_SH}'; leadv2_lead_session_id" 2>/dev/null)"
+  if [[ "${ZSH_ID}" == "direct" ]]; then
+    ok "zsh path pinned: resolver under zsh returns 'direct' (documented fail-open)"
+  else
+    bad "zsh path pinned: expected 'direct' under zsh, got '${ZSH_ID}' — the zsh path changed; update this expectation deliberately"
+  fi
+  if [[ "${BASH_ID}" == lead-* && "${BASH_ID}" != "${ZSH_ID}" ]]; then
+    ok "shells disagree as documented: bash='${BASH_ID}' zsh='${ZSH_ID}'"
+  else
+    bad "shells disagree as documented: bash='${BASH_ID}' zsh='${ZSH_ID}' — bash must resolve lead-<pid>-<birth> and differ from zsh"
+  fi
+else
+  ok "zsh path pinned: SKIP (no zsh on this machine)"
+  ok "shells disagree as documented: SKIP (no zsh on this machine)"
+fi
+
 printf '\n[TEST] %d passed, %d failed\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" -eq 0 ]]
