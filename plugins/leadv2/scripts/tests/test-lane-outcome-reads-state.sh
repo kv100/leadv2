@@ -11,7 +11,9 @@
 # run_dir by hand plus a throwaway local git repo. Never touches prod run
 # dirs. Self-selects via tests/run-all.sh's "a changed test suite selects
 # itself" rule (matches plugins/leadv2/scripts/tests/test-*.sh).
-set -uo pipefail
+set -u
+set +e
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLASSIFIER="${SCRIPT_DIR}/../leadv2-lane-outcome.sh"
@@ -168,4 +170,6 @@ fi
 # Summary
 # ---------------------------------------------------------------------------
 printf '\ntest-lane-outcome-reads-state: %d passed, %d failed\n' "${PASSES}" "${FAILURES}"
-(( FAILURES == 0 ))
+if [[ "${FAILURES}" -ne 0 ]]; then
+  exit 1
+fi
