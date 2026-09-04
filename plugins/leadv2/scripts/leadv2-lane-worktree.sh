@@ -285,18 +285,70 @@ cmd_ensure() {
   # Fresh branch from base + linked worktree.
   if git -C "$ROOT" worktree add -b "$branch" "$lane_path" "$base" >>"$ERRF" 2>&1; then
     git -C "$lane_path" commit --allow-empty -m "lane ${task_id} anchor" >>"$ERRF" 2>&1 || true
+    degrade_frozen_registry_copy "$lane_path"
     codex_trust_worktree "$lane_path"
     printf '%s\n' "$lane_path"
     return 0
   fi
   # Branch may already exist from a prior aborted run — attach the worktree to it.
   if git -C "$ROOT" worktree add "$lane_path" "$branch" >>"$ERRF" 2>&1; then
+    degrade_frozen_registry_copy "$lane_path"
     codex_trust_worktree "$lane_path"
     printf '%s\n' "$lane_path"
     return 0
   fi
   log_error "ensure: git worktree add failed for task=$task_id base=$base (see $ERRF) — FALLING BACK to shared tree"
   fallback
+  return 0
+}
+
+# WORKTREE-CREATION-RESURRECTS-THE-FROZEN-REGISTRY-01: a branch that still
+# carries docs/leadv2/active.yaml as a REAL tracked file (a stale artifact
+# predating LEAD-CONTROL-PLANE-01, still present on most worktree-* branches)
+# resurrects a frozen copy of the cross-lane registry the moment `git
+# worktree add` materializes it. Every reader of docs/leadv2/active.yaml in
+# the new worktree then sees that frozen snapshot instead of the live
+# control plane at ~/.claude/leadv2-state/<slug>/active.yaml (resolved by
+# leadv2-state-path.sh) -- a live lane can read back as dead and get
+# re-dispatched. Fix at the one chokepoint both creation sites share: right
+# after the worktree exists, replace a REAL (non-symlink) active.yaml with a
+# symlink to the live registry and mark it `--skip-worktree` so git stops
+# treating it as dirty (same idiom this repo already uses for voice-file
+# overrides). If the symlink cannot be created for any reason, do NOT leave
+# the frozen file looking authoritative -- destroy its content so a reader
+# sees an obvious non-registry sentinel instead of stale-but-plausible YAML.
+# This deliberately does NOT mirror the anti-pattern flagged in this repo's
+# history where a "repoint the pointer" helper did half the fix (updated one
+# reference) and still returned 0 as if fully repaired -- here, failure to
+# fully repair is loud (stderr) and visible in the file itself, never silent.
+degrade_frozen_registry_copy() { # <abs_worktree_path>
+  local lane_path="${1:-}"
+  [[ -n "$lane_path" ]] || return 0
+  local frozen="$lane_path/docs/leadv2/active.yaml"
+  # [[ -e ]] with -L guard: a symlink already at this path (main-lineage
+  # branches that never tracked active.yaml, or a worktree already repaired)
+  # is correct as-is and must be left alone -- only a REAL file is the hazard.
+  [[ -e "$frozen" && ! -L "$frozen" ]] || return 0
+
+  local sp_bin script_dir live
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  sp_bin="${script_dir}/leadv2-state-path.sh"
+  if [[ -x "$sp_bin" ]]; then
+    live="$(PROJECT_ROOT="$lane_path" "$sp_bin" --no-link active.yaml 2>/dev/null)"
+  fi
+  if [[ -z "${live:-}" ]]; then
+    log_error "degrade_frozen_registry_copy: could not resolve live active.yaml path via $sp_bin for $lane_path -- neutralizing frozen copy so it is never mistaken for the registry"
+    printf 'NOT-A-REGISTRY: leadv2-state-path.sh resolution failed at worktree creation (WORKTREE-CREATION-RESURRECTS-THE-FROZEN-REGISTRY-01) -- see leadv2-lane-worktree.sh degrade_frozen_registry_copy\n' > "$frozen" 2>/dev/null || rm -f "$frozen" 2>/dev/null
+    return 0
+  fi
+
+  rm -f "$frozen" 2>/dev/null
+  if ln -s "$live" "$frozen" 2>/dev/null; then
+    git -C "$lane_path" update-index --skip-worktree docs/leadv2/active.yaml 2>/dev/null || true
+  else
+    log_error "degrade_frozen_registry_copy: symlink creation failed ($frozen -> $live) -- writing non-YAML sentinel so a stale copy is never mistaken for live state"
+    printf 'NOT-A-REGISTRY: symlink to live control plane failed at worktree creation (WORKTREE-CREATION-RESURRECTS-THE-FROZEN-REGISTRY-01) -- see leadv2-lane-worktree.sh degrade_frozen_registry_copy\n' > "$frozen" 2>/dev/null
+  fi
   return 0
 }
 
