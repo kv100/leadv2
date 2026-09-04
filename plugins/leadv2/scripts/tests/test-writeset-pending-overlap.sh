@@ -216,6 +216,50 @@ else
   bad "3: out=[${out3}]"
 fi
 
+# ════ 3b. same recreation, but the row is STILL write-less after it ════════
+# The clock discriminator must not be diluted by the carry-over: a row that
+# never declared (write-less reservation, write-less recreation) is judged by
+# the pending window ALONE -- measured from first_seen_at, it has already
+# expired here (age ~2s > 1s window); measured from started_at (the pre-fix
+# clock), it is fresh and blanket-refuses. This is the case the mutation
+# control M1 redden.
+out3b="$( bash -s "${REGISTRY_SH}" "${FANOUT_FUNCS_SH}" "${TMPDIR_ROOT}" <<'EOF'
+set -uo pipefail
+source "$1"; set +e
+FANFUNCS="$2"
+root="$3/c3b"; mkdir -p "$root"
+export LEADV2_PROJECT_ROOT="$root" LEADV2_STATE_ROOT="$root" LEADV2_BURN_GOVERNOR=0
+export LEADV2_WRITESET_PENDING_WINDOW_SEC=1
+git -C "$root" init -q; git -C "$root" config user.email t@e.com; git -C "$root" config user.name t
+source "${FANFUNCS}"
+PROJECT_ROOT="$root"
+# t0: pid=null reservation that CANNOT declare (no writes on the task row).
+_fanout_register_session "WSO-RE2" Standard "null" "reserving" "true" "true" \
+  "dispatch-code" "" "" "" "" "" "" "" "" "" "task_row_undeclared" >/dev/null 2>&1
+sleep 2
+# t2: dispatch re-registers; pid=None -> remove+append; nothing to carry.
+leadv2_active_register "WSO-RE2" Standard "$root" wt false "" "" "" "" >/dev/null 2>&1
+python3 - "$root/docs/leadv2/active.yaml" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])) or {}
+row = next((s for s in d["sessions"] if s["task_id"] == "WSO-RE2"), {})
+print("still_writeless=%s" % (row.get("writes") is None))
+print("reason_carried=%s" % row.get("writes_reason"))
+PY
+# The clock is measured from FIRST sight: window already expired, so the
+# candidate is judged D7-unknown (warn -> admit, rc=0), never pending.
+leadv2_active_register "WSO-CAND" Standard "$root" wt-cand false "" "" "cand/b.txt" 2>/dev/null >/dev/null
+echo "cand_rc=$?"
+EOF
+)" || true
+if printf '%s' "${out3b}" | grep -q 'still_writeless=True' \
+  && printf '%s' "${out3b}" | grep -q 'reason_carried=task_row_undeclared' \
+  && printf '%s' "${out3b}" | grep -q 'cand_rc=0'; then
+  ok "3b: write-less recreated row exits the pending window by FIRST sight (cand rc=0; pre-fix clock would blanket-refuse)"
+else
+  bad "3b: out=[${out3b}]"
+fi
+
 # ════ 4. true positive preserved: declared sets that overlap still refuse ══
 out4="$( bash -s "${REGISTRY_SH}" "${TMPDIR_ROOT}" <<'EOF'
 set -uo pipefail
