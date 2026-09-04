@@ -3941,11 +3941,20 @@ _admission_classify() {
   estimate="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${TASK_JUDGE_BIN}" \
     --mission-file "${mfile}" --task-id "dispatch-${sig8}" 2>/dev/null)"
   local jrc=$?
-  rm -f "${mfile}" 2>/dev/null || true
   pair=""
   if [[ ${jrc} -eq 0 && -n "${estimate}" ]]; then
-    pair="$(leadv2_admission_class "${explicit}" "${flagged}" "${estimate}")"
+    # ADMISSION-CLASS-FALLS-BACK-TO-LIGHT-01: a fallback estimate (judge
+    # never saw the task) is re-derived from observables before it may
+    # decide the phase mode — the mission text itself (size + touched
+    # paths) and, on a re-entry, the task's own cost-estimate.yaml
+    # classification (same docs/handoff/<id>/ layout leadv2-cost-estimate.sh
+    # writes further down; founder id, else sig8 — mirror _cost_task_id).
+    local _cost_task_id _cost_yaml
+    _cost_task_id="${founder_task_id:-${sig8}}"
+    _cost_yaml="${PROJECT_ROOT}/docs/handoff/${_cost_task_id}/cost-estimate.yaml"
+    pair="$(leadv2_admission_class "${explicit}" "${flagged}" "${estimate}" "${mfile}" "${_cost_yaml}")"
   fi
+  rm -f "${mfile}" 2>/dev/null || true
   if [[ -n "${pair}" ]]; then
     IFS=$'\t' read -r ADMISSION_CLASS ADMISSION_SOURCE <<<"${pair}"
     ADMISSION_WORK_KIND="$(printf '%s' "${estimate}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("work_kind",""))' 2>/dev/null || true)"
