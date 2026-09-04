@@ -326,3 +326,9 @@ was not to fix that line: it was to re-verify all eight heads the document named
 A defect found in a record is evidence about the record's *class*, not about the line — the same way
 a mutation that reddens three cases through one branch is one witness, not three. Fixing the
 instance and leaving the class is how the same defect returns wearing a different name.
+
+**Where this file goes after the queue moves.** This branch is not a change waiting to merge; it is
+an accumulator that cannot stabilise, because doctrine has nowhere else to land while `main` is
+reachable through one blocked channel. Its head rotted twice in an afternoon for that reason alone.
+Once the queue clears, doctrine goes to `main` directly and never rides a branch that is itself
+waiting in line — otherwise the next quiet week reproduces the same unstable record by habit.
