@@ -4329,6 +4329,51 @@ _phase_precondition_guard() {
     3)
       local missing_csv="${assert_out#missing=}"
       if [[ "$mode" == "1" ]]; then
+        # PHASE-BOOTSTRAP-ADMIT-02: distinguish "this lane has never started"
+        # from "phases were skipped". cmd_resolve records `classify` as done
+        # UNCONDITIONALLY, on every single call, immediately before this guard
+        # runs (see "record classify as done (it just happened)" a few lines
+        # above every call site) -- so by the time we get here, phases.d is
+        # NEVER truly empty even on a brand-new lane's very first dispatch.
+        # Refusing here because plan/gate1 are missing means EVERY brand-new
+        # lane is refused on admission, because no worker has ever run yet to
+        # leave behind the plan/gate1 artifact the refusal's own remedy points
+        # at -- that is DISPATCH-PHASE-DEADLOCK-01, not a real violation.
+        #
+        # Scope: pre-build ONLY. scope=full is the deliberately-strict manual
+        # override path (LEADV2_REQUIRE_PHASES=1 with no PHASE_GUARD_SCOPE) --
+        # under scope=full, build/test/review/close are ALSO mandatory and
+        # none of those can exist on a first dispatch either, so bootstrap-
+        # admitting there would defeat the explicit full-completion check that
+        # path exists for (PHASES-ARE-THE-ONLY-PATH-01 regression guard G2 in
+        # test-phase-precondition.sh pins exactly this: a fresh lane under
+        # scope=full must still refuse).
+        #
+        # Definition: bootstrap iff phases.d contains NO phase record for any
+        # phase OTHER than the auto-stamped `classify`. The instant this lane
+        # records ANYTHING else -- even a mere `diverge` n/a -- it has real
+        # phase history and this guard falls straight through to the refusal
+        # below, unchanged. This is a one-shot grace on the very first
+        # dispatch attempt, never a standing bypass.
+        if [[ "${scope}" == "pre-build" ]]; then
+          local _pp_phases_d="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/phases.d"
+          local _pp_bootstrap="1" _pp_f
+          if [[ -d "${_pp_phases_d}" ]]; then
+            for _pp_f in "${_pp_phases_d}"/*.yaml; do
+              [[ -f "${_pp_f}" ]] || continue
+              local _pp_phase_name
+              _pp_phase_name="$(grep '^phase:' "${_pp_f}" 2>/dev/null | awk '{print $2}')"
+              if [[ "${_pp_phase_name}" != "classify" ]]; then
+                _pp_bootstrap=""
+                break
+              fi
+            done
+          fi
+          if [[ -n "${_pp_bootstrap}" ]]; then
+            emit decision "phase_precondition_bootstrap_admit task=${sig8} class=${cls} missing=${missing_csv} mode=1"
+            return 0
+          fi
+        fi
         emit decision "phase_precondition_refused task=${sig8} class=${cls} missing=${missing_csv} mode=1"
         log_err "dispatch refused: missing mandatory phases: ${missing_csv}"
         local mp
@@ -4340,10 +4385,21 @@ _phase_precondition_guard() {
         for mp in $(printf '%s' "${missing_csv}" | tr ',' ' '); do
           case "$mp" in
             plan)
-              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} plan --artifact docs/handoff/<task-id>/brief.md   (or docs/handoff/<task-id>/fix-round-N.md, or a context.yaml with decisions:, or a non-empty architect-prepass.md)"
+              # PHASE-BOOTSTRAP-ADMIT-02: point the remedy at evidence that
+              # can actually exist before any worker has run. A lead-authored
+              # brief is real plan evidence (_verify_artifact accepts it,
+              # proof=attested) -- same for fix-round-N.md, a context.yaml
+              # with decisions:, or a non-empty architect-prepass.md.
+              log_err "  remedy: write docs/handoff/dispatch-${sig8}/brief.md with the plan (a lead-authored brief is valid plan evidence)"
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} plan --artifact docs/handoff/dispatch-${sig8}/brief.md   (or docs/handoff/<task-id>/fix-round-N.md, or a context.yaml with decisions:, or a non-empty architect-prepass.md)"
               ;;
             gate1)
-              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} gate1 --reason \"<founder gate-1 decision>\"   (or --artifact <path-to-.gate1-passed> if run through leadv2-gate1-prompt.sh)"
+              # PHASE-BOOTSTRAP-ADMIT-02: an explicit recorded gate decision
+              # (--reason, no --artifact) is real gate1 evidence -- the
+              # .gate1-passed sentinel a worker/gate1-prompt would normally
+              # create cannot exist yet either.
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} gate1 --status done --reason \"<explicit gate1 decision>\"   (or --artifact <path-to-.gate1-passed> if run through leadv2-gate1-prompt.sh)"
+
               ;;
             *)
               log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
