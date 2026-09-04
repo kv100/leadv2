@@ -344,35 +344,52 @@ validate_plugin() {
 # Commands are space-split (every path in this list is space-free, matching the
 # assumption the rest of this plugin already makes).
 #
-# E2E-GATE-BROKE-TODAY-01 round 2: of the 11 |||SERIAL markers present before
-# this change, 4 were unjustified and moved into the parallel shard pool
-# (test-worktree-lane-safety.sh, test-fanout-classify-guard.sh,
-# test-report-only-gate.sh, test-prepass-resume-invalidate.sh) -- every one of
-# these is fully mktemp/LEADV2_STATE_ROOT/LEADV2_PROJECT_ROOT-isolated and
-# absent from run_check's _CORE_OFFLINE_OWNED_SUITES list a few lines above
-# (the runner's own ledger of suites whose fixtures legitimately dirty the
-# REAL REPO_ROOT/docs/leadv2 working tree), so run_check's per-suite HOME
-# sandbox (line ~257: sharded suites get a private $HOME, not the real host
-# one) already fully isolates them -- no dependence on serial placement.
+# E2E-GATE-BROKE-TODAY-01 round 2 moved 4 of the original 11 |||SERIAL markers
+# into the parallel pool; a lead pass on 2026-09-04 re-derived the remaining 7 by
+# BEHAVIOUR and moved 4 more, leaving 3.
 #
-# The other 7 remain SERIAL below, each with its own one-line reason. Five of
-# them (dispatch refusal fallback chain / product-close waits for worker exit
-# / Codex full-cycle runner / lanes snapshot reconciliation / lane truth
-# batch) ARE on _CORE_OFFLINE_OWNED_SUITES: their fixtures write real
-# REPO_ROOT/docs/leadv2 state, which run_check's hermeticity check diffs via
-# `git status` against that SAME real tree -- concurrent with a sibling
-# suite's own real docs/leadv2 write, that diff misattributes one suite's
-# dirt to the other, i.e. exactly the false-verdict failure mode this task
-# exists to prevent. Do not parallelize any suite on that list.
+# Method (and the reason the earlier justifications did not survive): each of the
+# 7 was run ALONE in an isolated worktree under /private/tmp -- never /tmp, whose
+# macOS symlink trips run-all.sh's root_escape guard and aborts the run before
+# selection -- with `git status -- docs/leadv2` taken before and after. The probe
+# was shown able to report DIRTY on a synthetic write before any "clean" from it
+# was believed.
+#
+#   green + clean, moved to the pool: test-no-work-terminal, test-lanes-snapshot,
+#     test-stop-gate, test-codex-session-runner (its rc=1 is its own defect,
+#     tracked separately -- a broken suite is not a placement reason).
+#   dirty, still SERIAL: test-routing-enforcement-p1, test-lane-truth-batch-01,
+#     test-burn-governor. All three dirty the SAME path,
+#     docs/leadv2/open-threads.md, and none of them writes it directly.
+#
+# The round-2 reasons cited membership in _CORE_OFFLINE_OWNED_SUITES. That list
+# is read in exactly one place (run_check ~296) and sets the SEVERITY of a
+# hermeticity violation -- owned means FAIL rather than WARN -- never placement.
+# It says what happens IF a suite dirties the tree; it does not say that one does.
+# A borrowed justification: the citation is real, the document is real, and the
+# proposition it was needed for is not in it. The real reason is a conjunction --
+# "dirties the shared tree AND its violations are fatal" -- and the list only ever
+# supplied the second half.
+#
 SUITE_DEFS=(
   "all plugin shell syntax|||syntax_all"
   "portable temp helper stress|||bash $TEST_DIR/test-leadv2-temp-stress.sh"
   "Claude plugin manifest/components|||validate_plugin"
   "provider/model router|||bash $TEST_DIR/test-session-route.sh"
-  # serial: on _CORE_OFFLINE_OWNED_SUITES -- see summary above the array.
+  # serial (measured 2026-09-04, run alone in an isolated worktree): dirties
+  # docs/leadv2/open-threads.md, which in every checkout is a symlink into the
+  # shared live control plane. The write is not the suite's own: the
+  # UserPromptSubmit hook capture_ask (leadv2-task-anchor.sh:589) appends and
+  # then os.replace()s the path, which destroys the symlink. Until that hook
+  # writes through the link, a concurrent neighbour is misattributed this dirt.
+  # PROMPT-CAPTURE-HOOK-DESTROYS-THE-SHARED-JOURNAL-01 removes this reason.
   "dispatch refusal fallback chain|||bash $TEST_DIR/test-routing-enforcement-p1.sh|||SERIAL"
-  # serial: on _CORE_OFFLINE_OWNED_SUITES -- see summary above the array.
-  "product-close waits for worker exit|||bash $TEST_DIR/test-no-work-terminal.sh|||SERIAL"
+  # parallel (measured 2026-09-04, run alone in an isolated worktree at
+  # /private/tmp): rc=0, docs/leadv2 clean. The round-2 reason cited
+  # _CORE_OFFLINE_OWNED_SUITES, but that list sets the SEVERITY of a
+  # hermeticity violation (run_check ~296: owned = FAIL, otherwise WARN),
+  # never placement -- it does not assert that a suite dirties anything.
+  "product-close waits for worker exit|||bash $TEST_DIR/test-no-work-terminal.sh"
   "product-close resumes a died-with-work lane once|||bash $TEST_DIR/test-dwr-resume.sh"
   "parked worker contract and one-shot resume (WORKER-PARKED-ON-BG-01)|||bash $TEST_DIR/test-parked-worker-resume.sh"
   "red-first pinned-baseline resolver (RED-FIRST-SELF-INVALIDATES-01)|||bash $TEST_DIR/test-red-first-baseline.sh"
@@ -380,7 +397,7 @@ SUITE_DEFS=(
   # serial: on _CORE_OFFLINE_OWNED_SUITES -- writes real REPO_ROOT/docs/leadv2
   # state; concurrent with another owned suite's write, run_check's hermetic
   # git-status diff misattributes one suite's dirt to the other.
-  "Codex full-cycle runner|||bash $TEST_DIR/test-codex-session-runner.sh|||SERIAL"
+  "Codex full-cycle runner|||bash $TEST_DIR/test-codex-session-runner.sh"
   "Codex terminal lead intake|||bash $TEST_DIR/test-codex-lead-intake.sh"
   "Codex child-session recursion boundary|||bash $TEST_DIR/test-codex-child-session-boundary.sh"
   "autonomous session spawner|||bash $TEST_DIR/test-session-spawner.sh"
@@ -397,8 +414,12 @@ SUITE_DEFS=(
   # parallel (round 2): not on _CORE_OFFLINE_OWNED_SUITES; LEADV2_PROJECT_ROOT/
   # LEADV2_STATE_ROOT sandboxed per-test, no shared lock/port.
   "fanout classifier/runner guard|||bash $TEST_DIR/test-fanout-classify-guard.sh"
-  # serial: on _CORE_OFFLINE_OWNED_SUITES -- see summary above the array.
-  "lanes snapshot reconciliation|||bash $TEST_DIR/test-lanes-snapshot.sh|||SERIAL"
+  # parallel (measured 2026-09-04, run alone in an isolated worktree at
+  # /private/tmp): rc=0, docs/leadv2 clean. The round-2 reason cited
+  # _CORE_OFFLINE_OWNED_SUITES, but that list sets the SEVERITY of a
+  # hermeticity violation (run_check ~296: owned = FAIL, otherwise WARN),
+  # never placement -- it does not assert that a suite dirties anything.
+  "lanes snapshot reconciliation|||bash $TEST_DIR/test-lanes-snapshot.sh"
   "T13 slice2 (arbiter bench-fallback + abandon dedup)|||bash $TEST_DIR/test-t13-slice2.sh"
   "Phase-8 task schema|||bash $TEST_DIR/test-leadv2-phase8-assert-a2-schema.sh"
   "Phase-8 merge/completion proof|||bash $PLUGIN_ROOT/tests/test-deploy-merge-blocker-gate.sh"
@@ -425,7 +446,13 @@ SUITE_DEFS=(
   "phase record round-trip|||bash $TEST_DIR/test-phase-record.sh"
   "phase precondition guard matrix|||bash $TEST_DIR/test-phase-precondition.sh"
   "lane phase render|||bash $TEST_DIR/test-lane-phase-render.sh"
-  # serial: on _CORE_OFFLINE_OWNED_SUITES -- see summary above the array.
+  # serial (measured 2026-09-04, run alone in an isolated worktree): dirties
+  # docs/leadv2/open-threads.md, which in every checkout is a symlink into the
+  # shared live control plane. The write is not the suite's own: the
+  # UserPromptSubmit hook capture_ask (leadv2-task-anchor.sh:589) appends and
+  # then os.replace()s the path, which destroys the symlink. Until that hook
+  # writes through the link, a concurrent neighbour is misattributed this dirt.
+  # PROMPT-CAPTURE-HOOK-DESTROYS-THE-SHARED-JOURNAL-01 removes this reason.
   "lane truth batch (log_path + quarantine convergence)|||bash $TEST_DIR/test-lane-truth-batch-01.sh|||SERIAL"
   "founder lane view|||bash $TEST_DIR/test-leadv2-lanes.sh"
   "plugin reliability (process liveness + role fallback + prepass/reorder signals)|||bash $TEST_DIR/test-plugin-reliability-01.sh"
@@ -452,7 +479,7 @@ SUITE_DEFS=(
   # hazard, but also could not fully disprove it (uses real `git worktree`
   # machinery via leadv2-lane-worktree.sh). Left serial: an unconfirmed
   # disproof is not grounds to risk a flaky-red incident.
-  "stop-gate autocommit on worker exit (V3-STOP-GATE-01)|||bash $TEST_DIR/test-stop-gate.sh|||SERIAL"
+  "stop-gate autocommit on worker exit (V3-STOP-GATE-01)|||bash $TEST_DIR/test-stop-gate.sh"
   "core-offline cross-run exclusive lock (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-lock-01.sh"
   "core-offline shard partition (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-shards-01.sh"
   # parallel (round 3): pure introspection -- asserts SUITE_DEFS shard
@@ -466,17 +493,13 @@ SUITE_DEFS=(
   "plugin sync .claude/scripts link classification|||bash $TEST_DIR/test-plugin-sync-claude-scripts.sh"
   "plugin sync contracts write gate|||bash $TEST_DIR/test-plugin-sync-contracts-gate.sh"
   "lane trace instrument (Mission B: writer/concurrency/off-path/reader)|||bash $TEST_DIR/test-leadv2-trace.sh"
-  # serial: kept per round-1 finding. Several cases (line ~375/435/443:
-  # --provider bogus, a typo'd --providr, and the no-args default) invoke
-  # GOVERNOR_BIN with no LEADV2_CLAUDE_BURN_DIR override, which would read
-  # the real ~/.claude/burn/history.db under a bare `bash` invocation --
-  # BUT under sharding run_check already forces HOME=<private suite_home>
-  # for every suite (line ~257), which redirects that same default path
-  # into the sandbox, so this specific hazard looks neutralized in the
-  # sharded path this task is actually fixing. Round-2 could not fully
-  # re-verify (no live multi-core run performed against a mutated fixture
-  # for this exact suite) -- left serial rather than ship an unconfirmed
-  # parallelization of a suite that touches real host billing/quota state.
+  # serial (measured 2026-09-04, run alone in an isolated worktree): dirties
+  # docs/leadv2/open-threads.md, which in every checkout is a symlink into the
+  # shared live control plane. The write is not the suite's own: the
+  # UserPromptSubmit hook capture_ask (leadv2-task-anchor.sh:589) appends and
+  # then os.replace()s the path, which destroys the symlink. Until that hook
+  # writes through the link, a concurrent neighbour is misattributed this dirt.
+  # PROMPT-CAPTURE-HOOK-DESTROYS-THE-SHARED-JOURNAL-01 removes this reason.
   "burn governor (BURN-GOVERNOR-01: 24h burn gate)|||bash $TEST_DIR/test-burn-governor.sh|||SERIAL"
   "provider quota gate (QUOTA-GATE-PARITY-01)|||bash $TEST_DIR/test-provider-quota-gate.sh"
   "Claude multi-profile selector (CLAUDE-MULTIPROFILE-QUOTA-02)|||bash $TEST_DIR/test-claude-profile-select.sh"

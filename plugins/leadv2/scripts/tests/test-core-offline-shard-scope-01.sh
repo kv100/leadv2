@@ -4,6 +4,15 @@
 # State lock on run-core-offline.sh SUITE_DEFS shard placement (the round-2
 # change). Round 2 moved 4 of the 11 |||SERIAL markers into the parallel shard
 # pool; 7 markers stayed SERIAL, each with a recorded one-line justification.
+# 2026-09-04: those 7 were re-derived by BEHAVIOUR rather than by list
+# membership -- each run alone in an isolated worktree under /private/tmp, with
+# git status on docs/leadv2 before and after. Four came back green AND clean
+# (no-work-terminal, codex-session-runner, lanes-snapshot, stop-gate) and moved
+# to the pool; three dirty docs/leadv2/open-threads.md and stayed SERIAL. The
+# round-2 reasons cited _CORE_OFFLINE_OWNED_SUITES, but that list sets the
+# SEVERITY of a hermeticity violation (run_check ~296: owned = FAIL, else WARN),
+# never placement -- a borrowed justification: the citation is real, the
+# document is real, and the proposition it needed is not in it.
 # This suite pins BOTH halves of that decision so neither direction can drift
 # silently:
 #   - the 4 round-2 suites MUST be assigned to a parallel shard;
@@ -23,7 +32,11 @@
 
 set -euo pipefail
 
-_src="${BASH_SOURCE[0]}"
+# SUITE-TEMPLATE-IS-ZSH-BLIND-01: fourth suite this shift blinded the same way.
+# BASH_SOURCE does not exist under zsh, so this aborted before a single case ran
+# (measured 1x5) while reading like a verdict about the runner.
+_src="${BASH_SOURCE[0]:-}"
+if [[ -z "$_src" && -f "${0:-}" ]]; then _src="$0"; fi
 while [ -L "$_src" ]; do
   _dir="$(cd -P "$(dirname "$_src")" && pwd)"
   _src="$(readlink "$_src")"
@@ -77,11 +90,11 @@ expect_pool "prepass resume invalidation (LANE-OBSERVABILITY-02)" parallel "test
 # git-status check would misattribute between concurrent suites; last 2 kept
 # per round-1 findings that round 2 could not disprove) ---
 expect_pool "dispatch refusal fallback chain" serial "test-routing-enforcement-p1"
-expect_pool "product-close waits for worker exit" serial "test-no-work-terminal"
-expect_pool "Codex full-cycle runner" serial "test-codex-session-runner"
-expect_pool "lanes snapshot reconciliation" serial "test-lanes-snapshot"
+expect_pool "product-close waits for worker exit" parallel "test-no-work-terminal"
+expect_pool "Codex full-cycle runner" parallel "test-codex-session-runner"
+expect_pool "lanes snapshot reconciliation" parallel "test-lanes-snapshot"
 expect_pool "lane truth batch (log_path + quarantine convergence)" serial "test-lane-truth-batch-01"
-expect_pool "stop-gate autocommit on worker exit (V3-STOP-GATE-01)" serial "test-stop-gate"
+expect_pool "stop-gate autocommit on worker exit (V3-STOP-GATE-01)" parallel "test-stop-gate"
 expect_pool "burn governor (BURN-GOVERNOR-01: 24h burn gate)" serial "test-burn-governor"
 
 # A dump line the parser did not recognize means the runner's dump format
