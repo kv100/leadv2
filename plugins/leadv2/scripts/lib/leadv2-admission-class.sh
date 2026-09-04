@@ -19,6 +19,17 @@
 # signals (never de-escalated). Classifier failure is the CALLER's branch:
 # Standard/phases, source=classifier_error — this map never fails open.
 #
+# ADMISSION-CLASS-FALLS-BACK-TO-LIGHT-01: the fallback estimate is
+# line-count-only, so a task the judge never saw fell to Light — the weakest
+# phase mode — precisely because nothing was known about it. Two changes:
+#   1. leadv2_admission_derive_floor re-derives a class floor from
+#      observables (touched paths, the task's own prior cost classification,
+#      mission size) before a fallback estimate may decide anything — the
+#      admission source becomes `derived` when observables were available;
+#   2. a fallback with NO observable left (source stays `fallback`) is
+#      STRICT: Standard, never Light. Deliberate default flip — a
+#      knows-nothing admission leans toward enforce, not warn.
+#
 # Bash 3.2 safe: no mapfile, no ${var^^}, no declare -A, no associative traps.
 _admission_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 # C-1 (DISPATCH-PIN-CLUSTER-01 round 7): guarded + canonical-fallback source --
@@ -67,16 +78,112 @@ else:
 ' "$1" 2>/dev/null
 }
 
-# <explicit-class> <flagged 0|1> <estimate-json> -> stdout: "class<TAB>source"
+# ADMISSION-CLASS-FALLS-BACK-TO-LIGHT-01: observable-feature floor for a
+# fallback estimate. <mission-file> <cost-yaml> -> stdout "floor<TAB>basis"
+# (floor: Light|Standard|Heavy; basis: comma-joined signals, EMPTY when no
+# observable could be evaluated at all — the caller then applies the strict
+# default). Signals, in raise order:
+#   path:core   mission (non-exclusion lines) names lib/, the dispatcher
+#               (leadv2-dispatch*) or hooks/ — the runtime control plane; a
+#               mission that edits it is never Light. Lines that forbid
+#               paths ("Не трогать: ...", "Do not touch: ...") are not
+#               evidence of a touch.
+#   cost:class  docs/handoff/<id>/cost-estimate.yaml from a prior cycle
+#               recorded its own classification — a re-entry floors at it.
+#   size:<n>    mission size: the ONLY signal that alone justifies Light
+#               (<=100 lines, matching the fallback estimator's own
+#               trivial/simple tiers); a larger mission floors at Standard.
+leadv2_admission_derive_floor() {  # <mission-file> <cost-yaml>
+  python3 - "$1" "$2" <<'PYEOF' 2>/dev/null || printf 'Light\t\n'
+import re, sys
+
+mission_path, cost_path = sys.argv[1], sys.argv[2]
+RANK = {'light': 0, 'standard': 1, 'heavy': 2, 'strategic': 3}
+NAME = {0: 'Light', 1: 'Standard', 2: 'Heavy', 3: 'Strategic'}
+
+text = ''
+try:
+    text = open(mission_path, encoding='utf-8', errors='replace').read()
+except OSError:
+    pass
+lines = text.splitlines()
+
+# Exclusion lines name paths the task must NOT change.
+EXCLUDE_LINE = re.compile(
+    r'не трогать|do not touch|off-?limits|не менять|do not (?:modify|edit)'
+    r'|boundaries|границы|не прав(?:ь|ить)', re.IGNORECASE)
+
+floor, basis = 0, []
+
+core_hit = False
+for ln in lines:
+    if EXCLUDE_LINE.search(ln):
+        continue
+    low = ln.lower()
+    if 'lib/' in low or 'leadv2-dispatch' in low or 'hooks/' in low:
+        core_hit = True
+        break
+if core_hit:
+    floor = max(floor, 1)
+    basis.append('path:core')
+
+if cost_path:
+    try:
+        for ln in open(cost_path, encoding='utf-8', errors='replace'):
+            m = re.match(r'\s*classification:\s*([A-Za-z]+)', ln)
+            if m:
+                cls = m.group(1).lower()
+                rank = RANK.get(cls)
+                if cls and rank is None:
+                    rank = 1  # unknown recorded class -> strict floor
+                if rank:
+                    floor = max(floor, min(rank, 2))
+                    basis.append('cost:class=%s' % cls)
+                break
+    except OSError:
+        pass
+
+if text:
+    basis.append('size:%d' % len(lines))
+    if len(lines) > 100:
+        floor = max(floor, 1)
+
+print('%s\t%s' % (NAME[floor], ','.join(basis)))
+PYEOF
+}
+
+# <explicit-class> <flagged 0|1> <estimate-json> [<mission-file> <cost-yaml>]
+# -> stdout: "class<TAB>source"
 # source: flag (explicit flag decided), judge|fallback (estimate_source won),
-# or empty stdout on unparseable estimate (caller takes classifier_error).
+# derived (ADMISSION-CLASS-FALLS-BACK-TO-LIGHT-01: fallback estimate
+# floor/justified from observable task features — see
+# leadv2_admission_derive_floor), or empty stdout on unparseable estimate
+# (caller takes classifier_error).
 leadv2_admission_class() {
-  local explicit="$1" flagged="$2" estimate="$3" mapped src
+  local explicit="$1" flagged="$2" estimate="$3" mfile="${4:-}" costf="${5:-}"
+  local mapped src
   explicit="$(_lv2_class_canonical "${explicit}")"
   mapped="$(leadv2_admission_map_class "$estimate")"
   [[ -n "$mapped" ]] || { printf ''; return 0; }
   src="$(printf '%s' "$estimate" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("estimate_source",""))' 2>/dev/null)"
   [[ "$src" == "judge" || "$src" == "fallback" ]] || src="fallback"
+  if [[ "$src" == "fallback" ]]; then
+    # ADMISSION-CLASS-FALLS-BACK-TO-LIGHT-01: the fallback estimate is
+    # line-count-only; it may decide the phase mode only after a floor was
+    # derived from what is actually observable about the task.
+    local floor basis
+    IFS=$'\t' read -r floor basis <<<"$(leadv2_admission_derive_floor "$mfile" "$costf")"
+    if [[ -n "${basis}" ]]; then
+      if (( $(_lv2_class_rank "$floor") > $(_lv2_class_rank "$mapped") )); then
+        mapped="$floor"
+      fi
+      src="derived"
+    elif [[ "$mapped" == "Light" ]]; then
+      # Deliberate default flip: no observable at all (mission unreadable,
+      # no cost record) — a knows-nothing admission is STRICT, never Light.
+      mapped="Standard"
+    fi
+  fi
   if [[ "$flagged" == "1" && -n "$explicit" ]]; then
     # Escalate-only: the flag wins unless the estimate's risk/complexity
     # signals rank ABOVE it (Light<Standard<Heavy<Strategic).
