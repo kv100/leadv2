@@ -188,3 +188,17 @@ Two operational consequences:
   worktree, a fixture repo, or an `mktemp` sandbox and then runs `run-all.sh` inherits this.
 - **When an acceptance says "not selected", check the path before the code.** The abort and the
   substantive answer are indistinguishable at the call site, and only one of them is about your work.
+
+A sharper form of the same trap, worth stating separately because the two cases differ in what
+they cost. In one, the path defect hid a working mechanism — unpleasant, and correctable the moment
+anyone looks. In the other it took an acceptance that was **guaranteed red today** and made it green,
+leaving the text of the check untouched: the falsifiable check we had just congratulated ourselves
+for writing quietly stopped being falsifiable. So:
+
+> A trap of this kind is dangerous not because it hides a defect, but because it removes the
+> check's ability to show one — and nothing in the check's wording changes when that happens.
+
+This is why the precheck belongs before the result and not beside it. An acceptance that cannot go
+red is indistinguishable, at every surface we read, from an acceptance that went green honestly.
+The only thing that separates them is having watched the probe answer non-zero on a case known to
+be alive.
