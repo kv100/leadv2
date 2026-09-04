@@ -120,6 +120,15 @@ readonly GLM_MODEL="${GLM_MODEL:-glm-5.3}"
 # output_tokens 130 at low vs 369 at max (probe 2026-09-02,
 # docs/handoff/GLM-EFFICIENCY-01/report.md). Empty = flag omitted = provider
 # default `max` (pre-lane behaviour, byte-identical spawn).
+# DEEPTHINK-MODE-IS-NOT-WIRED-01 (2026-09-04): there is deliberately NO
+# GLM_THINK flag here. At z.ai thinking intensity IS the effort vocabulary —
+# glm-5.3/5.3-flash always reason, `thinking.type` collapses into effort
+# (disabled -> low; enabled -> max only when no explicit effort is sent),
+# `budget_tokens` is dropped, and `max` is the documented "Deep Reasoning"
+# level. The dispatcher's think=deep decision therefore arrives as
+# GLM_EFFORT=max and rides the --effort flag above (probes 2026-09-04:
+# docs/handoff/DEEPTHINK-MODE-IS-NOT-WIRED-01/report.md). A second env/argv
+# knob would do nothing the provider honours — do not add one.
 readonly GLM_EFFORT="${GLM_EFFORT:-}"
 readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 readonly COSTLOG_DEV_LIB="${SELF%/*}/lib/leadv2-costlog-dev.sh"

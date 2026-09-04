@@ -5227,6 +5227,28 @@ _glm_effort_for_class() { # <raw task class> -> stdout: "<effort> <source>"
   esac
 }
 
+# DEEPTHINK-MODE-IS-NOT-WIRED-01 (founder order 2026-09-04): the deepthink
+# decision, by WORK KIND (class), never a name list. At z.ai there is no
+# second switch to wire — glm-5.3/5.3-flash always reason, `thinking.type`
+# collapses into the effort vocabulary (disabled->low, enabled->max when no
+# explicit effort), `budget_tokens` is dropped, and `max` IS the documented
+# "Deep Reasoning" level (probes + doc, 2026-09-04:
+# docs/handoff/DEEPTHINK-MODE-IS-NOT-WIRED-01/report.md). So `deep` rides the
+# SAME GLM_EFFORT variable to the runner (which already appends --effort max)
+# instead of minting a dead second flag. heavy|strategic = architecture /
+# safety / root-cause / heavy-diff review; trivial|light|bulk = mechanical,
+# docs; standard = routine dev. Unknown class -> off via fallback: never pay
+# deep quota on a class the admission classifier did not name.
+_glm_think_for_class() { # <raw task class> -> stdout: "<deep|off> <source>"
+  local _cls
+  _cls="$(printf '%s' "${1:-standard}" | tr '[:upper:]' '[:lower:]')"
+  case "${_cls}" in
+    heavy|strategic)             printf '%s %s' 'deep' 'class_map' ;;
+    trivial|light|bulk|standard) printf '%s %s' 'off'  'class_map' ;;
+    *)                           printf '%s %s' 'off'  'fallback' ;;
+  esac
+}
+
 _spawn_worker_body() {
   local arm="$1" mission="$2" sig8="$3" errf="$4"
   local out rc handle err
@@ -5317,12 +5339,25 @@ _spawn_worker_body() {
       # max, bulk -> low (mechanical). Review/verify roles would pay `high`
       # regardless of class — glm is in DEFAULT_REVIEW_EXCLUSIONS today, so
       # this row is contract-complete but currently unreachable.
-      local _glm_effort _glm_effort_source
+      local _glm_effort _glm_effort_source _glm_think _glm_think_source
       read -r _glm_effort _glm_effort_source <<<"$(_glm_effort_for_class "${DC_TASK_CLASS:-standard}")"
+      # DEEPTHINK-MODE-IS-NOT-WIRED-01: resolve the deepthink decision from
+      # the same raw class (see _glm_think_for_class). The think value is
+      # journaled on the effort_applied line next to effort= so a week from
+      # now the decision line itself proves deepthink travelled.
+      read -r _glm_think _glm_think_source <<<"$(_glm_think_for_class "${DC_TASK_CLASS:-standard}")"
       case "${LEADV2_WORKER_ROLE:-developer}" in
         review|verify|critic) _glm_effort=high; _glm_effort_source=role_override ;;
       esac
-      emit decision "effort_applied by=router arm=${arm} task=${sig8} effort=${_glm_effort} mechanism=flag source=${_glm_effort_source:-fallback} resolved=${RESOLVED_EFFORT:-unset}"
+      # think=deep pins effort=max AFTER the role override — a heavy-diff
+      # review must not be capped at high. Source becomes think_deep only
+      # when the pin actually changed the value; a heavy|strategic developer
+      # keeps source=class_map so the GLM-EFFICIENCY-01 suite's assertion
+      # (effort=max ... source=class_map) stays byte-identical.
+      if [[ "${_glm_think}" == "deep" && "${_glm_effort}" != "max" ]]; then
+        _glm_effort=max; _glm_effort_source=think_deep
+      fi
+      emit decision "effort_applied by=router arm=${arm} task=${sig8} effort=${_glm_effort} think=${_glm_think} think_source=${_glm_think_source:-class_map} mechanism=flag source=${_glm_effort_source:-fallback} resolved=${RESOLVED_EFFORT:-unset}"
       # FIX PASS 4: `9>&-` closes the lock fd for this call as defense-in-depth -- the
       # redesign already never holds the dispatch lock across spawn (spawn_worker runs
       # outside any lock this script itself opens), but a launcher spawns a DETACHED
