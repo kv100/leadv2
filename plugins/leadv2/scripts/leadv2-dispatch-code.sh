@@ -4163,13 +4163,29 @@ _phase_precondition_guard() {
   # values (0/warn/1) keep their exact pre-flip semantics + full scope.
   local scope="full"
   if [[ "${REQUIRE_PHASES_ENV_SET:-0}" != "1" ]]; then
+    # PHASE-GATE-DEFAULT-CLASS-ESCAPES-IT-01 (A): the class arriving here is not
+    # guaranteed canonical -- advance-arm reads it verbatim from the dispatch-
+    # ledger row (a live lowercase `task_class=heavy` row was measured
+    # 2026-09-04), and the exact-case match below routed every unrecognized
+    # spelling into warn: the permissive default. Canonicalize first (unknown
+    # -> Standard, lib/leadv2-lane-guard.sh). `product` -- classify_product_
+    # work's conservative_default -- never reaches this gate; it feeds the
+    # architect prepass and product-close, so the fix belongs here, not there.
+    cls="$(_lv2_class_canonical "${cls}")"
     case "$cls" in
       Standard|Heavy|Strategic)
         mode="1"
         scope="pre-build"
         ;;
-      *)
+      Light|Trivial)
         mode="warn"
+        ;;
+      *)
+        # Unreachable after canonicalization; kept fail-closed so a future
+        # canonicalizer regression can never silently reopen the permissive
+        # default this lane closed.
+        mode="1"
+        scope="pre-build"
         ;;
     esac
   fi
@@ -4211,6 +4227,21 @@ _phase_precondition_guard() {
 
   case "$assert_rc" in
     0)
+      # PHASE-GATE-DEFAULT-CLASS-ESCAPES-IT-01 (B): a pass left NO trace in any
+      # mode -- 31 of 77 live lanes in the 24h to 2026-09-04T17:00Z dispatched
+      # with zero phase_precondition journal lines (bootstrap admissions and
+      # satisfied passes were indistinguishable from a skipped gate; assert's
+      # own _emit event dies on leadv2-journal.sh's real argv contract). Every
+      # passage now journals; assert reports bootstrap admissions on stdout so
+      # the trace names the would-be-missing phases instead of a bare pass.
+      local _boot_csv=""
+      [[ "${assert_out}" == *admitted=bootstrap* ]] \
+        && _boot_csv="$(printf '%s' "${assert_out}" | sed -n 's/.*admitted=bootstrap would_be_missing=//p' | head -1)"
+      if [[ -n "${_boot_csv}" ]]; then
+        emit decision "phase_precondition_bootstrap task=${sig8} class=${cls} would_be_missing=${_boot_csv} mode=${mode} scope=${scope}"
+      else
+        emit decision "phase_precondition_pass task=${sig8} class=${cls} mode=${mode} scope=${scope}"
+      fi
       return 0
       ;;
     3)
