@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-phase8-closes-the-backlog-row.sh
+file=plugins/leadv2/scripts/leadv2-phase8-close.sh
+anchor=s#hits = \[it for it in items if isinstance(it, dict) and row_matches(it, founder)\]#&[:1]#
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: T6: rc=0 calls=1 logtail=<sweep-merged: 0 removed / 0 kept
+diff_hash=7fffa18b8527f0ce59be3d1df90fc82fac946b1b232e092fb856558d5d4d99f2
+lane_diff_hash=91a86319a978db5878fe0f33a5625034f91eb50080398d61545b6d8974ad19b1

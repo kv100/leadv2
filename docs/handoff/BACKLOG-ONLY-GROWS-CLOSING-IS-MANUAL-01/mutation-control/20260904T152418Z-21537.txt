@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-phase8-closes-the-backlog-row.sh
+file=plugins/leadv2/scripts/leadv2-phase8-close.sh
+anchor=s|if ! bash "${_p8c_row_bin}" "${_p8c_row_sid}"|if ! true|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: T1: rc=0 calls=0 line=<> logtail=<sweep-merged: 0 removed / 0 kept
+diff_hash=71ecc7c70a2b5ace69294889f45ae6c59f994f2d1462c39559b8bab93cb75ed7
+lane_diff_hash=91a86319a978db5878fe0f33a5625034f91eb50080398d61545b6d8974ad19b1
