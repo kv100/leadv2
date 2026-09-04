@@ -1,0 +1,11 @@
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -4272,7 +4272,7 @@
+       else
+         # mode 0 or warn: missing phases do not block
+         [[ "$mode" == "warn" ]] \
+-          && emit decision "phase_precondition_warn task=${sig8} class=${cls} missing=${missing_csv} mode=warn"
++          && emit decision "phase_precondition_nowarn task=${sig8} class=${cls} missing=${missing_csv} mode=warn"
+         return 0
+       fi
+       ;;

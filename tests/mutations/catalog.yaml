@@ -10,8 +10,12 @@
 #
 # Baseline: 3/3 killed on 2026-09-04 (artifacts under
 # docs/handoff/BACKLOG-ONLY-GROWS-CLOSING-IS-MANUAL-01/mutation-control/).
+# 2026-09-04 PHASE-GATE-DEFAULT-CLASS-ESCAPES-IT-01: +5 entries, 8/8 killed
+# (artifacts under docs/handoff/PHASE-GATE-DEFAULT-CLASS-ESCAPES-IT-01/
+# mutation-control/; the warn-trace control ran as a unified-diff patch —
+# macOS BSD sed degenerates its `${...}`-bearing anchor into an empty match).
 # The kill rate has no earlier value in this repo — this catalog is the first
-# — so "kill rate must not drop" starts at 3/3.
+# — so "kill rate must not drop" starts at 3/3, now 8/8.
 
 mutations:
   - id: phase8-backlog-row-call-removed
@@ -71,10 +75,19 @@ mutations:
     expected: killed
 
   - id: phase-gate-pass-leaves-a-trace
-    product_flow: "a satisfied pass journals phase_precondition_pass; a bootstrap admission journals phase_precondition_bootstrap with would_be_missing"
+    product_flow: "a satisfied pass journals phase_precondition_pass"
     file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
     anchor: |
       emit decision "phase_precondition_pass task=${sig8} class=${cls} mode=${mode} scope=${scope}"
     patch: |
       : # pass trace removed
+    expected: killed
+
+  - id: phase-gate-bootstrap-leaves-a-trace
+    product_flow: "a bootstrap admission journals phase_precondition_bootstrap with class and would_be_missing (the dispatch-96d97702 silent hole)"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    anchor: |
+      emit decision "phase_precondition_bootstrap task=${sig8} class=${cls} would_be_missing=${_boot_csv} mode=${mode} scope=${scope}"
+    patch: |
+      : # bootstrap trace removed
     expected: killed

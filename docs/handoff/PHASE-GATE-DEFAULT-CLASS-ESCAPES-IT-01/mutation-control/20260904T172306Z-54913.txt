@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-phase-gate-default-class.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s#emit decision "phase_precondition_bootstrap task=${sig8} class=${cls} would_be_missing=${_boot_csv} mode=${mode} scope=${scope}"#: bootstrap_trace_removed#
+baseline_rc=0
+mutated_rc=1
+red_line=  FAIL: T3: bootstrap trace with class+would_be_missing expected (log=)
+diff_hash=feed294610418304342f630527068e5ff893b553e55c6ad31f52b078f5aee7c0
+lane_diff_hash=8c827a7260f703dbfe84720dfdafa9b99e61281bd5580287f2b73a607d40b0e9

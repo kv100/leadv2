@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-phase-gate-default-class.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s#Light|Trivial)#LightTrivialDisabled)#
+baseline_rc=0
+mutated_rc=1
+red_line=  FAIL: T5: warn line with class+missing expected (log=phase_precondition_pass task=s5 class=Light mode=1 scope=pre-build )
+diff_hash=13e0991de86d649e7d34325dad1d2f9b3df60ea78ff379af5a4168e5d85fbf17
+lane_diff_hash=8c827a7260f703dbfe84720dfdafa9b99e61281bd5580287f2b73a607d40b0e9
