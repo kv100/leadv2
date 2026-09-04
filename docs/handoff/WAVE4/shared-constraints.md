@@ -75,3 +75,7 @@ the lying-green disease in its plugin-shaped form.
 
 Three Wave-4 lanes edit plugin scripts (PHASE-RECORD, BROAD-STATUS, MUTATION-CONTROL). All three
 owe this sentence.
+
+- **Ten consecutive runs, not one.** A suite that passes once is not green; flakiness is exactly
+  how a red main hides. Report the suite's exit codes for ten consecutive runs, and if any run
+  differs from the others, that disagreement IS the finding.
