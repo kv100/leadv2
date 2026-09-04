@@ -323,4 +323,34 @@ leadv2-lane-state.sh:plugins/leadv2/scripts/tests/test-leadv2-state-path.sh
   file changed this round; the resolvers are untouched in round 2).
 - Python: 0 files changed → `py_compile` not applicable.
 - Suite stability: 5/5 full-suite runs rc=0 (logs `/tmp/state-path-run-1..5.log`).
-- Changed-scope runner (`bash tests/run-all.sh --scope changed`): see verdict below.
+- Changed-scope runner (`bash tests/run-all.sh --scope changed`): **rc=1, red — and the red
+  is NOT this lane's change.** Verbatim tail:
+
+```
+[PASS] …/plugins/leadv2/scripts/tests/test-leadv2-state-path.sh
+  Failures (blocking):
+    - plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: 4 passed, 1 failed, scope=changed
+```
+
+  The lane's own suite passed 9/9 inside the runner, including NC-4 with
+  `mutated_rc=7`. The single blocking failure is the always-on shared wrapper
+  `run-core-offline.sh`: 13 nested FAILED labels, 11 allow-listed in
+  `tests/known-red-suites.txt`, 2 classified `[NOT-KNOWN-RED]` ("core:T14 worker
+  MCP (glm spawn role config)", "core:prepass resume invalidation
+  (LANE-OBSERVABILITY-02)").
+
+  Why this is machine state, not this diff (evidence, not argument):
+  - `grep -c 'test-leadv2-state-path' run-core-offline.sh` → **0**: the wrapper
+    never executes this lane's suite; the round-2 diff is that suite + this
+    report, nothing else (`git show --name-only f7f96fbf` + round-2 status).
+  - During the run, `ps` showed core-offline running from TWO other lanes'
+    worktrees concurrently (E2E-GATE-BROKE-TODAY-01, D6-REGISTRY-LANE-OWNERSHIP-01);
+    this run's "core-offline cross-run exclusive lock (SUITE-SPEED-01)" failure
+    printed `lock-probe acquired` — the cross-run interference signature.
+  - A clean-HEAD control (core-offline at f7f96fbf in a throwaway worktree —
+    the round-2 edits are uncommitted, so HEAD IS the clean baseline) was
+    attempted and **abandoned as un-informative under load**: it stalled 10+
+    minutes at `SHARD_RESULT idx=3` while competing with the two foreign
+    runners, and was killed deliberately (exit 144; worktree removed). Not
+    claiming numbers I did not get.
