@@ -112,5 +112,25 @@ out="$(run "$(quota_broken_glm 20 20)" 1 '{"kind":"code","size":"standard"}')"
 # must bench BOTH glm arms — assert neither is picked.
 if [[ "$out" != *'arm=glm '* && "$out" != *'arm=glm-flash '* && "$out" == *'util_glm=unknown_capped'* ]]; then pass 'broken glm probe (status!=ok) is fail-closed, never selected'; else fail "broken-glm-probe output=$out"; fi
 
+# (h) ARBITER-DECISION-LOGIC-CENSUS-01: the `active` flag on an anthropic
+# account names which credential the session resolved to, not that its probe
+# succeeded. A broken (status!='ok', all-null pct) active-flagged account
+# sitting next to a DIFFERENT, non-active account for the SAME account_label
+# that carries real, live pct must resolve to the real pct -- never the
+# optimistic pct=0 the old code produced by reading only the active-flagged
+# row's (null) fields.
+quota_broken_active_claude(){ python3 - "$1" "$2" "$3" <<'PY'
+import json,sys
+g,c,real=map(int,sys.argv[1:])
+print(json.dumps({'glm':{'status':'ok','five_hour':{'pct':g},'weekly':{'pct':g}},
+                   'codex':{'status':'ok','binding_window':'primary','windows':[{'kind':'primary','used_percent':c}]},
+                   'anthropic':{'status':'ok','accounts':[
+                     {'active':True,'account_label':'max_20x','status':'unknown'},
+                     {'active':False,'account_label':'max_20x','status':'ok','five_hour_pct':real,'seven_day_pct':real}]}}))
+PY
+}
+out="$(run "$(quota_broken_active_claude 10 10 72)" 0 '{"kind":"code","size":"standard","protected":true}')"
+if [[ "$out" == *'util_claude=72'* ]]; then pass 'broken-active claude account falls back to the real ok account, not pct=0'; else fail "broken-active-claude output=$out"; fi
+
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

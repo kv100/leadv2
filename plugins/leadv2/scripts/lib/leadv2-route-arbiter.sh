@@ -160,7 +160,31 @@ def util(provider):
         ws=x.get('windows') or []
         windows={(w.get('kind') or 'w%d'%i):w for i,w in enumerate(ws)}; pct_key='used_percent'
     else:
-        a=next((z for z in x.get('accounts',[]) if z.get('active')), (x.get('accounts') or [{}])[0])
+        # ARBITER-DECISION-LOGIC-CENSUS-01: the `active` flag names which
+        # account CREDENTIAL the session resolved to -- it is not proof that
+        # account's probe succeeded. Measured 2026-09-04: the active-flagged
+        # max_20x entry read http 401 (status=unknown, every pct null) while
+        # a DIFFERENT, non-active max_20x entry for the same account_label
+        # carried the real, freshly-probed pct. The old code took `a` from
+        # the active flag unconditionally, so a broken active credential fed
+        # nulls into every window below and this function returned the
+        # optimistic `empty` (pct=0.0) at line ~181 -- "claude is free" -- while
+        # a probed 72%/48% sat one field over, unread. Prefer the active
+        # account only when it actually reports ok; otherwise fall back to a
+        # DIFFERENT account with status=='ok' -- same account_label first (the
+        # true measurement for the account we believe we're using), then any
+        # ok account, before ever falling to the pessimistic unknown branch
+        # C3 already established for a fully-broken provider.
+        accounts=x.get('accounts') or [{}]
+        active=next((z for z in accounts if z.get('active')), None)
+        ok_accounts=[z for z in accounts if z.get('status')=='ok']
+        if active is not None and active.get('status')=='ok':
+            a=active
+        elif ok_accounts:
+            label=(active or {}).get('account_label')
+            a=next((z for z in ok_accounts if z.get('account_label')==label), ok_accounts[0])
+        else:
+            return dict(empty, pct=100.0, unknown=True)
         windows={'five_hour':(a.get('five_hour') or {'pct':a.get('five_hour_pct'),'reset_iso':a.get('five_hour_reset_iso')}),
                  'seven_day':(a.get('seven_day') or {'pct':a.get('seven_day_pct'),'reset_iso':a.get('seven_day_reset_iso')})}
         pct_key='pct'
