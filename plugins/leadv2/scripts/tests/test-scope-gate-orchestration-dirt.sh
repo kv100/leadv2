@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-dispatch-product-close.sh leadv2-lane-guard
 # test-scope-gate-orchestration-dirt.sh — SCOPE-GATE-ORCHESTRATION-DIRT-01.
 #
 # WHY THIS TEST EXISTS: pc_scope_diff refuses a lane as `unscoped_lane_work` when a

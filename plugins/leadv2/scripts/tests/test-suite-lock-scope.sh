@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: run-core-offline.sh
 # test-suite-lock-scope.sh — SUITE-LOCK-ORPHAN-FD-04
 #
 # Exercises the ACTUAL production lock section of run-core-offline.sh (never

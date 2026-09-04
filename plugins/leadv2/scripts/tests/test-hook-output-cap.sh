@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-one-copy-drift.sh leadv2-truth-card-inject.sh
 # tests/test-hook-output-cap.sh — HOOK-OUTPUT-CAP-PLUGIN-01: pins the
 # SessionStart output caps on leadv2-one-copy-drift.sh and
 # leadv2-truth-card-inject.sh. Every ordinary session start pays these two

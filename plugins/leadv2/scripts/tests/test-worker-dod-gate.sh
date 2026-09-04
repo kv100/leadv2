@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-dispatch-product-close.sh leadv2-dod-gate.sh leadv2-helpers.sh leadv2-lane-outcome.sh leadv2-mutation-control.sh leadv2-review-run.sh leadv2-worker-epilogue.sh
 # tests/test-worker-dod-gate.sh — WORKER-DOD-GATE-01.
 #
 # Exercises lib/leadv2-dod-gate.sh (checks a-e), leadv2-mutation-control.sh

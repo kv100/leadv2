@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# FABLE-THINK-TIER-01 R9: the unguarded-fallback behavioural proof (executes the workflow .js via
+# a Node harness, not a grep) lives in its own suite — map every workflow file it actually runs.
+# run-all-triggers: leadv2-audit.js leadv2-diverge.js leadv2-po-feedback-loop.js
 # FABLE-THINK-TIER-01 R9 — closes the "unguarded resilience-fallback" pattern that survived two
 # review rounds (leadv2-diverge.js:146 judge-opus-fallback, leadv2-po-feedback-loop.js:194
 # audit-opus-fallback): a fallback call that exists ONLY to survive a primary agent() failure was

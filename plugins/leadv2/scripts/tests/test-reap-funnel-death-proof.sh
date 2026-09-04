@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-dispatch-ledger.sh leadv2-lane-liveness.sh
 # tests/test-reap-funnel-death-proof.sh — D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF
 #
 # Drives the REAL `leadv2-dispatch-ledger.sh reap` (real subprocess, real git fixture

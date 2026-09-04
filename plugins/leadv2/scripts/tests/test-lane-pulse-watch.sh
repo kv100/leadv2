@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-dispatch-code.sh leadv2-lane-pulse-watch.sh
 # tests/test-lane-pulse-watch.sh — MON-PULSE-01 part 1: dispatcher-owned lane watch.
 #
 # Locks leadv2-lane-pulse-watch.sh (armed by leadv2-dispatch-code.sh at

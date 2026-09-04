@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: glm-coder.sh leadv2-dispatch-code.sh
 # tests/test-glm-flash-handle.sh — GLM-ARM-THROUGHPUT-01.
 #
 # Every glm-flash spawn used to end `spawn(glm-flash) handle= ... has no live

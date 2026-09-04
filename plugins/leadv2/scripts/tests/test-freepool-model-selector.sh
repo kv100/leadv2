@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: freepool-coder
 # Offline contract tests for FREEPOOL-MODEL-SELECTOR-01:
 #   - leadv2-freepool-model-select.sh (rank order, probe-fail advance, fail-open rc)
 #   - leadv2-freepool-gate.sh's stale-window TTL fix (FREEPOOL-GATE-STALE-WINDOW-01)

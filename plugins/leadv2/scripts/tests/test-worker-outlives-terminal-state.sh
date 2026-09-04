@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: claude-subsession.sh leadv2-dispatch-code.sh leadv2-dispatch-product-close.sh
 # WORKER-OUTLIVES-ITS-TERMINAL-STATE-01 regression harness.
 # Proves the continuation handle is normalized, the close gate waits for the
 # Sonnet finalizer, and a bounded timeout reaps both producer processes before

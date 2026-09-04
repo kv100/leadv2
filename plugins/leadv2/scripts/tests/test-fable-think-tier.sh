@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# FABLE-THINK-TIER-01: the think-tier contract (resolver default fable / opus
+# fallback, no hardcoded opus spawn pins, fable-ahead-of-opus review pool,
+# zero opus-4 literals) must re-run whenever any of its carriers changes.
+# R5: the remaining carriers this task's diff actually touches — the round-4
+# mapping missed these eight, so the contract suite would not re-run on them.
+# LEAD-IS-OPUS-THINK-IS-FABLE-01: the plugin-canonical main-model default now
+# carries its own axis (opus) — a change to it must re-run the split contract.
+# run-all-triggers: leadv2-ask.sh leadv2-cache-warm.sh leadv2-diagnose.js leadv2-dispatch-code.sh leadv2-diverge.js leadv2-fanout-classify.sh leadv2-fanout.sh leadv2-glm-policy-resolve.py leadv2-learn.js leadv2-llm-judge.sh leadv2-main-model.yaml leadv2-phase-record.sh leadv2-po-feedback-loop.js leadv2-repo-install.sh leadv2-review-run.sh leadv2-route-bandit.sh leadv2-router.sh leadv2-session-route.sh leadv2-think-model.sh model-capability.yaml
 # FABLE-THINK-TIER-01 (2026-09-01, founder order).
 #
 # THE CONTRACT THIS SUITE PINS: every role whose value is THINKING (not typing)

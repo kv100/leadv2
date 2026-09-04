@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: freepool-coder leadv2-worker-epilogue.sh
 # FREEPOOL-MUST-ACTUALLY-GET-WORK-01: exercise the real freepool supervisor
 # with a local stream-json worker that writes a declared file then consumes its
 # turn budget. A capped round must checkpoint that work into a commit before

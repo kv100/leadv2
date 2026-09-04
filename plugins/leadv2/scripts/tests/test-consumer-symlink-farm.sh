@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-admission-class.sh leadv2-dispatch-code.sh leadv2-dispatch-ledger.sh leadv2-dispatch-product-close.sh test-consumer-symlink-farm.sh
 # Consumer installs link individual scripts but not scripts/lib.  Exercise all
 # four lane-guard loaders through that topology, not through source-text grep.
 set -euo pipefail

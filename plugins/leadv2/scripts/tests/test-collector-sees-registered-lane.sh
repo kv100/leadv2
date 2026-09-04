@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-status-collector.sh
 # A founder board must read registered lanes from every control-plane repo,
 # even when the caller's ambient environment disables the optional snapshot
 # extension. This uses the real collector and snapshot, with a throwaway

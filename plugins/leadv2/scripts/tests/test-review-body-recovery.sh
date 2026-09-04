@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-review-run.sh
 # tests/test-review-body-recovery.sh — REVIEW-RUN-LOSES-VERDICTS-01.
 #
 # Two live-found defects in leadv2-review-run.sh:

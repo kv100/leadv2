@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# GUARD-CENSUS-IS-WRONG-01 round 2: the dispatcher hook had NO suite at all —
+# every verdict-kind/rotation line was untested until this mapping.
+# run-all-triggers: leadv2-bash-pre-dispatch.sh leadv2-guard-census.sh leadv2-guard-verdict.sh
 # test-bash-pre-dispatch-verdict.sh — GUARD-CENSUS-IS-WRONG-01 round 2
 #
 # Runs the REAL plugins/leadv2/hooks/leadv2-bash-pre-dispatch.sh (copied into

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-phase-record
 # test-phase-record.sh — record/assert/show round-trip for leadv2-phase-record.sh
 # PHASES-ARE-THE-ONLY-PATH-01 §11 test suite 1.
 set -uo pipefail

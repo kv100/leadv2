@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# PHASE-GATE-IS-INVERTED-01: the inversion regression lives in its own suite
+# and is exercised THROUGH the dispatcher, so both changed stems map to it.
+# run-all-triggers: leadv2-dispatch-code leadv2-phase-record
 # test-phase-gate-inversion.sh — PHASE-GATE-IS-INVERTED-01.
 #
 # Real dispatch-path regression for the inverted phase gate. The guard must be

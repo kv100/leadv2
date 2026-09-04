@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: codex-task.sh leadv2-dispatch-code.sh leadv2-pulse-beat.sh leadv2-routing.yaml leadv2-single-lead-beat-loop.sh
 # tests/test-plugin-papercuts.sh — PLUGIN-PAPERCUTS-01 (2026-08-31, four
 # plugin-level defects, each hitting every adopted repo).
 #

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-guard-census.sh leadv2-guard-verdict.sh
 # test-guard-census.sh — GUARDS-MUST-PROVE-THEY-FIRE-01
 #
 # Locks the guard census against fixture guards + a fixture hooks.json —

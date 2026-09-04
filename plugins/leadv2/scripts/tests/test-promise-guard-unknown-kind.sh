@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-promise-guard.sh
 # test-promise-guard-unknown-kind.sh — PROMISE-GUARD-UNKNOWN-KIND-01.
 #
 # WHY THIS TEST EXISTS: on 2026-09-02 the lead ended a turn with «так что сейчас

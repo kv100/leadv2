@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-quota-window-history.sh
 # tests/test-leadv2-ratelimit-probe.sh — QUOTA-BINDING-WINDOW-IS-NEVER-RECORDED-01
 #
 # Guards the rate_limit_history write path added to leadv2-ratelimit-probe.sh

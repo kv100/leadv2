@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: run-all.sh
 # FABLE-THINK-TIER-01 R6 — runtime proof that tests/run-all.sh --scope changed
 # selects the think-tier contract suite when a NON-.sh carrier changes.
 #
@@ -35,12 +37,15 @@ mkdir -p "$SCRATCH/tests" \
          "$SCRATCH/plugins/leadv2/scripts/tests" \
          "$SCRATCH/plugins/leadv2/workflows"
 cp "$RUN_ALL" "$SCRATCH/tests/run-all.sh"
-# the mapped target suite: a cheap stub that passes
-printf '#!/usr/bin/env bash\nexit 0\n' > "$SCRATCH/plugins/leadv2/scripts/tests/test-fable-think-tier.sh"
+# the mapped target suite: a cheap stub that passes. Since
+# SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01 the map rows live as per-suite
+# '# run-all-triggers:' declarations, so the scratch stub declares the
+# carriers itself (the EXTRA_SUITE_MAP fallback is empty).
+printf '#!/usr/bin/env bash\n# run-all-triggers: model-capability.yaml leadv2-glm-policy-resolve.py leadv2-diverge.js\nexit 0\n' > "$SCRATCH/plugins/leadv2/scripts/tests/test-fable-think-tier.sh"
 chmod +x "$SCRATCH/plugins/leadv2/scripts/tests/test-fable-think-tier.sh"
 # R7: run-all.sh's OWN carrier-map row (tests/test-run-all-carrier-map.sh) —
-# a cheap stub that passes
-printf '#!/usr/bin/env bash\nexit 0\n' > "$SCRATCH/tests/test-run-all-carrier-map.sh"
+# a cheap stub that passes, self-declaring its run-all.sh trigger
+printf '#!/usr/bin/env bash\n# run-all-triggers: run-all.sh\nexit 0\n' > "$SCRATCH/tests/test-run-all-carrier-map.sh"
 chmod +x "$SCRATCH/tests/test-run-all-carrier-map.sh"
 # tracked carriers (must be committed, then dirtied, to appear in diff HEAD)
 printf 'fable:\n  model_id: claude-fable-5-1\n' > "$SCRATCH/plugins/leadv2/config/model-capability.yaml"

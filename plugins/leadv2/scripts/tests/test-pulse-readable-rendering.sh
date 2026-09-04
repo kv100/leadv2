@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-broad-status.sh
 # tests/test-pulse-readable-rendering.sh — PULSE-READABLE-01.
 #
 # Reproduces the founder-rejected 2026-08-21 beat shape directly: a lane

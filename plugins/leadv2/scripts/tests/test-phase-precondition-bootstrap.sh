@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-dispatch-code leadv2-phase-record
 # test-phase-precondition-bootstrap.sh — DISPATCH-PHASE-DEADLOCK-01.
 #
 # Covers the deadlock where every brand-new Standard/Heavy lane was refused

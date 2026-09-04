@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01: the arbiter's wait-vs-switch
+# rule (near-reset over-ceiling providers stay in the chain instead of being
+# forced to switch) lives entirely inside leadv2-route-arbiter.sh -- map it
+# here since the stem-convention candidate would be test-leadv2-route-
+# arbiter.sh, not this suite's actual name.
+# run-all-triggers: leadv2-route-arbiter
 # test-quota-reset-arbiter.sh — CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01
 #
 # Proves the route arbiter (lib/leadv2-route-arbiter.sh) reads BOTH remaining

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-broad-status.sh
 # tests/test-single-lead-beat.sh — PULSE-IN-SINGLE-LEAD-01
 #
 # Verifies the single-lead beat driver (leadv2-pulse-beat.sh) and the hook

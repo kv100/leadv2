@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-active-registry.sh leadv2-dispatch-code.sh
 # PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01 round 4, root cause #2 — an async arm
 # (glm/glm-flash/kimi/codex/freepool) confirms spawn and this dispatcher
 # process exits, but the launcher is NOT a local fork of this process: the

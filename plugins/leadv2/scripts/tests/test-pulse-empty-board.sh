@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-broad-status.sh
 # tests/test-pulse-empty-board.sh — PULSE-EMPTY-BOARD-01.
 #
 # The founder went 60+ minutes with no signal while the board sat at zero

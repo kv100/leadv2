@@ -1,4 +1,6 @@
 #!/bin/bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: codex-task.sh
 # test-codex-longrun.sh — CODEX-DIES-MID-TEST-01
 #
 # A codex worker whose child runs a long test dies silently on this host

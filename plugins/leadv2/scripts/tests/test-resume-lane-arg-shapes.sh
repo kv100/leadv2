@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-dispatch-code.sh
 # RESUME-LANE-ACCEPTS-PATH-01 — --resume-lane placement resolver test.
 #
 # Five cases (fixture worktrees only; stub GLM/journal/liveness/quota — never a

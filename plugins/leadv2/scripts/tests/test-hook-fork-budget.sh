@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: hooks.json leadv2-hook-fork-budget.sh
 # test-hook-fork-budget.sh — FORK-STORM-KILLS-HOOKS-01.
 #
 # Grades the hooks.json cost + fail-open contract and the fork-budget command:

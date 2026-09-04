@@ -13,7 +13,10 @@
 # exit 2: bad usage
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# zsh-tolerant boot (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01): zsh has no
+# BASH_SOURCE; under `zsh tests/run-all.sh` $0 is the script path, same as a
+# direct bash execution — fall through without tripping set -u.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 ROOT="$(cd "${HERE}/.." && pwd)"
 
 # C2 (GATE-WRONG-ROOT-FALSE-DEAD-01): root-escape guard. If ROOT does not
@@ -96,7 +99,7 @@ add_suite() { # <path>
     *) echo "run-all: SKIP out_of_tree ${real}" >&2; return 0 ;;
   esac
   local existing
-  for existing in "${SUITES[@]:-}"; do
+  for existing in ${SUITES[@]+"${SUITES[@]}"}; do
     [[ "$existing" == "$real" ]] && return 0
   done
   SUITES+=("$real")
@@ -126,263 +129,89 @@ add_suite "${ROOT}/tests/test-status-surface-bash32.sh"
 add_suite "${ROOT}/tests/test-status-surface-single-lead.sh"
 add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 
-# MON-PULSE-01: EXTRA_SUITE_MAP — "<changed-stem>:<suite>" rows, one per line.
-# A changed plugin script whose behavioural lock lives in a DIFFERENTLY-NAMED
-# suite (the dispatch-code arming seam is proven by the pulse-watch suites,
-# not by any test-dispatch-code.sh) is mapped here so --scope changed still
-# runs its suite instead of silently dropping it.
-EXTRA_SUITE_MAP="glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-lock-per-lane.sh
-glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
-glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-effort-wiring.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-glm-effort-wiring.sh
-leadv2-phase8-assert.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
-leadv2-hook-session-kind.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
-leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
-leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-resume-lane-arg-shapes.sh
-leadv2-tasks-lib.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
-leadv2-active-registry.sh:plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-worker-outlives-terminal-state.sh
-leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-worker-outlives-terminal-state.sh
-claude-subsession.sh:plugins/leadv2/scripts/tests/test-worker-outlives-terminal-state.sh
-freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-selector.sh
-leadv2-backlog-pump:plugins/leadv2/scripts/tests/test-backlog-pump.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-phase-precondition.sh
-leadv2-gate1-prompt:plugins/leadv2/scripts/tests/test-gate1-discipline.sh
-leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-record.sh
-leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-precondition.sh
-leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-precondition-bootstrap.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-phase-precondition-bootstrap.sh
-# PHASE-GATE-IS-INVERTED-01: the inversion regression lives in its own suite
-# and is exercised THROUGH the dispatcher, so both changed stems map to it.
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-phase-gate-inversion.sh
-leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-gate-inversion.sh
-leadv2-admission-class:plugins/leadv2/scripts/tests/test-admission-class.sh
-leadv2-admission-class:plugins/leadv2/scripts/tests/test-admission-safety-pin.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-admission-safety-pin.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-brain-class-live.sh
-leadv2-brain-record:plugins/leadv2/scripts/tests/test-brain-class-live.sh
-leadv2-admission-class:plugins/leadv2/scripts/tests/test-brain-class-live.sh
-leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-route-arbiter-symlink-install.sh
-# CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01: the arbiter's wait-vs-switch
-# rule (near-reset over-ceiling providers stay in the chain instead of being
-# forced to switch) lives entirely inside leadv2-route-arbiter.sh -- map it
-# here since the stem-convention candidate would be test-leadv2-route-
-# arbiter.sh, not this suite's actual name.
-leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-quota-reset-arbiter.sh
-codex-task.sh:plugins/leadv2/scripts/tests/test-codex-longrun.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
-leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-freepool-gets-work.sh
-leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-freepool-gets-work.sh
-freepool-coder:plugins/leadv2/scripts/tests/test-freepool-turncap-checkpoint.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-model-select-telemetry.sh
-leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
-leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
-leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
-leadv2-pulse-beat.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
-leadv2-routing.yaml:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
-codex-task.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-row-identity.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-lanes-blind.sh
-leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-renderer-truth.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-duty.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-readable-rendering.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-empty-board.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-single-lead-beat.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lib-source-guarded.sh
-leadv2-sleep.sh:plugins/leadv2/scripts/tests/test-no-orphan-sleep.sh
-leadv2-hook-fork-budget.sh:plugins/leadv2/scripts/tests/test-hook-fork-budget.sh
-hooks.json:plugins/leadv2/scripts/tests/test-hook-fork-budget.sh
-leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-action-binding.sh
-leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh
-leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-classified-block.sh
-leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-unknown-kind.sh
-leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh
-leadv2-guard-census.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
-leadv2-guard-verdict.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
-# GUARD-CENSUS-IS-WRONG-01 round 2: the dispatcher hook had NO suite at all —
-# every verdict-kind/rotation line was untested until this mapping.
-leadv2-bash-pre-dispatch.sh:plugins/leadv2/scripts/tests/test-bash-pre-dispatch-verdict.sh
-leadv2-guard-census.sh:plugins/leadv2/scripts/tests/test-bash-pre-dispatch-verdict.sh
-leadv2-guard-verdict.sh:plugins/leadv2/scripts/tests/test-bash-pre-dispatch-verdict.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
-leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
-leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
-freepool-coder:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
-leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-adoption-gate-passable.sh
-leadv2-freepool-model-select:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
-freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
-freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
-freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-gets-work.sh
-freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-foreign-lanes.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-status-repo-scoped.sh
-leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-collector-sees-registered-lane.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-mission-writeset.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
-leadv2-mission-writeset:plugins/leadv2/scripts/tests/test-mission-writeset.sh
-# FABLE-THINK-TIER-01: the think-tier contract (resolver default fable / opus
-# fallback, no hardcoded opus spawn pins, fable-ahead-of-opus review pool,
-# zero opus-4 literals) must re-run whenever any of its carriers changes.
-leadv2-think-model.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-router.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-glm-policy-resolve.py:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-cache-warm.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-model-capability.yaml:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-# R5: the remaining carriers this task's diff actually touches — the round-4
-# mapping missed these eight, so the contract suite would not re-run on them.
-leadv2-session-route.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-route-bandit.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-ask.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-fanout.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-fanout-classify.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-# LEAD-IS-OPUS-THINK-IS-FABLE-01: the plugin-canonical main-model default now
-# carries its own axis (opus) — a change to it must re-run the split contract.
-leadv2-main-model.yaml:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-phase-record.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-llm-judge.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-diverge.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-learn.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-diagnose.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-po-feedback-loop.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-# FABLE-THINK-TIER-01 R9: the unguarded-fallback behavioural proof (executes the workflow .js via
-# a Node harness, not a grep) lives in its own suite — map every workflow file it actually runs.
-leadv2-diverge.js:plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh
-leadv2-po-feedback-loop.js:plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh
-leadv2-audit.js:plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh
-leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
-leadv2-one-copy-drift.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
-leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
-leadv2-dispatch-ledger:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
-leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
-leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-close-chain.sh
-leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
-leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh
-leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
-leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lane-containment.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-plan-in-lane.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lane-placement-pin.sh
-leadv2-lane-guard:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
-leadv2-lane-guard:plugins/leadv2/scripts/tests/test-lane-containment.sh
-leadv2-lane-guard:plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh
-leadv2-lane-guard:plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
-leadv2-lane-guard:plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
-leadv2-lane-guard:plugins/leadv2/scripts/tests/test-t13-slice1.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-class-floor-survives-resume.sh
-leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
-leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
-leadv2-admission-class.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
-test-consumer-symlink-farm.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
-leadv2-status-surface.sh:plugins/leadv2/scripts/tests/test-status-surface.sh
-leadv2-lane-status-line.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh
-leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh
-leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-gate-no-origin.sh
-gitignore:plugins/leadv2/scripts/tests/test-handoff-artifacts-tracked.sh
-gitignore:plugins/leadv2/scripts/tests/test-handoff-docs-not-leaked.sh
-# HANDOFF-DOCS-INVISIBLE-IN-LANES-01 (second cause): pick_base() base-ref
-# selection lives in leadv2-lane-worktree.sh but the suite proving it is
-# named for the behaviour (base-pick), not the carrier — self-select by
-# convention (test-leadv2-lane-worktree.sh) would never match it.
-leadv2-lane-worktree:plugins/leadv2/scripts/tests/test-lane-worktree-base-pick.sh
-leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-review-body-recovery.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-arm-admission.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-admission.sh
-leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-admission.sh
-leadv2-control-prover.sh:plugins/leadv2/scripts/tests/test-control-prover.sh
-leadv2-control-prover:plugins/leadv2/scripts/tests/test-control-prover.sh
-leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-control-prover.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-beat-stamp-agreement.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-effort-routing.sh
-leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-effort-routing.sh
-codex-task.sh:plugins/leadv2/scripts/tests/test-codex-broker-staleness.sh
-codex-guard.sh:plugins/leadv2/scripts/tests/test-codex-broker-staleness.sh
-leadv2-notify-lead:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
-leadv2-inbox:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
-leadv2-ask:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
-ask-lead:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
-leadv2-broad-status:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-complexity-routing.sh
-leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-complexity-routing.sh
-leadv2-router-v2:plugins/leadv2/scripts/tests/test-complexity-routing.sh
-leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-lane-finished-state.sh
-leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-fork-storm-watcher-liveness.sh
-leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh
-leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh
-leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-fork-storm-watcher-liveness.sh
-leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-lane-finished-state.sh
-leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh
-leadv2-suite-falsifiable:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh
-run-core-offline.sh:plugins/leadv2/scripts/tests/test-suite-lock-scope.sh
-leadv2-lane-watch-v2.sh:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
-leadv2-lane-watch-v2:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
-freepool-coder:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
-kimi-coder:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
-codex-task.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
-leadv2-codex-planner.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
-leadv2-worker-mcp.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
-leadv2-status-cache.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
-leadv2-spawn-rate.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
-leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
-leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
-leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
-leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
-leadv2-cache-truth.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
-# CACHE-TRUTH-01 R4: the coder arms' stream files are the tool's INPUTS — a
-# change to an arm runner can change the stream shape the TSV grades, so each
-# arm stem maps to the cache-truth suite too (R3 review finding 2: only the
-# tool stem was mapped; --scope changed silently dropped the suite for arm
-# edits).
-glm-coder.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
-freepool-coder.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
-kimi-coder.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
-claude-subsession.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
-# LEADV2-HOOK-CACHE-DEPLOY-01: the cache-sync script's behavioural lock is a
-# differently-named suite (no test-leadv2-plugin-cache-sync stem match).
-leadv2-plugin-cache-sync.sh:plugins/leadv2/scripts/tests/test-plugin-cache-sync.sh
-leadv2-merge-queue.sh:plugins/leadv2/scripts/tests/test-merge-queue-dead-head.sh
-leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
-leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-freepool-turncap-checkpoint.sh
-glm-coder.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
-run-all.sh:tests/test-run-all-carrier-map.sh
-glm-coder.sh:plugins/leadv2/scripts/tests/test-lane-outcome.sh
-leadv2-dod-gate.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
-leadv2-mutation-control.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
-leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
-leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
-leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
-leadv2-helpers.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
-leadv2-lane-outcome.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
-leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
-leadv2-phase8-e2e-gate.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
-leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-repo-install-tracked-settings.sh
-leadv2-quota-window-history.sh:plugins/leadv2/scripts/tests/test-leadv2-ratelimit-probe.sh
-leadv2-lane-state.sh:plugins/leadv2/scripts/tests/test-liveness-tristate-01.sh
-leadv2-lane-heartbeat.sh:plugins/leadv2/scripts/tests/test-liveness-tristate-01.sh
-leadv2-watch-lifecycle.sh:plugins/leadv2/scripts/tests/test-liveness-tristate-01.sh
-# LANE-MERGE-SILENTLY-REVERTS-MAIN-01: the merge-safety-gate carrier stem
-# self-selects its own suite by convention; these two rows cover the wiring
-# points (T11 merge in dispatch-product-close.sh, the ff-only merge in
-# deploy-merge.sh) so a change to either caller re-runs the gate's suite too.
-leadv2-lane-salvage.sh:plugins/leadv2/scripts/tests/test-lane-salvage.sh
-leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-leadv2-merge-safety-gate.sh
-leadv2-deploy-merge.sh:plugins/leadv2/scripts/tests/test-leadv2-merge-safety-gate.sh"
+# MON-PULSE-01 (superseded 2026-09-04, SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01):
+# this used to be a ~220-row literal map of "<changed-stem>:<suite>" rows, and
+# every lane adding a suite had to edit that one block in this one file — with
+# three sessions working, the block was a queue. The rows were migrated to
+# per-suite self-registration: each suite declares its own selection triggers
+# in its own file with a header line
+#   # run-all-triggers: <stem> [<stem>...]
+# and scan_suite_triggers() below discovers them by walking the four suite
+# directories, so adding a suite edits only that suite's own file — never
+# this one. A trigger matches a changed file's stem (basename minus
+# extension) or its full filename — the same key rule the map always applied
+# (key == stem or key == stem.sh). This variable remains a SUPPORTED
+# FALLBACK: rows added here still work, and a row whose target suite file
+# does not exist on disk MUST live here, because a self-declaration can only
+# be written into a file that exists.
+EXTRA_SUITE_MAP=""
+
+# --- self-registration discovery (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01) ----
+# A declaration line is exactly "# run-all-triggers:" followed by a
+# whitespace/comma-separated list of triggers; each trigger matches
+# [A-Za-z0-9._-]+. A declaration that cannot be parsed (empty list, invalid
+# character) is a FATAL error naming the file — the suite is never silently
+# unselected. Runs on EVERY invocation so a typo goes red at authoring time,
+# not at review time.
+DISCOVERED_SUITE_MAP=""
+TRIGGER_ERRORS=""
+
+parse_suite_triggers() { # <suite-relpath> <declaration lines>
+  local _rel="$1" _line _pfx _spec _toks _tok _n
+  _pfx='# run-all-triggers:'
+  while IFS= read -r _line; do
+    [[ -n "${_line}" ]] || continue
+    _spec="${_line#"${_pfx}"}"
+    _n=0
+    _toks="$(printf '%s' "${_spec}" | tr ',' ' ' | tr -s '[:space:]' '\n')"
+    while IFS= read -r _tok; do
+      [[ -n "${_tok}" ]] || continue
+      case "${_tok}" in
+        *[!A-Za-z0-9._-]*)
+          TRIGGER_ERRORS="${TRIGGER_ERRORS}${_rel}: invalid trigger '${_tok}' (allowed [A-Za-z0-9._-])
+" ;;
+        *)
+          _n=$((_n + 1))
+          DISCOVERED_SUITE_MAP="${DISCOVERED_SUITE_MAP}${_tok}:${_rel}
+" ;;
+      esac
+    done <<< "${_toks}"
+    if [[ ${_n} -eq 0 ]]; then
+      TRIGGER_ERRORS="${TRIGGER_ERRORS}${_rel}: declaration with no triggers
+"
+    fi
+  done <<< "$2"
+}
+
+scan_suite_triggers() {
+  local _dir _file _hits
+  for _dir in "${ROOT}/plugins/leadv2/scripts/tests" \
+              "${ROOT}/.claude/scripts/tests" \
+              "${ROOT}/plugins/leadv2/tests" \
+              "${ROOT}/tests"; do
+    [[ -d "${_dir}" ]] || continue
+    while IFS= read -r _file; do
+      [[ -n "${_file}" ]] || continue
+      _hits="$(grep -h '^# run-all-triggers:' "${_file}" 2>/dev/null || true)"
+      [[ -n "${_hits}" ]] || continue
+      parse_suite_triggers "${_file#"${ROOT}/"}" "${_hits}"
+    done < <(find "${_dir}" -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort)
+  done
+  if [[ -n "${TRIGGER_ERRORS}" ]]; then
+    printf '%s' "${TRIGGER_ERRORS}" >&2
+    echo "run-all: FATAL bad_trigger_decl — a malformed '# run-all-triggers:' declaration is an error, never a silently unselected suite; fix the suite file(s) listed above" >&2
+    exit 2
+  fi
+}
+
+scan_suite_triggers
+ALL_SUITE_MAP="${EXTRA_SUITE_MAP}${DISCOVERED_SUITE_MAP}"
+
+# Human/CI seam: print the discovered stem->suite rows and exit (no suites run).
+if [[ "${LEADV2_RUN_ALL_LIST_TRIGGERS:-0}" == "1" ]]; then
+  printf '%s' "${DISCOVERED_SUITE_MAP}"
+  exit 0
+fi
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -479,7 +308,7 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
           key="${row%%:*}"
           [[ "$key" == "${stem}" || "$key" == "${stem}.sh" ]] || continue
           add_suite "${ROOT}/${row#*:}"
-        done <<< "${EXTRA_SUITE_MAP}"
+        done <<< "${ALL_SUITE_MAP}"
         continue
       fi
       # PROMISE-GUARD-BIND-01: hooks/*.sh changes (e.g. leadv2-promise-guard.sh)
@@ -565,7 +394,7 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         key="${row%%:*}"
         [[ "$key" == "${stem}" || "$key" == "${stem}.sh" ]] || continue
         add_suite "${ROOT}/${row#*:}"
-      done <<< "${EXTRA_SUITE_MAP}"
+      done <<< "${ALL_SUITE_MAP}"
     done <<< "${changed}"
   fi
 fi
@@ -574,12 +403,12 @@ fi
 # that --scope changed will hand its suites to CI without starting the always-
 # on core runner on a shared machine. Normal CI never sets this seam.
 if [[ "${LEADV2_RUN_ALL_SELECT_ONLY:-0}" == "1" ]]; then
-  for suite in "${SUITES[@]:-}"; do printf '[SELECT] %s\n' "${suite}"; done
+  for suite in ${SUITES[@]+"${SUITES[@]}"}; do printf '[SELECT] %s\n' "${suite}"; done
   printf 'run-all: %s selected, scope=%s, select_only=1\n' "${#SUITES[@]}" "${SCOPE}"
   exit 0
 fi
 
-for suite in "${SUITES[@]:-}"; do
+for suite in ${SUITES[@]+"${SUITES[@]}"}; do
   printf '[RUN] %s\n' "${suite}"
   suite_log=""
   if [[ "${suite}" == "${ROOT}/${CORE_OFFLINE_REL}" || "${suite}" == "${ROOT}/.claude/scripts/tests/run-core-offline.sh" ]]; then

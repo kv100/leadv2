@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# LANE-MERGE-SILENTLY-REVERTS-MAIN-01: the merge-safety-gate carrier stem
+# self-selects its own suite by convention; these two rows cover the wiring
+# points (T11 merge in dispatch-product-close.sh, the ff-only merge in
+# deploy-merge.sh) so a change to either caller re-runs the gate's suite too.
+# run-all-triggers: leadv2-lane-salvage.sh
 # test-lane-salvage.sh — LANE-SALVAGE-TOOL-01
 #
 # Hermetic git-sandbox fixtures for leadv2-lane-salvage.sh. Every case is a
