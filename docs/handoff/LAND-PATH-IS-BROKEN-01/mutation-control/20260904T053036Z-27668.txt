@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-leadv2-land.sh
+file=plugins/leadv2/scripts/leadv2-land.sh
+anchor=346s/-eq 1/-eq 9/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL - f: merge-blocker.flag written
+diff_hash=eeffab9bbc8dfd428477a4d7f1767cac9e045ccc5333a4a6675d6875c06e1533
+lane_diff_hash=99f4ea618985b5b41242a9a3fd531ba9884b56682e38a59ba75e8bdda82d12f5
