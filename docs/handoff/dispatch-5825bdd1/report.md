@@ -94,17 +94,17 @@ solo runs) — deterministic.
 Per lead addendum §3: mutation inside `_emit_ready_line`'s body so `at=`
 returns to `$BEAT_AT`; the suite goes red on the T1 staleness assertion
 specifically (stale=1 still present, but `at=` is the beat clock again —
-the original defect shape). Artifact
-`mutation-control/20260904T192509Z-59329.txt`:
+the original defect shape). The committed artifact under
+`mutation-control/` (leadv2-mutation-control.sh output; diff_hash and
+lane_diff_hash live ONLY there — the lane hash binds to committed HEAD and
+cannot be embedded here) carries:
 
     suite=plugins/leadv2/scripts/tests/test-broad-status-stale-file.sh
     file=plugins/leadv2/scripts/leadv2-broad-status.sh
     anchor=s/"\$(_now_iso)" "\$at_iso"/"$(_now_iso)" "$BEAT_AT"/
     baseline_rc=0
     mutated_rc=1
-    red_line=[TEST] FAIL: T1: stale labeling wrong: ready=[2026-09-04T19:25:05Z [SUPERVISE-URGENT] BROAD_STATUS_READY at=2026-08-19T09:00:00Z path=... rows=0 dispatched=2 stale=1] expected_at=[2026-09-03T18:25:04Z] beat_at=[2026-08-19T09:00:00Z]
-    diff_hash=f66e812d638aa501de4e463a6f7674daabe027f072bc1ed8850079e557055794
-    lane_diff_hash=7fedf70cd32c6491f518a9c6daa3c4cc5410817dd57c06164c48d0d5a4d924d2
+    red_line=[TEST] FAIL: T1: stale labeling wrong: ready=[... BROAD_STATUS_READY at=2026-08-19T09:00:00Z ... stale=1] expected_at=[2026-09-03T18:27:32Z] beat_at=[2026-08-19T09:00:00Z]
 
 Addendum §3's second control (write guarded, `mv` fails ->
 BROAD_STATUS_FAILED fires, READY does not) is suite case T3, green.
