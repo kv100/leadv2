@@ -238,7 +238,14 @@ _fanout_register_session "WSO-RE2" Standard "null" "reserving" "true" "true" \
   "dispatch-code" "" "" "" "" "" "" "" "" "" "task_row_undeclared" >/dev/null 2>&1
 sleep 2
 # t2: dispatch re-registers; pid=None -> remove+append; nothing to carry.
+# The candidate follows IMMEDIATELY: under the pre-fix clock (started_at,
+# reset by this recreation) the fresh window blanket-refuses it; under the
+# fix (first_seen_at, t0) the window has already expired. Any slow step
+# between recreate and candidate would expire the 1s window even pre-fix
+# and dilute the discriminator (measured: a yaml row-dump here is enough).
 leadv2_active_register "WSO-RE2" Standard "$root" wt false "" "" "" "" >/dev/null 2>&1
+leadv2_active_register "WSO-CAND" Standard "$root" wt-cand false "" "" "cand/b.txt" 2>/dev/null >/dev/null
+echo "cand_rc=$?"
 python3 - "$root/docs/leadv2/active.yaml" <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1])) or {}
@@ -246,10 +253,6 @@ row = next((s for s in d["sessions"] if s["task_id"] == "WSO-RE2"), {})
 print("still_writeless=%s" % (row.get("writes") is None))
 print("reason_carried=%s" % row.get("writes_reason"))
 PY
-# The clock is measured from FIRST sight: window already expired, so the
-# candidate is judged D7-unknown (warn -> admit, rc=0), never pending.
-leadv2_active_register "WSO-CAND" Standard "$root" wt-cand false "" "" "cand/b.txt" 2>/dev/null >/dev/null
-echo "cand_rc=$?"
 EOF
 )" || true
 if printf '%s' "${out3b}" | grep -q 'still_writeless=True' \
