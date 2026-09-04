@@ -236,4 +236,5 @@ CI block above, and run-all.sh itself is under the §8a lock.
 - `cf1f5be6` — resolver lib + CLI + suite (C1–C11) + recovery-context adoption
 - `a7d88f30` — C12 recovery-context coverage
 - `d267a54c` — worktree-path double-slash squeeze
-- (this report commit follows)
+- `2cab56bb` — this report
+- (final verification commit follows: post-resume changed-scope run, see §Falsification)
