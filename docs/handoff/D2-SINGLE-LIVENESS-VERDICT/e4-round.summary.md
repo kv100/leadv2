@@ -75,7 +75,6 @@ lane's worker). It is out of this round's scope and must not be closed by it.
 **Accept this lane on fixture evidence plus a biting semantic control, and do not read the unchanged
 live verdict as a failure of the fix.** The live check becomes discriminating the moment M2 lands, or
 as soon as any live lane writes its first `*.full.md`.
-# bash-guard: allow
 
 ---
 
