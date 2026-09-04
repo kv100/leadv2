@@ -11,7 +11,7 @@
 # run_dir by hand plus a throwaway local git repo. Never touches prod run
 # dirs. Self-selects via tests/run-all.sh's "a changed test suite selects
 # itself" rule (matches plugins/leadv2/scripts/tests/test-*.sh).
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLASSIFIER="${SCRIPT_DIR}/../leadv2-lane-outcome.sh"
@@ -86,7 +86,7 @@ printf 'run_id: %s\ncwd: %s\n' "$(basename "${run_dir}")" "${REPO_DIR}" >> /dev/
 echo "dirty" >> "${REPO_DIR}/file.txt"
 echo max_turns > "${run_dir}/.bound_reason"
 printf 'outcome=completed\n' > "${run_dir}/.gate-verdict"
-"${CLASSIFIER}" "${run_dir}" 124 yes >/dev/null
+"${CLASSIFIER}" "${run_dir}" 124 yes >/dev/null || true
 _assert_outcome "${run_dir}" "case_verdict_outranks_bound" "completed" "none"
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ run_dir="$(_new_run_dir)"
 printf 'Status update.\nStanding by, waiting for the other lane to finish.\n' > "${run_dir}/result.md"
 : > "${run_dir}/.deliverable"
 : > "${run_dir}/.no-deliverable"
-"${CLASSIFIER}" "${run_dir}" 0 yes >/dev/null
+"${CLASSIFIER}" "${run_dir}" 0 yes >/dev/null || true
 got="$(grep '^outcome=' "${run_dir}/.outcome" | head -1 | cut -d= -f2-)"
 if [[ "${got}" == "parked" ]]; then
   fail "case_work_yes_never_downgraded_by_wording" "wording overrode work=yes state -> parked"
@@ -116,7 +116,7 @@ fi
 # respawn, throwing away any work that might exist. Must be "unknown"/none.
 # ---------------------------------------------------------------------------
 run_dir="$(_new_run_dir)"
-"${CLASSIFIER}" "${run_dir}" 1 >/dev/null
+"${CLASSIFIER}" "${run_dir}" 1 >/dev/null || true
 _assert_outcome "${run_dir}" "case_undetermined_work_is_unknown_not_died_clean" "unknown" "none"
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ _assert_outcome "${run_dir}" "case_undetermined_work_is_unknown_not_died_clean" 
 # guarantee: an undetermined lane cannot be silently thrown away).
 # ---------------------------------------------------------------------------
 run_dir="$(_new_run_dir)"
-"${CLASSIFIER}" "${run_dir}" 1 >/dev/null
+"${CLASSIFIER}" "${run_dir}" 1 >/dev/null || true
 got_next="$(grep '^next=' "${run_dir}/.outcome" | head -1 | cut -d= -f2-)"
 if [[ "${got_next}" == "respawn" ]]; then
   fail "case_unknown_work_never_auto_respawns" "next=respawn for an undetermined lane"
@@ -141,7 +141,7 @@ fi
 run_dir="$(_new_run_dir)"
 { printf 'run_id: %s\n' "$(basename "${run_dir}")"; } > "${run_dir}/meta.yaml"
 echo max_turns > "${run_dir}/.bound_reason"
-"${CLASSIFIER}" "${run_dir}" 124 yes >/dev/null
+"${CLASSIFIER}" "${run_dir}" 124 yes >/dev/null || true
 _assert_outcome "${run_dir}" "case_bound_with_real_work_still_died_with_work" "died-with-work" "continue"
 
 # ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ REPO_DIR2="$(_new_repo)"
 { printf 'run_id: %s\n' "$(basename "${run_dir}")"; printf 'cwd: %s\n' "${REPO_DIR2}"; } > "${run_dir}/meta.yaml"
 echo "real uncommitted change" >> "${REPO_DIR2}/file.txt"
 printf 'Wrapping up.\nNo further action until it finishes.\n' > "${run_dir}/result.md"
-"${CLASSIFIER}" "${run_dir}" 1 yes >/dev/null
+"${CLASSIFIER}" "${run_dir}" 1 yes >/dev/null || true
 got="$(grep '^outcome=' "${run_dir}/.outcome" | head -1 | cut -d= -f2-)"
 if [[ "${got}" == "died-clean" ]]; then
   fail "case_e2e_real_work_never_died_clean" "prose won over disk -- outcome=died-clean with real work on disk"
