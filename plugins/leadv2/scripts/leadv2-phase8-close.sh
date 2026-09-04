@@ -25,6 +25,9 @@
 #   0  success
 #   1  missing required input or render/gate failure
 #   3  fingerprint conflict (YAML exists with different content)
+#   5  E2E gate inconclusive (timed out, not regressed) — work is committed,
+#      round is resumable; see docs/handoff/<task_id>/close-state.md
+#      (GATE-UNKNOWN-MUST-NOT-KILL-A-ROUND-01)
 
 set -euo pipefail
 
@@ -258,7 +261,20 @@ if [[ -x "$E2E_GATE_SCRIPT" ]]; then
   log_info "Running E2E gate..."
   e2e_rc=0
   bash "$E2E_GATE_SCRIPT" "$TASK_ID" || e2e_rc=$?
-  if [[ $e2e_rc -ne 0 ]]; then
+  if [[ $e2e_rc -eq 5 ]]; then
+    # GATE-UNKNOWN-MUST-NOT-KILL-A-ROUND-01: exit 5 means the e2e gate never
+    # reached a verdict (timeout) -- inconclusive, NOT a regression. Do not
+    # declare the round dead; write a resumable marker and stop with a
+    # status distinguishable from the generic exit-1 failure path so a
+    # resuming round can pick this back up instead of re-deriving from
+    # scratch or being reported as a false-dead lane.
+    log "INFO: gate inconclusive, work committed — E2E gate timed out (exit ${e2e_rc}); see docs/handoff/${TASK_ID}/e2e-gate.md"
+    {
+      printf 'status: inconclusive\nreason: e2e_timeout\ngate: phase8_close\ntask: %s\nnote: gate inconclusive, work committed\n' \
+        "${TASK_ID}"
+    } >> "${LEADV2_HANDOFF_DIR}/${TASK_ID}/close-state.md" 2>/dev/null || true
+    exit 5
+  elif [[ $e2e_rc -ne 0 ]]; then
     log_error "E2E gate failed (exit ${e2e_rc}) — see docs/handoff/${TASK_ID}/e2e-gate.log"
     exit 1
   fi
