@@ -178,16 +178,21 @@ set -uo pipefail
 source "$1"; set +e
 FANFUNCS="$2"
 root="$3/c3"; mkdir -p "$root"
-# Window pinned SHORT: first sighting ages past it before the recreation.
+# Window pinned SHORT but with a WIDE margin (5s window, 6s sleep): the
+# mutation control M1 measured that a 1s window is dilutable — one slow
+# python spawn between the recreation and the candidate expires it even
+# under the pre-fix started_at clock, and the mutant survives. With 5s the
+# pre-fix clock (age ~0.3s at the candidate) still blanket-refuses while
+# the fix (age ~6s) has already expired.
 export LEADV2_PROJECT_ROOT="$root" LEADV2_STATE_ROOT="$root" LEADV2_BURN_GOVERNOR=0
-export LEADV2_WRITESET_PENDING_WINDOW_SEC=1
+export LEADV2_WRITESET_PENDING_WINDOW_SEC=5
 git -C "$root" init -q && git -C "$root" config user.email t@e.com && git -C "$root" config user.name t
 source "${FANFUNCS}"
 PROJECT_ROOT="$root"
 # t0: pid=null reservation declares res/a.txt (first_seen_at starts here).
 _fanout_register_session "WSO-REINC" Standard "null" "reserving" "true" "true" \
   "dispatch-code" "" "" "" "" "" "" "" "" "res/a.txt" "" >/dev/null 2>&1
-sleep 2
+sleep 6
 # t2: dispatch re-registers the same task_id; pid=None reads as not-alive so
 # the old row is removed and a fresh one appended (started_at resets).
 leadv2_active_register "WSO-REINC" Standard "$root" wt false "" "" "" "" >/dev/null 2>&1
@@ -201,8 +206,8 @@ print("carried_writes=%s" % row.get("writes"))
 print("clock_preserved=%s" % (fs is not None and fs != st))
 PY
 # t2+eps: with the clock measured from FIRST sight the window already
-# expired (age ~2s > 1s), so the candidate is NOT pending-blocked. The
-# pre-fix code measured from the recreation (age ~0) and refused.
+# expired (age ~6s > 5s), so the candidate is NOT pending-blocked. The
+# pre-fix code measured from the recreation (age ~0.3s) and refused.
 leadv2_active_register "WSO-CAND" Standard "$root" wt-cand false "" "" "cand/b.txt" 2>/dev/null >/dev/null
 echo "cand_rc=$?"
 EOF
@@ -220,7 +225,7 @@ fi
 # The clock discriminator must not be diluted by the carry-over: a row that
 # never declared (write-less reservation, write-less recreation) is judged by
 # the pending window ALONE -- measured from first_seen_at, it has already
-# expired here (age ~2s > 1s window); measured from started_at (the pre-fix
+# expired here (age ~6s > 5s window); measured from started_at (the pre-fix
 # clock), it is fresh and blanket-refuses. This is the case the mutation
 # control M1 redden.
 out3b="$( bash -s "${REGISTRY_SH}" "${FANOUT_FUNCS_SH}" "${TMPDIR_ROOT}" <<'EOF'
@@ -229,20 +234,20 @@ source "$1"; set +e
 FANFUNCS="$2"
 root="$3/c3b"; mkdir -p "$root"
 export LEADV2_PROJECT_ROOT="$root" LEADV2_STATE_ROOT="$root" LEADV2_BURN_GOVERNOR=0
-export LEADV2_WRITESET_PENDING_WINDOW_SEC=1
+export LEADV2_WRITESET_PENDING_WINDOW_SEC=5
 git -C "$root" init -q; git -C "$root" config user.email t@e.com; git -C "$root" config user.name t
 source "${FANFUNCS}"
 PROJECT_ROOT="$root"
 # t0: pid=null reservation that CANNOT declare (no writes on the task row).
 _fanout_register_session "WSO-RE2" Standard "null" "reserving" "true" "true" \
   "dispatch-code" "" "" "" "" "" "" "" "" "" "task_row_undeclared" >/dev/null 2>&1
-sleep 2
+sleep 6
 # t2: dispatch re-registers; pid=None -> remove+append; nothing to carry.
 # The candidate follows IMMEDIATELY: under the pre-fix clock (started_at,
-# reset by this recreation) the fresh window blanket-refuses it; under the
-# fix (first_seen_at, t0) the window has already expired. Any slow step
-# between recreate and candidate would expire the 1s window even pre-fix
-# and dilute the discriminator (measured: a yaml row-dump here is enough).
+# reset by this recreation) the fresh window blanket-refuses it (age ~0.3s
+# vs a 5s window — one slow python spawn no longer dilutes the control,
+# the M1 mutant_survived failure that forced this margin); under the fix
+# (first_seen_at, t0) the window has already expired (age ~6s > 5s).
 leadv2_active_register "WSO-RE2" Standard "$root" wt false "" "" "" "" >/dev/null 2>&1
 leadv2_active_register "WSO-CAND" Standard "$root" wt-cand false "" "" "cand/b.txt" 2>/dev/null >/dev/null
 echo "cand_rc=$?"
