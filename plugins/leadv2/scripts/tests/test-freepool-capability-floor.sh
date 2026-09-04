@@ -130,6 +130,17 @@ for cls in heavy strategic; do
   else
     pass "(b2) ${cls} build: freepool not selected"
   fi
+  # UNION (RECOVER-5FA969AC-01): the branch's round-1 suite asserted a
+  # floor_reason token for heavy/strategic too; on main's routing freepool has
+  # no heavy/strategic cells, so it never even enters `ok` and the H1 rule
+  # ("the demotion is only APPLIED when freepool is actually in the candidate
+  # set") must emit NO token. Assert that; the raw-class vocabulary itself
+  # stays pinned by (b)'s floor_reason=standard/code assertion.
+  if [[ "$out" == *'floor_applied=1'* ]]; then
+    fail "(b2) ${cls} build: floor token fired although freepool never contended ($out)"
+  else
+    pass "(b2) ${cls} build: no floor token when freepool is not in the candidate set"
+  fi
 done
 
 # ── (c) bulk / simple / non-build: freepool still selectable ─────────────────
