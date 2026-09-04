@@ -1,0 +1,85 @@
+# PLUGIN-REPO-HAS-NO-BACKLOG-01 -- persona-engine close commands
+# Produced by leadv2 plugin repo lane; NOT executed here (repo-scope: this lane only writes ~/Projects/leadv2).
+# Orchestrator runs these in ~/Projects/persona-engine after this lane merges.
+
+# 1. Write the 74 migrated source_ids to an ids file, then bulk-close:
+cat > /tmp/plugin-repo-backlog-migrated-ids.txt <<EOF
+24cc139cc4fb
+3f5f87d37524
+c05847ab1815
+96c2b64a2df4
+fa515ffe5e3a
+e368bedfc1af
+73e5d6ba3c97
+a54dcb736315
+e061e20c4cde
+17d5f8d6fa08
+f470ed0a43f1
+5eccb36b8133
+ac13c2d58a60
+7547e876567c
+88396fe3f032
+a89d4444bb75
+424a964eaf4d
+e589ee519dc8
+bc6b23753a7c
+21a71eb35dac
+e27781d427ee
+065897da9680
+63a6810ddd8e
+ec177217ed36
+160da73eb826
+7b4d1970f723
+2b95c99e292d
+3df240bba3cb
+b35ad780ea1d
+228239bcc795
+c8f7bdba64b6
+7ba2bd711056
+ad7bd2898d74
+87360d74442d
+a09f77f8a1ac
+ea94a77af50a
+9745dc9b9783
+84cd8dceb0f6
+d3a5ecc88068
+42f5dcc2fb19
+c40fcedf6268
+a10a747c0ac8
+e65408e54ff0
+b131028bcf26
+d3cd9bd49dfe
+d75b1723e4f9
+c4700349dfd6
+8721988ec0a1
+f38161387a22
+a814efbe1840
+d4a16a423c72
+eb2d6dd52a2d
+b9384f0806a2
+95df4bfb52e4
+e7e35567e722
+ca0b9d47c40b
+f630e21420b7
+d23a14bce0b7
+9370a6405e27
+ad64ded731f7
+fb3369300dce
+05a309fd5d75
+490ed6999bb4
+4421c56e04ea
+b5e27169435a
+d22d85cee19b
+77de6264b787
+ceaa0a06e3d0
+550665609c2d
+183f76542b3f
+899a2e661c5a
+2dcca7ef7e0f
+1656486bd9f8
+0000b5bc9aa0
+EOF
+scripts/task-close.sh --from-file /tmp/plugin-repo-backlog-migrated-ids.txt --reason "migrated to leadv2 plugin repo docs/tasks.yaml (PLUGIN-REPO-HAS-NO-BACKLOG-01)"
+
+# 2. Close the meta row (this task itself), separately:
+scripts/task-close.sh 540504d70585 --reason "resolved: leadv2 plugin repo now has its own docs/tasks.yaml (PLUGIN-REPO-HAS-NO-BACKLOG-01 complete)"
