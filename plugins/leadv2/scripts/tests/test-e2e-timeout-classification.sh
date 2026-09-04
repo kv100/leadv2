@@ -203,11 +203,14 @@ printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' \"\$*\" >> \"${R3_JOURNAL}\"
 chmod +x "${TMP}/stub-journal-r3.sh"
 run_phase8_gate "${R3}" "r3sig001" "1" "${TMP}/stub-journal-r3.sh"
 
-if [[ "${P8_RC}" -eq 1 ]] && grep -q 'status: unknown' <<<"${P8_MD}" \
+# GATE-UNKNOWN-MUST-NOT-KILL-A-ROUND-01: standalone phase-8 gate now exits 5
+# (not 1) on timeout so leadv2-phase8-close.sh can tell "inconclusive" apart
+# from "generic blocked/regression" (both of which stayed exit 1).
+if [[ "${P8_RC}" -eq 5 ]] && grep -q 'status: unknown' <<<"${P8_MD}" \
    && grep -q 'reason: e2e_timeout' <<<"${P8_MD}" && [[ -z "${P8_FLAG}" ]]; then
-  pass "R3: standalone phase-8 gate records timeout as unknown and writes no pass sentinel"
+  pass "R3: standalone phase-8 gate records timeout as unknown, exit 5, and writes no pass sentinel"
 else
-  fail "R3: expected rc 1 + unknown timeout + no sentinel, got rc=${P8_RC} md=<${P8_MD}> flag=<${P8_FLAG}> log=<$(cat "${P8_LOG}")>"
+  fail "R3: expected rc 5 + unknown timeout + no sentinel, got rc=${P8_RC} md=<${P8_MD}> flag=<${P8_FLAG}> log=<$(cat "${P8_LOG}")>"
 fi
 
 if grep -qE 'e2e_gate task=r3sig001 status=ran verdict=timeout rc=124' <<<"${P8_JOURNAL}"; then

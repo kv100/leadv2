@@ -257,12 +257,18 @@ rm -f "$SENTINEL"   # never leave a stale PASS behind on a red or timed-out re-r
 # a foreign pass or a regression from its partial output; it is unknown and
 # requires a human decision, with the timeout evidence recorded.
 if [[ ${rc} -eq 124 ]]; then
-  printf 'status: unknown\nreason: e2e_timeout\nrc: %s\ntimeout_s: %s\n' \
-    "${rc}" "${E2E_TIMEOUT_S}" > "${OUT_DIR}/e2e-gate.md" 2>/dev/null || true
+  # GATE-UNKNOWN-MUST-NOT-KILL-A-ROUND-01: a timeout is inconclusive, not a
+  # regression. Exit 5 is DISTINCT from the generic blocked/regression exit 1
+  # paths in this script so the consumer (leadv2-phase8-close.sh) can tell
+  # "gate never finished" apart from "gate ran and found a real failure" and
+  # avoid declaring the round dead over an inconclusive result.
+  _p8_e2e_commit="$(git -C "${_p8_e2e_root}" rev-parse HEAD 2>/dev/null || echo unknown)"
+  printf 'status: unknown\nreason: e2e_timeout\nrc: %s\ntimeout_s: %s\ncommit: %s\ngate: phase8_close\n' \
+    "${rc}" "${E2E_TIMEOUT_S}" "${_p8_e2e_commit}" > "${OUT_DIR}/e2e-gate.md" 2>/dev/null || true
   _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=timeout rc=${rc} timeout_s=${E2E_TIMEOUT_S}"
   echo "leadv2-phase8-e2e-gate: TIMEOUT (tests/run-all.sh --scope changed exceeded ${E2E_TIMEOUT_S}s) — see ${LOG}" >&2
   tail -40 "$LOG" >&2 || true
-  exit 1
+  exit 5
 fi
 
 if [[ $rc -eq 0 ]]; then
