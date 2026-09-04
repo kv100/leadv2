@@ -8057,11 +8057,14 @@ exit is treated as an incident."
     # FP-08 fix-round (H1/H3): the capability-floor journal comes from the
     # arbiter's OWN output line for THIS invocation (`floor_applied=1
     # floor_reason=<raw-class>/<kind>`), emitted when the demotion is APPLIED
-    # in the effective ranking -- never from a cross-run state file, which a
-    # failed arbiter write could leave carrying the PREVIOUS task's floor
-    # attribution (round-1 M3), and never from a raw Python bool whose `True`
-    # never matched this shell's `== "true"` probe (round-1 H3: the journal
-    # line was unreachable dead code).
+    # in the effective ranking -- never from the shared ROUTE_ARBITER
+    # _STATE_FILE, which every concurrent lane overwrites (a cross-lane
+    # attribution race: lane A's floor reason could be journaled by lane B,
+    # round-1 rationale), which the anti-stickiness layer rewrites as a bare
+    # arm name anyway, and which a failed arbiter write could leave carrying
+    # the PREVIOUS task's floor attribution (round-1 M3) -- and never from a
+    # raw Python bool whose `True` never matched this shell's `== "true"`
+    # probe (round-1 H3: the journal line was unreachable dead code).
     _arb_floor_applied="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*[[:space:]]floor_applied=\([01]\).*/\1/p')"
     _arb_floor_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*[[:space:]]floor_reason=\([^[:space:]]*\).*/\1/p')"
     if [[ "${_arb_floor_applied}" == "1" && -n "${_arb_floor_reason}" ]]; then

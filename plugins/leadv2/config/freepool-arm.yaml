@@ -218,10 +218,15 @@ role_rank:
 #   bulk_only (default) — freepool is rank-eligible only for bulk/simple code
 #                         work; standard/heavy/strategic code demotes it to the
 #                         last-resort chain position (FP-08 empty-diff incident).
+#                         The floor demotes, never excludes: a freepool-only
+#                         window still dispatches there.
 #   full                — the floor never applies; freepool competes on cost
 #                         for Standard/Heavy builds too (founder ask 2026-08-28).
+#                         This is the flip FP-04's quality gate will make when
+#                         freepool output proves Standard-build quality.
 # Env override FREEPOOL_CAPABILITY_FLOOR=bulk_only|full wins over this key; an
 # unrecognized value at either layer falls back toward bulk_only, never
-# silently unfloors. The dispatcher journals the resolved mode once per
+# silently unfloors (unreadable/missing file or key degrades to bulk_only =
+# floor ON, fail-safe). The dispatcher journals the resolved mode once per
 # dispatch as `freepool_floor_mode mode=<m> source=<yaml|env|default>`.
 capability_floor: bulk_only   # Standard+ production work stays floored; tests/docs-only is descriptor-exempt.

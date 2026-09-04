@@ -50,6 +50,12 @@ route_arbiter() { # <worker|reviewer> <task-descriptor-json>
     # do not perform it.
     printf '[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start\n' >&2
   fi
+  # FP-08 CAPABILITY-FLOOR: freepool's operator surface (config/freepool-arm.yaml)
+  # carries `capability_floor: bulk_only|full`. bulk_only (the default, also when
+  # the file/key is unreadable) holds freepool below codex/sonnet for Standard+
+  # build work; `full` is the flip FP-04's quality gate will make. Env seam for
+  # tests/hermeticity: LEADV2_ROUTE_ARBITER_FREEPOOL_CONFIG.
+  freepool_config="${LEADV2_ROUTE_ARBITER_FREEPOOL_CONFIG:-${here}/../config/freepool-arm.yaml}"
   ROUTE_ARBITER_ROLE="$role" ROUTE_ARBITER_DESCRIPTOR="$descriptor" \
   ROUTE_ARBITER_QUOTA="$quota_json" ROUTE_ARBITER_FREEPOOL_RC="$free_rc" \
   ROUTE_ARBITER_FREEPOOL_REASON="${free_reason}" \
