@@ -37,7 +37,28 @@ done
 
 [[ -z "$TASK_ID" || -z "$ATTEMPT" ]] && usage
 
+# INVISIBLE-DELIVERABLES-CENSUS-01: resolve this lane's handoff dir through
+# the shared address library before doing anything else. A finished lane's
+# report sits under docs/handoff/dispatch-<sig8>/ 279 times out of 292; the
+# naive construction below is what re-dispatched D6 over its own finished
+# report. Aux reads (context.yaml, architect.md, rollback.md) keep the
+# eponymous path; the resolution decides what PRIOR DELIVERABLE exists and
+# must be visible in recovery-full.md and on stdout before any salvage call.
+_RC_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/leadv2-lane-address.sh
+. "${_RC_LIB_DIR}/lib/leadv2-lane-address.sh"
+_addr_rc=0
+lane_address_resolve "$TASK_ID" --worktrees || _addr_rc=$?
 HANDOFF_DIR="${PROJECT_ROOT}/docs/handoff/${TASK_ID}"
+mkdir -p "$HANDOFF_DIR" 2>/dev/null || true
+
+PRIOR_DELIVERABLES="${LA_FOUND_ROWS}"
+ADDR_SEARCHED="registry docs/leadv2/active.yaml [${LA_REGISTRY_ROWS} rows]; "
+ADDR_SEARCHED+="receipts ${LA_RECEIPT_SEEN} [${LA_RECEIPT_MATCH} task_id match]; "
+ADDR_SEARCHED+="missions ${LA_MISSION_SEEN} [${LA_MISSION_MATCH} H1 match]; "
+ADDR_SEARCHED+="eponymous docs/handoff/${TASK_ID}/ [${LA_EPON_STATE}]; "
+ADDR_SEARCHED+="worktrees searched=${LA_WT_ROOTS} root(s)"
+ADDR_COVERAGE="$LA_COVERAGE_LINE"
 
 # Parse context.yaml for classification and original mission
 CLASSIFICATION="Unknown"
@@ -149,6 +170,15 @@ FULL_LOG="${HANDOFF_DIR}/recovery-full.md"
 {
   printf '# Recovery full log — task %s (attempt %s)\n\n' "$TASK_ID" "$ATTEMPT"
   printf '## Classification\n%s\n\n' "$CLASSIFICATION"
+  printf '## Prior deliverables (address resolution)\n'
+  printf 'result: %s (rc=%s)\n' "$LA_RESULT" "$_addr_rc"
+  printf 'searched: %s\n' "$ADDR_SEARCHED"
+  printf 'coverage: %s\n\n' "$ADDR_COVERAGE"
+  if [[ -n "$PRIOR_DELIVERABLES" ]]; then
+    printf 'Prior deliverable files (DO NOT re-dispatch over these):\n%s\n\n' "$PRIOR_DELIVERABLES"
+  else
+    printf 'No prior deliverable found. If result is unknown, absence is NOT\nevidence the worker died.\n\n'
+  fi
   printf '## Attempt 1 approach\n%s\n\n' "${ATTEMPT1_APPROACH:-[not available]}"
   printf '## Attempt 1 failure\n%s\n\n' "${ATTEMPT1_FAILURE:-[not available]}"
   printf '## Regression summary\n%s\n\n' "${REGRESSION_SUMMARY:-[not available]}"
@@ -172,6 +202,9 @@ log "archived full incident log: ${FULL_LOG}"
 cat <<CONTEXT
 RECOVERY-CONTEXT (compact)
 Original task: ${ORIGINAL_TASK_ID}
+Prior deliverables: ${LA_RESULT}${PRIOR_DELIVERABLES:+ (see below)}
+  searched: ${ADDR_SEARCHED}
+  coverage: ${ADDR_COVERAGE}
 Classification: ${CLASSIFICATION}
 Regression: ${REGRESSION_SUMMARY:-[see rollback.md]}
 Attempt 1 approach: ${ATTEMPT1_APPROACH:-[not available]}
@@ -183,4 +216,6 @@ ${REGRESSION_DIFF}
 Next approach requested: ${NEXT_APPROACH}
 
 Full incident log archived at: docs/handoff/${TASK_ID}/recovery-full.md
+${PRIOR_DELIVERABLES:+Prior deliverable files:
+${PRIOR_DELIVERABLES}}
 CONTEXT
