@@ -47,13 +47,14 @@ printf '2026-09-01T00:00:00Z\tfx-nofix.sh\tStop\tran\t-\n' > "$JDIR/journal.tsv"
 
 # Snapshot what the census must never mutate (case 8).
 snap_hook="$(mktemp "$TMP/snapXXXX")"; snap_journal="$(mktemp "$TMP/snapXXXX")"
-tar -cf "$snap_hook" -C "$FIXROOT" hook-dir hooks.json fixtures
+tar -cf "$snap_hook" -C "$FIXROOT" hook-dir scripts-dir hooks.json fixtures
 cp "$JDIR/journal.tsv" "$snap_journal"
 
 run_census_tsv() { # $1 hook-dir  $2 journal-dir  $3 sandbox-dir
   bash "$CENSUS" \
     --hooks-json "$FIXROOT/hooks.json" \
     --hook-dir "$1" \
+    --scripts-dir "$FIXROOT/scripts-dir" \
     --journal-dir "$2" \
     --fixtures-dir "$FIXROOT/fixtures" \
     --gv-lib "$GV_LIB" \
@@ -128,7 +129,7 @@ esac
 assert_eq "case7 fx-unwired state" "$(state_of fx-unwired.sh)" "not-wired"
 
 # ── case 8: the census never mutates the hook tree or the journal ───────────
-tar -cf "$TMP/snapafter" -C "$FIXROOT" hook-dir hooks.json fixtures
+tar -cf "$TMP/snapafter" -C "$FIXROOT" hook-dir scripts-dir hooks.json fixtures
 cmp -s "$snap_hook" "$TMP/snapafter" \
   && pass "case8 fixture hook tree byte-identical after census" \
   || fail "case8 census mutated the fixture hook tree"
@@ -322,6 +323,42 @@ case "$(printf '%s\n' "$OLDREGEX_OUT" | awk -F'\t' '$2=="fx-gate-empty.sh"' | cu
   always) pass "case11-mutation: old :-[01]-only regex prints gated guard as always (kills the fix)" ;;
   *) fail "case11-mutation: old-regex census did not reproduce 'always' — mutation not caught" ;;
 esac
+
+# ── case 13: a guard wired through scripts/ is resolved by its own wiring ──
+# GUARD-AUDIT-FINDINGS-NEVER-REACHED-THE-CODE-01: hooks.json wires
+# leadv2-hook-fork-guard.sh and leadv2-lane-watch-v2.sh via
+# ${CLAUDE_PLUGIN_ROOT}/scripts/ (not hooks/). The files exist and fire, but a
+# hooks/-only existence check called both `missing` — a false alarm at rank 2,
+# the top of the dead-first table, where the founder looks first.
+assert_eq "case13 fx-scriptsdir state (wired via scripts/)" \
+  "$(state_of fx-scriptsdir.sh)" "never-ran"
+assert_eq "case13 fx-scriptsdir DEFAULT read from the scripts/ path" \
+  "$(dflt_of fx-scriptsdir.sh)" '${LEADV2_FX_SCRIPTSDIR:-0}'
+
+# ── case 13 mutation: drop the scripts-dir resolution inside the row loop ⇒
+# the guard goes back to `missing` and DEFAULT back to `-`. This is the
+# negative control applied INSIDE the census's resolution code.
+NOSCRIPTSDIR_CENSUS="$TMP/census-noscriptsdir.sh"
+python3 - "$CENSUS" "$NOSCRIPTSDIR_CENSUS" <<'PYMUT'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as fh:
+    text = fh.read()
+old = '''  gpath="$HOOK_DIR/$g"
+  [ "$gdir" = "scripts" ] && gpath="$SCRIPTS_DIR/$g"
+'''
+new = '''  gpath="$HOOK_DIR/$g" # MUTATION: scripts-dir resolution dropped
+'''
+assert text.count(old) == 1, "fixture assumption stale: gpath resolution block not found verbatim"
+text = text.replace(old, new, 1)
+with open(dst, "w") as fh:
+    fh.write(text)
+PYMUT
+NOSCRIPTSDIR_OUT="$(bash "$NOSCRIPTSDIR_CENSUS" --hooks-json "$FIXROOT/hooks.json" --hook-dir "$FIXROOT/hook-dir" \
+  --scripts-dir "$FIXROOT/scripts-dir" --journal-dir "$JDIR" --fixtures-dir "$FIXROOT/fixtures" \
+  --gv-lib "$GV_LIB" --sandbox-dir "$TMP/sbx-noscriptsdir" --timeout 3 --format tsv 2>/dev/null)"
+assert_eq "case13-mutation: hooks/-only check re-falsifies fx-scriptsdir as missing" \
+  "$(printf '%s\n' "$NOSCRIPTSDIR_OUT" | awk -F'\t' '$2=="fx-scriptsdir.sh"' | cut -f4)" "missing"
 
 printf '\n%s\n' "----------------------------------------"
 if [ "$FAIL" -eq 0 ]; then

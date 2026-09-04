@@ -43,6 +43,7 @@ PLUGIN_ROOT="$(cd "$SCRIPT_ABS/.." && pwd)"
 
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 HOOK_DIR="$PLUGIN_ROOT/hooks"
+SCRIPTS_DIR="$PLUGIN_ROOT/scripts"
 JOURNAL_DIR="${CLAUDE_PROJECT_DIR:-$HOME}/.claude/cache/guard-verdicts"
 FIXTURES_DIR=""
 GV_LIB="$PLUGIN_ROOT/hooks/lib/leadv2-guard-verdict.sh"
@@ -55,12 +56,13 @@ FORMAT="table"
 # vanished, not that the guard cannot fire.
 GV_PY_SITE="$(python3 -c 'import site; print(site.getusersitepackages())' 2>/dev/null || true)"
 
-usage() { echo "usage: $0 [--hooks-json P] [--hook-dir P] [--journal-dir P] [--fixtures-dir P] [--gv-lib P] [--timeout S] [--sandbox-dir P] [--format table|tsv]" >&2; }
+usage() { echo "usage: $0 [--hooks-json P] [--hook-dir P] [--scripts-dir P] [--journal-dir P] [--fixtures-dir P] [--gv-lib P] [--timeout S] [--sandbox-dir P] [--format table|tsv]" >&2; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --hooks-json)  HOOKS_JSON="${2:?}"; shift 2 ;;
     --hook-dir)    HOOK_DIR="${2:?}"; shift 2 ;;
+    --scripts-dir) SCRIPTS_DIR="${2:?}"; shift 2 ;;
     --journal-dir) JOURNAL_DIR="${2:?}"; shift 2 ;;
     --fixtures-dir) FIXTURES_DIR="${2:?}"; shift 2 ;;
     --gv-lib)      GV_LIB="${2:?}"; shift 2 ;;
@@ -101,6 +103,18 @@ WIRED="$TMP/wired.tsv"
 jq -r '.hooks | to_entries[] | .key as $e | .value[] | .hooks[]? |
        [(.command // "" | capture("(?<n>[A-Za-z0-9_.-]+\\.sh)"; "").n // ""), $e]
        | @tsv' "$HOOKS_JSON" 2>/dev/null | awk -F'\t' '$1 != ""' | sort -u > "$WIRED"
+
+# GUARD-AUDIT-FINDINGS-NEVER-REACHED-THE-CODE-01: a handful of hooks.json
+# entries wire their guard through ${CLAUDE_PLUGIN_ROOT}/scripts/ rather than
+# hooks/ (leadv2-hook-fork-guard.sh, leadv2-lane-watch-v2.sh). Those files
+# exist and fire, but a hooks/-only existence check reported them `missing` —
+# a false alarm at rank 2, the very top of the dead-first table. The wiring's
+# own directory token decides where the file is resolved; bare-name commands
+# (no hooks/ or scripts/ prefix, fixture wiring) keep the hooks/ default.
+WIRED_DIR="$TMP/wired-dir.tsv"
+jq -r '.hooks | to_entries[] | .value[] | .hooks[]? |
+       ((.command // "") | capture("(?<p>(?:hooks|scripts)/[A-Za-z0-9_.-]+\\.sh)"; "").p)? // ""' \
+  "$HOOKS_JSON" 2>/dev/null | awk -F/ 'NF { print $NF "\t" $1 }' | sort -u > "$WIRED_DIR"
 
 # ---------------------------------------------------------------------------
 # 1b. Dispatcher follow-through. A guard invoked only from inside another
@@ -399,6 +413,9 @@ while IFS= read -r g; do
   events="$(awk -F'\t' -v g="$g" '$1==g { e = e sep $2; sep="," } END { printf "%s", e }' "$WIRED")"
   wired=0
   [ -n "$events" ] && wired=1
+  gdir="$(awk -F'\t' -v g="$g" '$1==g { print $2; exit }' "$WIRED_DIR" 2>/dev/null)"
+  gpath="$HOOK_DIR/$g"
+  [ "$gdir" = "scripts" ] && gpath="$SCRIPTS_DIR/$g"
 
   # reset per row (round 3, high#1): not-wired/missing rows never reach the
   # else-branch below, so without this they printed the PREVIOUS guard's
@@ -406,7 +423,7 @@ while IFS= read -r g; do
   dflt="-"
   if [ "$wired" -eq 0 ]; then
     state="not-wired"; rank=8
-  elif [ ! -f "$HOOK_DIR/$g" ]; then
+  elif [ ! -f "$gpath" ]; then
     state="missing"; rank=2
   else
     legacy_scan "$g"
@@ -432,7 +449,7 @@ while IFS= read -r g; do
     #   `${X:=…}`, `${X-…}`, `${X=…}`, `${X?…}`, `${X+…}` and bare `${X}`
     #   defensively. Any ${LEADV2_…} reference means env-gated; `always` is
     #   reserved for guards with zero LEADV2_ references.
-    dflt="$(grep -oE '\$\{LEADV2_[A-Za-z0-9_]+[^}]*\}' "$HOOK_DIR/$g" 2>/dev/null \
+    dflt="$(grep -oE '\$\{LEADV2_[A-Za-z0-9_]+[^}]*\}' "$gpath" 2>/dev/null \
       | grep -vE 'TRACE|DEBUG' | head -1)"
     if [ -n "$dflt" ]; then
       # nested defaults (`${X:-${Y:-z}}`) truncate at the inner `}` —
