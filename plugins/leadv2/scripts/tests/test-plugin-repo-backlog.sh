@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-tasks-lib tasks.yaml
 # tests/test-plugin-repo-backlog.sh — PLUGIN-REPO-HAS-NO-BACKLOG-01 negative
 # control. Proves the leadv2 plugin repo's own docs/tasks.yaml is real and
 # readable by leadv2-tasks-lib.sh's real functions -- not just parseable by a
