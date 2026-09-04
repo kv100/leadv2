@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-control-plane-merge.sh
+file=plugins/leadv2/scripts/leadv2-control-plane-merge-driver.sh
+anchor=s|exit 1; }|exit 0; }|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: T3 guard did NOT fire (rc=0): leadv2-control-plane-merge-driver: GUARD FAIL symlink_count=2 expected=3 in docs/leadv2
+diff_hash=42d3452acc743c4297ba0ec3b18be59a4919d2e2f9c236d88814e79d4a4128e2
+lane_diff_hash=8c60f4933ed23f56b88cac47cf3bb9f646d0e689153fffdd177715cee4e99a0a
