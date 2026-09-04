@@ -536,6 +536,65 @@ test_12_unreadable_dispatch_dir_is_unknown() {
   fi
 }
 
+# ── Test 13: fix round 2b — MULTIPLE registry rows, pointer on a NON-last row ──
+
+test_13_multi_row_pointer_only_on_nonlast_row() {
+  log "Test 13: founder-shaped id, 2 rows — dispatch pointer on row 1, NO log_path on the LAST row -> finished_unlanded:*"
+  local repo state active_path tid dead_pid verdict
+  read -r repo state < <(_new_fixture) || { fail "Test 13: fixture"; return; }
+  active_path="$(_active_yaml "$repo" "$state")"
+  mkdir -p "$(dirname "$active_path")"
+  dead_pid="$(_dead_pid)"
+  tid="SOME-REAMMED-TASK-01"
+  # Live shape measured on the D3 lane 2026-09-04: the dispatch pointer lives
+  # on an EARLIER row; a re-arm registered a fresh LAST row with no log_path
+  # at all (the live D3 row carried none -- raw_log_path null in the probe
+  # output). `sessions` (last-row-wins) handed E4 that pointerless row, the
+  # dispatch dir was unreachable, and the lane read dead:no_log_artifact with
+  # its deliverable on disk.
+  mkdir -p "$repo/docs/handoff/${tid}" "$repo/docs/handoff/dispatch-4e19b2c8"
+  printf -- 'planning note\n' > "$repo/docs/handoff/${tid}/brain.yaml"
+  printf -- '# developer.full.md\nRound complete; nothing committed.\n' \
+    > "$repo/docs/handoff/dispatch-4e19b2c8/developer.full.md"
+  cat > "$active_path" <<YAML
+sessions:
+  - task_id: ${tid}
+    session_id: d2-${tid}-arm1
+    started_at: "2020-01-01T00:00:00+00:00"
+    phase: review
+    pid: ${dead_pid}
+    pid_birth: null
+    worktree: "${repo}"
+    protocol_version: 2
+    backend: terminal
+    log_path: "docs/handoff/dispatch-4e19b2c8/developer.stream.jsonl"
+    last_pulse_at: "2020-01-01T00:00:00+00:00"
+    stale: false
+  - task_id: ${tid}
+    session_id: d2-${tid}-arm2
+    started_at: "2020-01-01T00:00:00+00:00"
+    phase: spawning
+    pid: ${dead_pid}
+    pid_birth: null
+    worktree: "${repo}"
+    protocol_version: 2
+    backend: terminal
+    last_pulse_at: "2020-01-01T00:00:00+00:00"
+    stale: false
+YAML
+  [[ -s "$repo/docs/handoff/dispatch-4e19b2c8/developer.full.md" ]] \
+    || { fail "Test 13: setup — dispatch-dir deliverable missing"; return; }
+  [[ ! -e "$repo/docs/handoff/${tid}/developer.full.md" ]] \
+    || { fail "Test 13: setup — tid dir must hold no deliverable"; return; }
+
+  verdict="$(_verdict "$repo" "$state" "$tid")"
+  if [[ "$verdict" =~ ^finished_unlanded:[0-9]+s$ ]]; then
+    pass "Test 13: verdict=$verdict (pointer on a non-last row still reaches the deliverable)"
+  else
+    fail "Test 13: verdict=$verdict (must be finished_unlanded:<age>s — last-row-wins hid the dispatch pointer)"
+  fi
+}
+
 test_1_deliverable_no_commit_is_finished_unlanded
 test_1b_sibling_prefix_contract
 test_2_no_deliverable_still_dead
@@ -550,6 +609,7 @@ test_9_json_evidence_trail
 test_10_founder_id_finds_dispatch_dir_deliverable
 test_11_founder_id_no_deliverable_anywhere_still_dead
 test_12_unreadable_dispatch_dir_is_unknown
+test_13_multi_row_pointer_only_on_nonlast_row
 
 echo
 log "==================================================================="
