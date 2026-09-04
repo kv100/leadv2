@@ -203,5 +203,19 @@ nlines=$(printf '%s\n' "$OUT" | grep -cE '^  (registry|receipts|missions|eponymo
 if [[ "$nlines" -eq 5 ]]; then ok "five labelled search lines (registry/receipts/missions/eponymous/worktrees)"; else bad "C11 nlines=$nlines out=$OUT"; fi
 rm -rf "$ROOT"
 
+section "C12 recovery-context resolves through the library"
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/lraddr.XXXXXX")
+mk_base_fixture "$ROOT"
+RCBIN="${SCRIPT_DIR}/../leadv2-recovery-context.sh"
+ROUT=$(PROJECT_ROOT="$ROOT" "$RCBIN" --task-id "$TID" --attempt 2 2>&1); RRC=$?
+RLOG_PATH="$ROOT/docs/handoff/$TID/recovery-full.md"
+RLOG=$(cat "$RLOG_PATH" 2>/dev/null || printf "MISSING")
+if [[ $RRC -eq 0 \
+  && $(grep -c 'result: found' "$RLOG_PATH" 2>/dev/null || echo 0) -ge 1 \
+  && "$RLOG" == *"dispatch-aaaa1111/developer.full.md"* \
+  && "$RLOG" == *"searched:"* && "$RLOG" == *"coverage:"* \
+  && "$ROUT" == *"Prior deliverables: found"* ]]; then ok "recovery-full.md carries resolution + search path + coverage"; else bad "C12 rrc=$RRC log=$(printf '%s' "$RLOG" | tr '\n' ' ' | head -c 400)"; fi
+rm -rf "$ROOT"
+
 printf '\nPASS=%s FAIL=%s\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]
