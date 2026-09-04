@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-lane-liveness.sh
 # FIX-LANE-LIVENESS-AUTHORITATIVE-01: provider status outranks sidecars/ps.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"

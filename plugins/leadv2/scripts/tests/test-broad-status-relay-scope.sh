@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-single-lead-beat-loop.sh leadv2-beat-owner.sh
 # tests/test-broad-status-relay-scope.sh — BROAD-STATUS-RELAY-SCOPE-01
 #
 # The founder hit this in production: a focused session received the

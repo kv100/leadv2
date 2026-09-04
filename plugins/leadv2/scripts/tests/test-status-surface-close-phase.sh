@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-status-surface.sh
 # tests/test-status-surface-close-phase.sh — N-7d DoD test.
 #
 # A lane has two acts: the worker (act one) and the close/review gate (act

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-status-surface.sh
 # tests/test-status-surface-handle-identity.sh — N-7c DoD test.
 #
 # Signal 2 (ledger `handle`) must prove IDENTITY, not mere existence: the pid

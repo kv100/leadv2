@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-lanes-snapshot.sh leadv2-active-registry.sh
 # tests/test-lane-liveness-lies.sh — LANE-LIVENESS-LIES-01.
 #
 # Root 1 (symptom A + B2): leadv2-active-registry.sh:556 wrote pid_birth via

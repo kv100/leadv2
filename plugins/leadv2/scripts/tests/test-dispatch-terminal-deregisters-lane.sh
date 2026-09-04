@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-dispatch-ledger.sh
 # test-dispatch-terminal-deregisters-lane.sh — LANE-DEREGISTRATION (T16 §10).
 #
 # Closed/terminal lanes never left docs/leadv2/active.yaml: rows accumulated
