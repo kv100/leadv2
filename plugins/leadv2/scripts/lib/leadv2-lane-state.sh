@@ -35,7 +35,7 @@ _lv2_lane_start_time() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed -e 
 _lv2_lane_state_mutate() { # <op> [args...] -- fcntl.flock + atomic rename
   local path lock; path="$(_lv2_lane_state_path)" || return 1; lock="$(_lv2_lane_state_lock)" || return 1
   python3 - "$lock" "$path" "$@" <<'PY'
-import datetime, fcntl, os, subprocess, sys, tempfile
+import datetime, fcntl, os, shlex, subprocess, sys, tempfile
 try:
     import yaml
 except ImportError:
@@ -54,6 +54,23 @@ def birth(pid):
         except OSError: pass
     try: return ' '.join(subprocess.run(['ps','-o','lstart=','-p',str(pid)], text=True, capture_output=True, timeout=2).stdout.split())
     except Exception: return ''
+def ppid(pid):
+    # Like the birth fixture, this seam supplies process observation only;
+    # candidate liveness remains governed by birth(pid) == recorded start.
+    fixture=os.environ.get('LEADV2_LANE_STATE_TEST_PPID_FILE','')
+    if fixture:
+        try:
+            for line in open(fixture, encoding='utf-8'):
+                key, value=line.rstrip('\n').split('\t', 1)
+                if key == str(pid): return int(value)
+        except (OSError, ValueError): pass
+    try: return int(subprocess.run(['ps','-o','ppid=','-p',str(pid)], text=True, capture_output=True, timeout=2).stdout.strip())
+    except Exception: return 1
+def ancestry():
+    result=set(); pid=os.getpid()
+    while pid > 1 and pid not in result:
+        result.add(pid); pid=ppid(pid)
+    return result
 def alive(row):
     try: pid=int(row.get('pid'))
     except (TypeError, ValueError): return False
@@ -111,6 +128,9 @@ with open(lock, 'a+') as lf:
       worktrees=[x[9:] for x in wt.splitlines() if x.startswith('worktree ')]
     except Exception: worktrees=[]
     known={os.path.realpath(str(r.get('worktree') or '')) for r in rows}
+    ancestors=ancestry()
+    worker_markers={'claude','leadv2-session-runner.sh','leadv2-codex-session-runner.sh','codex','glm-coder.sh','kimi-coder.sh'}
+    non_workers={'leadv2-dispatch-code.sh','leadv2-lane-liveness.sh','grep','ps','tail','Monitor'}
     for worktree in worktrees:
       real=os.path.realpath(worktree)
       if '/.claude/worktrees/' not in real or real in known: continue
@@ -119,10 +139,19 @@ with open(lock, 'a+') as lf:
         ps=open(fixture, encoding='utf-8').read().splitlines() if fixture else subprocess.run(['ps','-axo','pid=,lstart=,command='], text=True, capture_output=True, timeout=3).stdout.splitlines()
       except Exception: ps=[]
       for line in ps:
-        if worktree not in line: continue
         parts=line.strip().split(None, 6)
         if len(parts) < 7: continue
-        pid=int(parts[0]); start=' '.join(parts[1:6])
+        try: pid=int(parts[0])
+        except ValueError: continue
+        start=' '.join(parts[1:6]); command=parts[6]
+        try: argv=shlex.split(command)
+        except ValueError: continue
+        if not any(arg == worktree or arg.startswith(worktree + '/') for arg in argv): continue
+        if pid in ancestors: continue
+        if '--worktree' in command or '--resume-lane' in command: continue
+        programs={os.path.basename(arg) for arg in argv}
+        if programs & non_workers: continue
+        if not programs & worker_markers: continue
         if pid > 1 and start == birth(pid):
           task=os.path.basename(worktree)
           row={'task_id':task, 'session_id':'recovered', 'lead_session_id':'recovered', 'worktree':worktree,
