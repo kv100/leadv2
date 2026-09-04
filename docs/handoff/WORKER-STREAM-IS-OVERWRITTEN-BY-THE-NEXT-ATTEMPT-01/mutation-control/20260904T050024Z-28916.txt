@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-stream-attempt-isolation.sh
+file=plugins/leadv2/scripts/claude-subsession.sh
+anchor=s|if ln -s "\$target" "\$tmp_link" 2>/dev/null && mv -f "\$tmp_link" "\$link_name" 2>/dev/null; then|if false; then|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: A2: flat newest-pointer is a symlink
+diff_hash=19c7769b78452257a9e73fd6efe940d435a306488cd6b2df4547e0c47868006b
+lane_diff_hash=5544238ce2f3cf84c54509fde16b66311dd68be94e11e9f67937184ebbc9e01e
