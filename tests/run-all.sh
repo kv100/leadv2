@@ -118,11 +118,6 @@ fi
 # (PATH-resolved, not Homebrew bash 5) — a stem-based --scope=changed match on
 # the renderer/wrapper filenames is not enough, since a change to an unrelated
 # script must not silently drop this guard from a run. See SWIFTBAR-BASH32-01.
-# WORKER-STREAM-IS-OVERWRITTEN-BY-THE-NEXT-ATTEMPT-01: attempt-scoped worker
-# streams + cost markers (claude-subsession.sh) and the widened all-attempts
-# budget fallback (leadv2-budget-check.sh).
-add_suite "${ROOT}/plugins/leadv2/scripts/tests/test-stream-attempt-isolation.sh"
-
 add_suite "${ROOT}/tests/test-status-surface-bash32.sh"
 # SWIFTBAR-FAST-NAMES-01: the widget's async-cache + label-resolver contract —
 # always-on for the same reason as bash32 (the wrapper filename stem no longer
@@ -387,9 +382,7 @@ leadv2-watch-lifecycle.sh:plugins/leadv2/scripts/tests/test-liveness-tristate-01
 # deploy-merge.sh) so a change to either caller re-runs the gate's suite too.
 leadv2-lane-salvage.sh:plugins/leadv2/scripts/tests/test-lane-salvage.sh
 leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-leadv2-merge-safety-gate.sh
-leadv2-deploy-merge.sh:plugins/leadv2/scripts/tests/test-leadv2-merge-safety-gate.sh
-claude-subsession.sh:plugins/leadv2/scripts/tests/test-stream-attempt-isolation.sh
-leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-stream-attempt-isolation.sh"
+leadv2-deploy-merge.sh:plugins/leadv2/scripts/tests/test-leadv2-merge-safety-gate.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(

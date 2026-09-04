@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: claude-subsession.sh, leadv2-dispatch-code.sh
 # WORKER-STREAM-IS-OVERWRITTEN-BY-THE-NEXT-ATTEMPT-01 — attempt-scoped worker
 # streams. The stream file used to be keyed by TASK_ID alone, so re-dispatching
 # the same lane re-derived the SAME filename and the second `claude` process's
