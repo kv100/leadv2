@@ -197,3 +197,111 @@ lanes writing suite fixtures/tmpdirs will hit this; surfaced for the founder.
 
 - `plugins/leadv2/scripts/leadv2-state-compact.sh` — reader completion (resolver wiring)
 - `docs/handoff/dispatch-6436a2e2/report.md` — this report
+
+## Round 2 — the negative control made permanent (Addendum 4)
+
+The whole job this round: turn f495f881's hand-demonstrated NEG control into a
+suite CI selects and runs. The relocation, census and the rest of the report
+above are untouched.
+
+### The suite
+
+`plugins/leadv2/scripts/tests/test-dod-gate-lane-state-md.sh` (new, self-registered):
+
+    # run-all-triggers: leadv2-active-registry.sh leadv2-state-path.sh leadv2-dod-gate.sh
+
+It pins exactly what was shown by hand, through the PRODUCTION gate entry
+(`lv2_dod_gate_run`, the function product-close invokes) and the
+PRODUCTION diff construction (`git -C <lane> diff HEAD`, the plain path that
+writes review.diff):
+
+- **NEG (red half):** a lane worktree dirty in `docs/LEAD_V2_STATE.md` (the
+  harness registry write restored) next to a legitimate lane edit must fail
+  with the exact line
+  `dod_fail check=runtime_state_in_diff paths=docs/LEAD_V2_STATE.md` — rc=1.
+- **green half:** the same tree with the registry dirt removed (the write
+  lives at the shared state root now) must return rc=0 with
+  `dod_pass check=runtime_state`.
+
+The red half is what dies if the gate's `_DOD_RUNTIME_STATE_REGEX` ever drops
+`docs/LEAD_V2_STATE.md` (the rejected symptom-suppression direction) or the
+diff-path parse stops naming the file.
+
+### Falsification of the suite itself (mutation test)
+
+Stripped `docs/LEAD_V2_STATE\.md$|` from a /tmp copy of the gate lib — the
+rejected suppression direction — and ran the suite against it:
+
+    [TEST] FAIL: NEG: registry write dirty in lane worktree -> rc=1 + 'dod_fail check=runtime_state_in_diff paths=docs/LEAD_V2_STATE.md' (got rc=0 out=...
+    [TEST] pass=6 fail=1
+    MUTATED_RC=1
+
+The suite is not vacuously green: it detects the gate going blind. Non-mutated
+run: `pass=7 fail=0`, rc=0. Syntax floor: `bash -n` and `/bin/bash -n`
+(3.2) both clean. No Python files changed this round (py_compile n/a).
+# bash-guard: allow
+### Proof of selection (Addendum 4 item 3)
+
+Map discovery (`LEADV2_RUN_ALL_LIST_TRIGGERS=1 tests/run-all.sh`, 232 rows; the 3 new rows):
+
+    leadv2-active-registry.sh:plugins/leadv2/scripts/tests/test-dod-gate-lane-state-md.sh
+    leadv2-state-path.sh:plugins/leadv2/scripts/tests/test-dod-gate-lane-state-md.sh
+    leadv2-dod-gate.sh:plugins/leadv2/scripts/tests/test-dod-gate-lane-state-md.sh
+
+`--scope changed` against the lane's own diff (state file reset to merge-base,
+`LEADV2_RUN_ALL_SELECT_ONLY=1`): **10 suites selected**, this one among them:
+
+    [SELECT] .../plugins/leadv2/scripts/tests/test-dod-gate-lane-state-md.sh
+    run-all: 10 selected, scope=changed, select_only=1
+
+### Owed Addendum-3 measurement
+
+files changed (lane range) = **17**; suites selected for that range = **10**
+(incl. always-on core-offline); seconds = **not re-measured** — the parked
+lane's record is rc=124 at timeout_s=900 (the wall, not a need measurement),
+and re-timing the full gate against a live foreign core-offline runner was
+declined.
+
+### Changed-scope verification (9 of the 10 selected suites, foreground)
+
+core-offline **skipped**: a foreign lane (DARK-SUITES-REGRESSED-BY-SELF-
+REGISTRATION-01, pids 42744/42795/42799) was live inside run-core-offline.sh
+at decision time — a second concurrent runner is the exact forbidden
+interference and takes the same global flock.
+
+    test-status-surface-bash32 rc=0 (from tests/, not scripts/tests/)
+    test-status-surface-single-lead rc=0
+    test-status-surface-fast-names rc=0
+    test-cache-truth rc=0 | PASS=20 FAIL=0
+    test-stream-attempt-isolation rc=0
+    test-worker-outlives-terminal-state rc=0
+    test-dod-gate-lane-state-md rc=0 | [TEST] pass=7 fail=0
+    test-lane-registry-outlives-dispatcher rc=1   <- see below
+    test-worker-dod-gate rc=0
+
+### Pre-existing reds named (Addendum 2 discipline)
+
+- `test-active-registry-update-phase.sh` (the CI `unexpected=1`): **green on
+  this branch** — direct run 7/0, and 7/0 again under the pool's exact
+  environment (sandboxed HOME + retained PYTHONUSERBASE + LEADV2_*/CLAUDE_*
+  scrub, run-core-offline.sh:254-280). It reproduces red ONLY when user-site
+  is lost entirely (HOME scrubbed without PYTHONUSERBASE): the registry's
+  python helper then prints `[registry] PyYAML not found; install pyyaml`
+  and returns `phase='__ERR__'`. The CI trace's `leadv2_active_register:
+  command not found` signature did NOT reproduce locally; both definitions
+  still exist (leadv2-active-registry.sh:917, leadv2-helpers.sh:1472), and
+  the PyYAML error path is identical on the main blob (3 occurrences both)
+  — the fragile dependency predates the branch. Left as found, not silenced.
+- `test-lane-registry-outlives-dispatcher.sh`: **red on this branch AND on a
+  clean main worktree (b510db3e) with the identical 6 failures
+  (`dispatch exited 4 (expected 0)` etc.), hermetic env or not — predates the
+  branch.** It is NOT in tests/known-red-suites.txt (under-classified known
+  red); adding it there is forbidden to this lane (allowlist may only
+  shrink), so it is recorded here for the lead instead.
+
+### Files changed this round
+
+- `plugins/leadv2/scripts/tests/test-dod-gate-lane-state-md.sh` — new suite (the durable negative control)
+- `docs/handoff/dispatch-6436a2e2/report.md` — this section
+- `docs/handoff/dispatch-6436a2e2/developer.{full,summary}.md` — previous round's developer verdict artifacts, now committed
+# bash-guard: allow
