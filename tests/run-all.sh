@@ -132,6 +132,7 @@ add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 # not by any test-dispatch-code.sh) is mapped here so --scope changed still
 # runs its suite instead of silently dropping it.
 EXTRA_SUITE_MAP="glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-lock-per-lane.sh
+leadv2-task-anchor.sh:plugins/leadv2/scripts/tests/test-prompt-capture-symlink.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-effort-wiring.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
