@@ -79,3 +79,24 @@ owe this sentence.
 - **Ten consecutive runs, not one.** A suite that passes once is not green; flakiness is exactly
   how a red main hides. Report the suite's exit codes for ten consecutive runs, and if any run
   differs from the others, that disagreement IS the finding.
+
+## Prove the check executed before you believe it — two twins
+
+**A mutation that did not apply reads as a control that passed.** A suite's awk/sed anchor stops
+matching after the code it targets is reshaped; the mutation writes nothing, the suite stays green,
+and the artifact records a control that never happened. Remedy: assert the mutant differs from the
+original **byte for byte** before running it, and report the observed `baseline_rc` / `mutated_rc` /
+`restored_rc` triple — never a `diff_hash`, never a tool's verdict.
+
+**A shell that did not execute reads as a column that passed.** `test-lead-session-identity.sh` ran
+every identity case through `bash -c` (deliberately — two forks give two pids under either shell), so
+its "zsh column" was a bash run in a zsh wrapper: coverage of the zsh path was zero, while that path
+returned the very `direct` collapse the lane existed to remove. Six passes under zsh and ten under
+bash were the same run counted twice. Remedy: an explicit assertion on the value the other shell
+returns — pinning a documented fail-open turns accidental green into a signal in both directions
+(fix the fail-open and the case reddens, asking for a deliberate update; break the good path down to
+the fallback and the two shells stop disagreeing, which the case shows).
+
+The general rule both twins share: **green means "the check passed" only after you have proven the
+check ran.** Before trusting a control, make the mutant differ; before trusting a column, make the
+interpreter speak.
