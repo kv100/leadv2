@@ -87,3 +87,14 @@ docs/handoff/dispatch-*-review-*.md
 !docs/handoff/*/architect-prepass.md
 !docs/handoff/*/.gate1-passed
 !docs/handoff/*/divergence.md
+
+# REGISTRY-MUST-LEAVE-GIT-01: docs/leadv2/active.yaml is LIVE cross-worktree
+# registry state (see plugins/leadv2/scripts/leadv2-state-path.sh /
+# LEAD-CONTROL-PLANE-01). Tracking it in git meant every worktree checkout
+# got its own frozen copy at the branch's commit -- fourteen divergent
+# copies measured 2026-09-04. The resolver already redirects live reads/
+# writes to ~/.claude/leadv2-state/<repo-slug>/active.yaml and symlinks
+# docs/leadv2/active.yaml -> there; git must never re-materialize a real
+# file at this path (git checkout only recreates a path git remembers as
+# tracked -- untracking it stops the next worktree from getting a frozen copy).
+/docs/leadv2/active.yaml

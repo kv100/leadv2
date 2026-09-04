@@ -89,6 +89,20 @@ _SWEEP_LOG="${TMPDIR:-/tmp}/leadv2-sweep.$(id -u).log"
 
 lv2_wt_protect_prime "${ROOT}"
 
+# D4-NO-PATH-LOSES-WORK-01 / D9: checkpoint-then-sweep is load-bearing. This
+# MUST run before the removal loop below ever inspects a worktree — a lane
+# whose worker already died mid-edit gets its dirty tree turned into a
+# durable (ORPHAN) commit (or quarantined to orphan-quarantine/<lane>) here,
+# BEFORE the "merged and clean" / "dead+empty" checks below could otherwise
+# discard it (the exact discard-then-remove class of incident b413968c
+# closed for the pre-existing sweep criteria; this sweeper is external to
+# every worker's process tree, so it also survives a SIGKILL that the
+# in-process checkpointers cannot). Never fatal to the sweep itself.
+ORPHAN_CHECKPOINT_BIN="${SCRIPT_DIR}/../scripts/leadv2-orphan-checkpoint.sh"
+if [[ -f "${ORPHAN_CHECKPOINT_BIN}" ]]; then
+  bash "${ORPHAN_CHECKPOINT_BIN}" --project-root "${ROOT}" >/dev/null 2>&1 || true
+fi
+
 # L1b: the age floor is a pass-level setting — hoisted out of the loop so the
 # summary reports the RESOLVED floor, not a loop-local left over from whatever
 # iteration happened to run last.

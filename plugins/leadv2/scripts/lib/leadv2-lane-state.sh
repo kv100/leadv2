@@ -10,7 +10,18 @@
 #   lane_reconcile                       # marks dead, recovers live orphans
 #   lane_count_live <lead-session-id>    # stdout count
 
-_lv2_lane_state_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# REGISTRY-MUST-LEAVE-GIT-01: BASH_SOURCE[0] is unset (not merely empty) when
+# this file is sourced via `eval "$(cat ...)"` or a similar no-file-backing
+# path -- under a caller's `set -u` that is a hard "unbound variable" crash,
+# not a silently-wrong path. `${BASH_SOURCE[0]:-}` never crashes; when it IS
+# empty, fall back to LEADV2_PROJECT_ROOT/CLAUDE_PROJECT_DIR (the same
+# resolution order leadv2-active-registry.sh's own root fallback uses) so the
+# resolved dir still points at this checkout's scripts/, not some ambient cwd.
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  _lv2_lane_state_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+else
+  _lv2_lane_state_dir="${LEADV2_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}/plugins/leadv2/scripts"
+fi
 _lv2_lane_state_root() {
   local root="${LEADV2_PROJECT_ROOT:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
   printf '%s' "$root"

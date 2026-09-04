@@ -16,6 +16,16 @@
 # dead:* and child keep their exact literals (leadv2-dispatch-ledger.sh:981,
 # :1380, :1409 match them as literals).
 #
+# Fix round 2 (D2-E4-RESOLVES-THE-WRONG-DIR-01): E4 searched only
+# docs/handoff/<tid>/, but the lead names lanes by FOUNDER task id and the
+# funnel writes the deliverable to docs/handoff/dispatch-<sig8>/ -- so E4 was
+# green in fixtures and inert in production (three live lanes, two with
+# running workers, all read dead:no_log_artifact). Tests 10-12 use
+# founder-shaped ids whose registry row carries the production log_path
+# pointer: deliverable under the dispatch dir -> finished_unlanded; no
+# deliverable anywhere -> still dead; dispatch dir present but UNREADABLE ->
+# unknown (a check that could not look, never coerced to dead).
+#
 # This suite drives the REAL leadv2-lane-liveness.sh against scratch
 # fixtures. It performs NO in-suite mutation of production scripts: the
 # negative control for this lane is leadv2-mutation-control.sh (see
@@ -433,6 +443,99 @@ test_9_json_evidence_trail() {
   fi
 }
 
+# ── Test 10: fix round 2 — founder-shaped id, deliverable under the DISPATCH dir ──
+
+test_10_founder_id_finds_dispatch_dir_deliverable() {
+  log "Test 10: founder-shaped id + row log_path -> dispatch-<sig8>/ deliverable -> finished_unlanded:*, never dead:*"
+  local repo state active_path tid dead_pid verdict
+  read -r repo state < <(_new_fixture) || { fail "Test 10: fixture"; return; }
+  active_path="$(_active_yaml "$repo" "$state")"
+  mkdir -p "$(dirname "$active_path")"
+  dead_pid="$(_dead_pid)"
+  tid="SOME-TASK-NAME-01"
+  # Production shape, as measured on main 2026-09-04: the founder-named dir
+  # holds planning artifacts only; the deliverable lives under dispatch-<sig8>.
+  mkdir -p "$repo/docs/handoff/${tid}" "$repo/docs/handoff/dispatch-c3a41e77"
+  printf -- 'class: Standard\n' > "$repo/docs/handoff/${tid}/task-class.yaml"
+  printf -- '# developer.full.md\nRound complete; nothing committed.\n' \
+    > "$repo/docs/handoff/dispatch-c3a41e77/developer.full.md"
+  _fixture_row "$active_path" "$tid" "$dead_pid" "$repo" \
+    "docs/handoff/dispatch-c3a41e77/developer.stream.jsonl"
+  [[ -s "$repo/docs/handoff/dispatch-c3a41e77/developer.full.md" ]] \
+    || { fail "Test 10: setup — dispatch-dir deliverable missing"; return; }
+  [[ ! -e "$repo/docs/handoff/${tid}/developer.full.md" && ! -e "$repo/docs/handoff/${tid}/developer.summary.md" ]] \
+    || { fail "Test 10: setup — tid dir must hold NO deliverable (the production shape)"; return; }
+  [[ "$(_row_present "$active_path" "$tid")" == True ]] || { fail "Test 10: setup — registry row absent"; return; }
+
+  verdict="$(_verdict "$repo" "$state" "$tid")"
+  if [[ "$verdict" =~ ^finished_unlanded:[0-9]+s$ ]] && [[ "$verdict" != dead:* ]]; then
+    pass "Test 10: verdict=$verdict (founder id reached the dispatch-dir deliverable)"
+  else
+    fail "Test 10: verdict=$verdict (must be finished_unlanded:<age>s — E4 resolved the wrong dir)"
+  fi
+}
+
+# ── Test 11: fix round 2 — founder-shaped id, NO deliverable anywhere → still dead ──
+
+test_11_founder_id_no_deliverable_anywhere_still_dead() {
+  log "Test 11: founder-shaped id + dispatch dir with NO report -> dead:*, so the fix did not make every lane look finished"
+  local repo state active_path tid dead_pid verdict
+  read -r repo state < <(_new_fixture) || { fail "Test 11: fixture"; return; }
+  active_path="$(_active_yaml "$repo" "$state")"
+  mkdir -p "$(dirname "$active_path")"
+  dead_pid="$(_dead_pid)"
+  tid="SOME-DEAD-TASK-01"
+  mkdir -p "$repo/docs/handoff/${tid}" "$repo/docs/handoff/dispatch-99b1d0e4"
+  printf -- 'planning note\n' > "$repo/docs/handoff/${tid}/brain.yaml"
+  printf -- 'admitted\n' > "$repo/docs/handoff/dispatch-99b1d0e4/admission-receipt.yaml"
+  _fixture_row "$active_path" "$tid" "$dead_pid" "$repo" \
+    "docs/handoff/dispatch-99b1d0e4/developer.stream.jsonl"
+  [[ ! -e "$repo/docs/handoff/dispatch-99b1d0e4/developer.full.md" && ! -e "$repo/docs/handoff/dispatch-99b1d0e4/developer.summary.md" ]] \
+    || { fail "Test 11: setup — dispatch dir must hold no report"; return; }
+
+  verdict="$(_verdict "$repo" "$state" "$tid")"
+  if [[ "$verdict" == dead:* ]]; then
+    pass "Test 11: verdict=$verdict (genuine death intact from a founder-shaped id)"
+  else
+    fail "Test 11: verdict=$verdict (must be dead:* — the third state must not swallow real death)"
+  fi
+}
+
+# ── Test 12: fix round 2 — dispatch dir EXISTS but cannot be READ → unknown ──
+
+test_12_unreadable_dispatch_dir_is_unknown() {
+  log "Test 12: founder-shaped id + chmod-000 dispatch dir -> unknown:*, never dead:* / finished_unlanded:*"
+  local repo state active_path tid dead_pid verdict ddir
+  read -r repo state < <(_new_fixture) || { fail "Test 12: fixture"; return; }
+  active_path="$(_active_yaml "$repo" "$state")"
+  mkdir -p "$(dirname "$active_path")"
+  dead_pid="$(_dead_pid)"
+  tid="SOME-BLIND-TASK-01"
+  ddir="$repo/docs/handoff/dispatch-7f00ca11"
+  mkdir -p "$repo/docs/handoff/${tid}" "$ddir"
+  printf -- 'planning note\n' > "$repo/docs/handoff/${tid}/brain.yaml"
+  printf -- 'invisible report\n' > "$ddir/developer.full.md"
+  chmod 000 "$ddir"
+  _fixture_row "$active_path" "$tid" "$dead_pid" "$repo" \
+    "docs/handoff/dispatch-7f00ca11/developer.stream.jsonl"
+  # Fixture self-check: if the platform did not actually block reads (e.g.
+  # running as root), this test cannot assert what it exists to assert -- fail
+  # loudly rather than pass silently on an unenforced precondition.
+  if python3 -c "import os,sys; os.listdir(sys.argv[1])" "$ddir" 2>/dev/null; then
+    chmod 700 "$ddir"
+    fail "Test 12: setup — chmod 000 did not block listdir on this platform; refusing to assert"
+    return
+  fi
+
+  verdict="$(_verdict "$repo" "$state" "$tid")"
+  chmod 700 "$ddir"
+  if [[ "$verdict" == unknown:* ]] && [[ "$verdict" != dead:* ]] && [[ "$verdict" != finished_unlanded:* ]]; then
+    pass "Test 12: verdict=$verdict (a dir E4 could not look at is unknown, never dead)"
+  else
+    fail "Test 12: verdict=$verdict (must be unknown:* — an unreadable deliverable dir is never evidence of death)"
+  fi
+}
+
 test_1_deliverable_no_commit_is_finished_unlanded
 test_1b_sibling_prefix_contract
 test_2_no_deliverable_still_dead
@@ -444,6 +547,9 @@ test_6_summary_md_and_newest_wins
 test_7_live_pid_with_deliverable_is_not_finished
 test_8_landed_commit_still_finished
 test_9_json_evidence_trail
+test_10_founder_id_finds_dispatch_dir_deliverable
+test_11_founder_id_no_deliverable_anywhere_still_dead
+test_12_unreadable_dispatch_dir_is_unknown
 
 echo
 log "==================================================================="

@@ -96,7 +96,15 @@ if grep -q 'source "\${SCRIPT_DIR}/lib/leadv2-review-reroute-note.sh"' "$REVIEW_
 else
   fail "leadv2-review-run.sh missing reroute-note wiring"
 fi
-if grep -q 'source "\${SCRIPT_DIR}/lib/leadv2-review-reroute-note.sh"' "$PRODUCT_CLOSE_SH" \
+# product-close resolves the lib through a symlink-safe fallback variable
+# (_REVIEW_REROUTE_NOTE_SH, set from SCRIPT_DIR then LEADV2_CANONICAL_ROOT)
+# rather than sourcing the literal ${SCRIPT_DIR} path inline -- the invariant
+# this asserts is "the shared lib is sourced and called", not one exact path
+# expression, so either sourcing form satisfies it as long as the lib
+# filename and the call are both present.
+if { grep -q 'source "\${SCRIPT_DIR}/lib/leadv2-review-reroute-note.sh"' "$PRODUCT_CLOSE_SH" \
+     || grep -q 'source "\${_REVIEW_REROUTE_NOTE_SH}"' "$PRODUCT_CLOSE_SH"; } \
+   && grep -q 'leadv2-review-reroute-note\.sh' "$PRODUCT_CLOSE_SH" \
    && grep -q 'leadv2_review_reroute_note "\${TASK}" "\${pool}" "\${reviewer}"' "$PRODUCT_CLOSE_SH"; then
   pass "leadv2-dispatch-product-close.sh: sources + calls the shared reroute-note helper"
 else

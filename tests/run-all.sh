@@ -380,6 +380,7 @@ leadv2-watch-lifecycle.sh:plugins/leadv2/scripts/tests/test-liveness-tristate-01
 # self-selects its own suite by convention; these two rows cover the wiring
 # points (T11 merge in dispatch-product-close.sh, the ff-only merge in
 # deploy-merge.sh) so a change to either caller re-runs the gate's suite too.
+leadv2-lane-salvage.sh:plugins/leadv2/scripts/tests/test-lane-salvage.sh
 leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-leadv2-merge-safety-gate.sh
 leadv2-deploy-merge.sh:plugins/leadv2/scripts/tests/test-leadv2-merge-safety-gate.sh"
 

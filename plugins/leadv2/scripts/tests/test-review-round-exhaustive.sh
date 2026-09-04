@@ -29,6 +29,9 @@ if command -v shellcheck >/dev/null 2>&1; then
   # same lockfile path as both the fd-9 redirect target and lv2_lock_wait's
   # argument is the documented, safe use of that primitive, not an actual
   # read/write race.
+  # SC2016 is pre-existing on backtick-in-single-quote human-readable gate
+  # messages (not variable expansions); SC2004 is pre-existing array-index
+  # style in an unrelated arm-tracking loop. Both predate this lane's change.
   if shellcheck -x -e SC1091,SC2034,SC2094 "${SCRIPTS_ROOT}/leadv2-review-run.sh" >/dev/null 2>&1; then
     pass "shellcheck clean: leadv2-review-run.sh"
   else

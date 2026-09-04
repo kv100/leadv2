@@ -76,7 +76,16 @@ _leadv2_state_path_sh() {
     printf -- '%s' "${LEADV2_STATE_PATH_BIN}"
     return 0
   fi
-  bundled="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-state-path.sh"
+  # REGISTRY-MUST-LEAVE-GIT-01: BASH_SOURCE[0] is unset (not just empty) when
+  # this file is sourced via `eval "$(cat ...)"` or similar no-file-backing
+  # paths; under this script's own `set -euo pipefail` that is an unbound-
+  # variable crash. `${BASH_SOURCE[0]:-}` never crashes; fall through to the
+  # LEADV2_PROJECT_ROOT-relative path below (already computed above) when empty.
+  if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    bundled="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-state-path.sh"
+  else
+    bundled="${LEADV2_PROJECT_ROOT}/plugins/leadv2/scripts/leadv2-state-path.sh"
+  fi
   if [[ -x "${bundled}" ]]; then
     printf -- '%s' "${bundled}"
   else

@@ -188,3 +188,214 @@ the moment someone lowers the cap, and it will look like a new defect.
 `lib/leadv2-lead-identity.sh` is landed AND visible in `git ls-files`, hand that session the exact
 replacement text for the third fallback link — not before. They have said they will apply it from
 the finished artifact, never blind.
+
+---
+
+## LEAD ADDENDUM — `pid: 1` makes a registry row IMMORTAL, and that belongs to this lane
+
+Measured on the live registry 2026-09-04 by session persona-engine-c2, and folded into this lane
+because it is the same defect this lane exists to fix: **the registry lies about who owns a lane.**
+
+The registry held 106 rows. A naive liveness check called 18 of them alive — and **eleven of those
+eighteen carried `pid: 1`.** PID 1 is `launchd`. It is alive always, on every machine, forever.
+So `kill -0 1` succeeds for the rest of the machine's uptime and **a row with `pid: 1` can never
+be reaped.**
+
+The second half is what turns an annoyance into a permanent lock. `leadv2-dispatch-code.sh:4555`
+refuses to unregister when a task does not have exactly ONE row (`not_owner_row_intact`). So:
+
+1. A dispatch fails or is refused, leaving its row behind.
+2. The next attempt adds a second row.
+3. Unregister now refuses — the count is not one.
+4. Every further attempt adds another ghost, and the lane is **unresumable forever**, blocked by
+   nothing but its own history. Measured on D4: two rows; on D6: three.
+
+The cleanup rule that worked, use it as your specification: **a row is dead if its pid is not
+alive — where `1` does NOT count as alive — AND no process holds `worktrees/<task>`.** Everything
+else is preserved. 106 rows became 12; 94 removed under the file lock in one atomic write, with a
+backup taken first.
+
+### Required in this lane
+
+- **Refuse to register a row whose pid is `1` or empty.** At the write, not at the read — a bad row
+  that reaches the file has already done its damage.
+- **Unregister must work for N rows, not only for N=1.** `leadv2_active_unregister <task_id>` in
+  `leadv2-active-registry.sh` already removes ALL rows for a task under the lock; the `:4555`
+  guard's exactly-one condition is the bug. Removing every row for a task you own is correct;
+  refusing because there are two is what created the lock.
+- **A scheduled sweep** using the rule above, so ghosts cannot accumulate to the point where a lane
+  locks itself.
+- Liveness in the sweep obeys this lane's own discipline: the pair **(pid, process start time)**,
+  never the pid alone; `kill -0` classified by **stderr** not exit code; anything unanswerable is
+  `unknown` and `unknown` is never swept.
+
+### Negative controls (one per changed function, mutation inside the body)
+
+- Registration accepts `pid: 1` → a suite assertion goes red.
+- Unregister with two rows present → red if it refuses instead of removing both.
+- The sweep treats `pid: 1` as alive → red.
+- The sweep removes a row whose liveness is `unknown` → red. This one is the important one: it is
+  the difference between a cleaner and a work-destroyer.
+
+Registry row for the record: `SD-REGISTRY-PID-ONE-IS-IMMORTAL-01`.
+
+---
+
+## LEAD CORRECTION — there are TWO registries, and they disagreed. Ignore the "foreign session" theory.
+
+An earlier lead addendum guessed that unregister fails when another session owns the row. **That
+guess is retracted — it was measured and it is false.** `leadv2_active_unregister <task_id>` works
+on a row written by a different session: rc=0, the task's rows go to 0.
+
+What actually happened is worse, and it is the real requirement for this lane. **The registry
+exists in more than one file, and the copies drifted apart:**
+
+| file | rows |
+|---|---|
+| `~/Projects/leadv2/docs/leadv2/active.yaml` | 106 → 12 → 11 |
+| `~/.claude/leadv2-state/leadv2/active.yaml` | **103** (86 of them dead, after the first was called clean) |
+| `~/Projects/persona-engine/docs/leadv2/active.yaml` | 0 |
+
+One session cleaned the first file and reported "the registry is clean". The second still held 86
+dead rows. A reader looking at one file and a writer touching another produce the observation
+"the command did not work" — while both are behaving exactly as written.
+
+Note the two files are not even shaped alike: in the shared one, `pid` is the pid of the SESSION
+(70832 / 79117 / 50528), so liveness there is decided differently than in the repo-local file.
+A single sweep rule cannot be correct for both, which is itself an argument for one file.
+
+**And path resolution depends on HOW the command was launched.** Under `bash -c` it breaks:
+
+```
+_leadv2_state_path_sh:10: BASH_SOURCE[0]: parameter not set
+```
+
+so the path silently moves. Which registry you edit depends not only on the repo root but on the
+invocation form.
+
+### The requirement for this lane, replacing the retracted one
+
+1. **ONE registry.** The second copy is deleted or becomes a symlink to the first. Two files that
+   can disagree is the defect; keeping them in sync is not a fix.
+2. **Path resolution must not depend on `BASH_SOURCE` or on the invocation form.**
+3. **Unregister must work for N rows**, not only N=1 (`leadv2-dispatch-code.sh:4555`'s
+   exactly-one guard is what let ghosts accumulate until a lane locked itself).
+4. **Refuse to register a row whose pid is `1` or empty** — `1` is `launchd`, alive forever, so
+   such a row is immortal and can never be reaped.
+
+**GO-condition, checkable:** the same command, run from each of the three repo roots AND under
+`bash -c`, resolves to the SAME path. That is the acceptance for item 2, and it is a suite
+assertion, not a claim.
+
+Registry rows for the record: `SD-TWO-REGISTRIES-DISAGREE-01`, `SD-REGISTRY-PID-ONE-IS-IMMORTAL-01`.
+
+### Order of the negative controls
+
+Keep **"sweeping a row whose liveness is `unknown` turns the suite red"** FIRST. It is the boundary
+between a cleaner and a work-destroyer, and that boundary has already been crossed blind twice
+tonight. Every other control ranks below it.
+
+---
+
+## LEAD NOTE — do NOT edit `tests/run-all.sh` in this lane
+
+This lane was refused once with `writeset_conflict`: lane `D4-NO-PATH-LOSES-WORK-01` holds
+`tests/run-all.sh`, because every lane that adds a suite needs a row in the same
+`EXTRA_SUITE_MAP` table. The refusal is CORRECT — two lanes editing one table produce a merge
+conflict at best and a silently dropped row at worst.
+
+So, for this lane only:
+
+- **Do not touch `tests/run-all.sh`.** It is outside your declared write set and the dispatcher
+  will refuse you again if you add it.
+- Instead, put the exact row you need in your report, verbatim and ready to paste — the pattern it
+  must match, the suite path it maps to, and the line it belongs after. The lead lands it once the
+  file is free.
+- Your CI-selection claim then reads honestly: *"the suite exists and is green; its
+  `EXTRA_SUITE_MAP` row is specified in this report and is NOT yet landed, so CI does not select it
+  yet."* Do not write that CI selects it. A row that is not in the file does not select anything,
+  and claiming otherwise is the exact lying-green shape this wave exists to remove.
+
+Everything else in this brief stands unchanged.
+
+### One more reason the registry must be ONE file: a field that means two things
+
+Measured 2026-09-04. In the repo-local registry `pid` is the WORKER's pid. In the shared
+`~/.claude/leadv2-state/leadv2/active.yaml` it is the SESSION's pid. So the rule "pid alive means
+the row is alive" is TRUE in one file and FALSE in the other, and a sweep that applied it correctly
+still preserved a dead row — a correct execution of a wrong rule.
+
+That class of defect is caught by neither a test of the rule nor a test of the file. It is caught
+only by the field having ONE meaning. So the requirement is not "keep the two copies in sync" and
+not even "delete the second copy" — it is: **one registry, one schema, and every field means
+exactly one thing.** If a second file must exist, it is a symlink, never a second shape.
+
+### SCOPE CUT (lead, 2026-09-04): the registry-hardening half moved OUT of this lane
+
+This lane was refused with `writeset_conflict` on `leadv2-active-registry.sh` — another session is
+actively editing that file. So this lane now delivers ONLY the lane-identity half:
+`lib/leadv2-lead-identity.sh` and its suite. Do NOT touch `leadv2-active-registry.sh`.
+
+The registry-hardening requirements above (one registry, no `pid: 1`, unregister for N rows,
+path resolution independent of BASH_SOURCE) stay written down here as CONTEXT — they explain why
+the identity must not be a session-scoped guess — but they are delivered by
+`SD-REGISTRY-PID-ONE-IS-IMMORTAL-01` / `SD-TWO-REGISTRIES-DISAGREE-01`, not by you.
+
+If your identity work needs a change inside `leadv2-active-registry.sh`, do NOT make it: write the
+exact patch into your report and say it is unlanded.
+
+---
+
+## MEASURED PREMISE — the identity does not exist at all. Read this before you design anything.
+
+Measured live on the registry 2026-09-04. The premise of this lane is not "identity is unreliable";
+it is stronger and simpler:
+
+```
+lead_session_id:  Counter({'direct': 16})   <- EVERY row, of ALL THREE sessions
+session_id:       15 distinct values        <- carries the pid: -708, -791, -857
+```
+
+**None of the three variables in the fallback chain is set in any session**, so the chain collapses
+to its last resort, `direct`, everywhere:
+
+```
+${LEADV2_LEAD_SESSION_ID:-${LEADV2_PARENT_SESSION_ID:-${CLAUDE_SESSION_ID:-direct}}}
+```
+
+The same chain appears in SIX places: `leadv2-dispatch-code.sh:7083`, `leadv2-session-runner.sh:197`,
+`leadv2-codex-session-runner.sh:101`, `leadv2-inbox.sh:123`, `leadv2-broad-status.sh:1396`, and the
+test `test-lane-placement-pin.sh:194`.
+
+**A discriminator already exists and is simply not used:** `session_id` carries the session's pid.
+
+### Three consequences — all three belong in the report
+
+1. **The lane cap is SHARED.** `lead_session_lane_cap` counts live lanes per `lead_session_id`, so
+   three independent sessions share one bucket of 2. It has not fired yet (no such refusals in the
+   logs), but under a live cap two sessions would lock out a third, and the refusal would look like
+   anything except the truth.
+2. **A lane cannot be attributed to its session** — the field is a constant.
+3. **A reader forced to pick one row per task cannot pick the RIGHT one** — the field that would
+   distinguish them is identical for all.
+
+Consequence 3 re-reads an existing comment. `leadv2-lanes-snapshot.sh:644` says
+`# last-write-wins on dup task_id`. That is not "duplicates were considered normal" — it is
+**recorded resignation**: they cannot be told apart, so the last one is taken. And
+`lib/leadv2-lane-state.sh:88-91` already names the real repair — *attribute lanes to the correct
+session*. A previous author described this fix and did not make it. **This lane is finishing it.**
+
+### GO-condition — live, not by code reading
+
+**≥2 distinct `lead_session_id` values in the registry while two sessions are working.**
+
+Reading the code is NOT proof here: the chain looks functional, it has six links, and it fails into
+a constant silently. Only the live count proves it.
+
+### Binding acceptance (unchanged, and it is the cap test)
+
+With cap=1, dispatch must REFUSE a second lane of the SAME session and PERMIT a lane from ANOTHER
+session. "Two distinct owners appear in a file" is not the acceptance — the cap behaving
+differently for self and other is.
+
+Registry row: `SD-LEAD-IDENTITY-COLLAPSES-TO-DIRECT-01`.
