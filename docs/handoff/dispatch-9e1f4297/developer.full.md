@@ -301,6 +301,6 @@ work — see the final line of this section, filled in post-commit.)
 `lib/leadv2-parked-detect.sh` is listed in `LANE_WRITES` but carries no diff —
 declared, not touched, per §2 above.
 
-COMMIT_SHA: <filled in below, see final-turn confirmation>
+COMMIT_SHA: b96ed952 ("fix(lane-outcome): verdict-first, unknown-not-died-clean, wording subordinated")
 
 DELIVERABLE_COMPLETE
