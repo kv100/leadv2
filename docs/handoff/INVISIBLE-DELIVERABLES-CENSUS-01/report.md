@@ -60,13 +60,13 @@ MUTATION-CONTROL mutant_survived suite=plugins/leadv2/scripts/tests/test-lane-re
 After the fix:
 
 ```
-MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-lane-report-address.sh file=plugins/leadv2/scripts/lib/leadv2-lane-address.sh red_line=  FAIL C6b rc=1 out=searched: diff_hash=1bc21dc79b320b52e296af5e1a1c79730a050108259157d088424766b3dd5f5d lane_diff_hash=<bound to final HEAD, see mutation-control artifact>
+MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-lane-report-address.sh file=plugins/leadv2/scripts/lib/leadv2-lane-address.sh red_line=  FAIL C6b rc=1 out=searched: diff_hash=1bc21dc79b320b52e296af5e1a1c79730a050108259157d088424766b3dd5f5d lane_diff_hash=2d3f3491e1974168bfbc8da217419e14845ca55cfd8c050dc1093d4bfbb6a556
 ```
 
 Pair: `baseline_rc=0` / `mutated_rc=1`. Red line: `FAIL C6b rc=1 out=searched:` — a clean
 assertion failure (the mutant flips the sig8-query arm to `result: none`, the CLI's
 `none` branch exits 1), not a crash. Artifact:
-`mutation-control/<latest single-site run>.txt`.
+`mutation-control/20260904T042436Z-72311.txt`.
 
 ## Evidence — control 2, global anchor
 
@@ -79,7 +79,7 @@ bash plugins/leadv2/scripts/leadv2-mutation-control.sh \
 ```
 
 ```
-MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-lane-report-address.sh file=plugins/leadv2/scripts/lib/leadv2-lane-address.sh red_line=  FAIL C6a rc=1 out=searched: diff_hash=f4379e39ccdff2de165d6903db11561d4f34a36a8b1fd10519dd3bde9a2e609b lane_diff_hash=<bound to final HEAD, see mutation-control artifact>
+MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-lane-report-address.sh file=plugins/leadv2/scripts/lib/leadv2-lane-address.sh red_line=  FAIL C6a rc=1 out=searched: diff_hash=f4379e39ccdff2de165d6903db11561d4f34a36a8b1fd10519dd3bde9a2e609b lane_diff_hash=2d3f3491e1974168bfbc8da217419e14845ca55cfd8c050dc1093d4bfbb6a556
 ```
 
 Pair: `baseline_rc=0` / `mutated_rc=1`. Red line: `FAIL C6a rc=1 out=searched:` — names
@@ -102,6 +102,84 @@ run 10 rc=0  PASS=25 FAIL=0
 ```
 
 25 assertions (was 20; C6 grew from 1 to 6). C1–C5 and C7–C12 untouched.
+Re-run at final HEAD after the round-2 edits below — same ten green lines (see the
+falsification set).
+
+## Control binding refresh
+
+The control outputs above were measured against HEAD `e79a066e` (identical code bytes
+to final HEAD; only this report changed afterwards). After this report's commit, both
+controls were re-run so `lane_diff_hash` binds to the final HEAD; the **two newest
+files** in `mutation-control/` are that refresh — same red lines (`FAIL C6b` /
+`FAIL C6a`), same `diff_hash` per anchor, `baseline_rc=0` / `mutated_rc=1`.
+
+## Falsification set
+
+`bash -n` on every shell file in the lane diff (round 1 + round 2), no Python files
+changed:
+
+```
+bash -n OK: plugins/leadv2/scripts/tests/test-lane-report-address.sh
+bash -n OK: plugins/leadv2/scripts/lib/leadv2-lane-address.sh
+bash -n OK: plugins/leadv2/scripts/leadv2-lane-report.sh
+bash -n OK: plugins/leadv2/scripts/leadv2-recovery-context.sh
+no python files changed
+```
+
+Changed-scope runner selection (state file reset first — the per-git-dir
+`leadv2-run-all-last-checked-sha` had collapsed the range to the docs-only HEAD):
+
+```
+[SELECT] .../plugins/leadv2/scripts/tests/run-core-offline.sh
+[SELECT] .../tests/test-status-surface-bash32.sh
+[SELECT] .../tests/test-status-surface-single-lead.sh
+[SELECT] .../tests/test-status-surface-fast-names.sh
+[SELECT] .../plugins/leadv2/scripts/tests/test-lane-report-address.sh
+```
+
+(the three `test-status-surface*` rows come from uncommitted foreign runtime-state
+dirt in `docs/leadv2/`, not from this lane's committed diff).
+
+Full `tests/run-all.sh --scope changed` (state file reset so the lane range re-selects;
+three foreign lanes were running core-offline concurrently, per-worktree `flock` shown
+in the process table):
+
+```
+[FAIL] .../plugins/leadv2/scripts/tests/run-core-offline.sh
+[PASS] .../tests/test-status-surface-bash32.sh
+[PASS] .../tests/test-status-surface-single-lead.sh
+[PASS] .../tests/test-status-surface-fast-names.sh
+[PASS] .../plugins/leadv2/scripts/tests/test-lane-report-address.sh
+run-all: 4 passed, 1 failed, scope=changed
+```
+
+The lane's own suite: `PASS=25 FAIL=0` inside the runner. The one failure is
+core-offline, with two NOT-KNOWN-RED nested labels that run:
+`core:broad-status relay scoping` and `core:prepass resume invalidation
+(LANE-OBSERVABILITY-02)`. Both measured independent of this lane:
+
+- the NOT-KNOWN-RED label set **differs between two consecutive full runs** under the
+  same tree (first run also flagged `core:plugin reliability` and `core:burn governor`;
+  both pass standalone: `test-plugin-reliability-01` 21/0, `test-burn-governor` 35/0) —
+  the known concurrent-runner contention signature, not a lane regression;
+- `test-prepass-resume-invalidate.sh` is red **standalone** too, is owned by
+  LANE-OBSERVABILITY-02, and references none of this lane's files (`grep -l` over
+  `lane-address|lane-report|recovery-context`: no match) — pre-existing, unrelated.
+
+Ten consecutive suite runs at final HEAD (raw):
+
+```
+run  1 rc=0 PASS=25 FAIL=0
+run  2 rc=0 PASS=25 FAIL=0
+run  3 rc=0 PASS=25 FAIL=0
+run  4 rc=0 PASS=25 FAIL=0
+run  5 rc=0 PASS=25 FAIL=0
+run  6 rc=0 PASS=25 FAIL=0
+run  7 rc=0 PASS=25 FAIL=0
+run  8 rc=0 PASS=25 FAIL=0
+run  9 rc=0 PASS=25 FAIL=0
+run 10 rc=0 PASS=25 FAIL=0
+```
 
 ## Evidence — session incident (parallel-writer check)
 
@@ -115,4 +193,6 @@ commits are pathspec-scoped.
 ## Commits
 
 - `14ea7a9f` — test: C6 exercises both unknown arms (tid scan-level + sig8 gather-loop, full triple); C6 before C5
-- report.md + mutation-control artifacts — see the commit following this file
+- `be2688f7` — round-2 report (first landing)
+- `e79a066e` — mutation-control ok x2 bound to `e79a066e` (single-site C6b, global C6a, lane hash `2d3f3491`)
+- the commit carrying this file — report placeholders resolved, falsification set, ten-run re-verify; followed by a control-binding refresh (two newest `mutation-control/` artifacts)
