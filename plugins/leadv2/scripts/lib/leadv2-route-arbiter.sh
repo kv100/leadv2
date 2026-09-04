@@ -31,11 +31,28 @@ route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   quota_json="$(bash "$live" json 2>/dev/null)" || return 67
   free_gate="${LEADV2_ROUTE_ARBITER_FREEPOOL_GATE:-${here}/lib/leadv2-freepool-gate.sh}"
   free_rc=1
+  free_reason=""
   if [[ -x "$free_gate" || -f "$free_gate" ]]; then
-    bash "$free_gate" check >/dev/null 2>&1; free_rc=$?
+    # FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01: the gate's refusal marker
+    # (LEADV2_DISPATCH_REFUSED: arm_down|gate_broken|pin_drift) previously
+    # died in ">/dev/null 2>&1", so "proxy dead" and "quota burnt" both
+    # arrived as the same bare non-zero rc and rendered identically below as
+    # util_freepool=100 — a dead arm read as a busy one for a full day
+    # (2026-09-04). Capture the stderr, parse the named reason out of it,
+    # and re-emit the arm_down case loudly: the arbiter's own stderr is what
+    # lands in the dispatch journal a lead actually reads.
+    free_err="$(bash "$free_gate" check 2>&1 >/dev/null)"; free_rc=$?
+    free_reason="$(printf '%s\n' "${free_err}" | sed -n 's/.*LEADV2_DISPATCH_REFUSED:[[:space:]]*\([A-Za-z0-9._-]\{1,\}\).*/\1/p' | head -1)"
+  fi
+  if [[ "${free_reason}" == "arm_down" ]]; then
+    # LOUD journal line — the one fact the lead must not have to reconstruct.
+    # Not auto-restarting the proxy (founder scope 2026-09-04): name the fix,
+    # do not perform it.
+    printf '[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start\n' >&2
   fi
   ROUTE_ARBITER_ROLE="$role" ROUTE_ARBITER_DESCRIPTOR="$descriptor" \
   ROUTE_ARBITER_QUOTA="$quota_json" ROUTE_ARBITER_FREEPOOL_RC="$free_rc" \
+  ROUTE_ARBITER_FREEPOOL_REASON="${free_reason}" \
   ROUTE_ARBITER_STATE_FILE="${LEADV2_ROUTE_ARBITER_STATE_FILE:-${TMPDIR:-/tmp}/leadv2-route-arbiter-last-arm}" \
   python3 - "$routing" <<'PY'
 import json, os, sys, tempfile
@@ -47,6 +64,13 @@ try:
 except Exception:
     raise SystemExit(2)
 role=os.environ['ROUTE_ARBITER_ROLE']; free_ok=os.environ.get('ROUTE_ARBITER_FREEPOOL_RC')=='0'
+# FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01: the gate's named refusal reason
+# (arm_down|gate_broken|pin_drift), parsed upstream from the gate's stderr
+# marker. This is the difference between "dead" and "busy": pct below stays a
+# NUMBER (sort/capped semantics unchanged — a dead freepool must still lose
+# selection), but the RENDERING below turns arm_down into the word `down` so
+# the decision line can never present a dead arm as a 100%-busy one.
+free_reason=str(os.environ.get('ROUTE_ARBITER_FREEPOOL_REASON') or '').strip()
 # T17 fix-round (C1): normalize kind to the matrix vocabulary. Real callers
 # pass fanout-class-funnel / backlog-pump (now first-class matrix entries,
 # see config/leadv2-routing.yaml) plus the abstract code|docs|review|plan|
@@ -150,7 +174,8 @@ def util(provider):
     # The demotion now happens on the effective cost, right before the sort.
     empty={'pct':0.0,'unknown':False,'hours_to_reset':None,'period_hours':None,'reset_basis':'n/a'}
     if provider=='freepool':
-        return dict(empty, pct=(0.0 if free_ok else 100.0))
+        return dict(empty, pct=(0.0 if free_ok else 100.0),
+                    status=('ok' if free_ok else ('down' if free_reason=='arm_down' else (free_reason or 'unknown'))))
     x=q.get('anthropic' if provider=='claude' else provider,{})
     if x.get('status')!='ok': return dict(empty, pct=100.0, unknown=True)
     if provider=='glm':
@@ -212,7 +237,11 @@ else:
 test_only=bool(d.get('test_only'))
 floor_applies = (size_raw in ('standard','heavy','strategic') and kind == 'code' and not test_only) if floor_mode=='bulk_only' else False
 def ufmt():
-    util_part=' '.join('util_%s=%s' % (p, 'unknown_capped' if unk[p] else '%d'%u[p]) for p in ('glm','codex','claude','freepool'))
+    # FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01: a DOWN freepool renders as
+    # the word `down`, never as the number 100 — one number must not carry
+    # two facts. Other gate refusals (gate_broken/pin_drift) keep their
+    # numeric pct and are named by the freepool_gate= token on the line.
+    util_part=' '.join('util_%s=%s' % (p, 'unknown_capped' if unk[p] else ('down' if (p=='freepool' and _uraw['freepool'].get('status')=='down') else '%d'%u[p])) for p in ('glm','codex','claude','freepool'))
     reset_part=' '.join('reset_%s=%s' % (p, ('%.2fh_%s' % (_uraw[p]['hours_to_reset'], _uraw[p]['reset_basis'])) if _uraw[p].get('hours_to_reset') is not None else 'n/a') for p in ('glm','codex','claude','freepool'))
     return util_part + ' ' + reset_part
 ceil=((data.get('router_v2') or {}).get('quota_ceilings') or {})
@@ -380,6 +409,11 @@ else:
 _w_reset=('%.2fh' % _w_info['hours_to_reset']) if _w_info.get('hours_to_reset') is not None else 'n/a'
 _quota = ' remaining=%s reset_in=%s reset_basis=%s' % (_w_remaining, _w_reset, _w_info.get('reset_basis','n/a'))
 _wait = (' wait_applied=%s' % ','.join(_waited)) if _waited else ''
-print('arm=%s model=%s tier=%s effort=%s reason=cheapest_capable chain=%s %s%s%s%s%s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),effort,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_quota,_wait))
+# FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01: name ANY gate refusal on the
+# decision line itself — this line is what the dispatcher journals verbatim
+# (route_resolved ... util_glm=... tail), so the freepool verdict travels
+# with every decision, not only the ones a human re-derives by hand.
+_gate = (' freepool_gate=%s' % free_reason) if (free_reason and not free_ok) else ''
+print('arm=%s model=%s tier=%s effort=%s reason=cheapest_capable chain=%s %s%s%s%s%s%s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),effort,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_quota,_wait,_gate))
 PY
 }
