@@ -1309,8 +1309,8 @@ if [[ -f "${_FALSIFY_BIN}" ]]; then
       printf 'status: blocked\nreason: suite_falsifiability_undetermined\nsuite: %s\n\n' "${_fs_path}"
       printf 'The falsifiability check could not determine whether this suite can go\n'
       printf 'red — it may already be failing at baseline (run it yourself:\n'
-      printf 'bash %s). Make the suite green, and make its failures change its exit\n'
-      printf 'code, then re-run review.\n\n' "${_fs_path}"
+      printf 'bash %s). Make the suite green, and make its failures change its exit\n' "${_fs_path}"
+      printf 'code, then re-run review.\n\n'
       printf '%s\n' "${_fs_out}"
     } > "${HANDOFF}/review-gate.md.tmp"
     mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
@@ -1329,8 +1329,16 @@ fi
 # report.md live there); when omitted, falls back to ${HANDOFF}-scoped
 # checks with an explicit dod_skip note -- never a silent assumption that
 # HANDOFF equals the task dir (CHALLENGE-03), never a crash.
+# T12 (missing/unreadable diff file): the DoD gate cannot check anything
+# against a diff it cannot read -- its own output degrades every diff-keyed
+# check to "undetermined" (reason=no_diff_file) and blocks with exit 10,
+# which pre-empts every later step including mission-file write. That
+# produces the worse failure mode this gate exists to prevent: a review that
+# silently produced NO mission at all instead of the always-safe exhaustive
+# round 1. Scope: only the REVIEW_DIFF_HASH_OK==0 path skips this gate;
+# a readable diff still runs it exactly as before.
 _DOD_GATE_SH="${SCRIPT_DIR}/lib/leadv2-dod-gate.sh"
-if [[ -f "${_DOD_GATE_SH}" ]]; then
+if [[ "${REVIEW_DIFF_HASH_OK:-0}" -eq 1 && -f "${_DOD_GATE_SH}" ]]; then
   _DOD_TASK_DIR="${TASK_DIR_ARG:-${HANDOFF}}"
   _dod_fallback_note=""
   [[ -z "${TASK_DIR_ARG}" ]] && _dod_fallback_note="dod_skip check=no_task_dir reason=task_dir_omitted_fallback_to_handoff"
