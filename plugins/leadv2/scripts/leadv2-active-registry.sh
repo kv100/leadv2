@@ -5,6 +5,7 @@
 # Functions:
 #   leadv2_active_register <task_id> <class> <worktree> <branch> <daemon_mode>
 #                           [<group_key>] [<risk_tags>] [<writes>]  (LANE-WRITESET-REGISTRY-01)
+#                           [<writes_reason>]  (WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01)
 #   leadv2_active_unregister <task_id>
 #   leadv2_active_update_phase <task_id> <phase> [<resolved_model>]
 #   leadv2_active_update_pulse <task_id>
@@ -41,6 +42,13 @@
 # This closes the TOCTOU where dispatch-code.sh registers a row before the
 # architect prepass has resolved its writes, then patches the same row once
 # known (dispatch-code.sh:~5859 and :~6005).
+# WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: the window is measured
+# from the row's `first_seen_at` (its FIRST registration), never from
+# `started_at` -- recreation (a pid=None placeholder replaced by a later
+# register) used to reset the clock and make the window unreachable. A row
+# that genuinely cannot declare yet records WHY in `writes_reason`, and the
+# pending refusal surfaces it: "reason=pending_resolution
+# writes_reason=<why>".
 
 set -euo pipefail
 
@@ -356,7 +364,14 @@ def _lv2_ws_dead(other):
     return pid is not None and not _pid_alive(pid)
 
 def _lv2_ws_pending(other):
-    started = other.get("started_at")
+    # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: the window is measured
+    # from the row's FIRST registration (first_seen_at, carried across
+    # recreation by the register op below), never from the latest recreation
+    # -- a pid=None placeholder row re-registered every couple of minutes
+    # used to reset started_at on every attempt and never leave the window,
+    # making the 900s bound unreachable in practice. Rows written before
+    # first_seen_at existed fall back to started_at.
+    started = other.get("first_seen_at") or other.get("started_at")
     if not started:
         return False
     try:
@@ -398,10 +413,17 @@ try:
         (session_id, task_id, worktree, branch, started_at,
          phase, cls, pid, pid_birth, parent_session_id,
          daemon_mode, last_pulse_at, pulse_log, group_key, risk_tags,
-         writes) = args
+         writes) = args[:16]
+        # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01 step 3: optional 17th
+        # arg -- WHY this row has no write set, recorded by creators that
+        # genuinely cannot know yet (plan gate, fork attach, mid-prepass
+        # dispatch). The pending refusal surfaces it verbatim; a declared
+        # write set clears it.
+        writes_reason = args[16] if len(args) > 16 else "-"
         group_key = None if group_key in ("", "null", "None", "-") else group_key
         risk_tags = None if risk_tags in ("", "null", "None", "-") else risk_tags
         writes = None if writes in ("", "null", "None", "-") else writes
+        writes_reason = None if writes_reason in ("", "null", "None", "-") else writes_reason
 
         pid_int = int(pid) if pid not in ("null", "", "None") else None
         daemon_bool = daemon_mode.lower() in ("1", "true", "yes")
@@ -434,7 +456,12 @@ try:
                     # below, which remains the policy for genuinely legacy
                     # rows outside the pending window.
                     if _lv2_ws_pending(other):
-                        print(f"[registry] writeset conflict: other={other.get('task_id')} reason=pending_resolution", file=sys.stderr)
+                        # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: name
+                        # WHY the incumbent has no write set (its recorded
+                        # writes_reason), so a blocked lead can tell a
+                        # mid-prepass row from a creator that will never
+                        # declare. Rows without the key say undeclared.
+                        print(f"[registry] writeset conflict: other={other.get('task_id')} reason=pending_resolution writes_reason={other.get('writes_reason') or 'undeclared'}", file=sys.stderr)
                         sys.exit(5)
                     # D7: an incumbent with neither key is the third state,
                     # `unknown` -- never silently "conflicts with everything"
@@ -466,6 +493,7 @@ try:
         # duplicate or leaving a false main-worktree claim.
         existing = next((s for s in sessions if s.get("task_id") == task_id), None)
         refresh_existing = False
+        prev_row = None
         if existing:
             if _pid_alive(existing.get("pid")):
                 refresh_existing = True
@@ -478,8 +506,17 @@ try:
                 existing["updated_at"] = _now_iso()
                 existing["stale"] = False
                 existing["proc_kind"] = _proc_kind(existing.get("pid"))
+                # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: refresh
+                # must not reset the pending clock -- first_seen_at survives
+                # from the row's original registration.
+                existing["first_seen_at"] = existing.get("first_seen_at") or existing.get("started_at")
                 if writes is not None:
                     existing["writes"] = writes
+                    # A row that just declared its write set no longer needs
+                    # its no-set reason.
+                    existing["writes_reason"] = None
+                elif writes_reason is not None:
+                    existing["writes_reason"] = writes_reason
                 # LIVE-LANE-IS-ABSENT-FROM-THE-REGISTRY-01: a row created by a
                 # DIFFERENT registrar (leadv2-fanout.sh's own
                 # _fanout_register_session stamps "f-<ts>-<pid>-<pid>", not
@@ -500,10 +537,25 @@ try:
                 existing["session_id"] = session_id
                 print(session_id)
             else:
+                prev_row = existing
                 sessions.remove(existing)
 
         if not refresh_existing:
             now = _now_iso()
+            # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: a recreation
+            # (dead or never-recorded pid on the old row -- e.g. fanout's
+            # pid=null reservation replaced by dispatch's register) must not
+            # launder away what the previous row already declared, must not
+            # reset the pending-window clock, and must carry a still-true
+            # no-set reason forward.
+            prev_row = prev_row or {}
+            if writes is None:
+                writes = prev_row.get("writes")
+                if writes is None:
+                    writes = prev_row.get("write_set")
+            if writes_reason is None:
+                writes_reason = prev_row.get("writes_reason")
+            first_seen_at = prev_row.get("first_seen_at") or prev_row.get("started_at") or started_at
             sessions.append({
                 "session_id": session_id,
                 "task_id": task_id,
@@ -541,6 +593,12 @@ try:
                 "group_key": group_key,
                 "risk_tags": risk_tags,
                 "writes": writes,
+                # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: why the row
+                # has no write set (None once writes are declared), and the
+                # row's FIRST-registration timestamp the pending window is
+                # measured from (recreation-immune; see _lv2_ws_pending).
+                "writes_reason": writes_reason if writes is None else None,
+                "first_seen_at": first_seen_at,
                 # D-d registry-honesty fields (SUPERVISE-V2-01 item 3) — additive,
                 # every new row registers V2 explicitly; legacy rows written by
                 # an older registry simply lack these keys (reader-side infers
@@ -760,6 +818,9 @@ try:
             print(f"[registry] task not registered for set_writes: {task_id}", file=sys.stderr)
             sys.exit(4)
         target["writes"] = writes_csv
+        # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: a row that just
+        # declared its write set no longer needs its no-set reason.
+        target["writes_reason"] = None
         target["updated_at"] = _now_iso()
 
     # LANE-TRUTH-BATCH-01 Row 1: stamp the authoritative log_path AFTER
@@ -932,6 +993,10 @@ _lv2_pid_birth() {
 
 # leadv2_active_register <task_id> <class> <worktree> <branch> <daemon_mode>
 #                         [<group_key>] [<risk_tags>] [<writes>]
+#                         [<writes_reason>]  (WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01:
+#                         WHY the row has no write set yet; recorded verbatim
+#                         on the row, surfaced by the pending refusal; ignored
+#                         when <writes> is non-empty)
 # Writes a new session row to active.yaml.
 # Returns (stdout): session_id in format s-YYYYMMDDTHHMMSSZ-PID
 # Returns (exit code): 0 ok; 5/6 on a LANE-WRITESET-REGISTRY-01 admission
@@ -947,6 +1012,7 @@ leadv2_active_register() {
   local group_key="${6:-}"
   local risk_tags="${7:-}"
   local writes="${8:--}"
+  local writes_reason="${9:--}"
 
   if [[ -z "$branch" ]]; then
     branch="$(git -C "$worktree" rev-parse --abbrev-ref HEAD 2>/dev/null || printf -- 'unknown')"
@@ -975,7 +1041,8 @@ leadv2_active_register() {
     "$lockfile" "$yaml_file" register \
     "$session_id" "$task_id" "$worktree" "$branch" "$ts" \
     "intake" "$cls" "${durable_pid}" "$pid_birth" "$parent_sid" \
-    "$daemon_mode" "$ts" "$pulse_log" "$group_key" "$risk_tags" "$writes")" || _register_rc=$?
+    "$daemon_mode" "$ts" "$pulse_log" "$group_key" "$risk_tags" "$writes" \
+    "$writes_reason")" || _register_rc=$?
 
   # LANE-WRITESET-REGISTRY-01 step 3: propagate the python op's exit code
   # instead of swallowing it -- a writeset admission refusal (rc 5/6) must

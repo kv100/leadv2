@@ -59,9 +59,13 @@ _gate1_register_active() {
   local _yaml_dir="${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/docs/leadv2"
   mkdir -p "$_yaml_dir"
   if [[ -f "$_registry" ]]; then
+    # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: the gate1 row cannot
+    # know the lane's write set yet (the plan is prose here; the architect
+    # prepass resolves writes at dispatch), so record WHY the row is
+    # write-less -- its pending-window refusals then say so.
     LEADV2_PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" \
       source "$_registry" \
-      && leadv2_active_register "$task_id" "${cls:-Standard}" "$(pwd)" "" "false" \
+      && leadv2_active_register "$task_id" "${cls:-Standard}" "$(pwd)" "" "false" "" "" "" "plan_gate_pre_dispatch" \
       && { log "registered task in active.yaml via registry"; return 0; } \
       || { log "WARNING: registry register failed — falling back to direct write"; true; }
   fi

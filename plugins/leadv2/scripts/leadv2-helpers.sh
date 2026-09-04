@@ -656,7 +656,11 @@ leadv2_lock_acquire() {
   if [[ -n "${LEADV2_TASK_ID:-}" ]]; then
     local cls="${LEADV2_TASK_CLASS:-Standard}"
     local worktree="${LEADV2_PROJECT_ROOT}"
-    leadv2_active_register "${LEADV2_TASK_ID}" "$cls" "$worktree" "" "${LEADV2_DAEMON:-false}" >/dev/null 2>&1 || true
+    # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: the legacy lock shim
+    # can never know a write set -- say so on the row instead of landing a
+    # bare write-less one. Extra args are ignored if this resolves to the
+    # active.md variant of leadv2_active_register (whichever sourced last).
+    leadv2_active_register "${LEADV2_TASK_ID}" "$cls" "$worktree" "" "${LEADV2_DAEMON:-false}" "" "" "" "legacy_lock_acquire" >/dev/null 2>&1 || true
     return 0
   fi
   # Legacy file-lock fallback when no task ID is set.

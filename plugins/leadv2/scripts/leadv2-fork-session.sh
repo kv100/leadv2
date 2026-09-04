@@ -203,7 +203,10 @@ cmd_preflight() {
   _leadv2_state_path_sh() { printf '%s' "${SCRIPT_DIR}/leadv2-state-path.sh"; }
   # register's helpers print bookkeeping lines to stdout (session id, render
   # note) — keep stdout clean: preflight's contract is ONE line, the lane root.
-  if ! leadv2_active_register "$task_id" "$cls" "$lane_root" "worktree-${task_id}" "false" >/dev/null; then
+  # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: a fork attaches before
+  # anything knows the lane's write set -- record WHY the row is write-less
+  # so its pending-window refusals say so.
+  if ! leadv2_active_register "$task_id" "$cls" "$lane_root" "worktree-${task_id}" "false" "" "" "" "fork_attach_unknown" >/dev/null; then
     log_error "active.yaml register failed for ${task_id}"
     exit 1
   fi
