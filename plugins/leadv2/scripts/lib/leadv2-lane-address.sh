@@ -267,6 +267,7 @@ PY
       local rel="" relf=""
       rel="${dir#"$root"/}"
       relf="${rel%/}/$f"
+      case "$relf" in *"//"*) relf=$(printf "%s" "$relf" | tr -s "/" "/");; esac
       sz=$(wc -c < "$dir/$f" | tr -d ' ')
       ts=$(date -u -r "$dir/$f" +%FT%TZ 2>/dev/null || printf '?')
       LA_FOUND_ROWS="${LA_FOUND_ROWS}[$label]  $relf  ${sz}b  $ts"$'\n'
