@@ -239,4 +239,23 @@ State restored to `35192125` before the real changed-scope run.
 
 - `bash -n`: `leadv2-guard-census.sh`, `test-guard-census.sh`, `test-promise-guard-unknown-kind.sh` — OK.
 - `python3 -m py_compile`: no Python files changed.
-- `bash tests/run-all.sh --scope changed` — see final message (run below, result pasted verbatim).
+- `bash tests/run-all.sh --scope changed` (foreground via background-capture, ~25 min):
+
+```
+run-all: 6 passed, 1 failed, scope=changed
+  Failures (blocking):
+    - plugins/leadv2/scripts/tests/run-core-offline.sh
+```
+
+  All 6 selected suites that cover this diff PASSED (incl. `test-guard-census.sh` 43/43,
+  `test-promise-guard-unknown-kind.sh` 21/0). The one failure is the ALWAYS-ON
+  `run-core-offline.sh`; its 11 internal `FAILED:` labels break down as 9 on
+  `tests/known-red-suites.txt` (pre-existing, FIFTEEN-RED-SUITES-01) + 2 off-list:
+  `T14 worker MCP (glm spawn role config)` — its pinned pre-T14 argv baseline lacks the
+  `--effort low` that GLM-EFFICIENCY-01's effort wiring now appends to the glm spawn —
+  and `prepass resume invalidation (LANE-OBSERVABILITY-02)`. Neither path is touched by
+  this lane's diff (census + fixtures + report only). A FOREIGN concurrent
+  `tests/run-all.sh --scope changed` (pid 70437, cwd
+  `worktrees/WRITESET-REFUSAL-NEVER-NAMES-THE-BLOCKER-01`, live at check time) was running
+  core-offline in parallel — the measured condition that flips nested core-offline suites
+  NOT-KNOWN-RED. Left for the liveness/CI owners; not widened into any known-red list.
