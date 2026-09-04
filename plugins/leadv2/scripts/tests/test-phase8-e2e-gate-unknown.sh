@@ -32,7 +32,14 @@
 # Run: bash scripts/tests/test-phase8-e2e-gate-unknown.sh
 # Exit 0 = all pass; non-zero = failures found.
 set -uo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# GATE-UNKNOWN-MUST-NOT-KILL-A-ROUND-01 / lead fix: BASH_SOURCE does not exist under
+# zsh, so this resolved to the caller's cwd and the suite ran against script paths
+# that do not exist (five zsh runs rc=1, while the round reported "10/10 zsh green").
+# Same order as the merged lib/leadv2-lane-state.sh: this file's path when bash names
+# it, then $0 when it names a real file.
+_t8_src="${BASH_SOURCE[0]:-}"
+if [[ -z "$_t8_src" && -f "${0:-}" ]]; then _t8_src="$0"; fi
+SCRIPT_DIR="$(cd "$(dirname "$_t8_src")" && pwd)"
 SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPTS_ROOT}/leadv2-temp.sh"
 
