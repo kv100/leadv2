@@ -389,7 +389,7 @@ SUITE_DEFS=(
   # _CORE_OFFLINE_OWNED_SUITES, but that list sets the SEVERITY of a
   # hermeticity violation (run_check ~296: owned = FAIL, otherwise WARN),
   # never placement -- it does not assert that a suite dirties anything.
-  "product-close waits for worker exit|||bash $TEST_DIR/test-no-work-terminal.sh"
+  "product-close waits for worker exit|||bash $TEST_DIR/test-no-work-terminal.sh|||SERIAL"
   "product-close resumes a died-with-work lane once|||bash $TEST_DIR/test-dwr-resume.sh"
   "parked worker contract and one-shot resume (WORKER-PARKED-ON-BG-01)|||bash $TEST_DIR/test-parked-worker-resume.sh"
   "red-first pinned-baseline resolver (RED-FIRST-SELF-INVALIDATES-01)|||bash $TEST_DIR/test-red-first-baseline.sh"
@@ -397,7 +397,7 @@ SUITE_DEFS=(
   # serial: on _CORE_OFFLINE_OWNED_SUITES -- writes real REPO_ROOT/docs/leadv2
   # state; concurrent with another owned suite's write, run_check's hermetic
   # git-status diff misattributes one suite's dirt to the other.
-  "Codex full-cycle runner|||bash $TEST_DIR/test-codex-session-runner.sh"
+  "Codex full-cycle runner|||bash $TEST_DIR/test-codex-session-runner.sh|||SERIAL"
   "Codex terminal lead intake|||bash $TEST_DIR/test-codex-lead-intake.sh"
   "Codex child-session recursion boundary|||bash $TEST_DIR/test-codex-child-session-boundary.sh"
   "autonomous session spawner|||bash $TEST_DIR/test-session-spawner.sh"
@@ -419,7 +419,7 @@ SUITE_DEFS=(
   # _CORE_OFFLINE_OWNED_SUITES, but that list sets the SEVERITY of a
   # hermeticity violation (run_check ~296: owned = FAIL, otherwise WARN),
   # never placement -- it does not assert that a suite dirties anything.
-  "lanes snapshot reconciliation|||bash $TEST_DIR/test-lanes-snapshot.sh"
+  "lanes snapshot reconciliation|||bash $TEST_DIR/test-lanes-snapshot.sh|||SERIAL"
   "T13 slice2 (arbiter bench-fallback + abandon dedup)|||bash $TEST_DIR/test-t13-slice2.sh"
   "Phase-8 task schema|||bash $TEST_DIR/test-leadv2-phase8-assert-a2-schema.sh"
   "Phase-8 merge/completion proof|||bash $PLUGIN_ROOT/tests/test-deploy-merge-blocker-gate.sh"
@@ -490,7 +490,7 @@ SUITE_DEFS=(
   # hazard, but also could not fully disprove it (uses real `git worktree`
   # machinery via leadv2-lane-worktree.sh). Left serial: an unconfirmed
   # disproof is not grounds to risk a flaky-red incident.
-  "stop-gate autocommit on worker exit (V3-STOP-GATE-01)|||bash $TEST_DIR/test-stop-gate.sh"
+  "stop-gate autocommit on worker exit (V3-STOP-GATE-01)|||bash $TEST_DIR/test-stop-gate.sh|||SERIAL"
   "core-offline cross-run exclusive lock (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-lock-01.sh"
   "core-offline shard partition (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-shards-01.sh"
   # parallel (round 3): pure introspection -- asserts SUITE_DEFS shard
