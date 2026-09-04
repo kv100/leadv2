@@ -3792,11 +3792,16 @@ _prepass_writes() { # <sig8> -> CSV writes or empty
 # never a wrong one.
 _emit_writeset_refusal() {
   local sig8="$1" lane_writes="$2" reg_err="$3" founder_task_id="$4"
-  local line other reason paths ws_age
+  local line other reason paths ws_age ws_reason
   line="$(printf '%s\n' "${reg_err}" | grep -m1 'writeset conflict: other=' || true)"
   other="$(printf '%s\n' "${line}" | sed -nE 's/.* other=([^[:space:]]+).*/\1/p' | head -n 1)"
   reason="$(printf '%s\n' "${line}" | sed -nE 's/.* reason=([^[:space:]]+).*/\1/p' | head -n 1)"
   paths="$(printf '%s\n' "${line}" | sed -nE 's/.* paths=(.*)$/\1/p' | head -n 1)"
+  # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: the pending line also
+  # carries the incumbent's recorded WHY (writes_reason=<why>); surface it
+  # verbatim so a blocked lead can tell a mid-prepass row from a creator
+  # that will never declare (undeclared = legacy row).
+  ws_reason="$(printf '%s\n' "${line}" | sed -nE 's/.* writes_reason=([^[:space:]]+).*/\1/p' | head -n 1)"
   if [[ -n "${other}" && "${reason}" == "pending_resolution" ]]; then
     # Name how long the incumbent has held the window: read the row the
     # registry just named (the same active.yaml the register call judged).
@@ -3820,7 +3825,7 @@ except Exception:
     pass
 PYEOF
 )" || ws_age=""
-    emit decision "dispatch_refused reason=writeset_pending task=${sig8} blocked_by=${other} age_s=${ws_age:-unknown} window_s=${LEADV2_WRITESET_PENDING_WINDOW_SEC:-900} writes=${lane_writes}"
+    emit decision "dispatch_refused reason=writeset_pending task=${sig8} blocked_by=${other} age_s=${ws_age:-unknown} window_s=${LEADV2_WRITESET_PENDING_WINDOW_SEC:-900} writes_reason=${ws_reason:-undeclared} writes=${lane_writes}"
     _dl_note "${sig8}" refused writeset_pending "" "${founder_task_id}"
     printf 'LEADV2_DISPATCH_REFUSED: writeset_pending\n'
     return 0
@@ -7385,7 +7390,14 @@ cmd_resolve() {
       # through _emit_writeset_refusal with it. Stdout contract (session_id)
       # is unchanged; a failed mktemp degrades to the old 2>/dev/null.
       _register_errf="$(mktemp "${TMPDIR:-/tmp}/leadv2-regerr.XXXXXX" 2>/dev/null)" || _register_errf=""
-      _register_out="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" "" "" "" "${lane_writes}" 2>"${_register_errf:-/dev/null}")"
+      # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: when the lane cannot
+      # declare writes yet (the architect prepass has not resolved them),
+      # the row records WHY so a concurrent refusal names the state instead
+      # of a bare pending_resolution. A lane that already knows its writes
+      # (row-declared or CLI --writes) declares them and carries no reason.
+      local _reg_ws_reason="prepass_pending"
+      [[ -n "${lane_writes}" ]] && _reg_ws_reason="-"
+      _register_out="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" "" "" "" "${lane_writes}" "${_reg_ws_reason}" 2>"${_register_errf:-/dev/null}")"
       _register_rc=$?
       _register_err=""
       if [[ -n "${_register_errf}" ]]; then

@@ -902,6 +902,14 @@ _fanout_register_session() {
   # supply the artifact path it actually knows about; every existing caller omits
   # it and keeps today's hardcoded path, unchanged.
   local log_path_override="${15:-}"
+  # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: optional 16th/17th args
+  # -- the lane's write set (when the caller already knows it) and WHY it
+  # does not (when it genuinely cannot). A write-less row inside the pending
+  # window blanket-refuses every concurrent dispatch before any path
+  # comparison, so a creator that knows its write set must declare it here,
+  # and one that cannot must say so.
+  local writes="${16:-}"
+  local writes_reason="${17:-pre_dispatch_spawn}"
   local branch ts_now yaml_file lockfile session_id pulse_log_path
   branch="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || printf -- 'unknown')"
   ts_now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -915,13 +923,16 @@ _fanout_register_session() {
     "$branch" "$ts_now" "$cls" "$pid_val" "$window_title" "$daemon_mode" \
     "$pulse_log_path" "$pid_pending" "$where" \
     "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" \
-    "$provider" "$route_reason" "$group_key" <<'PYEOF' || _reg_rc=$?
+    "$provider" "$route_reason" "$group_key" "$writes" "$writes_reason" <<'PYEOF' || _reg_rc=$?
 import sys, os, fcntl, tempfile, yaml
 
 (lockfile, yaml_path, session_id, task_id, worktree, branch, started_at,
  cls, pid_str, window_title, daemon_mode_str, pulse_log, pid_pending_str,
  where, risk_tags, lead_model, lead_effort, class_reason,
- provider, route_reason, group_key) = sys.argv[1:22]
+ provider, route_reason, group_key, writes_str, writes_reason_str) = sys.argv[1:24]
+
+writes = None if writes_str in ("", "null", "None", "-") else writes_str
+writes_reason = None if writes_reason_str in ("", "null", "None", "-") else writes_reason_str
 
 pid_val = None if pid_str in ("null", "", "None") else int(pid_str)
 daemon_mode = daemon_mode_str.lower() in ("1", "true", "yes")
@@ -1000,6 +1011,14 @@ try:
     if existing and pid_alive(existing.get("pid")):
         print(f"[fanout] {task_id} already has a live registered session — not overwriting", file=sys.stderr)
         sys.exit(0)
+    # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: a recreation over a
+    # dead/absent-pid row must not launder away what that row already
+    # declared, nor reset its pending-window clock (first_seen_at).
+    prev_row = existing or {}
+    if writes is None:
+        writes = prev_row.get("writes")
+        if writes is None:
+            writes = prev_row.get("write_set")
     if existing:
         sessions.remove(existing)
 
@@ -1056,6 +1075,14 @@ try:
         "class_reason": class_reason,
         "provider": provider,
         "route_reason": route_reason,
+        # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: same writeset field
+        # set the shared register() op persists -- fanout is a SECOND writer
+        # of active.yaml, so a row it writes must declare its write set (or
+        # record why it cannot) exactly like one written through
+        # leadv2_active_register.
+        "writes": writes,
+        "writes_reason": writes_reason if writes is None else None,
+        "first_seen_at": prev_row.get("first_seen_at") or prev_row.get("started_at") or started_at,
         # SUPERVISE-V2-01 fix-1 (Codex#2): same registry-honesty field set
         # leadv2_active_register()/op=register writes (leadv2-active-registry.sh)
         # -- fanout is a SECOND writer of active.yaml (window_title has no slot
@@ -1811,9 +1838,24 @@ launch_via_dispatch_code() {
   # pid_pending=true) so the SAME admission check dispatch-code.sh's spawn can
   # never bypass runs before, not after, the worker exists. Any non-launch
   # outcome below releases this reservation via leadv2_active_unregister.
+  # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: read the lane contract
+  # BEFORE reserving and declare the write set ON the reservation row when
+  # the task row carries one. The old order reserved first and read the
+  # contract after, so the pid=null reservation row sat write-less from
+  # birth -- and a write-less row inside the pending window blanket-refuses
+  # every concurrent dispatch (reason=pending_resolution) before any path
+  # comparison, the false block this lane removes. When the task row itself
+  # carries no writes, the reservation records that instead of pretending.
+  local _lane_writes="" _lane_acceptance="" _lane_rollback="0"
+  IFS=$'\t' read -r _lane_writes _lane_acceptance _lane_rollback <<< "$(_fanout_task_lane_contract "$tid")"
+  [[ "$_lane_writes" == "-" ]] && _lane_writes=""
+  [[ "$_lane_acceptance" == "-" ]] && _lane_acceptance=""
+  local _reserve_writes="" _reserve_reason="task_row_undeclared"
+  [[ -n "${_lane_writes}" ]] && { _reserve_writes="${_lane_writes}"; _reserve_reason=""; }
   local _reserve_rc=0
   _fanout_register_session "$tid" "$cls" "null" "dispatch-code: ${tid} (reserving)" "true" "true" "dispatch-code" \
-    "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" "$provider" "$route_reason" "$group_key" || _reserve_rc=$?
+    "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" "$provider" "$route_reason" "$group_key" \
+    "$_reserve_writes" "$_reserve_reason" || _reserve_rc=$?
   if [[ "$_reserve_rc" -eq 3 ]]; then
     log "single-worker funnel: task=${tid} lane admission refused under lock BEFORE dispatch (F6/FIX3 cap) -- releasing claim, not launched this run"
     leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
@@ -1838,10 +1880,10 @@ launch_via_dispatch_code() {
   # rollback_onestep when the founder task row carries them -- dispatch-code.sh
   # already implements --writes/--acceptance-cmd/--rollback-onestep, this caller
   # simply never read them off the task before now.
-  local _lane_writes="" _lane_acceptance="" _lane_rollback="0"
-  IFS=$'\t' read -r _lane_writes _lane_acceptance _lane_rollback <<< "$(_fanout_task_lane_contract "$tid")"
-  [[ "$_lane_writes" == "-" ]] && _lane_writes=""
-  [[ "$_lane_acceptance" == "-" ]] && _lane_acceptance=""
+  # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: _lane_writes/_lane_
+  # acceptance/_lane_rollback are resolved ABOVE the reservation (so the
+  # reservation row itself could declare its write set at birth); reused
+  # here unchanged.
 
   # WRITES-CONFLICT-NOTIFY (SUPERVISOR-AUDIT-01 T-E, founder point: notify,
   # not hard-block): when this lane declares writes, (a) stamp them onto its
