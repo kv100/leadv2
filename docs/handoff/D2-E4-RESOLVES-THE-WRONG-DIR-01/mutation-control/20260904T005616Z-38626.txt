@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-lane-verdict-three-states.sh
+file=plugins/leadv2/scripts/leadv2-lane-liveness.sh
+anchor=s/for sess in (lane_sessions or \[\]):/for sess in []:/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: Test 10: verdict=dead:no_log_artifact (must be finished_unlanded:<age>s — E4 resolved the wrong dir)
+diff_hash=2bd4b896ce47a106a359769278860b50d6fe6ade3ec61aa51d5529f3ac68fc07
+lane_diff_hash=e638cf9cf600790fa1d105cffec5634f2622802ccdd267f4901dc9ffbe0fe26a
