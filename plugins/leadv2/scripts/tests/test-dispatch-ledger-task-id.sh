@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-dispatch-code.sh leadv2-dispatch-ledger.sh
 # tests/test-dispatch-ledger-task-id.sh — SWIFTBAR-LIVE-01 round 2 (§2.4) writer regression.
 #
 # THE BUG: dispatch_reserve() called _dispatch_append_pending_locked with only 6 of its

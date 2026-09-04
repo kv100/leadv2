@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-dispatch-ledger.sh
 # T-o (SUPERVISOR-AUDIT-01): dispatch terminal-state ledger -- write-once, dedup, sweep.
 # CLI-only (this script is NEVER sourced -- see leadv2-dispatch-ledger.sh's own doc header
 # for why it is called as a subprocess, not a library, by dispatch-code.sh/dispatch-

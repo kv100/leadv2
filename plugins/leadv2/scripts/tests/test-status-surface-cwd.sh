@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-status-surface.sh leadv2-state-path.sh
 # tests/test-status-surface-cwd.sh — SWIFTBAR-LIVE-01 cwd-independence regression.
 #
 # Reproduces the exact real-world failure this task fixes: SwiftBar launches

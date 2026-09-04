@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-dispatch-code.sh
 # tests/test-dispatch-ledger-partial-close.sh — DISPATCH-LEDGER-PARTIAL-CLOSE-01 regression
 # test.
 #

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-lane-liveness.sh
 # LANE-LIVENESS-IGNORES-ITS-OWN-COMPLETION-SENTINEL-01: a runner-written
 # .finalized sentinel + dead process group must produce dead:sentinel_finalized
 # even when the log mtime is still fresh.  Cases S1–S6, S8.
