@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-lane-verdict-three-states.sh
+file=plugins/leadv2/scripts/leadv2-lane-liveness.sh
+anchor=s/_deliverable_age = deliverable_age_s(_deliverable_dirs)/_deliverable_age = None/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: Test 1: verdict=dead:no_log_artifact (must match finished_unlanded:<age>s, never dead:*)
+diff_hash=ade1e65e332056d032f6b21a602001a125627c4a77b5918de5bf4f7a07b6b4d6
+lane_diff_hash=e638cf9cf600790fa1d105cffec5634f2622802ccdd267f4901dc9ffbe0fe26a
