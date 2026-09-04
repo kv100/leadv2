@@ -179,9 +179,18 @@ lv2_lane_worker_alive() {
 # (already visible in the primed lsof table) against the worktree, catching
 # exactly the reused-pid case this function alone cannot.
 lv2_lane_pid_alive() {
-  local pid="$1"
+  local pid="$1" err
   [[ "${pid}" =~ ^[0-9]+$ ]] || return 1
-  kill -0 "${pid}" 2>/dev/null
+  err="$(kill -0 "${pid}" 2>&1)" && return 0
+  # rc!=0 alone does not distinguish ESRCH (no such process, truly DEAD) from
+  # EPERM (process exists, owned by someone else -- the process IS alive, we
+  # just can't signal it). Classify by stderr text, per D2's bias to fail
+  # closed toward ALIVE under ambiguity: only an explicit "no such process"
+  # counts as DEAD; anything else (including a permission denial) is ALIVE.
+  case "${err}" in
+    *[Nn]o\ such\ process*) return 1 ;;
+    *) return 0 ;;
+  esac
 }
 
 # lv2_lane_pid_cwd <pid> -> stdout: the cwd recorded for <pid> in the primed
