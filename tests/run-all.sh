@@ -353,6 +353,11 @@ leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilog
 leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-freepool-turncap-checkpoint.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
 run-all.sh:tests/test-run-all-carrier-map.sh
+# E2E-GATE-CANNOT-SEE-THE-ALLOWLIST-01: the known-red allow-list's nested-name
+# classification (core:<label> vs the wrapper's own path) lives in this file
+# (the block right above, guarded by CORE_OFFLINE_REL) — a change here must
+# re-run the suite that proves it, not just the carrier-map suite.
+run-all.sh:tests/test-known-red-allowlist-nested-match.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-lane-outcome.sh
 leadv2-dod-gate.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-mutation-control.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh

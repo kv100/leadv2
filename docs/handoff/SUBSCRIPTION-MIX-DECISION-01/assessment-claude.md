@@ -177,3 +177,37 @@ the weekly window is tighter than the raw percentage shows, and the 20× still m
 are 16% into. What still gates acting on it is unchanged too: `binding_window` has one recorded
 sample, and now there is a second reason to distrust single samples — the router was degraded when
 it was taken.
+
+---
+
+## SECOND CORRECTION, 2026-09-03 evening — the token claim was inverted
+
+The first correction said the personal account's default token was expired 198 times and that this
+partly explains the 93/29 split. **Measured by the Wave-3 session, that is wrong, and backwards.**
+
+- All 209 `default_token_expired` warnings are **false**. The default slot was never unavailable:
+  94 of 94 dispatch directories carrying the warn produced real artifacts (40 KB – 4.2 MB), and
+  across all of `docs/handoff` there are **zero** authorization-failure signatures — no
+  `authentication_error`, no `invalid bearer`, no 401, no "run /login" — in a week.
+- `expiresAt` in the keychain is expired for **all six** Claude Code credential entries, including
+  the one that session itself runs on. The field is not a liveness signal; the process refreshes
+  the token without rewriting it where the selector reads it.
+- The skew toward personal has the **opposite** cause from the one stated above:
+  `WARN: registry line 2 skipped: token_expired label=work` appears **79 times**. The same broken
+  check evicts the **work** slot from the registry, leaving personal as the only candidate.
+  Co-occurrences of a warn with a normal scored pick: **zero**. With a single-profile fallback: **60**.
+
+**And one finding that outranks all of the above for the purchase decision:**
+`same_account label=personal label=work -- one real account behind two slots` appears **9 times**.
+In some runs both registry slots resolved to the *same live account*. The two-bucket premise this
+whole assessment rests on — and which the founder's 2026-09-15 move to Max 5x depends on — is
+therefore **not reliably true today**. Filed for Wave 3.
+
+What this changes in the recommendation: nothing about the arithmetic, everything about the
+prerequisite. Two Max 5x seats only beat one Max 20x if work actually lands on two distinct
+accounts. Until `same_account` is impossible, that is unproven on this machine.
+
+Method note, recorded because it nearly produced a false finding: the first run of the
+"did the warn-carrying dispatches do real work" metric returned 0 of 94 — a false zero caused by a
+zsh glob failing on directories with no stream file and killing `cat` inside the loop. Re-derived
+via `find`. The 94/94 figure is the corrected one.
