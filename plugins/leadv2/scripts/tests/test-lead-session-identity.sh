@@ -13,7 +13,10 @@
 # bash 3.2. No real spawns beyond `bash -c` subshells for distinct PIDs.
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ${BASH_SOURCE[0]:-$0}: green under bash AND zsh (founder shell), failing on
+# disagreement -- zsh has no BASH_SOURCE, and under `set -u` the bare form
+# would abort the suite before any case ran.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 PLUGIN_SCRIPTS="$(cd "${SCRIPT_DIR}/.." && pwd)"
 IDENTITY_SH="${PLUGIN_SCRIPTS}/lib/leadv2-lead-identity.sh"
 LANE_STATE_SH="${PLUGIN_SCRIPTS}/lib/leadv2-lane-state.sh"
@@ -66,19 +69,28 @@ exec /bin/ps "$@"
 PSSTUB
 chmod +x "${FAKEBIN}/ps"
 
-# ── 1. Distinct owners: two real subshells resolve to different ids ────────
-# One level of `bash -c` shares $PPID with THIS test script for every
-# invocation (they're all direct children of the same process), so the
-# fallback-to-$PPID branch would collapse to one id regardless of the fix.
-# Nest one more level: the inner shell's $PPID is the outer `bash -c`
-# process's own pid, which is a distinct, real OS pid per invocation --
-# exercising the resolver the way two concurrent lead processes actually
-# would (no shared immediate parent).
-# A leading no-op statement stops bash from exec-replacing itself with the
-# inner `bash -c` (tail-call optimization), which would otherwise skip the
-# fork and leave both invocations reporting the SAME pid.
-ID_A="$(PATH="${FAKEBIN}:${PATH}" bash -c ": noop; bash -c \"source '${IDENTITY_SH}'; leadv2_lead_session_id\"" 2>/dev/null)"
-ID_B="$(PATH="${FAKEBIN}:${PATH}" bash -c ": noop; bash -c \"source '${IDENTITY_SH}'; leadv2_lead_session_id\"" 2>/dev/null)"
+# ── 1. Distinct owners: two real processes resolve to different ids ────────
+# Each resolver runs inside its own background job shell. The two job shells
+# are two real forks (distinct pids BY CONSTRUCTION), so the resolver's
+# $PPID fallback -- the branch actually reachable in production, where the
+# lead process is the durable claude process itself, not a descendant of one
+# -- lands on a different pid per invocation in bash AND zsh, regardless of
+# either interpreter's $()/exec fork-optimization. The earlier
+# ': noop; bash -c' nesting depended on that fork-exec luck: green under
+# bash, both invocations collapsed onto one pid under zsh -- exactly the
+# cross-shell disagreement class this suite is required to fail on, so the
+# construction was replaced rather than the zsh result tolerated.
+run_id_job() { # $1 = output file
+  (
+    OUT="$(PATH="${FAKEBIN}:${PATH}" bash -c "source '${IDENTITY_SH}'; leadv2_lead_session_id" 2>/dev/null)" \
+      && printf '%s' "${OUT}" > "$1"
+  ) &
+}
+run_id_job "${SANDBOX}/id_a"; JOB_A=$!
+run_id_job "${SANDBOX}/id_b"; JOB_B=$!
+wait "${JOB_A}" "${JOB_B}"
+ID_A="$(cat "${SANDBOX}/id_a" 2>/dev/null)"
+ID_B="$(cat "${SANDBOX}/id_b" 2>/dev/null)"
 if [[ -n "${ID_A}" && -n "${ID_B}" && "${ID_A}" != "${ID_B}" ]]; then
   ok "distinct owners: ${ID_A} != ${ID_B}"
 else
@@ -108,9 +120,35 @@ else
 fi
 unset LEADV2_LANE_CAP
 
-# ── 3. Orphan detection: lane_lead_alive reports dead once the process exits ─
+# ── 3. lane_lead_alive corroboration: alive / birth-mismatch / dead ─────────
+# Two-sided on purpose: an assertion of merely "rc != 0" cannot tell a dead
+# owner from a broken wrapper (an arg-dropped mutation ALSO crashes rc!=0 and
+# would survive). Three rows against this script's own live pid ($$):
+#   3a correct birth      -> rc=0 (lead_pid/lead_pid_birth args 6/7 flowed
+#                            through lane_register and corroborate)
+#   3b wrong recorded birth -> rc=1 (corroboration must fail on mismatch)
+#   3c owner process exited -> rc!=0 (the original orphan case)
 printf 'sessions: []\n' > "${ACTIVE}"
-CHILD_OUT="${SANDBOX}/child_pid_birth"
+LIVE_BIRTH="$(ps -o lstart= -p "$$" 2>/dev/null | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//')"
+lane_register live-ok-task lead-live-ok "${TARGET}" spawning "$$" "$$" "${LIVE_BIRTH}" >/dev/null 2>&1
+bash -c "source '${LANE_STATE_SH}'; lane_lead_alive lead-live-ok" >/dev/null 2>&1
+ALIVE_OK_RC=$?
+if [[ "${ALIVE_OK_RC}" == "0" ]]; then
+  ok "lead alive corroboration: live owner + matching birth -> rc=0"
+else
+  bad "lead alive corroboration: live owner + matching birth got rc=${ALIVE_OK_RC} (want 0)"
+fi
+
+lane_register live-bad-birth-task lead-live-badbirthday "${TARGET}" spawning "$$" "$$" "Wed Dec 25 00:00:00 2020" >/dev/null 2>&1
+bash -c "source '${LANE_STATE_SH}'; lane_lead_alive lead-live-badbirthday" >/dev/null 2>&1
+ALIVE_BAD_RC=$?
+if [[ "${ALIVE_BAD_RC}" == "1" ]]; then
+  ok "lead alive corroboration: recorded birth mismatch -> rc=1 (not alive)"
+else
+  bad "lead alive corroboration: recorded birth mismatch got rc=${ALIVE_BAD_RC} (want 1)"
+fi
+
+CHILD_PID=""
 ( sleep 30 ) &
 CHILD_PID=$!
 CHILD_BIRTH="$(ps -o lstart= -p "${CHILD_PID}" 2>/dev/null | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//')"
@@ -125,9 +163,9 @@ done
 bash -c "source '${LANE_STATE_SH}'; lane_lead_alive orphan-lead" >/dev/null 2>&1
 LEAD_ALIVE_RC=$?
 if [[ "${LEAD_ALIVE_RC}" != "0" ]]; then
-  ok "orphan detection: lane_lead_alive reports dead (rc=${LEAD_ALIVE_RC}) after owning process exited"
+  ok "lead alive corroboration: dead owner reports not-alive (rc=${LEAD_ALIVE_RC})"
 else
-  bad "orphan detection: lane_lead_alive still reports alive after owning process exited"
+  bad "lead alive corroboration: lane_lead_alive still reports alive after owning process exited"
 fi
 
 # ── 4. Legacy rows resolve: a fixture row with lead_session_id: direct ─────

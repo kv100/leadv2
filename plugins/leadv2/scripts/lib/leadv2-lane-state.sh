@@ -16,7 +16,11 @@
 #                                         # owning lead process can be checked
 #                                         # without re-parsing lead_session_id)
 
-_lv2_lane_state_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# ${BASH_SOURCE[0]:-$0}: bash keeps the lib's own path; zsh (no BASH_SOURCE)
+# degrades to the sourcing script's $0 -- correct whenever the consumer sits
+# one directory below this lib's parent, which is every current caller plus
+# the test suites. Production writers are bash-shebang and unaffected.
+_lv2_lane_state_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 _lv2_lane_state_root() {
   local root="${LEADV2_PROJECT_ROOT:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
   printf '%s' "$root"
@@ -39,8 +43,15 @@ _lv2_lane_state_lock() {
 }
 _lv2_lane_start_time() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//'; }
 _lv2_lane_state_mutate() { # <op> [args...] -- fcntl.flock + atomic rename
-  local path lock; path="$(_lv2_lane_state_path)" || return 1; lock="$(_lv2_lane_state_lock)" || return 1
-  python3 - "$lock" "$path" "$@" <<'PY'
+  # _lv2_mutate_path/_lv2_mutate_lock, NOT plain path/lock: in zsh `path` is
+  # the tied array of $PATH, so the old names clobbered PATH inside this
+  # function and every child lookup (env bash / python3) died with
+  # "No such file or directory". Same behavior under bash, zsh-safe by
+  # construction.
+  local _lv2_mutate_path _lv2_mutate_lock
+  _lv2_mutate_path="$(_lv2_lane_state_path)" || return 1
+  _lv2_mutate_lock="$(_lv2_lane_state_lock)" || return 1
+  python3 - "$_lv2_mutate_lock" "$_lv2_mutate_path" "$@" <<'PY'
 import datetime, fcntl, os, subprocess, sys, tempfile
 try:
     import yaml

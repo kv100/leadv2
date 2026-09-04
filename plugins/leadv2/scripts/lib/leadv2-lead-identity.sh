@@ -26,7 +26,11 @@ if [[ -n "${_LV2_LEAD_IDENTITY_LOADED:-}" ]]; then
   return 0 2>/dev/null || true
 fi
 _LV2_LEAD_IDENTITY_LOADED=1
-_LV2_LEAD_IDENTITY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ${BASH_SOURCE[0]:-$0}: bash keeps this lib's own path; zsh (no BASH_SOURCE)
+# degrades to the sourcing script's $0, which may sit one level up -- the
+# registry source then fails to resolve and the resolver fails open to
+# "direct" with its stderr warning, never a hard error.
+_LV2_LEAD_IDENTITY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
 leadv2_lead_session_id() {
   (
@@ -42,9 +46,10 @@ leadv2_lead_session_id() {
       if [[ -n "${pid}" ]]; then
         birth="$(_lv2_pid_birth "${pid}" 2>/dev/null)"
         if [[ -n "${birth}" && "${birth}" != "unknown" ]]; then
-          hash="$(printf '%s' "${birth}" | cksum | awk '{print $1}')"
-          if [[ -n "${hash}" ]]; then
-            id="lead-${pid}-${hash}"
+          birth_hash="$(printf '%s' "${birth}" | cksum | awk '{print $1}')"
+          if [[ -n "${birth_hash}" ]]; then
+            # birth_hash, NOT hash: `hash` is zsh's command-table parameter.
+            id="lead-${pid}-${birth_hash}"
           fi
         fi
       fi
