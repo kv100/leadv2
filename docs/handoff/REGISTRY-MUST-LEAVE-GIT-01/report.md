@@ -217,3 +217,140 @@ No Python files were changed by this lane; `py_compile` not applicable.
   Flagging it here since it's adjacent and easy to conflate with this task's fix.
 - **`docs/LEAD_V2_STATE.md`, `docs/leadv2/` other files, `main`, `tests/known-red-suites.txt`** —
   untouched, per explicit boundaries.
+
+---
+
+# Round 2 (2026-09-04) — three items, nothing else
+
+Round 1 is not rewritten; everything below is additive.
+
+## 1. NC-4 now proves the consequence, with a nonzero `mutated_rc`
+
+**Choice made: the control asserts the observable consequence — WHICH file the resolver
+settled on — not the error text** (option (b) of the brief). Option (a) — make the resolver
+itself return nonzero on an unresolved path — was rejected: the legacy
+`$root/docs/leadv2/active.yaml` else-branch in `_lv2_lane_state_path()` is a deliberate
+degraded mode (the registry stays usable when the bundled helper is not next to the sourced
+file); hard-failing it converts a working-but-degraded registry into an outage across the
+consumer repos — a product behavior change with real blast radius, made to satisfy a test.
+The defect the brief names is the control's discriminating power; that is fixed test-side.
+
+Mechanics (`test-leadv2-state-path.sh`, test 4 only; the round-1 mutation awk is
+byte-identical, only detection changed):
+
+- A sentinel `leadv2-state-path.sh` is planted at
+  `<scratch>/plugins/leadv2/scripts/leadv2-state-path.sh` — reachable ONLY through the fixed
+  `${BASH_SOURCE[0]:-}` fallback branch when the file is eval-sourced. It prints
+  `<LEADV2_STATE_ROOT>/<name>`.
+- Baseline arm: the inner script captures `got="$(_lv2_lane_state_path)"`, prints
+  `RESOLVED=<got>`, exits 7 on path mismatch, 8 if `lane_count_live` fails. Passes only
+  when rc=0 AND the resolved path is the sentinel's.
+- Mutant arm: the mutant derails `_lv2_lane_state_dir` to `/`, the sentinel is not found
+  there, the resolver silently falls back to the legacy path — precisely the
+  rc-0-from-failure case the brief flagged — and the resolution check exits 7.
+
+Why this closes the class: under eval-sourcing the unbound-variable error kills only the
+inner command-substitution subshell; the parent prints the error AND STILL EXITS 0 (that is
+exactly why round-1 NC-4 showed `mutated_rc=0`). A control grepping that message cannot
+tell a fixed resolver from a derailed one that swallows the error; comparing the resolved
+path can, in BOTH directions — a "fixed" resolver that resolves the wrong file but exits 0
+now fails the BASELINE arm as well (`RESOLVED` mismatch → exit 7).
+
+Raw before (round 1, verbatim):
+
+```
+PASS: negative control confirmed: mutated (unguarded BASH_SOURCE[0]) crashes:
+output=[bash: line 21: BASH_SOURCE[0]: unbound variable
+RC=0] rc=0
+```
+
+Raw after (round 2, verbatim suite output; scratch paths abbreviated `…`):
+
+```
+PASS: lane-state resolver survives eval-sourcing AND resolves the sentinel: baseline_rc=0 output=[RESOLVED=…/state-path-scratch.8vkJ2a/.state/active.yaml]
+PASS: negative control confirmed: mutated resolver resolved a WRONG path and the check caught it by rc: mutated_rc=7 output=[bash: line 21: BASH_SOURCE[0]: unbound variable
+RESOLVED=…/state-path-scratch.JPV8lK/docs/leadv2/active.yaml]
+```
+
+`mutated_rc=7` — nonzero by construction of the harness (exit 7 on path mismatch), not by
+luck of bash's stderr wording. Stability: 5 consecutive full-suite runs, all rc=0, and all
+five logs contain the `mutated_rc=7` line.
+
+NC-3 (test 3's control) is left as round 1 accepted it: its mutant already yields a nonzero
+rc (2, via the mutant's own eval syntax error — the form disclosed and credited in round 1),
+so the specific defect named by the brief (rc=0 from the mutated arm) does not exist there.
+Extending the sentinel pattern to test 3 would be a round-3 decision, not one of this
+round's three items.
+
+## 2. Report relocated
+
+`report.md` (repo root, commit f7f96fbf) → `docs/handoff/REGISTRY-MUST-LEAVE-GIT-01/report.md`
+via `git mv` — pure rename; round-1 content is byte-identical, this section appended below
+it. `git status` shows `R report.md -> docs/handoff/REGISTRY-MUST-LEAVE-GIT-01/report.md`.
+The path needs no force-add: `.gitignore` carries `!docs/handoff/*/report.md`.
+
+## 3. The runner selects the suite — proof
+
+```
+$ LEADV2_RUN_ALL_SELECT_ONLY=1 bash tests/run-all.sh --scope changed | tail -6
+[SELECT] …/plugins/leadv2/scripts/tests/run-core-offline.sh
+[SELECT] …/tests/test-status-surface-bash32.sh
+[SELECT] …/tests/test-status-surface-single-lead.sh
+[SELECT] …/tests/test-status-surface-fast-names.sh
+[SELECT] …/plugins/leadv2/scripts/tests/test-leadv2-state-path.sh
+run-all: 5 selected, scope=changed, select_only=1
+```
+
+`tests/run-all.sh` was NOT modified. Selection fires through the self-select rule (a
+changed `plugins/leadv2/scripts/tests/test-*.sh` adds itself), because the suite is in this
+run's changed set.
+
+Honest caveat — a carrier-coverage gap that this lane cannot fix (`tests/run-all.sh` is a
+shared serialization point, explicitly out of bounds): the self-select rule covers only
+commits that touch the suite itself. A future change touching `leadv2-active-registry.sh`
+or `lib/leadv2-lane-state.sh` alone will NOT select this suite — the stem convention looks
+for `test-leadv2-active-registry.sh` / `test-leadv2-lane-state.sh` (neither exists), and no
+`EXTRA_SUITE_MAP` row points here. Ready rows for the run-all owner:
+
+```
+leadv2-active-registry.sh:plugins/leadv2/scripts/tests/test-leadv2-state-path.sh
+leadv2-lane-state.sh:plugins/leadv2/scripts/tests/test-leadv2-state-path.sh
+```
+
+## Falsification set (round 2)
+
+- `bash -n plugins/leadv2/scripts/tests/test-leadv2-state-path.sh` → OK (the only shell
+  file changed this round; the resolvers are untouched in round 2).
+- Python: 0 files changed → `py_compile` not applicable.
+- Suite stability: 5/5 full-suite runs rc=0 (logs `/tmp/state-path-run-1..5.log`).
+- Changed-scope runner (`bash tests/run-all.sh --scope changed`): **rc=1, red — and the red
+  is NOT this lane's change.** Verbatim tail:
+
+```
+[PASS] …/plugins/leadv2/scripts/tests/test-leadv2-state-path.sh
+  Failures (blocking):
+    - plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: 4 passed, 1 failed, scope=changed
+```
+
+  The lane's own suite passed 9/9 inside the runner, including NC-4 with
+  `mutated_rc=7`. The single blocking failure is the always-on shared wrapper
+  `run-core-offline.sh`: 13 nested FAILED labels, 11 allow-listed in
+  `tests/known-red-suites.txt`, 2 classified `[NOT-KNOWN-RED]` ("core:T14 worker
+  MCP (glm spawn role config)", "core:prepass resume invalidation
+  (LANE-OBSERVABILITY-02)").
+
+  Why this is machine state, not this diff (evidence, not argument):
+  - `grep -c 'test-leadv2-state-path' run-core-offline.sh` → **0**: the wrapper
+    never executes this lane's suite; the round-2 diff is that suite + this
+    report, nothing else (`git show --name-only f7f96fbf` + round-2 status).
+  - During the run, `ps` showed core-offline running from TWO other lanes'
+    worktrees concurrently (E2E-GATE-BROKE-TODAY-01, D6-REGISTRY-LANE-OWNERSHIP-01);
+    this run's "core-offline cross-run exclusive lock (SUITE-SPEED-01)" failure
+    printed `lock-probe acquired` — the cross-run interference signature.
+  - A clean-HEAD control (core-offline at f7f96fbf in a throwaway worktree —
+    the round-2 edits are uncommitted, so HEAD IS the clean baseline) was
+    attempted and **abandoned as un-informative under load**: it stalled 10+
+    minutes at `SHARD_RESULT idx=3` while competing with the two foreign
+    runners, and was killed deliberately (exit 144; worktree removed). Not
+    claiming numbers I did not get.

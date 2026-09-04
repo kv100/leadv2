@@ -117,6 +117,35 @@ _mk_scratch_repo() {
   printf '%s' "$dir"
 }
 
+# Sentinel resolver fixture for test 4: a deterministic stand-in for
+# leadv2-state-path.sh planted at <scratch>/plugins/leadv2/scripts/, reachable
+# ONLY through the BASH_SOURCE-less fallback branch. It prints
+# <LEADV2_STATE_ROOT>/<name>, so the test asserts on the observable
+# consequence of resolution -- WHICH file the chain settled on -- rather than
+# on bash's stderr wording: an unguarded BASH_SOURCE[0] under eval-sourcing
+# kills only the inner command-substitution subshell, so the parent prints the
+# "unbound variable" error AND STILL EXITS 0. A control that greps that
+# message cannot tell a fixed resolver from a derailed one that swallows the
+# error; a control that compares the resolved path can (round 2, item 1).
+_mk_sentinel_state_path() { # <scratch-root>
+  local dir="$1/plugins/leadv2/scripts"
+  mkdir -p "$dir" "$1/.state"
+  cat > "${dir}/leadv2-state-path.sh" <<'EOF'
+#!/usr/bin/env bash
+# test fixture (REGISTRY-MUST-LEAVE-GIT-01): sentinel state-path resolver.
+# Flags are ignored; prints <LEADV2_STATE_ROOT>/<last non-flag arg>.
+name=""
+for a in "$@"; do
+  case "$a" in
+    -*) ;;
+    *) name="$a" ;;
+  esac
+done
+printf '%s/%s\n' "${LEADV2_STATE_ROOT:?LEADV2_STATE_ROOT unset}" "$name"
+EOF
+  chmod +x "${dir}/leadv2-state-path.sh"
+}
+
 # ── Test 3: leadv2-active-registry.sh's resolver survives BASH_SOURCE-less sourcing ─
 test_3_registry_survives_eval_sourcing() {
   log "Test 3: sourcing leadv2-active-registry.sh via eval (no BASH_SOURCE) must not crash under set -u"
@@ -169,24 +198,35 @@ test_3_registry_survives_eval_sourcing() {
 
 # ── Test 4: lib/leadv2-lane-state.sh's resolver survives BASH_SOURCE-less sourcing ─
 test_4_lane_state_survives_eval_sourcing() {
-  log "Test 4: sourcing lib/leadv2-lane-state.sh via eval (no BASH_SOURCE) must not crash under set -u"
-  local scratch out baseline_rc=0
+  log "Test 4: eval-sourced lane-state must resolve the sentinel state-path helper, not merely exit 0"
+  local scratch expected out baseline_rc=0
   scratch="$(_mk_scratch_repo)"
+  _mk_sentinel_state_path "$scratch"
+  expected="${scratch}/.state/active.yaml"
   out="$(
-    LEADV2_STATE_ROOT="${scratch}/.state" LEADV2_PROJECT_ROOT="$scratch" bash -uc '
+    LEADV2_STATE_ROOT="${scratch}/.state" LEADV2_PROJECT_ROOT="$scratch" \
+    LEADV2_EXPECTED_STATE_PATH="$expected" bash -uc '
       eval "$(cat "'"$LANE_STATE_SH"'")"
-      lane_count_live "__test_nonexistent_lead__" >/dev/null 2>&1
-      echo RC=$?
+      got="$(_lv2_lane_state_path)"
+      printf "RESOLVED=%s\n" "$got"
+      # Assert the observable consequence -- WHICH file resolution settled on
+      # -- because a derailed resolver can print an unbound-variable error to
+      # stderr and still exit 0 (the subshell death is swallowed by the
+      # parent). Exit 7 = wrong file; exit 8 = API call failed.
+      [[ "$got" == "$LEADV2_EXPECTED_STATE_PATH" ]] || exit 7
+      lane_count_live "__test_nonexistent_lead__" >/dev/null 2>&1 || exit 8
+      exit 0
     ' 2>&1
   )" || baseline_rc=$?
   rm -rf "$scratch"
-  if [[ "$out" == *"RC=0"* && "$out" != *"parameter not set"* && "$out" != *"unbound variable"* ]]; then
-    pass "lane-state resolver survives eval-sourcing: baseline_rc=0, output=[${out}]"
+  if [[ "$baseline_rc" -eq 0 && "$out" == *"RESOLVED=${expected}"* \
+        && "$out" != *"parameter not set"* && "$out" != *"unbound variable"* ]]; then
+    pass "lane-state resolver survives eval-sourcing AND resolves the sentinel: baseline_rc=0 output=[${out}]"
   else
-    fail "lane-state resolver crashed under eval-sourcing: baseline_rc=${baseline_rc} output=[${out}]"
+    fail "lane-state resolver derailed under eval-sourcing: baseline_rc=${baseline_rc} output=[${out}]"
   fi
 
-  log "Test 4 negative control: reintroduce bare BASH_SOURCE[0] -> must crash the same way"
+  log "Test 4 negative control: reintroduce bare BASH_SOURCE[0] -> resolution check must fail with NONZERO rc"
   local tmp_lane mutated_out mutated_rc=0
   tmp_lane="$(lv2_mktemp_file "lane-state-mutated" "sh")"
   awk -v repl='_lv2_lane_state_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' '
@@ -195,19 +235,24 @@ test_4_lane_state_survives_eval_sourcing() {
     { print }
   ' "$LANE_STATE_SH" > "$tmp_lane"
   scratch="$(_mk_scratch_repo)"
+  _mk_sentinel_state_path "$scratch"
   mutated_out="$(
-    LEADV2_STATE_ROOT="${scratch}/.state" LEADV2_PROJECT_ROOT="$scratch" bash -uc '
+    LEADV2_STATE_ROOT="${scratch}/.state" LEADV2_PROJECT_ROOT="$scratch" \
+    LEADV2_EXPECTED_STATE_PATH="${scratch}/.state/active.yaml" bash -uc '
       eval "$(cat "'"$tmp_lane"'")"
-      lane_count_live "__test_nonexistent_lead__" >/dev/null 2>&1
-      echo RC=$?
+      got="$(_lv2_lane_state_path)"
+      printf "RESOLVED=%s\n" "$got"
+      [[ "$got" == "$LEADV2_EXPECTED_STATE_PATH" ]] || exit 7
+      lane_count_live "__test_nonexistent_lead__" >/dev/null 2>&1 || exit 8
+      exit 0
     ' 2>&1
   )" || mutated_rc=$?
   rm -rf "$scratch"
   lv2_rmtemp_file "$tmp_lane"
-  if [[ "$mutated_out" == *"unbound variable"* || "$mutated_out" == *"parameter not set"* || "$mutated_rc" -ne 0 ]]; then
-    pass "negative control confirmed: mutated (unguarded BASH_SOURCE[0]) crashes: output=[${mutated_out}] rc=${mutated_rc}"
+  if [[ "$mutated_rc" -ne 0 ]]; then
+    pass "negative control confirmed: mutated resolver resolved a WRONG path and the check caught it by rc: mutated_rc=${mutated_rc} output=[${mutated_out}]"
   else
-    fail "negative control did NOT reproduce the crash: output=[${mutated_out}] rc=${mutated_rc}"
+    fail "negative control did NOT flip: mutated_rc=0 -- derailed resolver still passed (rc-0 from success indistinguishable from rc-0 from failure) output=[${mutated_out}]"
   fi
 }
 
