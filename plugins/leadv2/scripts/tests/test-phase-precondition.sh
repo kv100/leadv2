@@ -279,7 +279,11 @@ case "${1:-}" in
     mkdir -p "$RUNS" 2>/dev/null
     handle="stub-run-$(date +%s)-$$"
     printf '%s' "$handle" > "$RUNS/$handle" 2>/dev/null
-    printf '%s\n' "$handle"
+    # dispatch-code's GLM adapter extracts a handle from the legacy
+    # "<run-dir>/<handle><handle>" launch envelope.  Emit that exact envelope
+    # so the fixture exercises its liveness check instead of falling through
+    # to a real later arm after a false not_live result.
+    printf '%s/%s%s\n' "$RUNS" "$handle" "$handle"
     exit 0
     ;;
   status)
@@ -331,8 +335,41 @@ SH
 chmod +x "${E2E_JOURNAL}"
 export E2E_JOURNAL_LOG
 
+# Fast offline judge stub: no `claude -p` (which hung this suite waiting on a
+# real nested LLM call), deterministic JSON instead. Same pattern as
+# test-plugin-papercuts.sh.
+E2E_JUDGE_STUB="${E2E_SANDBOX}/judge-stub.sh"
+printf '#!/usr/bin/env bash\nprintf %s\n' "'{\"work_kind\":\"build\",\"complexity\":\"simple\",\"duration_class\":\"short\"}'" > "${E2E_JUDGE_STUB}"
+chmod +x "${E2E_JUDGE_STUB}"
+
+# Never let a dispatch test create or inspect a real lane worktree.  The
+# fixture repository is enough for this guard matrix; returning it for both
+# operations also keeps the dispatcher on the shared-tree plan-delivery path.
+LANE_WT_STUB="${E2E_SANDBOX}/lane-wt-stub.sh"
+cat > "${LANE_WT_STUB}" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  ensure|path-of) printf '%s\n' "${LEADV2_PROJECT_ROOT}" ;;
+esac
+SH
+chmod +x "${LANE_WT_STUB}"
+
+# The arbiter library runs a nested model call when it is present.  A regular
+# empty file is an intentional no-arbiter seam (unlike /dev/null, it passes
+# the dispatcher's file-exists check); cost estimation is disabled for the
+# same hermetic reason.
+E2E_NO_ARBITER_LIB="${E2E_SANDBOX}/no-arbiter.lib"
+: > "${E2E_NO_ARBITER_LIB}"
+
 # Per-case setup: resets journal log, sets common env
 e2e_setup() {
+  # FOREIGN-PROJECT-ROOT-GUARD-01: the guard treats an env-provided
+  # LEADV2_PROJECT_ROOT that disagrees with cwd's git toplevel as foreign and
+  # overrides it to the cwd-derived root -- which, unless we cd into the
+  # throwaway fixture repo first, is this actual leadv2 checkout. Every other
+  # e2e suite already cd's into its fixture repo before invoking dispatch;
+  # this suite did not, so PPC-G2 (and its siblings) silently ran dispatch
+  # against the real repo instead of the sandbox, hanging on live locks.
   : > "${E2E_JOURNAL_LOG}"
   # FOREIGN-PROJECT-ROOT-GUARD-01: dispatch-code.sh only trusts an env-provided
   # LEADV2_PROJECT_ROOT when cwd's own git toplevel already matches it; otherwise
@@ -351,6 +388,14 @@ e2e_setup() {
   export LEADV2_DISPATCH_GLM_BIN="${GLM_STUB}"
   export LEADV2_STUB_GLM_RUNS="${E2E_STUB_RUNS}"
   export LEADV2_JOURNAL_BIN="${E2E_JOURNAL}"
+  export LEADV2_TASK_JUDGE_BIN="${E2E_JUDGE_STUB}"
+  export LEADV2_DISPATCH_LANE_WORKTREE_BIN="${LANE_WT_STUB}"
+  export LEADV2_ROUTE_ARBITER_LIB="${E2E_NO_ARBITER_LIB}"
+  export LEADV2_DISPATCH_COST_ESTIMATE=0
+  # The launch assertion is this suite's subject; it must not spend the
+  # production early-verdict window polling a deliberately non-completing
+  # fixture worker.
+  export LEADV2_ARM_EARLY_VERDICT_S=0
   export LEADV2_ROUTER_V2=0
   export GLM_POLICY_RESOLVER="${GLM_POLICY_RESOLVER_STUB}"
   export LEADV2_LANE_SHAPE=off
