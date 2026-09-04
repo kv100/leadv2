@@ -159,3 +159,53 @@ NOT re-run after the first (unwitting) attempt: the suite spawns real workers
 (fact 3 above); docs-only change carries no shell/python surface to syntax-check.
 Fix ownership stays engine-side per #6: stub `LEADV2_DISPATCH_GLM_BIN=/bin/true`
 on every `--spawn` case — F4b's dispatch site is `:361`.
+
+---
+
+# TEST-ESCAPE — instance #9: C1 fixture (heading, no --task-id) escapes via sibling lane's glm-coder.sh
+
+**Escaped worker:** this lane (worktree **de4fcc31**, branch `worktree-de4fcc31`), run
+`260904-154357-de4fcc31-15f0`. **Date:** 2026-09-04 15:44 EEST. **Precedent:** #5
+(8a18fce), #6 (405f697, root cause VERIFIED), #7 (cc7c79f), #8 (this file, F4b).
+
+## What happened
+
+The spawning suite run (test shell PID **72750**, fixture tmpdir
+`dispatch-ledger-task-id-72750-1788525694.mAksKI`) reached case C1 — mission with an H1
+heading but deliberately no `--task-id`, driving the real live dispatch shape. This
+worker received the fixture heading verbatim: `# N7F-C1 — case one heading,
+dispatch-ledger-task-id 72750 1788525770`.
+
+## Evidence (captured from inside this worker)
+
+1. `LEADV2_DISPATCH_SUBSESSION_BIN` **IS set** to the fixture's
+   `fake-claude-subsession.sh` (fixture tmpdir path, verbatim) — the stubbed seam is
+   not the escape route.
+2. `LEADV2_DISPATCH_GLM_BIN` is **absent** from this worker's environment.
+3. Parent chain: `claude -p '# N7F-C1 …'` (pid 27992) ← `glm-coder.sh` (pid 27867,
+   pp=27752) running from lane worktree **DARK-SUITES-REGRESSED-BY-SELF-REGISTRATION-01** —
+   the escape needs no WIP dispatcher edit; the sibling lane's stock `glm-coder.sh`
+   suffices when the GLM seam is un-stubbed.
+4. Run metadata (`~/.claude/cache/glm-runs/260904-154357-de4fcc31-15f0/meta.yaml`):
+   `endpoint: https://api.z.ai/api/anthropic`, `model: glm-5.3`, `status: running`,
+   `repo: de4fcc31`, `cwd: …/worktrees/de4fcc31`; ≥1 `PROVIDER_RETRY` line in
+   `progress.log` — real provider quota burned on a fixture string.
+
+## Notable fact: current main's suite appears to carry the #6 fix
+
+This checkout's `test-dispatch-ledger-task-id.sh` exports
+`LEADV2_DISPATCH_GLM_BIN=/usr/bin/false` (line 34) and re-points it at a fake launcher
+(line 123) — yet this worker's env has no `GLM_BIN`. Either the spawning checkout
+(DARK-SUITES lane) predates that stub, or the C1 dispatch site drops it from the
+spawned env. UNVERIFIED which: not probed from inside this worker beyond the env
+capture above; the engine session that owns the fix should check whether the suite's
+`export LEADV2_DISPATCH_GLM_BIN` actually survives into the child of the C1 `--spawn`
+call.
+
+## Worker conduct
+
+No mission work was performed: the mission body ("case one heading, deliberately no
+--task-id") is a fixture assertion, not a task. Deliberately NOT run:
+`test-dispatch-ledger-task-id.sh` itself — re-running the suite risks manufacturing
+escape instance #10 (see instance #8, fact 3). Docs-only change; no shell/python
+surface to syntax-check.
