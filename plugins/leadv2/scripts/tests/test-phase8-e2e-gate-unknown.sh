@@ -231,6 +231,22 @@ else
   fail "T4: 'exit 5' not found in gate script -- fix not present"
 fi
 
+# ── T5: STATE, not wording -- the inconclusive branch must exit BEFORE the
+# sentinel writer runs. leadv2-phase8-assert.sh is what writes
+# docs/handoff/<task>/phase8-passed.flag; every reader that decides whether a
+# round is finished keys on that flag's presence. If the `exit 5` branch is ever
+# moved below ASSERT_SCRIPT=, an inconclusive gate would leave a passed sentinel
+# behind and the round would read as CLOSED -- which is the exact defect this
+# task exists to prevent. Drop T2's message assertion and this one still holds
+# the claim: resumability is a property of ordering, not of a log line.
+_t5_exit5="$(grep -n '^    exit 5$' "${CLOSE_SH}" | head -1 | cut -d: -f1)"
+_t5_assert="$(grep -n '^ASSERT_SCRIPT=' "${CLOSE_SH}" | head -1 | cut -d: -f1)"
+if [[ -n "${_t5_exit5}" && -n "${_t5_assert}" && "${_t5_exit5}" -lt "${_t5_assert}" ]]; then
+  pass "T5: inconclusive exit 5 (line ${_t5_exit5}) precedes the sentinel writer ASSERT_SCRIPT= (line ${_t5_assert}) -- no phase8-passed.flag on an inconclusive round"
+else
+  fail "T5: inconclusive branch does not precede the sentinel writer (exit5=${_t5_exit5:-<none>} assert=${_t5_assert:-<none>}) -- an inconclusive gate could leave a passed sentinel and the round would read as closed"
+fi
+
 printf -- '\n[TEST] %d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
   printf '%s\n' "${ERRORS[@]}"
