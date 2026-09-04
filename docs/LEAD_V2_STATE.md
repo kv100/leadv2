@@ -4,7 +4,7 @@
 
 # /leadv2 Active Sessions
 
-Last updated: 2026-09-03T23:10:52Z
+Last updated: 2026-09-03T23:49:12Z
 
 | task_id | phase | class | started_at | daemon |
 |---|---|---|---|---|
@@ -107,15 +107,22 @@ Last updated: 2026-09-03T23:10:52Z
 | 9289462d | recovered | ? | 2026-09-03T19:51 | no |
 | TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01 | review:blocked | Light | 2026-09-03T19:57 | no |
 | HARNESS-EMPTY-TASK-PROBE-01 | build | Light | 2026-09-03T21:08 | no |
-| INVISIBLE-DELIVERABLES-CENSUS-01 | review:blocked | Light | 2026-09-03T21:47 | no |
 | PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01 | review:blocked | Light | 2026-09-03T22:20 | no |
 | PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01 | recovered | ? | 2026-09-03T22:23 | no |
 | CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 | recovered | ? | 2026-09-03T22:35 | no |
 | D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01 | build | Standard | 2026-09-03T22:41 | no |
-| D2-UNBLIND-AND-THIRD-STATE-M0M1-01 | build | Standard | 2026-09-03T22:45 | no |
 | D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01 | spawning | Standard | 2026-09-03T22:50 | no |
 | SCANNER-MISSES-PS-SUBSTRING-01 | build | Light | 2026-09-03T23:07 | no |
-| HANDOFF-ANALYSIS-DIES-UNTRACKED-01 | intake | Standard | 2026-09-03T23:10 | no |
+| HANDOFF-ANALYSIS-DIES-UNTRACKED-01 | build | Standard | 2026-09-03T23:12 | no |
+| D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01 | spawning | ? | 2026-09-03T23:23 | no |
+| D2-UNBLIND-AND-THIRD-STATE-M0M1-01 | e2e | ? | 2026-09-03T23:24 | no |
+| D2-E4-RESOLVES-THE-WRONG-DIR-01 | build | Standard | 2026-09-03T23:26 | no |
+| DERIVE-COERCES-GIT-FAILURE-TO-NO-COMMIT-01 | build | Standard | 2026-09-03T23:27 | no |
+| FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01 | build | Standard | 2026-09-03T23:37 | no |
+| CODE-INTEL-SKIPPED-FIFTEEN-TIMES-01 | build | Standard | 2026-09-03T23:41 | no |
+| LANE-SALVAGE-TOOL-01 | build | Standard | 2026-09-03T23:43 | no |
+| ADMISSION-CLASS-FALLS-BACK-TO-LIGHT-01 | build | Standard | 2026-09-03T23:45 | no |
+| DEEPTHINK-MODE-IS-NOT-WIRED-01 | intake | Standard | 2026-09-03T23:49 | no |
 
-Sessions: 108 / 3 max
+Sessions: 115 / 3 max
 
