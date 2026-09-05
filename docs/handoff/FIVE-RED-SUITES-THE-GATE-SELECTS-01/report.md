@@ -372,3 +372,174 @@ is named here rather than taken.
 - **`leadv2-suite-falsifiable.sh`'s 180s budget** against a 182s suite.
 - **The symlinked-script-needs-its-sibling shape** wherever else a fixture
   links one script into a bare directory.
+
+---
+
+# Continued — commits 6 through 9
+
+| commit | what |
+|---|---|
+| `122049f1` | `leadv2-backlog-pump.sh` — it could not reserve a single lane, and that read as restraint |
+| `176f792b` | `test-lane-registry-outlives-dispatcher` — it depended on a gate it never mentioned |
+| `5a44bc33` | `test-liveness-tristate-01` — a deliberate permanent red stopped being pressure |
+| `a12fdf11` | `test-collector-sees-registered-lane` — 2/2 → 4/1, and the last red is a real question |
+
+## 6. `backlog-pump` — the most expensive find after PyYAML, and unrelated to it
+
+`_pump_reserve_lane` called the registry's `register` op directly with 15
+positional fields. The registry has expected 16 since it gained `writes`, so
+every call raised
+
+```
+ValueError: not enough values to unpack (expected 16, got 15)
+```
+
+and every candidate was skipped as `pump_skip reason=lane_reserve_failed`. The
+loop treats a failed reservation as a capacity refusal — **deliberately,
+fail-closed** — so a pump that could register nothing at all was
+indistinguishable from a pump correctly declining to overfill.
+`LEADV2_BACKLOG_PUMP` defaults to 1, so this was the enabled path.
+
+That shape is worth naming on its own: this is not "unknown became
+permission". It is **correct caution swallowing a hard failure.** The safe
+behaviour was doing its job and hiding an outage at the same time.
+
+Checked whether it was mine: built a pin at the parent of my own earlier
+carousel commit and ran the suite there — the same 17/5, the same
+`lane_reserve_failed`. Not mine, and settled by measurement rather than by
+argument.
+
+**17/5 → 23/0.** All five failures were this one root cause.
+
+Every other caller reaches the registry through the `leadv2_active_register`
+wrapper and was carried along by the field addition; only this site had pinned
+the positional contract by hand. **Census of direct callers: four**
+(`backlog-pump` ×2, `phase8-close`, `stale-sweeper`), and only `register` had
+drifted — the others use ops with short stable signatures. One instance, not a
+class. Recorded as a result of the census rather than as its absence.
+
+### A control that killed nothing, which was the point
+
+The second control — drop `detail=` from the pump's journal line — killed
+**nothing** on its first run. The reason was in the output but asserted by no
+test, and an untested diagnostic is the first thing to rot; that is exactly how
+the arity failure survived its whole life. A case was added
+(`reserve_failure_names_its_cause`, hermetic: the registry is pointed at a
+directory where a file belongs) and the control now kills it. Catalogued as
+measured, not as intended.
+
+## 7. `lane-registry-outlives-dispatcher` — a suite depending on a gate it never mentioned
+
+Four failures, one root, and **not** the pump's root. BEAT-LOOP-ORPHANS-01
+added a session-kind gate to `_arm_lane_pulse_watch`: only a `lead`
+classification arms a persistent loop, and `unknown` fails closed, because
+headless worker sessions were arming loops nobody could disarm (measured
+2026-09-01: 53 orphaned loops, load 244). A suite harness has no transcript, so
+it classifies as unknown, no watcher was ever armed, and "watcher stub never
+started" cascaded into three assertions about a registry pid that could not
+exist.
+
+The suite now declares `LEADV2_SESSION_KIND=lead`. Not a workaround: the
+production code offers that pin for exactly this case. **6/4 → 10/0**, one
+line, nothing weakened.
+
+**A paired case was written and deleted.** "A worker session arms nothing"
+survived its control (delete the gate, so every kind arms), because a second
+dispatch never reaches the arming call in this fixture — it held for a reason
+unrelated to the gate. The gap it leaves is written into the suite in plain
+words: **the orphan gate is uncovered here.** The opposite mutation is caught:
+refusing every kind takes the suite from 10/0 to 6/4, exactly the four failures
+it carried.
+
+## 8. `liveness-tristate-01` — a deliberate permanent red that had stopped being pressure
+
+T5 scans the two canonical liveness libs for decisions made by enumerating the
+process table and selecting rows by text, and failed whenever any finding
+existed, with the known violator named only in prose — a standing red as
+pressure until its fix lane lands.
+
+It had stopped being pressure. Nobody scanning a red list can tell a new
+violation from the standing one, and the proof is that this suite arrived in a
+fifteen-suite red census as *red*, not as *pressure*. It was making noise, not
+applying it. Same shape as a `known-red-suites.txt` entry without being in the
+file.
+
+The known violator is now a list — one entry,
+`lib/leadv2-lane-state.sh:248` — which may only **shrink**. Exactly the known
+set is green and says so by name; anything else is red and names the file. A
+listed violator that has **moved** passes while telling you which line to
+update; one that has **disappeared** prints a note to shrink the list.
+**13/1 → 14/0.**
+
+### The subtlety a control caught before it shipped
+
+Keying the list on the **file** would have been a blindfold: a second violation
+in an already-listed file would read as "the standing one moved" and be
+excused. The moved-branch therefore counts findings per file. The control
+proves it — a second injection into `leadv2-lane-state.sh` gives 13/1 and names
+**both** lines rather than excusing either.
+
+Both controls here are deliberately distinct from the suite's own T5-NC: that
+one proves the **scanner** works, these prove the **list** does not excuse what
+it was never given. Without them the suite would be green with any list at all,
+including an empty one.
+
+## 9. `collector-sees-registered-lane` — 2/2 → 4/1, and the last red is a real question
+
+The fixture never created the PULSE-REPO-SCOPED-03 ownership mark. The renderer
+keeps a foreign-repo row only when this repo dispatched it, and
+`docs/leadv2/tasks/<task_id>/` is what says so. That rule landed after the
+fixture was written, so the board-level case asserted the older behaviour and
+could only fail. The other half of the rule is now pinned too — a foreign lane
+this repo never dispatched must be dropped — with a third branch that
+distinguishes "the unowned one was dropped" from "nothing rendered at all".
+`run_board` also clears the cached snapshot so each case measures a fresh
+render.
+
+**The remaining red is left red on purpose.** The suite's own mutation control
+stripped the collector's `LEADV2_LANES_ALL_REPOS=1` pin and expected the
+foreign lane to vanish. First finding: `leadv2-lanes-snapshot.sh` defaults the
+same variable to 1, so that was a single-site mutation of a two-site property.
+Both sites removed, measured three ways with the board rendering correctly:
+
+```
+pin removed, ownership mark present  -> foreign lane still on the board
+pin removed, ownership mark absent   -> foreign lane still on the board
+pin AND snapshot default removed     -> foreign lane still on the board
+```
+
+Foreign-lane visibility is governed by **neither** of the two things that claim
+to govern it. There is a third, unidentified discovery path. That is a product
+question about the collector/renderer, larger than this lane, and the honest
+state is a red assertion with the measurement written beside it — not a green
+bought by lowering the bar. The failure text says so and asks not to be
+silenced.
+
+Why it went unnoticed: while the board-level case was broken the lane was
+absent from every render, so "absent after the mutation" held for free. **A
+control whose expected outcome is an absence proves nothing until something has
+been shown to make the thing present.** Fixing the case above is what first
+gave this control the ability to fail.
+
+Also hardened: that control mutates the real production files in place and now
+restores **both** under an `EXIT` trap. A suite that dies between mutation and
+revert leaving a production file mutated is the vandal shape that has already
+cost us a working tree once. Verified clean after the run.
+
+---
+
+## State
+
+| | |
+|---|---|
+| green | `lane-watch-v2` 35/0 · `skill-telemetry` 39/0 · `writes-overlap` 17/0 · `status-churn` 13/0 · `backlog-pump` 23/0 · `lane-registry-outlives-dispatcher` 10/0 · `liveness-tristate-01` 14/0 |
+| improved, one honest red | `collector-sees-registered-lane` 4/1 |
+| not yet reached | `claude-profile-select` 79/2 · `beat-loop-orphans` 29/1 · `broad-status-foreign-lanes` 5/3 · `status-repo-scoped` 4/3 · `lead-worker-channel` 11/1 · `effort-routing` 7/4 · `phase-gate-inversion` · `arm-capability-honoured` 1/3 · `fork-storm-watcher-liveness` 5/1 |
+| catalog | 34 rows, all `expected: killed` |
+
+`broad-status-foreign-lanes` and `status-repo-scoped` both fail on a
+`founder-status.md` that renders almost nothing, which is the same board the
+question above is about. They are worth taking together rather than one at a
+time: if the root is shared it is one finding, not three.
+
+Still nothing added to `tests/known-red-suites.txt` or `known-failures.txt`.
