@@ -57,7 +57,26 @@ lv2_assert_scratch_repo "$REPO"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
-FOUNDER_STATUS="$REPO/docs/leadv2/founder-status.md"
+# The board is read (and written) OUTSIDE the control plane on purpose.
+#
+# docs/leadv2/founder-status.md is a RENDER-class control-plane name: it is a
+# symlink into the state root, and leadv2-state-path.sh repairs that symlink
+# on every call. The renderer writes with temp+rename, which forks the link
+# into a real file -- and the repair then restores the symlink to the state
+# copy. Measured 2026-09-05: the symlink is re-created on every beat, the
+# state-side copy stops changing after the FIRST beat, and every later beat
+# renders correctly and is then discarded. So from beat 2 on this suite was
+# asserting against beat 1'"'"'s board, whatever the snapshot said.
+#
+# The old assertions were not wrong about production -- they were reading the
+# wrong artifact. With the board pinned to a plain path (the override
+# PULSE-READABLE-01 added for exactly this), all three cases below render
+# what they always claimed: 4/3 -> 7/0, no assertion weakened.
+#
+# Both paths are pinned together deliberately: the header of
+# leadv2-broad-status.sh records a defect from overriding only one.
+BOARD_DIR="$TMP/board"; mkdir -p "$BOARD_DIR"
+FOUNDER_STATUS="$BOARD_DIR/founder-status.md"
 
 # broad-status invokes: collector.sh --project-root <root> --out <path>
 collector_out() {  # <snapshot-json-string>
@@ -115,6 +134,8 @@ run_beat() {
     LEADV2_BROAD_STATUS_CLAUDE_BIN="$STUBS/claude.sh" \
     LEADV2_BROAD_STATUS_BEAT_AT="2026-08-31T09:00:00Z" \
     LEADV2_BROAD_STATUS_DISPATCHED="1" \
+    LEADV2_FOUNDER_STATUS_PATH="$FOUNDER_STATUS" \
+    LEADV2_FOUNDER_STATUS_FULL_PATH="$BOARD_DIR/founder-status-full.md" \
     bash "$BROAD_STATUS_SH" >/dev/null 2>&1 || true
 }
 
