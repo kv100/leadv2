@@ -162,8 +162,17 @@ resolve_review_pool_call() {
     esac
   fi
   emit decision "review_signals task=${TASK} protected_path=${_sig_protected} source=${_sig_source} matched=${_sig_matched}"
+  # ROUTING-YAML-HAS-TWO-READERS-AND-TWO-FILES-01: glm_policy lives in the phase
+  # policy document, which no longer has to share the registry's filename.
+  local _pp_yaml=""
+  if [[ -r "${SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh" ]]; then
+    # shellcheck source=lib/leadv2-phase-policy-path.sh
+    source "${SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh"
+    _pp_yaml="$(leadv2_phase_policy_path "${ROOT}" 2>/dev/null)" || _pp_yaml=""
+  fi
   local -a resolver_args=(--routing-yaml "${routing_yaml}" --job review --base-arm codex \
     --review-pool --author "${AUTHOR}" --signals "${_signals_json}")
+  [[ -n "${_pp_yaml}" ]] && resolver_args+=(--phase-policy-yaml "${_pp_yaml}")
   [[ -n "${GLM_POLICY_QUOTA_LIVE:-}" ]] && resolver_args+=(--quota-live "${GLM_POLICY_QUOTA_LIVE}")
   # FP-07B-POOL-PARSE-01: A2 parity with the close-gate copy (the lane's
   # resolve_review_pool_call since dispatch-8e2a32be). The old tail here --

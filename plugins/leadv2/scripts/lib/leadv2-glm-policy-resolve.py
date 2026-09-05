@@ -1094,6 +1094,13 @@ def _main(argv):
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--routing-yaml", required=True)
+    # ROUTING-YAML-HAS-TWO-READERS-AND-TWO-FILES-01 (2026-09-05): the glm_policy
+    # block is a PHASE-POLICY key (phases.glm_policy.*: codex_default_tier,
+    # sonnet_exceptions, codex_quota_gate), but --routing-yaml names the router
+    # registry, and _resolve_routing_yaml_path only ever searches registry
+    # locations. When the two documents live in two files, pass this as well.
+    # Absent => every byte of the previous behaviour is preserved.
+    ap.add_argument("--phase-policy-yaml", default=None)
     ap.add_argument("--job", default="build")
     ap.add_argument("--signals", default="{}")
     ap.add_argument("--base-arm", default="glm")
@@ -1129,6 +1136,19 @@ def _main(argv):
         text = Path(routing_yaml_path).read_text()
 
         glm_policy = extract_glm_policy_block(text)
+        # Prefer the phase-policy document for this block when one was named and
+        # actually carries it. Measured 2026-09-05: without this, moving
+        # document B out of the registry's filename silently changed
+        # `tier=volume` to `tier=standard` for persona-engine review dispatches.
+        _pp = getattr(args, "phase_policy_yaml", None)
+        if (_pp and os.path.isfile(_pp)
+                and os.path.abspath(_pp) != os.path.abspath(routing_yaml_path)):
+            try:
+                _pp_block = extract_glm_policy_block(Path(_pp).read_text())
+            except Exception:
+                _pp_block = {}
+            if _pp_block:
+                glm_policy = _pp_block
         ladder = extract_dispatch_ladder(text)
         ladder_providers = {e["id"]: e["provider"] for e in ladder}
         rank_table = {e["id"]: e["review_rank"] for e in ladder if e.get("review_rank") is not None}

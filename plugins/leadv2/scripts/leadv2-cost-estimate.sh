@@ -19,7 +19,14 @@ readonly SCRIPT_DIR
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 readonly PROJECT_ROOT
 
-readonly ROUTING_YAML="$PROJECT_ROOT/.claude/ref/leadv2-routing.yaml"
+# ROUTING-YAML-HAS-TWO-READERS-AND-TWO-FILES-01: the phase cost table lives in
+# the PHASE POLICY document, not in the router registry that shares the old
+# filename. Same resolver, same fallback, same behaviour on a miss (routing={}).
+# shellcheck source=lib/leadv2-phase-policy-path.sh
+source "${SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh"
+ROUTING_YAML="$(leadv2_phase_policy_path "$PROJECT_ROOT")" \
+  || ROUTING_YAML="$PROJECT_ROOT/.claude/ref/leadv2-routing.yaml"
+readonly ROUTING_YAML
 # DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: prefer the shared
 # control-plane copy; see leadv2-active-registry.sh's writer comment.
 if [[ -z "${LEADV2_LEAD_STATE_PATH:-}" ]]; then

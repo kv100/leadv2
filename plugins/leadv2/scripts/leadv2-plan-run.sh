@@ -199,8 +199,17 @@ resolve_plan_pool_call() {
   fi
   local routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
   local _signals_json='{}'
+  # ROUTING-YAML-HAS-TWO-READERS-AND-TWO-FILES-01: glm_policy lives in the phase
+  # policy document, which no longer has to share the registry's filename.
+  local _pp_yaml=""
+  if [[ -r "${SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh" ]]; then
+    # shellcheck source=lib/leadv2-phase-policy-path.sh
+    source "${SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh"
+    _pp_yaml="$(leadv2_phase_policy_path "${ROOT}" 2>/dev/null)" || _pp_yaml=""
+  fi
   local -a resolver_args=(--routing-yaml "${routing_yaml}" --job plan --base-arm codex \
     --plan-pool --signals "${_signals_json}")
+  [[ -n "${_pp_yaml}" ]] && resolver_args+=(--phase-policy-yaml "${_pp_yaml}")
   [[ -n "${GLM_POLICY_QUOTA_LIVE:-}" ]] && resolver_args+=(--quota-live "${GLM_POLICY_QUOTA_LIVE}")
   python3 "${resolver}" "${resolver_args[@]}" 2>/dev/null || printf 'planner=\npool=\nrefusal=resolver_error_failclosed\n'
 }

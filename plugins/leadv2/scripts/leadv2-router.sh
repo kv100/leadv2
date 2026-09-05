@@ -30,7 +30,17 @@ if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${SCRIPT_DIR}/lib/leadv2-trace.sh"
 else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 readonly PROJECT_ROOT
-readonly ROUTING_YAML="$PROJECT_ROOT/.claude/ref/leadv2-routing.yaml"
+# ROUTING-YAML-HAS-TWO-READERS-AND-TWO-FILES-01 (2026-09-05): this script reads
+# the PHASE POLICY document (phases / stop_rules / floor_rules), which is a
+# DIFFERENT document from the router registry that shares the old filename --
+# they have zero top-level keys in common. Resolve it by the document's shape.
+# On a miss the resolver prints why, and we keep the historical path, so
+# behaviour is byte-identical to before and the failure is never silent.
+# shellcheck source=lib/leadv2-phase-policy-path.sh
+source "${SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh"
+ROUTING_YAML="$(leadv2_phase_policy_path "$PROJECT_ROOT")" \
+  || ROUTING_YAML="$PROJECT_ROOT/.claude/ref/leadv2-routing.yaml"
+readonly ROUTING_YAML
 # T-b (SUPERVISOR-AUDIT-01): single glm_policy/codex_quota_gate resolver, shared with
 # leadv2-dispatch-code.sh:resolve_arm(). Exported so the python helper (a temp file, not
 # this script) sees it via os.environ regardless of the heredoc's quoted-EOF (no bash

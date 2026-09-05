@@ -124,6 +124,10 @@ source "${_CODEX_SCRIPT_DIR}/lib/leadv2-arm-cooldown.sh"
 source "${_CODEX_SCRIPT_DIR}/lib/leadv2-codex-circuit.sh"
 # CODEX-QUOTA-GUARDRAILS-01 — shared spawn gate (cooldown + circuit).
 source "${_CODEX_SCRIPT_DIR}/lib/leadv2-codex-quota-gate.sh"
+# ROUTING-YAML-HAS-TWO-READERS-AND-TWO-FILES-01 — codex_quota_gate lives under
+# phases.glm_policy, i.e. in the PHASE POLICY document, not the router registry.
+# shellcheck source=lib/leadv2-phase-policy-path.sh
+source "${_CODEX_SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh"
 
 # C3 (tenant-generic) -- resolve the routing yaml. SAME convention as
 # leadv2-dispatch-product-close.sh:196 and leadv2-dispatch-code.sh:263:
@@ -147,6 +151,14 @@ _codex_quota_routing_yaml() {
     _root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
   fi
   [[ -z "$_root" ]] && _root="$PWD"
+  # Resolve the phase-policy document by shape; the historical path stays the
+  # fallback so an unresolvable root behaves exactly as it did (caller
+  # FAIL-OPENs on an absent/unreadable file).
+  local _pp
+  if _pp="$(leadv2_phase_policy_path "$_root")"; then
+    printf '%s' "$_pp"
+    return 0
+  fi
   printf '%s/.claude/ref/leadv2-routing.yaml' "$_root"
 }
 

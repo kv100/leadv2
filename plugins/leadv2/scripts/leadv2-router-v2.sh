@@ -67,7 +67,25 @@ ROUTER_PY="${LEADV2_ROUTER_V2_PY:-"${SCRIPT_DIR}/leadv2-router-v2.py"}"
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 GLM_QUOTA_GATE="${LEADV2_GLM_QUOTA_GATE:-${SCRIPT_DIR}/leadv2-glm-quota-gate.sh}"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+# ROUTING-YAML-HAS-TWO-READERS-AND-TWO-FILES-01 (2026-09-05). filter mode wants
+# a key from EACH of two documents that used to share one filename:
+#   router_v2.arms      -> the router registry  (ROUTING_YAML below)
+#   phases.glm_policy   -> the phase policy     (PHASE_POLICY_YAML below)
+# No file on this machine carries both -- measured. Before this change the
+# comment at the filter block claimed they came out of "the SAME routing.yaml",
+# and whichever document was missing silently contributed nothing: in the plugin
+# repo glm_policy resolved to {} (no policy bans at all), in a tenant repo
+# router_v2.arms resolved to [] and the script died. Now each key is read from
+# the document that actually holds it.
 ROUTING_YAML="${LEADV2_ROUTING_YAML:-${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml}"
+if [[ ! -f "${ROUTING_YAML}" && -f "${SCRIPT_DIR}/../config/leadv2-routing.yaml" ]]; then
+  # Same file-level fallback leadv2-dispatch-code.sh:575 already uses for the
+  # router registry, so a repo without a tenant copy is routed, not refused.
+  ROUTING_YAML="${SCRIPT_DIR}/../config/leadv2-routing.yaml"
+fi
+# shellcheck source=lib/leadv2-phase-policy-path.sh
+source "${SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh"
+PHASE_POLICY_YAML="$(leadv2_phase_policy_path "${PROJECT_ROOT}")" || PHASE_POLICY_YAML="${ROUTING_YAML}"
 
 die() { printf -- '[leadv2-router-v2] %s\n' "$*" >&2; exit 2; }
 
@@ -121,22 +139,29 @@ if [[ "${MODE}" == "filter" ]]; then
   ARMS_JSON="${TMP_DIR}/arms.json"
   POLICY_JSON="${TMP_DIR}/glm_policy.json"
 
-  # Pull router_v2.arms + phases.glm_policy out of the SAME routing.yaml as
-  # plain JSON -- glm_policy stays the single source of policy bans (spec
-  # sec1); this only re-serializes it for the python filter, never a second
-  # copy of the policy itself.
+  # Pull router_v2.arms from the router registry and phases.glm_policy from the
+  # phase policy -- two documents, one key each (see the note at PHASE_POLICY_YAML).
+  # glm_policy stays the single source of policy bans (spec sec1); this only
+  # re-serializes it for the python filter, never a second copy of the policy.
   python3 -c '
 import sys, json, yaml
-cfg_path, out_arms, out_policy = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(cfg_path) as fh:
-    cfg = yaml.safe_load(fh) or {}
-arms = ((cfg.get("router_v2") or {}).get("arms")) or []
-policy = (cfg.get("phases") or {}).get("glm_policy") or cfg.get("glm_policy") or {}
+arms_path, policy_path, out_arms, out_policy = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+def load(p):
+    try:
+        with open(p) as fh:
+            return yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        return {}
+acfg = load(arms_path)
+pcfg = acfg if policy_path == arms_path else load(policy_path)
+arms = ((acfg.get("router_v2") or {}).get("arms")) or []
+policy = (pcfg.get("phases") or {}).get("glm_policy") or pcfg.get("glm_policy") or {}
 with open(out_arms, "w") as fh:
     json.dump(arms, fh)
 with open(out_policy, "w") as fh:
     json.dump(policy, fh)
-' "${ROUTING_YAML}" "${ARMS_JSON}" "${POLICY_JSON}" || die "routing.yaml parse failed: ${ROUTING_YAML}"
+' "${ROUTING_YAML}" "${PHASE_POLICY_YAML}" "${ARMS_JSON}" "${POLICY_JSON}" \
+    || die "routing.yaml parse failed: arms=${ROUTING_YAML} policy=${PHASE_POLICY_YAML}"
 
   ARM_COUNT="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "${ARMS_JSON}")"
   [[ "${ARM_COUNT}" -gt 0 ]] || die "router_v2.arms is empty or missing in ${ROUTING_YAML}"
