@@ -416,7 +416,12 @@ assert d["decision"] == "block"
 # ════════════════════════════════════════════════════════════════════════════
 {
   HOOKS_JSON="$PLUGIN_DIR/hooks/hooks.json"
-  if python3 -c '
+  # Round-3 order (lead correction 587625e7): never silence this assert. Its
+  # stderr is the only line that says WHICH sub-contract broke and what the
+  # hook list actually contains; the old `2>/dev/null` collapsed every failure
+  # — stale checkout and real regression alike — into the same undiagnosable
+  # "registration assertion failed".
+  if CASE10_DETAIL="$(python3 -c '
 import sys, json
 with open(sys.argv[1]) as f:
     d = json.load(f)
@@ -432,10 +437,14 @@ assert any("leadv2-lane-watch-v2.sh" in c and "--arm-from-hook" in c for c in ar
     f"lane-watch-v2 --arm-from-hook missing from SessionStart: {arm}"
 assert any("leadv2-lane-watch-v2.sh" in c and "--disarm-from-hook" in c for c in disarm), \
     f"lane-watch-v2 --disarm-from-hook missing from SessionEnd: {disarm}"
-' "$HOOKS_JSON" 2>/dev/null; then
+' "$HOOKS_JSON" 2>&1 >/dev/null)"; then
     pass "case 10: idle-lead-guard retired; promise-guard kept; lane-watch-v2 armed on both events"
   else
-    fail "case 10: registration assertion failed"
+    # Keep only the AssertionError line (the last stderr line): it names the
+    # broken sub-contract and the actual hook list; the traceback frame noise
+    # above it explains nothing this suite does not already know.
+    CASE10_DETAIL="${CASE10_DETAIL##*$'\n'}"
+    fail "case 10: registration assertion failed — ${CASE10_DETAIL}"
   fi
 }
 
