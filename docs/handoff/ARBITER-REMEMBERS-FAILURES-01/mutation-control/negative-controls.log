@@ -1,0 +1,118 @@
+ARBITER-REMEMBERS-FAILURES-01 negative controls - 2026-09-05T01:47:38Z
+repo=/Users/kostiantyn.vlasenko/Projects/leadv2 head=ee68e4e0
+
+===== UNMUTATED BASELINE =====
+PASS: empty history is no_history and still resolves (baseline arm=glm-flash)
+PASS: arm that failed twice on this task is not chosen again (glm-flash -> glm)
+PASS: banned arm is absent from the candidate chain, not only from arm=
+PASS: a single failure does not retire the arm (threshold is 2)
+PASS: pre-spawn refusals (write-set / registry window / capped gate) never ban an arm
+PASS: unreadable journal reports unavailable, never a clean zero
+PASS: descriptor without a task signature is absent_key, routed as before
+PASS: the ban is scoped to the failing task signature, not global
+PASS: all-arms-banned yields instead of deadlocking (failure_memory=exhausted)
+PASS: a failed probe does not read as a capped arm (probe_outage named, work still routed)
+PASS: three measured over-ceiling arms still refuse all_arms_capped
+PASS: an unmeasured arm is demoted behind every measured one (won: glm-flash)
+SUMMARY: pass=12 fail=0
+suite exit=0 (must be 0)
+
+===== NEGATIVE CONTROL: ARBITER-FAILURE-MEMORY-STOPS-COUNTING =====
+mutation ARBITER-FAILURE-MEMORY-STOPS-COUNTING applied: 1 site, inside a function body, file still compiles
+--- mutated function body (proof the edit landed INSIDE it) ---
+def read_failure_memory(sig):
+    # -> (counts_by_arm, status). status is one of:
+    #   absent_key  -- this caller passed no task signature; nothing to look up
+    #   unavailable -- a journal could not be read; UNKNOWN, never "zero"
+    #   no_history  -- journals read fine, this signature has no failures
+    #   ok          -- journals read fine and this signature has failures
+    if not sig: return {}, 'absent_key'
+    evt=os.environ.get('ROUTE_ARBITER_EVENTS_JOURNAL') or ''
+    led=os.environ.get('ROUTE_ARBITER_FAILURE_LEDGER') or ''
+    spawns=[]; counts={}; evt_ok=False; led_ok=False
+    try:
+        with open(evt) as _f:
+            for _l in _f:
+                try: r=json.loads(_l)
+                except Exception: continue
+                if str(r.get('task') or '')!=sig: continue
+                a=str(r.get('arm') or '')
+                if not a: continue
+                k=r.get('kind')
+                if k=='worker_spawned': spawns.append((str(r.get('ts') or ''), a))
+                elif k=='arm_refused': counts[a]=counts.get(a,0)+1
+        evt_ok=True
+    except Exception:
+        evt_ok=False
+    spawns.sort()
+    try:
+        with open(led) as _f:
+            for _l in _f:
+                try: r=json.loads(_l)
+                except Exception: continue
+                if str(r.get('task_sig') or '')!=sig: continue
+                if ('%s:%s' % (r.get('terminal'), r.get('cause'))) not in arm_failure_causes: continue
+                ts=str(r.get('ts') or ''); arm=None
+                for _sts,_a in spawns:
+                    if _sts<=ts: arm=_a
+                if arm: pass
+        led_ok=True
+    except Exception:
+        led_ok=False
+    if not (evt_ok and led_ok): return {}, 'unavailable'
+    return counts, ('ok' if counts else 'no_history')
+failure_counts, failure_memory = read_failure_memory(task_sig)
+--- suite against the mutated arbiter ---
+PASS: empty history is no_history and still resolves (baseline arm=glm-flash)
+FAIL: twice-failed arm still chosen output=arm=glm-flash kind=code model=glm-5.3-flash tier=standard effort=medium reason=cheapest_capable chain=glm-flash,glm,codex,sonnet,freepool util_glm=10 util_codex=10 util_claude=10 util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=5.00h_default_full_period reset_freepool=n/a floor_applied=1 floor_reason=standard/code floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=none remaining=90.0 reset_in=5.00h reset_basis=default_full_period failure_memory=no_history
+FAIL: banned arm still in chain=glm-flash,glm,codex,sonnet,freepool (was glm-flash,glm,codex,sonnet,freepool)
+FAIL: single failure banned the arm output=arm=glm-flash kind=code model=glm-5.3-flash tier=standard effort=medium reason=cheapest_capable chain=glm-flash,glm,codex,sonnet,freepool util_glm=10 util_codex=10 util_claude=10 util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=5.00h_default_full_period reset_freepool=n/a floor_applied=1 floor_reason=standard/code floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=none remaining=90.0 reset_in=5.00h reset_basis=default_full_period failure_memory=no_history
+PASS: pre-spawn refusals (write-set / registry window / capped gate) never ban an arm
+PASS: unreadable journal reports unavailable, never a clean zero
+PASS: descriptor without a task signature is absent_key, routed as before
+PASS: the ban is scoped to the failing task signature, not global
+FAIL: all-banned output=arm=glm-flash kind=code model=glm-5.3-flash tier=standard effort=medium reason=cheapest_capable chain=glm-flash,glm,codex,sonnet,freepool util_glm=10 util_codex=10 util_claude=10 util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=5.00h_default_full_period reset_freepool=n/a floor_applied=1 floor_reason=standard/code floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=none remaining=90.0 reset_in=5.00h reset_basis=default_full_period failure_memory=no_history
+PASS: a failed probe does not read as a capped arm (probe_outage named, work still routed)
+PASS: three measured over-ceiling arms still refuse all_arms_capped
+PASS: an unmeasured arm is demoted behind every measured one (won: glm-flash)
+SUMMARY: pass=8 fail=4
+suite exit=1 (0 here would mean the control FAILED to falsify)
+
+===== NEGATIVE CONTROL: ARBITER-UNKNOWN-IS-CAPPED-AGAIN =====
+mutation ARBITER-UNKNOWN-IS-CAPPED-AGAIN applied: 1 site, inside a function body, file still compiles
+--- mutated function body (proof the edit landed INSIDE it) ---
+def capped(provider):
+    # ARBITER-REMEMBERS-FAILURES-01 edit B (founder 2026-09-05): `unknown` is a
+    # THIRD state, never a synonym for "busy". util() already returns pct=100.0
+    # WITH unknown=True when a provider's probe did not answer (the status!='ok'
+    # line and the claude branch's no-ok-account fall-through), and `unk` has
+    # carried that flag ever since -- but it entered the SELECTION nowhere, so a
+    # broken measurer rendered identically to an exhausted quota. Measured
+    # 2026-09-04/05: util_codex=unknown_capped in 122 of 143 decisions, codex out
+    # for a day, and six lanes killed by `reason=all_arms_capped` when what
+    # actually failed was the instrument. An unknown arm is therefore NOT capped
+    # -- it stays in the candidate set and is instead DEMOTED on effective cost
+    # (UNKNOWN_PROBE_PENALTY below), so it ranks strictly after every arm whose
+    # headroom we actually measured and is picked only when the alternative is
+    # refusing the work outright. Rejected alternatives: "skip it" is today's bug
+    # verbatim; "take it as free" would spend a genuinely burnt provider on the
+    # strength of a failed reading.
+    if over_ceiling(provider) and near_reset_wait(provider):
+        return False
+    return over_ceiling(provider)
+cells=((data.get('router_v2') or {}).get('capability_matrix') or [])
+--- suite against the mutated arbiter ---
+PASS: empty history is no_history and still resolves (baseline arm=glm-flash)
+PASS: arm that failed twice on this task is not chosen again (glm-flash -> glm)
+PASS: banned arm is absent from the candidate chain, not only from arm=
+PASS: a single failure does not retire the arm (threshold is 2)
+PASS: pre-spawn refusals (write-set / registry window / capped gate) never ban an arm
+PASS: unreadable journal reports unavailable, never a clean zero
+PASS: descriptor without a task signature is absent_key, routed as before
+PASS: the ban is scoped to the failing task signature, not global
+PASS: all-arms-banned yields instead of deadlocking (failure_memory=exhausted)
+FAIL: probe outage still refused output=arm=refuse model=none tier=none reason=all_arms_capped kind=code chain= util_glm=99 util_codex=99 util_claude=unknown_capped util_freepool=100 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a probe_outage=claude failure_memory=no_history
+PASS: three measured over-ceiling arms still refuse all_arms_capped
+PASS: an unmeasured arm is demoted behind every measured one (won: glm-flash)
+SUMMARY: pass=11 fail=1
+suite exit=1 (0 here would mean the control FAILED to falsify)
