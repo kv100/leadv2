@@ -8589,6 +8589,13 @@ ${mission}"
           elif [[ -z "${_qg_eligible}" ]]; then
             emit decision "router_v2_reorder_failed task=${sig8} rc=0 reason=no_eligible_arms"
           fi
+          # PLUGIN-RELIABILITY-01 D5: journal reorder failure so refusal chains
+          # are debuggable instead of silently falling through.
+          if [[ ${_qg_rc} -ne 0 ]]; then
+            emit decision "router_v2_reorder_failed task=${sig8} rc=${_qg_rc} reason=resolve_nonzero"
+          elif [[ -z "${_qg_eligible}" ]]; then
+            emit decision "router_v2_reorder_failed task=${sig8} rc=0 reason=no_eligible_arms"
+          fi
         fi
       fi
       # N1-EMPTY-LANE-IS-NOT-A-PASS (B.2): a lock-busy refusal carries a routing
