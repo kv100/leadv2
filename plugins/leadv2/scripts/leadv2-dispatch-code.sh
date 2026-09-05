@@ -4010,7 +4010,13 @@ _apply_kimi_admission() { # <mission> <sig8> <writes_csv> <kimi_fit>; mutates ca
 _lane_writes_guard() {
   local sig8="$1" row_writes="$2" have_prepass="$3"
   [[ "${REQUIRE_LANE_WRITES}" == "1" ]] || return 0
-  [[ -n "${row_writes}" ]] && return 0
+  if [[ -n "${row_writes}" ]]; then
+    # LANE-WRITES-IS-EMPTY-98-PERCENT-01: this satisfier used to return in
+    # silence, so a lane that DID declare its scope was indistinguishable in the
+    # journal from one that never had a write set at all.
+    emit decision "lane_writes task=${sig8} source=row writes=${row_writes}"
+    return 0
+  fi
   # REPORT-ONLY-GATE-01: a report lane legitimately has NO LANE_WRITES — its deliverable
   # lives under docs/handoff/ by contract, which the writes grammar itself excludes. A
   # lane that declared (and had validated, at resolve time) an exactly-parsable
@@ -4031,7 +4037,14 @@ _lane_writes_guard() {
   # (leadv2-fanout-lane-launcher.sh:366, leadv2-dispatch-product-close.sh:386) already
   # pin this; this was the one that didn't.
   [[ -n "${founder_task_id:-}" ]] && _wt="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${founder_task_id}" 2>/dev/null)"
-  [[ -n "${_wt}" ]] && return 0
+  if [[ -n "${_wt}" ]]; then
+    # LANE-WRITES-IS-EMPTY-98-PERCENT-01: isolation substituting for a
+    # declaration is a real decision and must be readable as one. Silent before,
+    # it made "no declared write set" and "declared nothing, ran isolated" the
+    # same row -- and only the second is safe.
+    emit decision "lane_writes task=${sig8} source=worktree substitutes_for=declaration"
+    return 0
+  fi
   ARCHITECT_PREPASS_REASON="no_lane_writes"
   emit decision "architect_prepass task=${sig8} status=failed reason=no_lane_writes remedy=LANE_WRITES:a,b,c"
   log_err "dispatch parked: no declared write set (reason=no_lane_writes)"
