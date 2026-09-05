@@ -111,6 +111,10 @@ import yaml
 try:
     d = yaml.safe_load(open('$ACTIVE')) or {}
     s = d.get('sessions') or []
+    # TERMINAL-LANES-STILL-READ-AS-LIVE-01: drop lanes that recorded a terminal
+    # outcome. They keep their last phase forever, so listing them as OTHER
+    # LIVE SESSIONS made a closed lane indistinguishable from a running one.
+    s = [x for x in s if not str(x.get('terminal_status') or '').strip()]
     if not s: print('')
     else:
         lines = []
@@ -142,7 +146,13 @@ try:
     s = d.get('sessions') or []
     mine = '$TID_ACTIVE'
     # No cap: a dropped session's note/blocked_by is information loss (T15 V1).
-    others = [sess for sess in s if sess.get('task_id') != mine]
+    # TERMINAL-LANES-STILL-READ-AS-LIVE-01: but a lane that recorded a terminal
+    # outcome is NOT information loss -- it is a finished lane whose `phase` is
+    # frozen, and listing it under 'these are OTHER live sessions' made a closed
+    # lane indistinguishable from a running one on every prompt.
+    others = [sess for sess in s
+              if sess.get('task_id') != mine
+              and not str(sess.get('terminal_status') or '').strip()]
     if not others: print('')
     else:
         lines = []

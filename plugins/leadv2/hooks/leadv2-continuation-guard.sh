@@ -143,6 +143,14 @@ if not active:
             sph  = (sess.get("phase") or "").strip()
             if not sid:
                 continue
+            # TERMINAL-LANES-STILL-READ-AS-LIVE-01: a lane that recorded a
+            # terminal outcome is finished, whatever its `phase` still says.
+            # Only 2 of 106 readers of active.yaml knew this field existed, so a
+            # closed lane kept being named as the active task. The closed-flag
+            # test below is the same idea via the filesystem; this is the same
+            # idea via the registry's own record. Both must clear the lane.
+            if (sess.get("terminal_status") or "").strip():
+                continue
             # Check if this session's task is closed
             h_dir = os.path.join(cwd, "docs", "handoff", sid)
             t_dir = os.path.join(cwd, "docs", "leadv2", "tasks", sid)
