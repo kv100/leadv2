@@ -128,6 +128,30 @@ mkdir -p "${HANDOFF}" 2>/dev/null || true
 # Engine-local logger — stderr-only, never calls the lane's journal emit.
 emit() { printf '[leadv2-plan-run] %s %s\n' "${1:-}" "${2:-}" >&2; }
 
+# PLAN-RUN-LIVE-PATH-UNVERIFIED-01: this script's whole output goes to stderr by the
+# deliberate choice one line above, so nothing it does leaves a trace anyone can count
+# later. That made a real question unanswerable: leadv2-acceptance-shape.sh
+# assert-precedence -- the guard that stops acceptance criteria being written after the
+# diff -- has exactly one production caller, and it is here. Measured 2026-09-06 across
+# 1020 docs/handoff/dispatch-* dirs: 0 .precedence-err artifacts, 0 precedence_violated
+# in journals, acceptance.authored_at present in 1 of 54 context.yaml. That is
+# consistent with the guard never running, and equally consistent with plan-run never
+# running -- and there was no way to tell, because "0 rows in the journal" proves
+# nothing when the writer never writes to the journal.
+#
+# So: a receipt, not a journal line. The stderr-only decision is left intact and the
+# lane's journal is not polluted (TESTS-POLLUTE-REAL-JOURNAL-01 exists for a reason).
+# One stamp file in this run's own handoff dir, best-effort, never able to fail the
+# run: after this, "did plan-run ever execute here" is one `ls` away.
+_plan_run_receipt() { # <handoff_dir> -> always 0
+  local d="${1:-}"
+  [[ -n "${d}" && -d "${d}" ]] || return 0
+  printf '%s plan-run started pid=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" "$$" \
+    >> "${d}/.plan-run-started" 2>/dev/null || true
+  return 0
+}
+_plan_run_receipt "${HANDOFF}"
+
 # Compute artifact path relative to ROOT for gate output.
 _artifact_rel="${HANDOFF}"
 case "${HANDOFF}" in
