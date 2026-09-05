@@ -494,9 +494,14 @@ _resolve_lane_diff_base() {
 # DEADLOCK-01; PHASE-BOOTSTRAP-ADMIT-02): "attested" is real evidence, but not
 # something a machine independently derived.
 _VA_STRENGTH=""
+# PLAN-ARTIFACT-HAS-THREE-DIFFERENT-ADDRESSES-01: side channel carrying the
+# addresses a FAILED verification actually consulted, so the refusal can name
+# them instead of leaving the caller to guess which of three homes was meant.
+_VA_LOOKED_AT=""
 _verify_artifact() {
   local sig8="$1" phase="$2" artifact="${3:-}" sha="${4:-}" commit="${5:-}" reason="${6:-}"
   _VA_STRENGTH=""
+  _VA_LOOKED_AT=""
   case "$phase" in
     plan)
       # context.yaml or prepass file with non-empty design — machine-checked,
@@ -534,6 +539,19 @@ _verify_artifact() {
           return 0
         fi
       fi
+      # The three addresses are deliberate, not an accident: (1) and (2) are
+      # machine-derived artifacts that only exist once an architect/worker ran,
+      # (3) is a human-authored brief that lives under the TASK-ID directory and
+      # is accepted only as `attested`. What was missing is that a refusal named
+      # none of them, so a lead who put context.yaml under docs/handoff/<TASK-ID>/
+      # (the path the dispatcher's own lane_plan_missing line prints, which is a
+      # DELIVERY source, not a proof address) reads the refusal as "there is no
+      # plan". Measured 2026-09-05 on task 11b25531: four dispatch attempts, the
+      # first three writing the file at an address nothing verifies.
+      local _p1=absent _p2=absent
+      if [[ -s "$prepass_file" ]]; then _p1=present; fi
+      if [[ -s "$ctx_file" ]]; then _p2=present; fi
+      _VA_LOOKED_AT="plan proof is read at exactly these addresses and no other: (1) ${prepass_file} [${_p1}]; (2) ${ctx_file}, and it must contain a 'decisions' key [${_p2}]; (3) --artifact docs/handoff/<TASK-ID>/{brief,brief-*,fix-round-N}.md with a matching --sha, accepted as attested [--artifact was: ${artifact:-<none passed>}]"
       return 1
       ;;
     gate1)
@@ -837,7 +855,7 @@ cmd_record() {
       # piece of evidence the verifier also wants is not in place YET. Recorded
       # unverified, and said out loud -- this one genuinely may become true.
       _proof="unverified"
-      _log "WARN: phase '$phase' for $sig8 recorded done with proof NOT yet verified — assert will refuse until the rest of its evidence lands"
+      _log "WARN: phase '$phase' for $sig8 recorded done with proof NOT yet verified — assert will refuse until the rest of its evidence lands${_VA_LOOKED_AT:+ -- }${_VA_LOOKED_AT}"
     fi
   fi
 

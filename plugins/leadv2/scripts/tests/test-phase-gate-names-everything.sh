@@ -167,6 +167,54 @@ else
   bad "b5: record rc=$B5_RC assert rc=$B5_ARC out=$(printf '%s' "$B5_OUT" | tr '\n' ' ')"
 fi
 
+
+# ══════════════════════ defect 3: the refusal names none of the addresses ═══
+# PLAN-ARTIFACT-HAS-THREE-DIFFERENT-ADDRESSES-01. Plan proof is read at three
+# addresses, and that is deliberate: (1)/(2) are machine-derived artifacts under
+# docs/handoff/dispatch-<SIG8>/, (3) is a human brief under docs/handoff/<TASK-ID>/
+# accepted only as `attested`. What was NOT deliberate is that a failed
+# verification named none of them, while the dispatcher's own lane_plan_missing
+# line prints a FOURTH path (its copy SOURCE, docs/handoff/<TASK-ID>/context.yaml)
+# — so a lead who writes the plan where the dispatcher pointed reads the refusal
+# as "there is no plan". Measured 2026-09-05 on task 11b25531: four dispatch
+# attempts, the first three placing context.yaml where nothing verifies it.
+#
+# The pair is the point: the right address must still VERIFY (so naming the
+# addresses did not turn into widening them), and EITHER wrong address must still
+# be UNVERIFIED *and* be told the right one.
+C_RIGHT="$(newroot)"; mkdir -p "$C_RIGHT/docs/handoff/dispatch-P6"
+printf 'decisions:\n  - the plan\n' > "$C_RIGHT/docs/handoff/dispatch-P6/context.yaml"
+C1_OUT="$(pr "$C_RIGHT" record P6 plan --status done --artifact docs/handoff/dispatch-P6/context.yaml 2>&1)"; C1_RC=$?
+C1_PROOF="$(sed -n 's/^proof: //p' "$C_RIGHT/docs/handoff/dispatch-P6/phases.d/plan.yaml" 2>/dev/null)"
+if [[ "$C1_RC" -eq 0 && "$C1_PROOF" == "verified" && "$C1_OUT" != *"proof NOT yet verified"* ]]; then
+  ok "the address the verifier actually reads still verifies, silently"
+else
+  bad "c1: rc=$C1_RC proof=$C1_PROOF out=$(printf '%s' "$C1_OUT" | tr '\n' ' ' | cut -c1-160)"
+fi
+
+# (c2) the task-id directory — the path the dispatcher's lane_plan_missing prints.
+C_TASK="$(newroot)"; mkdir -p "$C_TASK/docs/handoff/MY-TASK-01"
+printf 'decisions:\n  - the plan\n' > "$C_TASK/docs/handoff/MY-TASK-01/context.yaml"
+C2_OUT="$(pr "$C_TASK" record P7 plan --status done --artifact docs/handoff/MY-TASK-01/context.yaml 2>&1)"
+C2_PROOF="$(sed -n 's/^proof: //p' "$C_TASK/docs/handoff/dispatch-P7/phases.d/plan.yaml" 2>/dev/null)"
+if [[ "$C2_PROOF" == "unverified" && "$C2_OUT" == *"docs/handoff/dispatch-P7/context.yaml"* ]]; then
+  ok "a plan at the TASK-ID address is unverified AND told the address that is read"
+else
+  bad "c2: proof=$C2_PROOF out=$(printf '%s' "$C2_OUT" | tr '\n' ' ' | cut -c1-260)"
+fi
+
+# (c3) the third address seen in the wild, docs/leadv2/tasks/dispatch-<sig8>/.
+C_LV2="$(newroot)"; mkdir -p "$C_LV2/docs/leadv2/tasks/dispatch-P8"
+printf 'decisions:\n  - the plan\n' > "$C_LV2/docs/leadv2/tasks/dispatch-P8/context.yaml"
+C3_OUT="$(pr "$C_LV2" record P8 plan --status done --artifact docs/leadv2/tasks/dispatch-P8/context.yaml 2>&1)"
+C3_PROOF="$(sed -n 's/^proof: //p' "$C_LV2/docs/handoff/dispatch-P8/phases.d/plan.yaml" 2>/dev/null)"
+if [[ "$C3_PROOF" == "unverified" && "$C3_OUT" == *"docs/handoff/dispatch-P8/context.yaml"* ]]; then
+  ok "a plan under docs/leadv2/tasks/ is unverified AND told the address that is read"
+else
+  bad "c3: proof=$C3_PROOF out=$(printf '%s' "$C3_OUT" | tr '\n' ' ' | cut -c1-260)"
+fi
+rm -rf "$C_RIGHT" "$C_TASK" "$C_LV2"
+
 rm -rf "$R1" "$R2" "$R3" "$R4"
 printf '[PHASE-GATE-NAMES-EVERYTHING] pass=%d fail=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
