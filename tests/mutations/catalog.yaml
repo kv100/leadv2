@@ -516,3 +516,29 @@ mutations:
       stays at zero and every drain re-delivers the whole inbox
     expected: killed
     note: "12/0 -> 9/3: C3 and C4 (the drain API directly) and C5b (the same contract through a rendered beat). C5b could not fail before 2026-09-05 -- the suite read the board at the control-plane symlink, so the second beat's output was simply the first beat's file and the consumed row was still there. A first attempt at this control swapped `drain` for `peek` in the beat's call and killed C5 instead: `peek` is not a subcommand, the row never rendered, and the control fired for the wrong reason"
+
+  - id: stale-expiresat-row-dropped-before-same-account-check
+    product_flow: "D3 (TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01): a stale expiresAt is not proof a slot is dead, so the row stays a candidate and reaches the same-account comparison; only the live probe may retire it"
+    file: plugins/leadv2/scripts/leadv2-claude-profile-select.sh
+    suite: plugins/leadv2/scripts/tests/test-claude-profile-select.sh
+    anchor: |
+      probing live anyway"
+    patch: |
+      a `continue` after the expiresAt_stale warn, inside the registry loop --
+      the pre-D3 coverage hole, where a real same-account pair presents as one
+      unwarned candidate whenever a stale field hides the sibling
+    expected: killed
+    note: "82/0 -> 77/5, including T23b (the pair is no longer named) plus T12b/T13a/T22b. T23a is untouched by this mutation on purpose: it asserts the warn, which still fires; the KEPT half of the contract is what this control proves"
+
+  - id: same-account-incident-response-removed
+    product_flow: "TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01: two registry rows resolving to ONE real account is the incident -- the selector picks nothing (profile=- reason=same_account) so the caller keeps its inherited profile"
+    file: plugins/leadv2/scripts/leadv2-claude-profile-select.sh
+    suite: plugins/leadv2/scripts/tests/test-claude-profile-select.sh
+    anchor: |
+      printf 'profile=- reason=same_account\n'
+      exit 0
+    patch: |
+      replaced with a no-op, so a same_account hit warns and then selects a
+      profile anyway
+    expected: killed
+    note: "82/0 -> 77/5: T23c plus T14b/T14c/T21b/T21c, which pin the same refusal from three different fixtures. Before 2026-09-05 T23 asserted `profile=same-fresh ... candidates=2` -- a fail-open that no code path can reach; it and the production refusal both landed on 2026-09-03 in two commits whose own subjects say they are rescued, unfinished work"

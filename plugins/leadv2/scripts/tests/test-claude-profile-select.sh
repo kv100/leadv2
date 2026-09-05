@@ -498,8 +498,33 @@ acct_json 40 30 > "$FIX/same-fresh.json"; acct_json 40 30 > "$FIX/same-stale.jso
 printf 'same-fresh\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-same-fresh" "$tmp/dir-same-fresh" > "$REG"
 printf 'same-stale\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-same-stale" "$tmp/dir-same-stale" >> "$REG"
 run_select $(base_env) "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
-check_grep "$ERR" 'WARN: same_account label=same-fresh label=same-stale identity=team/shared2@fixture\.test' 'T23a: same_account fires even though one sibling looked expired -- closes the coverage hole'
-check_grep "$OUT" '^profile=same-fresh .*candidates=2 ' 'T23b: both slots stay candidates (fail-open, as with T14)'
+# Both assertions below were written against a shape the production script
+# never had. T23 and the D3 rescue landed the SAME day (2026-09-03) in two
+# commits that both say so in their own subjects -- "rescue uncommitted lane
+# work after worker death" and "checkpoint of a worker that died mid-write --
+# NOT finished work" -- and the two halves disagree because neither was
+# finished, not because the product regressed:
+#
+#   * the warn carries `sub=` and `account=`, not `identity=`. The
+#     `identity=` form is from f6c580d8 (2026-08-27) and was replaced in the
+#     same rescue commit that added this case.
+#   * `profile=same-fresh ... candidates=2` is unreachable BY DESIGN. Two
+#     slots resolving to one real account is "the incident" in this script's
+#     own header table, and its documented response is to select nothing --
+#     `profile=- reason=same_account`, exit 0 -- so the caller keeps the
+#     profile it inherited rather than silently collapsing two slots onto one
+#     account. There is no code path that reaches a candidate count after a
+#     same_account hit. "fail-open, as with T14" was carried over from T14,
+#     whose case has no same_account hit at all.
+#
+# The INTENT of T23 is untouched and is what the assertions now check: a
+# sibling whose expiresAt looks stale must still reach the same-account
+# comparison. That is asserted on both sides -- the stale row is warned about
+# and kept (D3), and the pair is then detected -- so the coverage hole this
+# case exists for stays closed, and the incident response is pinned with it.
+check_grep "$ERR" 'WARN: registry line 2: expiresAt_stale label=same-stale identity=team/shared2@fixture\.test -- probing live anyway' 'T23a: the stale-looking sibling is warned about and KEPT, not dropped in the registry loop (D3)'
+check_grep "$ERR" 'WARN: same_account label=same-fresh label=same-stale sub=team account=' 'T23b: both slots reached the comparison and the pair is named -- the coverage hole stays closed'
+check_grep "$OUT" '^profile=- reason=same_account$' 'T23c: the documented incident response -- select nothing, so the caller keeps its inherited profile'
 [[ "$RC" -eq 0 ]] && pass "T23: exit 0" || fail "T23 exit" "rc=$RC"
 
 printf '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
