@@ -34,6 +34,19 @@ lv2_assert_scratch_repo "$REPO"
 
 mkdir -p "$STATE/board" "$STATE/persona-engine" \
   "$FOREIGN/docs/handoff/dispatch-f9ecad31"
+# PULSE-REPO-SCOPED-03 ownership mark. The renderer keeps a foreign-repo row
+# only when THIS repo dispatched it, and the dispatch journal directory
+# docs/leadv2/tasks/<task_id>/ is what says so. That rule landed after this
+# fixture was written, so the board-level case asserted the older behaviour --
+# every foreign row the collector could see appears -- and could only fail.
+#
+# Creating the mark is not a workaround: it makes the fixture the case this
+# suite is actually about, and the one the collector's LEADV2_LANES_ALL_REPOS=1
+# pin exists to rescue -- a lane THIS repo dispatched whose registry row lives
+# in another repo must stay visible here. The other half of the rule (a
+# foreign row this repo never dispatched is dropped) is pinned separately
+# below; an assumption worth pinning is worth pinning on both sides.
+mkdir -p "$REPO/docs/leadv2/tasks/dispatch-f9ecad31"
 printf '%s\n' "$REPO" > "$STATE/board/.repo-root"
 printf '%s\n' "$FOREIGN" > "$STATE/persona-engine/.repo-root"
 printf 'sessions: []\n' > "$STATE/board/active.yaml"
@@ -90,6 +103,14 @@ chmod +x "$STUBS/claude.sh"
 FOUNDER_STATUS="$REPO/docs/leadv2/founder-status.md"
 
 run_board() {
+  # Every case must measure a fresh render. The status snapshot is cached with
+  # a TTL, so without this the board after a mutation could be the board from
+  # before it -- and the suite's own mutation control was passing on exactly
+  # that: it asserts the foreign lane is ABSENT, and while the board-level
+  # case was broken the lane was absent from every render regardless of the
+  # mutation. A control whose expected outcome is "absent" is worthless until
+  # something has been shown to make it present.
+  rm -f "$STATE/board/status-snapshot.json" "$STATE/board/status-snapshot-journal.jsonl" 2>/dev/null || true
   env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE/board" LEADV2_STATE_BASE="$STATE" \
     LEADV2_LANES_ALL_REPOS=0 LEADV2_LANE_LIVENESS_BIN="$STUBS/liveness.sh" \
     LEADV2_BROAD_STATUS_CLAUDE_BIN="$STUBS/claude.sh" \
@@ -105,31 +126,99 @@ else
   fail "board-level: foreign lane missing from founder-status.md: $(grep '^|' "$FOUNDER_STATUS" 2>/dev/null | head -3)"
 fi
 
+# ── the other half of PULSE-REPO-SCOPED-03 ─────────────────────────────────
+#
+# The case above proves an OWNED foreign lane survives. Without this one the
+# suite would stay green if the repo-scoping rule were deleted entirely, and
+# the board would fill with other repos' lanes again -- which is the state
+# PULSE-REPO-SCOPED-03 was written to end.
+UNOWNED=dispatch-c0ffee01
+mkdir -p "$FOREIGN/docs/handoff/${UNOWNED}"
+printf '{"event":"writing"}\n' > "$FOREIGN/docs/handoff/${UNOWNED}/developer.stream.jsonl"
+cat >> "$STATE/persona-engine/active.yaml" <<EOF
+  - task_id: ${UNOWNED}
+    pid: $$
+    phase: build
+    log_path: docs/handoff/${UNOWNED}/developer.stream.jsonl
+    started_at: 2026-08-30T11:06:43Z
+EOF
+rm -f "$FOUNDER_STATUS"
+run_board
+if grep -q "^| persona-engine/${UNOWNED}" "$FOUNDER_STATUS" 2>/dev/null; then
+  fail "repo-scoping: a foreign lane this repo never dispatched reached the board (${UNOWNED})"
+elif grep -q '^| persona-engine/dispatch-f9ecad31' "$FOUNDER_STATUS" 2>/dev/null; then
+  pass "repo-scoping: the owned foreign lane stays, the unowned one is dropped"
+else
+  # Both absent is not the same fact as "the unowned one was dropped": it
+  # means the board rendered nothing at all and this case proved nothing.
+  fail "repo-scoping: neither lane is on the board -- nothing was measured (table: $(grep '^|' "$FOUNDER_STATUS" 2>/dev/null | head -2 | tr '\n' ' '))"
+fi
+
 # Mutation control: disable the collector's own-process pin (leadv2-status-
 # collector.sh's _sc_lanes_section) and prove the SAME fixture goes red at
 # the board layer -- then revert and prove green again. Never a scratch
 # copy: the production file is mutated in place and restored via git.
 COLLECTOR_PROD="$SCRIPT_DIR/leadv2-status-collector.sh"
+SNAPSHOT_PROD="$SCRIPT_DIR/leadv2-lanes-snapshot.sh"
 cp "$COLLECTOR_PROD" "$TMP/collector.sh.orig"
-python3 - "$COLLECTOR_PROD" <<'PY'
+cp "$SNAPSHOT_PROD" "$TMP/lanes-snapshot.sh.orig"
+# Restore both even if this suite dies between mutation and revert: these are
+# the real production files, mutated in place, and a suite that leaves one
+# mutated is the vandal shape that has already cost us a working tree once.
+trap 'cp -f "$TMP/collector.sh.orig" "$COLLECTOR_PROD" 2>/dev/null || true; cp -f "$TMP/lanes-snapshot.sh.orig" "$SNAPSHOT_PROD" 2>/dev/null || true' EXIT
+python3 - "$COLLECTOR_PROD" "$SNAPSHOT_PROD" <<'PY'
 import sys
-path = sys.argv[1]
-with open(path) as f:
+# Remove the PROPERTY, not one implementation of it -- and it is STILL not
+# enough. Read this before touching the assertion below.
+#
+# The control used to strip only the collector's explicit
+# `LEADV2_LANES_ALL_REPOS=1` pin. leadv2-lanes-snapshot.sh DEFAULTS the same
+# variable to 1, so that single-site mutation left the property intact; both
+# sites are now removed. Measured 2026-09-05, three ways, all with the board
+# rendering correctly:
+#
+#   pin removed, ownership mark present   -> foreign lane still on the board
+#   pin removed, ownership mark absent    -> foreign lane still on the board
+#   pin AND snapshot default removed      -> foreign lane still on the board
+#
+# So the visibility of a foreign-repo lane on this board is NOT governed by
+# either of the two things that claim to govern it. There is a third discovery
+# path and it has not been identified. That is a product question about the
+# collector/renderer, not a suite defect, and it is left RED on purpose: the
+# assertion is the honest one, and the way to make it green is to find the
+# path, not to lower the bar.
+#
+# Why nobody noticed until now: while the board-level case above was broken,
+# the lane was absent from EVERY render, so this control's assertion --
+# "absent after the mutation" -- held for free. A control whose expected
+# outcome is an absence proves nothing until something has been shown to make
+# the thing present. Fixing the case above is what made this control able to
+# fail at all.
+collector_path, snapshot_path = sys.argv[1], sys.argv[2]
+
+with open(collector_path) as f:
     text = f.read()
 needle = "    LEADV2_LANES_ALL_REPOS=1 \\\n"
 assert needle in text, "mutation anchor not found in leadv2-status-collector.sh"
-text = text.replace(needle, "", 1)
-with open(path, "w") as f:
-    f.write(text)
+with open(collector_path, "w") as f:
+    f.write(text.replace(needle, "", 1))
+
+with open(snapshot_path) as f:
+    snap = f.read()
+snap_needle = 'ALL_REPOS="${LEADV2_LANES_ALL_REPOS:-1}"'
+assert snap_needle in snap, "mutation anchor not found in leadv2-lanes-snapshot.sh"
+with open(snapshot_path, "w") as f:
+    f.write(snap.replace(snap_needle, 'ALL_REPOS="${LEADV2_LANES_ALL_REPOS:-0}"', 1))
 PY
 rm -f "$FOUNDER_STATUS"
 run_board
 if grep -q '^| persona-engine/dispatch-f9ecad31' "$FOUNDER_STATUS" 2>/dev/null; then
-  fail "mutation control: foreign lane still visible with the collector's all-repos pin removed (RED expected)"
+  fail "mutation control: foreign lane still visible with BOTH all-repos sites removed (collector pin + lanes-snapshot default) -- a third, unidentified discovery path renders foreign lanes; see the note above, and do not silence this by weakening the assertion"
 else
   pass "mutation control: removing the collector's all-repos pin reproduces the empty-of-foreign-lanes board (RED)"
 fi
 cp "$TMP/collector.sh.orig" "$COLLECTOR_PROD"
+cp "$TMP/lanes-snapshot.sh.orig" "$SNAPSHOT_PROD"
 bash -n "$COLLECTOR_PROD" || fail "mutation control: leadv2-status-collector.sh failed to parse after revert"
 rm -f "$FOUNDER_STATUS"
 run_board
