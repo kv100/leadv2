@@ -601,3 +601,101 @@ should start.
 **Nothing was committed for this suite.** Three red assertions with four named
 dead ends is a more useful handover than a fixture edit that moves a number
 without explaining it.
+
+---
+
+## The board finding — one root, two suites, six red assertions
+
+The section above closed `status-repo-scoped` as four dead ends and nothing
+shipped. That was the honest state at the time; it is now superseded, and the
+root is one line from the third hypothesis I had reverted. **The revert was
+still right**: pinning `LEADV2_STATE_BASE` fixed nothing and explained nothing.
+The state root was never the problem — the *board path* was.
+
+### What it is
+
+`docs/leadv2/founder-status.md` is a RENDER-class control-plane name: a symlink
+into the state root, and `leadv2-state-path.sh` repairs that symlink on every
+call. The renderer writes with temp+rename, which forks the link into a real
+file; the repair puts the symlink back. Measured 2026-09-05 across three beats:
+
+```
+beat 1  snapshot [dispatch-fee00001]                board row: fee00001
+beat 2  snapshot [dispatch-own00001, error-row]     board row: fee00001
+beat 3  snapshot [dispatch-own00002]                board row: fee00001
+```
+
+The snapshot is fresh every beat, the script exits 0, the symlink is present
+and re-created every beat, the state-side copy's md5 never changes. Pointing
+`LEADV2_FOUNDER_STATUS_PATH` at a plain file in the sandbox — the override
+PULSE-READABLE-01 added for exactly this — and the same three beats render
+`fee00001 → own00001 → own00002`, which is what the suites always asserted.
+
+So both suites were reading beat 1's board forever. Their assertions were never
+wrong about production; they were reading the wrong artifact. Nothing was
+weakened to make them pass.
+
+| suite | before | after |
+|---|---|---|
+| `test-status-repo-scoped.sh` | 4/3 | **7/0** |
+| `test-broad-status-foreign-lanes.sh` | 5/3 | **8/0** |
+
+### The second defect, unrelated and worse
+
+`test-broad-status-foreign-lanes.sh` installed S3's liveness stub with
+`env LEADV2_LANE_LIVENESS_BIN=… snap`. `snap` is a shell **function**; `env`
+execs a binary. That line has failed with `env: snap: No such file or
+directory`, rc=127, empty output on every run since it was written — the stub
+was never installed and S3 measured nothing at all.
+
+It stayed invisible because of two swallows in a row: `snap()` discards stderr,
+and the verdict used `2>/dev/null || true`. The result was a failure line that
+read, in full:
+
+```
+[TEST] FAIL: S3:
+```
+
+A red that names nothing is the mirror image of a green that proves nothing —
+same disease, opposite colour. The suite now distinguishes "the instrument did
+not run" from "the answer was wrong", and says which.
+
+### Negative controls — three, all by regex inside a body, all run
+
+| # | mutation | result |
+|---|---|---|
+| 1 | `leadv2-broad-status.sh`: the PULSE-REPO-SCOPED-03 ownership test becomes `or True` | `status-repo-scoped` 7/0 → **6/1**, C3 names the unowned lane on the board |
+| 2 | `leadv2-broad-status.sh` (render.py): stop extracting `{repo,error}` rows | `foreign-lanes` 8/0 → **7/1**, R2 red |
+| 3 | `leadv2-lanes-snapshot.sh`: a failed foreign liveness read reports `live` | `foreign-lanes` 8/0 → **7/1**, S3 red, naming the row |
+
+Control 1 was also run against `foreign-lanes` and killed **nothing** (8/0) —
+its foreign lane is owned, so unconditional ownership changes nothing there.
+Recorded because a control that does not fire is a fact about coverage, not a
+detail to leave out: it is *not* that suite's control, and is not claimed as one.
+
+All three are in `tests/mutations/catalog.yaml` (37 rows, every one
+`expected: killed`). Production files verified clean after each run.
+
+### CI selection, proven by changing the production file
+
+```
+$ printf '\n# marker\n' >> plugins/leadv2/scripts/leadv2-broad-status.sh
+$ LEADV2_RUN_ALL_SELECT_ONLY=1 bash tests/run-all.sh --scope changed
+[SELECT] …/tests/test-broad-status-foreign-lanes.sh
+[SELECT] …/tests/test-status-repo-scoped.sh
+```
+
+Both carry `# run-all-triggers: leadv2-broad-status.sh`. The marker was reverted
+immediately; `SELECT_ONLY` exits at run-all.sh:412, before the control-plane
+symlink relocation that makes a full run unsafe in a live checkout.
+
+### One open product question, not fixed here
+
+A beat's freshly written board can be discarded by the control-plane symlink
+repair. In the fixture that is certain and measured. Whether it can happen to
+the founder's real board I have **not** established — production may be saved
+by the repair's migrate branch, and I did not test it, so I am not claiming a
+production defect. But the two components run in the same order there, and the
+failure is silent: the script exits 0 and the stale board keeps its old
+timestamp-bearing content. It deserves a backlog row of its own. I did not file
+it — that is the lead's call and outside this lane's write set.
