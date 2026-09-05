@@ -75,6 +75,12 @@ mkdir -p "$(dirname "$LOG_FILE")" "$(dirname "$FOUNDER_STATUS")" "$STATE_DIR" "$
 write_beat() {  # <at-stamp> <body-marker>
   local at="$1" marker="$2"
   printf -- '%s\n%s\n' "$at" "row: $marker" > "$FOUNDER_STATUS"
+  # BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01: a real composer write also
+  # stamps the confirmed-write epoch next to the artifact. Without a fresh
+  # stamp the owner branch's absolute-age check correctly REFUSES the relay
+  # (fail-safe toward stale), and every full-relay assertion below would
+  # exercise the refusal instead of the relay it means to lock.
+  printf -- '%s' "$(date +%s)" > "$REPO/docs/leadv2/.founder-status-epoch"
   printf -- '%s [SUPERVISE-URGENT] BROAD_STATUS_READY at=%s path=docs/leadv2/founder-status.md rows=1 dispatched=0\n' \
     "$at" "$at" >> "$LOG_FILE"
 }
@@ -85,6 +91,7 @@ write_beat() {  # <at-stamp> <body-marker>
 # a plugin root whose scripts/leadv2-pulse-beat.sh is a harmless stub).
 STUB_PLUGIN_ROOT="$TMP/plugin-stub"
 mkdir -p "$STUB_PLUGIN_ROOT/scripts"
+cp "$SCRIPT_DIR/leadv2-portable-lock.sh" "$STUB_PLUGIN_ROOT/scripts/leadv2-portable-lock.sh"
 cp "$SCRIPT_DIR/leadv2-state-path.sh" "$STUB_PLUGIN_ROOT/scripts/leadv2-state-path.sh"
 cp "$SCRIPT_DIR/leadv2-beat-owner.sh" "$STUB_PLUGIN_ROOT/scripts/leadv2-beat-owner.sh"
 # T9-T14/T18 exercise the REAL leadv2_session_has_live_lane read side, which
@@ -105,6 +112,7 @@ hook_fire() {  # <event> <session_id> [owner_override]
     | env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" CLAUDE_PROJECT_DIR="$REPO" \
         CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT" \
         LEADV2_BEAT_OWNER_OVERRIDE="$override" \
+        LEADV2_SESSION_KIND=lead \
         bash "$HOOK_SH"
 }
 
@@ -191,6 +199,7 @@ OUT6="$(printf '{"cwd":"%s","hook_event_name":"UserPromptSubmit","session_id":"s
   | env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" CLAUDE_PROJECT_DIR="$REPO" \
       CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT" \
       LEADV2_BEAT_OWNER_OVERRIDE="sess-owner3" LEADV2_BEAT_RELAY_SCOPE=0 \
+      LEADV2_SESSION_KIND=lead \
       bash "$HOOK_SH")"
 CTX6="$(extract_ctx "$OUT6")"
 if printf -- '%s' "$CTX6" | grep -q 'BROAD_STATUS_READY' && printf -- '%s' "$CTX6" | grep -q 'RELAY=full'; then
@@ -274,6 +283,7 @@ real_hook_fire() {  # <event> <sid> -> fires with NO override, real beat-owner
   printf '{"cwd":"%s","hook_event_name":"%s","session_id":"%s"}' "$REPO" "$evt" "$sid" \
     | env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" CLAUDE_PROJECT_DIR="$REPO" \
         CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT" \
+        LEADV2_SESSION_KIND=lead \
         bash "$HOOK_SH"
 }
 
@@ -470,12 +480,14 @@ rm -f "$STATE_DIR"/.pulse-delivered* "$STATE_DIR"/.pulse-body-hash*
 write_beat "2026-08-19T15:00:00Z" "lima"
 MISSING_STUB_ROOT="$TMP/plugin-stub-nobeat"
 mkdir -p "$MISSING_STUB_ROOT/scripts"
+cp "$STUB_PLUGIN_ROOT/scripts/leadv2-portable-lock.sh" "$MISSING_STUB_ROOT/scripts/leadv2-portable-lock.sh"
 cp "$STUB_PLUGIN_ROOT/scripts/leadv2-state-path.sh" "$MISSING_STUB_ROOT/scripts/leadv2-state-path.sh"
 cp "$STUB_PLUGIN_ROOT/scripts/leadv2-pulse-beat.sh" "$MISSING_STUB_ROOT/scripts/leadv2-pulse-beat.sh"
 T19_ERR="$TMP/t19.stderr"
 OUT19="$(printf '{"cwd":"%s","hook_event_name":"UserPromptSubmit","session_id":"sess-t19"}' "$REPO" \
   | env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" CLAUDE_PROJECT_DIR="$REPO" \
       CLAUDE_PLUGIN_ROOT="$MISSING_STUB_ROOT" \
+      LEADV2_SESSION_KIND=lead \
       bash "$HOOK_SH" 2>"$T19_ERR")"
 CTX19="$(extract_ctx "$OUT19")"
 ERR_LINES19="$(grep -c '.' "$T19_ERR" 2>/dev/null || true)"

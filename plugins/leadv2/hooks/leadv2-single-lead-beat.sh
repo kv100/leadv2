@@ -172,6 +172,38 @@ else
     FOUNDER_STATUS_PATH="${PROJECT_ROOT}/docs/leadv2/founder-status.md"
   fi
 fi
+# BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01 (addendum 2): never carry a
+# relative path -- measured 2026-09-03, the same ready-line reached two lead
+# sessions and each resolved docs/leadv2/founder-status.md under its own
+# project root to a DIFFERENT file, one of them a day old. Anchor any
+# relative override to THIS session's PROJECT_ROOT.
+case "$FOUNDER_STATUS_PATH" in /*) ;; *) FOUNDER_STATUS_PATH="${PROJECT_ROOT}/${FOUNDER_STATUS_PATH}" ;; esac
+# BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01: independent staleness check
+# for THIS hook, per the FRESH-VS-STALE RULE in leadv2-broad-status.sh
+# (compare `date +%s` against the integer epoch file — never a wall-clock
+# text stamp). Deliberately does not trust the READY line's own `at=`/
+# `stale=1` alone: BROAD_STATUS_FAILED lines never carry either, and a hook
+# that only forwards what the composer claims re-creates the same silent
+# single-mechanism failure this defect class is named for
+# (ANTI-SILENCE-ONE-MECHANISM-01).
+# The epoch path stays constructed EXACTLY like leadv2-broad-status.sh:110
+# constructs its write side (raw PROJECT_ROOT default, env override wins):
+# status/epoch are one pair and must resolve to the same checkout the
+# composer wrote, or the age below is computed against a file nobody wrote.
+FOUNDER_STATUS_EPOCH_PATH="${LEADV2_FOUNDER_STATUS_EPOCH_PATH:-${PROJECT_ROOT}/docs/leadv2/.founder-status-epoch}"
+_hook_status_age_s() {
+  local now epoch
+  now="$(date +%s 2>/dev/null || echo 0)"
+  epoch="$(cat "$FOUNDER_STATUS_EPOCH_PATH" 2>/dev/null || true)"
+  [[ "$epoch" =~ ^[0-9]+$ ]] || epoch=0
+  printf '%s' "$(( now - epoch ))"
+}
+_iso_to_epoch_s() {  # <iso-8601-Z> -> epoch seconds; empty when unparseable
+  local iso="$1"
+  [[ "$iso" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || { printf ''; return; }
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null \
+    || date -u -d "$iso" +%s 2>/dev/null || printf ''
+}
 
 # ── 1. DELIVER ───────────────────────────────────────────────────────────
 CTX=""
@@ -193,11 +225,51 @@ if [[ -f "$LOG_FILE" ]]; then
         if [[ "$ROLE" == "guest" ]]; then
           # Exactly one line, no ready-line body, no BROAD_STATUS_READY
           # bytes — so the task-anchor's verbatim-relay rule cannot latch.
-          CTX="${AT} [BROAD_STATUS] at=${AT} path=docs/leadv2/founder-status.md — full status in owning session (RELAY=none); do not read founder-status.md; relay only this line. The relay is an aside, not the turn's work: execute any founder command in this same turn after it — never end the turn on the relay alone."
+          CTX="${AT} [BROAD_STATUS] at=${AT} path=${FOUNDER_STATUS_PATH} — full status in owning session (RELAY=none); do not read founder-status.md; relay only this line. The relay is an aside, not the turn's work: execute any founder command in this same turn after it — never end the turn on the relay alone."
         else
-          CTX="${READY_LINE}
-RELAY=full — paste docs/leadv2/founder-status.md verbatim; compare its line-1 stamp with the beat above before relaying.
+          # BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01: two ABSOLUTE
+          # gates. A brand-new session's first fire has no per-session delta
+          # to gate on (that is all the READY-line-changed / body-hash-changed
+          # checks above test), so these are the only things standing between
+          # a stale file and a founder told it is fresh:
+          #   1. absolute age: the file's confirmed-write stamp (epoch file)
+          #      must be younger than BEAT_S.
+          #   2. announced-vs-file stamps: the ready-line's at= must agree
+          #      with the file's own line-1 stamp within BEAT_S. A gross
+          #      mismatch means the line describes a DIFFERENT write than
+          #      the file this session is about to paste (two-files /
+          #      slept-beat case; a prose "compare before relaying" was the
+          #      original defect, not the fix).
+          # Either failure REFUSES publication — a warning is exactly what
+          # gets skipped on the third occurrence.
+          STATUS_AGE_S="$(_hook_status_age_s)"
+          REFUSAL_REASON=""
+          if [[ "$STATUS_AGE_S" =~ ^[0-9]+$ ]] && [[ "$STATUS_AGE_S" -ge "$BEAT_S" ]]; then
+            REFUSAL_REASON="confirmed write is ${STATUS_AGE_S}s old (>= ${BEAT_S}s threshold)"
+          else
+            LINE1_STAMP="$(head -n1 "$FOUNDER_STATUS_PATH" 2>/dev/null | awk '{print $1}')"
+            LINE1_EPOCH="$(_iso_to_epoch_s "$LINE1_STAMP")"
+            AT_EPOCH="$(_iso_to_epoch_s "$AT")"
+            if [[ -n "$LINE1_EPOCH" && -n "$AT_EPOCH" ]]; then
+              if [[ "$AT_EPOCH" -ge "$LINE1_EPOCH" ]]; then
+                STAMP_DIFF=$(( AT_EPOCH - LINE1_EPOCH ))
+              else
+                STAMP_DIFF=$(( LINE1_EPOCH - AT_EPOCH ))
+              fi
+              if [[ "$STAMP_DIFF" -ge "$BEAT_S" ]]; then
+                REFUSAL_REASON="ready-line at=${AT} and file line-1 ${LINE1_STAMP} disagree by ${STAMP_DIFF}s (>= ${BEAT_S}s) — the line and the file describe different writes"
+              fi
+            fi
+          fi
+          if [[ -n "$REFUSAL_REASON" ]]; then
+            CTX="${READY_LINE}
+RELAY=refused — founder-status.md must not be relayed as current: ${REFUSAL_REASON}. Do NOT paste it verbatim or relay it as current; tell the founder the status is stale and a refresh is pending (the trigger step below has already kicked one off).
 The relay is an aside, not the turn's work: if the founder's message contains a command or task, execute it in this same turn after the relay — never end the turn on the relay alone."
+          else
+            CTX="${READY_LINE}
+RELAY=full — paste ${FOUNDER_STATUS_PATH} verbatim; compare its line-1 stamp with the beat above before relaying.
+The relay is an aside, not the turn's work: if the founder's message contains a command or task, execute it in this same turn after the relay — never end the turn on the relay alone."
+          fi
         fi
         printf -- '%s' "$BODY_HASH" > "${BODY_HASH_FILE}.tmp.$$" 2>/dev/null \
           && mv -f "${BODY_HASH_FILE}.tmp.$$" "$BODY_HASH_FILE" 2>/dev/null || true
