@@ -90,8 +90,11 @@ if [[ -f "$_LV2_HOOK_KIND_LIB" ]]; then
   # in THIS shell so the journal below can carry reason=<why>.
   leadv2_hook_session_kind "${LEADV2_LOOP_OWNER_TRANSCRIPT:-}" >/dev/null 2>&1 || true
   _lv2_loop_kind="${LEADV2_SESSION_KIND_OUT:-unknown}"
-  if [[ "$_lv2_loop_kind" != "lead" ]]; then
-    leadv2_loop_arm_journal "$_lv2_beat_journal" "single-lead-beat-loop" "$_lv2_loop_kind" refused 2>/dev/null || true
+  # SESSION-KIND-UNKNOWN-REFUSES-CLOSED-01 stage 1: see leadv2-lane-pulse-watch.sh
+  if [[ "$_lv2_loop_kind" != "lead" || "${LEADV2_LOOPS_ARM_ON_LEAD:-0}" != "1" ]]; then
+    _lv2_beat_outcome=refused
+    [[ "$_lv2_loop_kind" == "lead" ]] && _lv2_beat_outcome=refused_stage1_hold
+    leadv2_loop_arm_journal "$_lv2_beat_journal" "single-lead-beat-loop" "$_lv2_loop_kind" "$_lv2_beat_outcome" 2>/dev/null || true
     exit 0
   fi
 else

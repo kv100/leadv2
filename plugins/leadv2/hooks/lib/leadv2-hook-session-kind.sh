@@ -120,6 +120,21 @@ leadv2_hook_session_kind() {  # <transcript_path> -> prints lead|worker|unknown
     return 0
   fi
 
+  # SESSION-KIND-UNKNOWN-REFUSES-CLOSED-01: a POSITIVE lead signal, owned by the
+  # runtime rather than by us. CLAUDE_CODE_ENTRYPOINT=cli means a human started
+  # this session in a terminal; the dispatcher spawns workers headless. Measured
+  # over 871 production arm records: 745 `cli`, none of them ever a worker; all
+  # 94 known workers carried `sdk-cli`. This branch sits AFTER every worker check,
+  # so interactive lane work still classifies `worker` on its worktree path or
+  # mission header (40/40 on real worker transcripts, 0/25 false positives).
+  if [[ "${CLAUDE_CODE_ENTRYPOINT:-}" == "cli" ]]; then
+    LEADV2_SESSION_KIND_REASON="entrypoint_cli"
+    _kind="lead"
+    LEADV2_SESSION_KIND_OUT="$_kind"
+    printf '%s\n' "$_kind"
+    return 0
+  fi
+
   # Fix-round 2: no env pin, no worker signal in the transcript itself.
   # FAIL CLOSED for loops — this is `unknown`, never `lead`.
   if [[ -n "$transcript" && -r "$transcript" ]]; then

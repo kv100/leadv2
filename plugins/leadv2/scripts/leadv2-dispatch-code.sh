@@ -5277,9 +5277,11 @@ _arm_lane_pulse_watch() {  # <sig8> — fail-open, never blocks dispatch
   # Fix-round 2: worker refuses; unknown FAILS CLOSED too — journal and do
   # not arm. Only a `lead` classification (or the LEADV2_SESSION_KIND=lead
   # pin) arms a persistent loop.
-  if [[ "${_LV2_KIND}" != "lead" ]]; then
+  # SESSION-KIND-UNKNOWN-REFUSES-CLOSED-01 stage 1 hold (see the lib header).
+  if [[ "${_LV2_KIND}" != "lead" || "${LEADV2_LOOPS_ARM_ON_LEAD:-0}" != "1" ]]; then
     leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
-      lane-pulse-watch "${_LV2_KIND}" refused 2>/dev/null || true
+      lane-pulse-watch "${_LV2_KIND}" \
+      "$([[ "${_LV2_KIND}" == "lead" ]] && echo refused_stage1_hold || echo refused)" 2>/dev/null || true
     return 0
   fi
   LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
@@ -5301,9 +5303,11 @@ _arm_single_lead_beat() {  # fail-open, armed once (loop's own pidfile guards re
   _lv2_session_kind
   # Fix-round 2: same fail-closed rule as _arm_lane_pulse_watch — worker and
   # unknown never arm; only `lead` (incl. the LEADV2_SESSION_KIND=lead pin).
-  if [[ "${_LV2_KIND}" != "lead" ]]; then
+  # SESSION-KIND-UNKNOWN-REFUSES-CLOSED-01 stage 1 hold (see the lib header).
+  if [[ "${_LV2_KIND}" != "lead" || "${LEADV2_LOOPS_ARM_ON_LEAD:-0}" != "1" ]]; then
     leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
-      single-lead-beat-loop "${_LV2_KIND}" refused 2>/dev/null || true
+      single-lead-beat-loop "${_LV2_KIND}" \
+      "$([[ "${_LV2_KIND}" == "lead" ]] && echo refused_stage1_hold || echo refused)" 2>/dev/null || true
     return 0
   fi
   LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
