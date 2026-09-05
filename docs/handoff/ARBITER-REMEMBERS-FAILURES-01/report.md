@@ -225,7 +225,14 @@ level, reddens every suite for the wrong reason, and reads like a pass.
 
 Two entries in `tests/mutations/catalog.yaml` (`arbiter-failure-memory-stops-counting`,
 `arbiter-unknown-is-capped-again`), each with `file`, `suite`, `anchor`, `patch`,
-`expected: killed`, and a note on which cases it kills. Repo kill rate 8/8 → **10/10**.
+`expected: killed`, and a note on which cases it kills.
+
+> Correction, made the same day from the next lane: the running total I wrote
+> here ("repo kill rate 8/8 → 10/10") was inherited from the catalog header,
+> which was itself stale — the file already held eleven entries while the header
+> said eight. The honest statement is that these two entries are killed, and
+> that the catalog's total is now derived by counting rather than carried
+> (commit `9703e25c`). Counted on 2026-09-05: 15 entries, all `expected: killed`.
 
 ### 4. CI selection, proven by changing the PRODUCTION file
 
