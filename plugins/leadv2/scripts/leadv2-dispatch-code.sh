@@ -3842,14 +3842,27 @@ sanitize_field() { printf '%s' "$1" | tr -d '"\\' | tr '\n' ' ' | tr -cd 'A-Za-z
 # A fast path must be explicit.  Do not infer "docs" from a filename or assume a
 # diagnosis is harmless merely because its prose contains no change verb: unknown means
 # product and gets all three gates.
+LEADV2_NON_PRODUCT_KINDS="plugin|tooling|tool|docs|documentation|diagnosis|diagnostic|investigation"
 classify_product_work() { # <kind> <mission> -> product|non_product<TAB>reason
   local kind mission
   kind="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   mission="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
-  case "${kind}" in
-    plugin|tooling|tool|docs|documentation|diagnosis|diagnostic|investigation)
-      printf 'non_product\texplicit_kind_%s' "${kind}"; return ;;
-  esac
+  # CLASS-IS-COMPUTED-NOT-DECLARED-01: ONE source for the kinds that skip the product
+  # gates -- the case pattern below and the remedy printed on the decision line read the
+  # same string, so the advice can never drift from what is actually accepted. (Unquoted
+  # expansion in a case pattern is alternation, which is exactly what is wanted here.)
+  # An unquoted variable in a `case` pattern is NOT alternation -- the `|` inside it is a
+  # literal, so that spelling silently accepts nothing and EVERY kind falls through to
+  # product. Caught by this row's own suite before it shipped, and worth recording: the
+  # three cases that guard the conservative default all stayed green while the hatch was
+  # dead, so only the case that walks the advertised kinds saw it. Split explicitly,
+  # which keeps the single source the remedy line reads.
+  local _npk _nk
+  IFS='|' read -r -a _npk <<< "${LEADV2_NON_PRODUCT_KINDS}"
+  for _nk in "${_npk[@]}"; do
+    [[ -n "${_nk}" && "${kind}" == "${_nk}" ]] || continue
+    printf 'non_product\texplicit_kind_%s' "${kind}"; return
+  done
   if [[ "${mission}" =~ ^[[:space:]]*(docs?-only|documentation-only|pure[[:space:]]+diagnosis|diagnosis-only|tooling-only|plugin-only) ]]; then
     printf 'non_product\texplicit_mission_fast_path'; return
   fi
@@ -7580,7 +7593,19 @@ cmd_resolve() {
   # the task.  This is intentionally before any reservation/spawn side effect.
   local product_class classification_reason
   IFS=$'\t' read -r product_class classification_reason <<< "$(classify_product_work "${kind}" "${mission}")"
-  emit decision "dispatch_classified task=${sig8} class=${product_class} reason=${classification_reason} kind=${kind:-unknown}"
+  # CLASS-IS-COMPUTED-NOT-DECLARED-01: what this classification asserts is NOT the nature
+  # of the work and NOT which repository it touches -- it is the STRICTNESS OF ADMISSION,
+  # and `product` on an unknown kind is a deliberate fail-closed choice ("unknown means
+  # product and gets all three gates"). That is right, and it is also expensive when it is
+  # wrong: measured 2026-09-05, a plugin-only task defaulted to product, hit the architect
+  # prepass, and died seven times in a row until --kind plugin was passed by hand. The
+  # accepted kinds were known to this function and printed nowhere, so the line said what
+  # it decided and not what would change the decision. Say both. The class itself is
+  # unchanged -- a genuine product task still takes the product path.
+  local _class_remedy=""
+  [[ "${classification_reason}" == "conservative_default" ]] \
+    && _class_remedy=" asserts=admission_strictness remedy=--kind:${LEADV2_NON_PRODUCT_KINDS}"
+  emit decision "dispatch_classified task=${sig8} class=${product_class} reason=${classification_reason} kind=${kind:-unknown}${_class_remedy}"
 
   # PHASES-ARE-THE-ONLY-PATH-01 §7: register the dispatch lane in active.yaml.
   # Without this, leadv2_active_update_phase finds no row to patch and the mirror
