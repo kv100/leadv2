@@ -91,6 +91,9 @@ if [[ -n "${fixture_green}" ]]; then
   fail "scanner: guarded fixture was incorrectly reported: ${fixture_green}"
 else
   sed -i.bak '/LEADV2_CANONICAL_ROOT/d' "${FIXTURE}/plugins/leadv2/scripts/probe.sh"
+  # PATCHERS-REPORT-SUCCESS-ON-ZERO-MATCHES-01: a drifted anchor makes the
+  # mutation a no-op and this negative control green for the wrong reason.
+  cmp -s "${FIXTURE}/plugins/leadv2/scripts/probe.sh.bak" "${FIXTURE}/plugins/leadv2/scripts/probe.sh" && { printf 'FATAL: mutation matched nothing (anchor drifted): %s\n' "${FIXTURE}/plugins/leadv2/scripts/probe.sh" >&2; exit 1; }
   fixture_red="$(scan_unguarded "${FIXTURE}")"
   [[ "${fixture_red}" == "plugins/leadv2/scripts/probe.sh:2" ]] \
     && pass "control: removed canonical fallback is detected (would be red)" \

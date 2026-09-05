@@ -655,6 +655,9 @@ fi
 # recognised as refused_* at all -- it must fall through to "ran", which the
 # union-verdict path with no parseable body turns into a blocked gate.
 sed -i.bak "s/if \[\[ -n \"\${marker}\" \&\& ( \"\${rc}\" == \"1\" || \"\${rc}\" == \"2\" || \"\${rc}\" == \"75\" ) \]\]; then/if [[ -n \"\${marker}\" \&\& 0 -eq 1 ]]; then  # MUTATION-B/" "$ENGINE"
+# PATCHERS-REPORT-SUCCESS-ON-ZERO-MATCHES-01: a drifted anchor makes the
+# mutation a no-op and this negative control green for the wrong reason.
+cmp -s "$ENGINE.bak" "$ENGINE" && { printf 'FATAL: mutation matched nothing (anchor drifted): %s\n' "$ENGINE" >&2; exit 1; }
 rm -f "${ENGINE}.bak"
 if bash -n "$ENGINE"; then
   pass "MUTATION-B: mutated engine still parses (bash -n)"

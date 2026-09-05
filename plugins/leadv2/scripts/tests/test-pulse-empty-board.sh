@@ -343,6 +343,9 @@ EOF
 
   cp "$PULSE_BEAT_SH" "$TMP/pulse-beat-red-t3.sh"
   sed -i.bak 's/^  _prepare_transition_env$/  :/' "$TMP/pulse-beat-red-t3.sh"
+  # PATCHERS-REPORT-SUCCESS-ON-ZERO-MATCHES-01: a drifted anchor makes the
+  # mutation a no-op and this negative control green for the wrong reason.
+  cmp -s "$TMP/pulse-beat-red-t3.sh.bak" "$TMP/pulse-beat-red-t3.sh" && { printf 'FATAL: mutation matched nothing (anchor drifted): %s\n' "$TMP/pulse-beat-red-t3.sh" >&2; exit 1; }
   chmod +x "$TMP/pulse-beat-red-t3.sh"
 
   LEADV2_PROJECT_ROOT="$repo" LEADV2_STATE_ROOT="$state" \
@@ -516,6 +519,9 @@ test_t5_red() {
   # RED: disable both epoch-stamp call sites — the file should now be
   # ABSENT after a fresh render, meaning a reader has NOTHING to compare.
   sed -i.bak 's/&& _stamp_epoch//' "$TMP/broad-status-red-t5.sh"
+  # PATCHERS-REPORT-SUCCESS-ON-ZERO-MATCHES-01: a drifted anchor makes the
+  # mutation a no-op and this negative control green for the wrong reason.
+  cmp -s "$TMP/broad-status-red-t5.sh.bak" "$TMP/broad-status-red-t5.sh" && { printf 'FATAL: mutation matched nothing (anchor drifted): %s\n' "$TMP/broad-status-red-t5.sh" >&2; exit 1; }
   chmod +x "$TMP/broad-status-red-t5.sh"
   local epoch_file="$repo/docs/leadv2/.founder-status-epoch"
   rm -f "$epoch_file"

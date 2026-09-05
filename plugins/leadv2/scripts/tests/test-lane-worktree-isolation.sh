@@ -163,8 +163,14 @@ export LEADV2_PROJECT_ROOT="$SCRATCH2"
 laneC_dir="$(bash "$LANE_SH" ensure taskC heavy)"
 laneD_dir="$(bash "$LANE_SH" ensure taskD heavy)"
 sed -i.bak 's/status: queued/status: done-by-C/' "$laneC_dir/docs/tasks.yaml" && rm -f "$laneC_dir/docs/tasks.yaml.bak"
+# PATCHERS-REPORT-SUCCESS-ON-ZERO-MATCHES-01: a drifted anchor makes the
+# mutation a no-op and this negative control green for the wrong reason.
+cmp -s "$laneC_dir/docs/tasks.yaml.bak.bak" "$laneC_dir/docs/tasks.yaml.bak" && { printf 'FATAL: mutation matched nothing (anchor drifted): %s\n' "$laneC_dir/docs/tasks.yaml.bak" >&2; exit 1; }
 git -C "$laneC_dir" commit docs/tasks.yaml -m "lane C: rowX -> done-by-C" -q
 sed -i.bak 's/status: queued/status: done-by-D/' "$laneD_dir/docs/tasks.yaml" && rm -f "$laneD_dir/docs/tasks.yaml.bak"
+# PATCHERS-REPORT-SUCCESS-ON-ZERO-MATCHES-01: a drifted anchor makes the
+# mutation a no-op and this negative control green for the wrong reason.
+cmp -s "$laneD_dir/docs/tasks.yaml.bak.bak" "$laneD_dir/docs/tasks.yaml.bak" && { printf 'FATAL: mutation matched nothing (anchor drifted): %s\n' "$laneD_dir/docs/tasks.yaml.bak" >&2; exit 1; }
 git -C "$laneD_dir" commit docs/tasks.yaml -m "lane D: rowX -> done-by-D" -q
 
 land "$laneC_dir" worktree-taskC >/dev/null 2>&1 || true

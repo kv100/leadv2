@@ -596,6 +596,9 @@ YAML
 
   cp "$LIVENESS_SH" "${LIVENESS_SH}.finstate-orig"
   sed -i.bak 's/if _commit_age is not None and _commit_age <= finished_window:/if False:  # LANE-LIVENESS-THREE-STATES-02 mutation gate/' "$LIVENESS_SH"
+  # PATCHERS-REPORT-SUCCESS-ON-ZERO-MATCHES-01: a drifted anchor makes the
+  # mutation a no-op and this negative control green for the wrong reason.
+  cmp -s "$LIVENESS_SH.bak" "$LIVENESS_SH" && { printf 'FATAL: mutation matched nothing (anchor drifted): %s\n' "$LIVENESS_SH" >&2; exit 1; }
   rm -f "${LIVENESS_SH}.bak"
 
   red="$(_placement_probe "$repo" "$tid" "$state")"
@@ -664,6 +667,9 @@ YAML
   # RED: mutate, reset the poll state, re-run the exact same 2-poll cycle.
   cp "$SNAPSHOT_SH" "${SNAPSHOT_SH}.finstate-orig"
   sed -i.bak 's/if _commit_age is not None and _commit_age <= _LANE_FINISHED_WINDOW_S:/if False:  # LANE-LIVENESS-THREE-STATES-02 mutation gate/' "$SNAPSHOT_SH"
+  # PATCHERS-REPORT-SUCCESS-ON-ZERO-MATCHES-01: a drifted anchor makes the
+  # mutation a no-op and this negative control green for the wrong reason.
+  cmp -s "$SNAPSHOT_SH.bak" "$SNAPSHOT_SH" && { printf 'FATAL: mutation matched nothing (anchor drifted): %s\n' "$SNAPSHOT_SH" >&2; exit 1; }
   rm -f "${SNAPSHOT_SH}.bak"
 
   _fixture_row

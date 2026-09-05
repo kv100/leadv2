@@ -635,6 +635,9 @@ done
 MUT_C_DIR="$tmp/composer-mut-c"
 cp -a "$SCRATCH_SCRIPTS" "$MUT_C_DIR"
 sed -i.bak 's/_surf_marker=""; (( _surf_remaining > 0 )) && _surf_marker=" +${_surf_remaining}"/_surf_marker=""/' "$MUT_C_DIR/leadv2-lane-status-line.sh"
+# PATCHERS-REPORT-SUCCESS-ON-ZERO-MATCHES-01: a drifted anchor makes the
+# mutation a no-op and this negative control green for the wrong reason.
+cmp -s "$MUT_C_DIR/leadv2-lane-status-line.sh.bak" "$MUT_C_DIR/leadv2-lane-status-line.sh" && { printf 'FATAL: mutation matched nothing (anchor drifted): %s\n' "$MUT_C_DIR/leadv2-lane-status-line.sh" >&2; exit 1; }
 rm -f "$MUT_C_DIR/leadv2-lane-status-line.sh.bak"
 COMPOSER_SAVED="$COMPOSER"; COMPOSER="$MUT_C_DIR/leadv2-lane-status-line.sh"
 MUT_C_RED=""
