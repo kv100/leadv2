@@ -1,0 +1,16 @@
+BASELINE (unmutated pin3)
+    suite: 14 passed, 0 failed
+    [TEST] PASS: T5: only the known violator(s) remain: plugins/leadv2/scripts/lib/leadv2-lane-state.sh:248
+
+--- new-violation-in-a-clean-file ---
+    target: plugins/leadv2/scripts/lib/leadv2-watch-lifecycle.sh
+    injected after: wl_owner_gone() {
+    expected to kill: T5 -- a violation in an unlisted file must be NEW, not excused
+    suite: rc=1  12 passed, 2 failed
+      [TEST] FAIL: T5: NEW text-matched process-table liveness decision(s): plugins/leadv2/scripts/lib/leadv2-watch-lifecycle.sh:134 (known and allowed: plugins/leadv2/scripts/lib/leadv2-lane-state.sh:248)
+--- second-violation-in-a-listed-file ---
+    target: plugins/leadv2/scripts/lib/leadv2-lane-state.sh
+    injected after: _lv2_lane_state_root() {
+    expected to kill: T5 -- a SECOND violation in a listed file must be NEW, not read as the standing one having moved
+    suite: rc=1  13 passed, 1 failed
+      [TEST] FAIL: T5: NEW text-matched process-table liveness decision(s): plugins/leadv2/scripts/lib/leadv2-lane-state.sh:41; plugins/leadv2/scripts/lib/leadv2-lane-state.sh:252 (known and allowed: plugins/leadv2/scripts/lib/leadv2-lane-state.sh:248)

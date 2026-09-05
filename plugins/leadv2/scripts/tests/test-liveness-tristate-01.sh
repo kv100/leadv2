@@ -452,13 +452,59 @@ test_5_no_text_matched_process_table() {
   local out rc
   out="$(_scan_text_matched_process_table "$LANE_STATE_SH" "$WATCH_LIFECYCLE_SH")"
   rc=$?
+  # Known violators, one per line, repo-relative `path:line`. This list may
+  # only SHRINK, like every other list we keep.
+  #
+  # It used to be a deliberate permanent RED: the suite failed whenever any
+  # finding existed, with the known one named only in prose. That is a
+  # known-red entry wearing different clothes -- nobody scanning a red list can
+  # tell a NEW violation from the standing one, and the proof is that this
+  # suite arrived in a fifteen-suite red census as "red", not as "pressure".
+  # A marker that cannot distinguish new from old has stopped applying
+  # pressure and started making noise.
+  #
+  # Now: exactly the known set -> green. Anything else -> red, naming the file.
+  local known_list
+  known_list="plugins/leadv2/scripts/lib/leadv2-lane-state.sh:248"
+
+  local repo_root new_findings moved_findings seen_line rel
+  repo_root="$(cd "${SCRIPTS_ROOT}/../../.." 2>/dev/null && pwd)"
+  new_findings=""; moved_findings=""
+
   if [[ "$rc" -eq 0 ]]; then
     pass "T5: no text-matched process-table liveness decision found in scan scope"
+    if [[ -n "$known_list" ]]; then
+      printf '[TEST] NOTE: %s\n' "T5: the known-violator list is non-empty but nothing was found -- shrink it: ${known_list}"
+    fi
   else
-    # DELIBERATE RED: the known live violator (lane-state.sh reconcile) is
-    # expected here until the fix lane lands; every finding must be a real
-    # class member, not scanner noise. Findings census: report.md.
-    fail "T5: text-matched process-table liveness decision(s) found (expected: the known lane-state.sh reconcile violator; any OTHER line is a new finding for the report):\n${out}"
+    while IFS= read -r seen_line; do
+      [[ -n "$seen_line" ]] || continue
+      rel="${seen_line#"${repo_root}/"}"
+      rel="${rel%%: *}"                       # "path:line"
+      if grep -qxF "$rel" <<<"$known_list"; then
+        continue
+      elif [[ "$(grep -cxF "${rel%%:*}" <<<"$(sed 's/:.*$//' <<<"$known_list")")" == "$(grep -c "^${repo_root}/${rel%%:*}:" <<<"$out")" ]] \
+           && [[ "$(grep -cxF "${rel%%:*}" <<<"$(sed 's/:.*$//' <<<"$known_list")")" == "1" ]]; then
+        # Same file, different line, and the file contributes exactly as many
+        # findings as it has known entries: the standing violator moved.
+        #
+        # The counting matters. Matching on the file alone would make a SECOND
+        # violation added to an already-listed file invisible -- the list would
+        # go on excusing a file rather than a violation, which is the failure
+        # mode that turns an allow-list into a blindfold.
+        moved_findings="${moved_findings}${moved_findings:+; }${rel}"
+      else
+        new_findings="${new_findings}${new_findings:+; }${rel}"
+      fi
+    done <<< "$out"
+
+    if [[ -n "$new_findings" ]]; then
+      fail "T5: NEW text-matched process-table liveness decision(s): ${new_findings} (known and allowed: ${known_list})"
+    elif [[ -n "$moved_findings" ]]; then
+      pass "T5: only the known violator, which has MOVED -- update the list to: ${moved_findings}"
+    else
+      pass "T5: only the known violator(s) remain: ${known_list}"
+    fi
   fi
 }
 

@@ -437,3 +437,34 @@ mutations:
       so no session kind ever arms
     expected: killed
     note: "10/0 -> 6/4, and the four failures are exactly the four the suite carried before the pin was declared. The OPPOSITE mutation (`if false`, so every kind arms) kills nothing: the orphan gate itself is UNCOVERED here, because a second dispatch never reaches the arming call in this fixture. A case written for it survived both controls and was deleted rather than kept -- the gap is recorded in the suite instead"
+
+  # FIVE-RED-SUITES-THE-GATE-SELECTS-01 (2026-09-05). T5 used to be a
+  # deliberate permanent RED with the one known violator named only in prose.
+  # That is a known-red entry in different clothes: nobody scanning a red list
+  # can tell a NEW violation from the standing one, and the proof is that this
+  # suite arrived in a fifteen-suite red census as "red", not as "pressure".
+  # It now carries the known violator as a list that may only SHRINK.
+  - id: liveness-scan-finds-a-new-violation
+    product_flow: "a new liveness decision made by enumerating the process table and selecting rows by text -- the class that measured 0 live lanes out of 231 while a lane was writing"
+    file: plugins/leadv2/scripts/lib/leadv2-watch-lifecycle.sh
+    suite: plugins/leadv2/scripts/tests/test-liveness-tristate-01.sh
+    anchor: |
+      the first top-level function opening in the file
+    patch: |
+      insert, inside that function body, an unexecuted heredoc containing
+      `ps -axo pid=,command=` and `if worktree not in line: continue`
+      (bash-valid: the suite sources these libs, so an unparseable mutant
+      would redden everything for the wrong reason)
+    expected: killed
+    note: "14/0 -> 12/2, naming the unlisted file. Distinct from the suite's own T5-NC, which proves the SCANNER works; this proves the LIST does not excuse a file it was never given"
+
+  - id: liveness-scan-list-excuses-a-file-not-a-violation
+    product_flow: "a SECOND text-matched liveness decision added to a file that already carries a known one -- the shape an allow-list keyed on the file would wave through forever"
+    file: plugins/leadv2/scripts/lib/leadv2-lane-state.sh
+    suite: plugins/leadv2/scripts/tests/test-liveness-tristate-01.sh
+    anchor: |
+      the first top-level function opening in the file
+    patch: |
+      same injection as above, into the file that IS on the known list
+    expected: killed
+    note: "14/0 -> 13/1, and it names BOTH lines rather than reading the standing violator as having merely moved. This is why the moved-branch counts findings per file instead of matching the file alone: a list that excuses a file rather than a violation is a blindfold"
