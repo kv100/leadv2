@@ -71,15 +71,26 @@ reset_scenario() {
   mkdir -p "$state_dir"
 }
 
+# Consumer exit codes and stderr are kept, not discarded. A consumer that
+# dies writes no journal row, and an empty journal was previously read as
+# "the race did not happen" -- the same collapse of unknown into a definite
+# negative that this suite's control exists to catch elsewhere.
+RUN_N_RCS=""
 run_n_concurrent() {
   local lib="$1" state_dir="$2" n="$3" compute="$4"
-  local i
+  local i pid
+  local -a pids=()
+  RUN_N_RCS=""
+  : > "${TMP_ROOT}/consumers.err"
   for i in $(seq 1 "$n"); do
     ( LEADV2_STATE_ROOT="$state_dir" PROJECT_ROOT="$TMP_ROOT" \
       LEADV2_STATUS_SNAPSHOT_TTL_S=3 \
-      bash "$RUN_SH" "$lib" "$i" "$compute" >/dev/null ) &
+      bash "$RUN_SH" "$lib" "$i" "$compute" >/dev/null 2>>"${TMP_ROOT}/consumers.err" ) &
+    pids+=("$!")
   done
-  wait
+  for pid in "${pids[@]}"; do
+    wait "$pid"; RUN_N_RCS="${RUN_N_RCS}$? "
+  done
 }
 
 # Deterministic staleness: rewrite a snapshot's computed_at to N seconds ago
@@ -203,7 +214,15 @@ MUT_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT" "$MUT_ROOT"' EXIT
 mkdir "$MUT_ROOT/lib"
 BROKEN_LIB="${MUT_ROOT}/lib/leadv2-status-cache.sh"
-ln -s "$(cd "${SCRIPT_DIR}/.." && pwd)/leadv2-state-path.sh" "${MUT_ROOT}/leadv2-state-path.sh"
+# leadv2-state-path.sh sources leadv2-portable-lock.sh from its OWN
+# directory, and for a symlinked script that directory is the SYMLINK's, not
+# the target's -- so a bare MUT_ROOT holding only state-path made every
+# invocation of the mutated library exit 1 before it wrote anything. The
+# control then measured zero recomputes and reported "the mutation did not
+# reproduce the race": the mutant had never run. Link the siblings it needs.
+for _sib in leadv2-state-path.sh leadv2-portable-lock.sh; do
+  ln -s "$(cd "${SCRIPT_DIR}/.." && pwd)/${_sib}" "${MUT_ROOT}/${_sib}"
+done
 python3 - "$LIB_SH" "$BROKEN_LIB" <<'PYEOF'
 import sys
 
@@ -230,8 +249,21 @@ else
   chmod +x "$BROKEN_LIB"
   STATE_M="${TMP_ROOT}/state-mutation"
   reset_scenario "$STATE_M"
+  WARM_ERR="${TMP_ROOT}/mutant-warm.err"
   LEADV2_STATE_ROOT="$STATE_M" PROJECT_ROOT="$TMP_ROOT" LEADV2_STATUS_SNAPSHOT_TTL_S=3 \
-    bash "$RUN_SH" "$BROKEN_LIB" warm "$COMPUTE_SH" >/dev/null
+    bash "$RUN_SH" "$BROKEN_LIB" warm "$COMPUTE_SH" >/dev/null 2>"$WARM_ERR"
+  WARM_RC=$?
+  # A control that cannot run is not a control that found nothing.
+  #
+  # Before this, the mutant's warm step ran with stdout discarded and stderr
+  # unread. When it produced no snapshot at all, make_stale raised a bare
+  # FileNotFoundError, the recompute count stayed 0, and the suite reported
+  # "the mutation did not reproduce the race" -- the same collapse of unknown
+  # into a definite negative that this whole family of bugs is made of. The
+  # mutant never executed; nothing at all was measured about the lock.
+  if [[ "$WARM_RC" -ne 0 || ! -f "${STATE_M}/status-snapshot.json" ]]; then
+    fail "mutation control COULD NOT RUN: the mutated library exited ${WARM_RC} and wrote no snapshot -- nothing was measured about the lock (stderr: $(head -c 300 "$WARM_ERR" 2>/dev/null | tr '\n' ' '))"
+  else
   make_stale "${STATE_M}/status-snapshot.json" 3600
   J_M="$(journal_path_for "$STATE_M")"
   : > "$J_M"
@@ -243,7 +275,8 @@ else
     ok
     printf '  (expected RED reproduced: mutation without the lock causes >=2 recomputes)\n'
   else
-    fail "mutation control did not reproduce the race (expected >=2 recomputes, got $RECOMPUTES_M) -- suite may not be exercising the lock"
+    fail "mutation control ran but did not reproduce the race (expected >=2 recomputes, got $RECOMPUTES_M; consumer rcs=[${RUN_N_RCS}] journal_lines=$(wc -l < "$J_M" 2>/dev/null | tr -d ' ') consumer stderr: $(head -c 300 "${TMP_ROOT}/consumers.err" 2>/dev/null | tr '\n' ' '))"
+  fi
   fi
 fi
 

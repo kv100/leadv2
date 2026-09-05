@@ -372,3 +372,22 @@ mutations:
       replace that single line with `if false; then`
     expected: killed
     note: "kills all three: both no-parser cases and the liveness case. The arbiter / review-gate shape one floor up -- knowing and not saying. The stub package that removes PyYAML is a yaml.py on PYTHONPATH that raises ImportError, so the case reads the same on a host where PyYAML IS installed system-wide"
+
+  # FIVE-RED-SUITES-THE-GATE-SELECTS-01 (2026-09-05). This mutation was
+  # already written INSIDE test-status-churn.sh as its own built-in control,
+  # and it had stopped firing: the fixture symlinked leadv2-state-path.sh into
+  # a bare directory without the sibling it sources, so every invocation of the
+  # mutated library exited 1 before writing anything, and the suite read the
+  # resulting zero as "the mutation did not reproduce the race". Catalogued
+  # now that it fires again -- 5 recomputes where 1 is correct.
+  - id: status-snapshot-recomputes-without-the-lock
+    product_flow: "five concurrent consumers of a stale status snapshot each recompute it instead of one, so a status read multiplies the work it was built to avoid"
+    file: plugins/leadv2/scripts/lib/leadv2-status-cache.sh
+    suite: plugins/leadv2/scripts/tests/test-status-churn.sh
+    anchor: |
+      fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    patch: |
+      drop the flock call, keeping `got_lock = True`, so every caller believes
+      it won the race
+    expected: killed
+    note: "the suite carries this control itself; measured after the fixture repair: 5 recomputes vs 1. Selection proven from the production file -- clean tree 3 suites, one appended comment in lib/leadv2-status-cache.sh -> 4, incl. test-status-churn.sh"
