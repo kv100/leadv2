@@ -1,0 +1,8 @@
+    mutation applied inside scan_suite_triggers()
+    changed: 2 line(s)
+    mutant parses
+    discovered map now: []
+    lane-watch-v2      rc=1  PASS=34 FAIL=1
+      [TEST] FAIL: run-all.sh: the discovered trigger map is EMPTY -- no suite is selectable at all
+    skill-telemetry    rc=1  PASS=38 FAIL=1
+      [TEST] FAIL: run-all.sh: the discovered trigger map is EMPTY -- no suite is selectable at all

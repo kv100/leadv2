@@ -270,16 +270,44 @@ else
   fail "no NEVER_INVOKED skill found to spot-check"
 fi
 
-# F. run-all.sh registration (static check; live selection proof is run
-# separately via LEADV2_RUN_ALL_SELECT_ONLY=1, see report — this suite only
-# proves the EXTRA_SUITE_MAP rows exist)
+# F. run-all.sh registration.
+#
+# This block used to grep tests/run-all.sh for two literal
+# `<stem>.sh:<suite>` rows, on the assumption that selection was written out
+# in an EXTRA_SUITE_MAP table inside that file. 65734576 ("wip(SUITE-MAP):
+# CHECKPOINT -- self-registration markers across 102 suites, ACCEPTANCE NOT
+# PROVEN") emptied that table when selection moved to the
+# `# run-all-triggers:` marker on line 29 of this file. So the assertion was
+# checking a mechanism that no longer exists and could only ever fail. It also
+# spelled the stems with a `.sh` the marker does not carry, so it would not
+# have matched even against a live table.
+#
+# Intent kept, mechanism re-pointed at the live one and made stronger: ask
+# run-all.sh what it maps. LEADV2_RUN_ALL_LIST_TRIGGERS=1 prints the
+# discovered stem->suite rows and exits at run-all.sh:213, before the harness
+# mutates anything, so asking costs no side effects.
 RUN_ALL="${SCRIPTS_DIR}/../../../tests/run-all.sh"
-if [ -f "$RUN_ALL" ] && grep -q 'leadv2-skill-telemetry-collect.sh:plugins/leadv2/scripts/tests/test-skill-telemetry.sh' "$RUN_ALL" \
-   && grep -q 'leadv2-skill-rollup.sh:plugins/leadv2/scripts/tests/test-skill-telemetry.sh' "$RUN_ALL"; then
-  pass "tests/run-all.sh EXTRA_SUITE_MAP carries both stem rows for this suite"
+_st_map="$(LEADV2_RUN_ALL_LIST_TRIGGERS=1 bash "$RUN_ALL" 2>/dev/null)"; _st_rc=$?
+_st_missing=""
+for _st_stem in leadv2-skill-telemetry-collect leadv2-skill-rollup; do
+  printf '%s\n' "$_st_map" \
+    | grep -q "^${_st_stem}:.*tests/test-skill-telemetry\.sh$" \
+    || _st_missing="${_st_missing:+${_st_missing},}${_st_stem}"
+done
+if [ ! -f "$RUN_ALL" ]; then
+  fail "tests/run-all.sh is absent -- selection is unknowable, not disproven"
+elif [ "$_st_rc" -ne 0 ]; then
+  fail "run-all.sh: the trigger-listing seam exited ${_st_rc} -- selection is unknowable, not disproven"
+elif [ -z "$_st_map" ]; then
+  # "no row for me" and "no rows for anyone" are different facts; the old
+  # assertion could not tell them apart, which is how it went stale unnoticed.
+  fail "run-all.sh: the discovered trigger map is EMPTY -- no suite is selectable at all"
+elif [ -n "$_st_missing" ]; then
+  fail "run-all.sh: --scope changed does not map these stems to this suite: ${_st_missing}"
 else
-  fail "tests/run-all.sh EXTRA_SUITE_MAP missing a row for this suite"
+  pass "run-all.sh: --scope changed maps both stems to this suite"
 fi
+unset _st_map _st_rc _st_missing _st_stem
 
 # ══════════════════════════════════════════════════════════════════════════
 # M1 — bucketing negative control (leadv2-skill-rollup.sh :: bucket_for_skill)

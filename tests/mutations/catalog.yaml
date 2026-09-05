@@ -324,3 +324,22 @@ mutations:
       /if \[ "\$queued_rc" -ne 0 \]; then/s|.*|  if false; then|
     expected: killed
     note: "the arbiter/review-gate shape one floor up: knowing and not saying. Kills case r2-unknown in both environments. A third assertion written alongside these two (r2-unknown-b) survived BOTH controls -- it asserted the ABSENCE of a LANE-IDLE count, which an answer of zero also satisfies -- and was deleted rather than kept for the count"
+
+  # FIVE-RED-SUITES-THE-GATE-SELECTS-01 (2026-09-05). One control, two suites.
+  # Both had a selection proof that grepped tests/run-all.sh for a literal row
+  # in EXTRA_SUITE_MAP; 65734576 emptied that table and both assertions could
+  # only ever fail. Re-pointed at the live seam, they now distinguish "no row
+  # for me" from "no rows for anyone" -- which is exactly what this control
+  # measures, and exactly what the old form could not say.
+  - id: trigger-discovery-returns-an-empty-map
+    product_flow: "run-all.sh --scope changed discovers no trigger rows at all, so every suite is silently unselectable and a green CI means nothing ran"
+    file: tests/run-all.sh
+    suite: plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
+    also_kills: plugins/leadv2/scripts/tests/test-skill-telemetry.sh
+    anchor: |
+      [[ -n "${_hits}" ]] || continue
+    patch: |
+      inside scan_suite_triggers() only, replace the first
+      `[[ -n "${_hits}" ]] || continue` with a bare `continue`
+    expected: killed
+    note: "both suites go red naming the EMPTY map specifically, not a missing row -- the distinction is the property. Census by BEHAVIOUR (a fail() whose text names EXTRA_SUITE_MAP, not a mention of the string) found exactly two such assertions in the tree; the other 99 references are the line-2 migration comment and 6 more are fixture data in suites that test the parser itself"
