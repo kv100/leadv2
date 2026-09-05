@@ -878,3 +878,85 @@ CI selection proven by changing the production file
 
 Commits: `833adb6f` (fixture), catalogue + this section following.
 Catalogue: **50 rows, every one `expected: killed`.**
+
+## `test-arm-capability-honoured.sh` — the same disagreement, settled twice, in opposite directions
+
+1/3, and two of the three failures were the suite asserting a precondition the
+shipped config had **deliberately deleted**. Arbitration by date and commit
+subject:
+
+| | |
+|---|---|
+| `78ae2a5a` 2026-08-30 | *fix(freepool): arbiter honours router arm exclusions* — created both the `allowed_arms` wiring **and this suite**. At that commit freepool's ladder entry did not list `light`, so a light task really was excluded by the router. |
+| `8cbeeed4` 2026-08-31 | *feat(routing): arm admission — … router/arbiter agreement* — **added `light`** to freepool's ladder `when:`, with a ten-line rationale in the yaml naming the old ticket (`ARMS-ADMISSION-01` / `ROUTER-ARBITER-DISAGREE-ON-FREEPOOL-01`): the arbiter's `SIZE_MAP` has always folded light → the `standard` cell, the founder already signed that behaviour off (FP-06/FP-08), so the ladder now agrees with the arbiter instead of the arbiter being overruled. |
+
+One day apart, the same dispute was closed first by **forcing the arbiter to
+honour the exclusion** and then by **removing the exclusion**. Both fixes are in
+the tree, neither is wrong, and the suite — untouched since 08-30 — encodes the
+first. The observable consequence in its own log: `candidate_chain
+arms=freepool,codex,sonnet`, no exclusion at all, so there was nothing for the
+arbiter to violate and the guard could not be exercised. **A false artifact that
+nobody edited.**
+
+The third failure was the suite's alone: its mutation was a verbatim copy of the
+entire descriptor line at `leadv2-dispatch-code.sh:8060`, and production had
+since gained `complexity`, `duration_class`, `test_only`. Zero matches. The good
+half is that it failed **hard** instead of passing quietly — but it did not say
+*what* had moved.
+
+### What changed
+
+The property under test is not "the shipped config excludes freepool for a light
+task" — that is policy, and policy moved. It is "**the arbiter must never
+re-admit an arm the router excluded in the same dispatch**". So the fixture now
+owns its own scenario: it copies the real routing yaml and removes `light` from
+freepool's **ladder** entry, restoring exactly the 2026-08-30 shape. The arbiter
+side stays real and untouched — `SIZE_MAP` still folds light → standard and the
+capability cell still keeps freepool cheap there, so it still genuinely *wants*
+the arm the router just dropped.
+
+The downgrade is structural (entry found by `- id: freepool`, so a reordered or
+extended `when:` still matches), and if it stops applying the fixture prints
+`FIXTURE PRECONDITION GONE`, names what it looked for, and **stops the run**
+rather than handing the green assertions a config they were never written
+against. The exclusion assertion's failure text now names both sides —
+`leadv2-dispatch-code.sh:2455` and `lib/leadv2-route-arbiter.sh:336` — because
+reading a vanished precondition as a product accusation is what kept this suite
+red for six days.
+
+The mutation is now the smallest fragment that carries the meaning,
+`,"allowed_arms":allowed`, and the zero-match failure is kept and widened to
+"found N times, expected exactly 1".
+
+One more thing worth recording, because it was my own version of the disease.
+The first downgrade was a single regex — `^ *- id: freepool\n(?:[ \t]+(?!- id:)
+[^\n]*\n)*? +when: \[([^\]]*)\]` — and it did not fail, it **hung**:
+`[ \t]+` followed by `[^\n]*` is a nested quantifier over the same text, and
+this yaml has **two** `- id: freepool` entries, the first of which carries no
+`when:` at all, so the engine went exponential on it. Python pinned for 2.5
+minutes with no output, and from the outside that reads as "slow suite" — the
+exact misreading this lane had just spent a run undoing. Replaced with a line
+scan that visits every `- id: freepool`, keeps the ones carrying a `when:`, and
+**refuses if two ever qualify** rather than silently taking the first. A fixture
+that hangs is worse than one that fails, and an ambiguous anchor is how a
+fixture downgrades something nobody meant.
+
+| control | result |
+|---|---|
+| `,"allowed_arms":allowed` deleted from the descriptor | 4/0 → the red half PASSES, i.e. `arbiter_pick=freepool` comes back — the arbiter re-picks the arm the router just excluded |
+
+### Found, not fixed from this lane
+
+Two lists encode the same idea — "this kind of work writes no production code,
+so do not strip an untrusted arm" — and they disagree on one element:
+
+* router, `plugins/leadv2/scripts/leadv2-dispatch-code.sh:2407` — `review|audit|plan`
+* arbiter, `plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh:121` — `review, audit, plan, **recon**`
+
+Filed by the peer session as `ROUTER-ARBITER-DISAGREE-ON-RECON-01`. Stated
+honestly: the divergence is a fact of reading the code; a live scenario where it
+bites was **probed and not found** — under `--kind recon --protected` freepool
+never reaches the strip at all (`candidate_chain arms=sonnet`, no `arm_excluded`
+line), and under `--kind code --protected` the arbiter bans freepool on its own
+`require_trusted`, so the two agree. The hypothesis that `allowed_arms` is the
+only thing holding that door was mine, and my own probe falsified it.

@@ -25,6 +25,45 @@
 # back (RED), then run the same scenario against the real, unmutated file
 # and prove it stays fixed (GREEN). Hermetic: quota/freepool-gate/arbiter
 # state are all test seams; --no-spawn; real worker process never runs.
+#
+# ── 2026-09-05: why the fixture now OWNS the routing config ──────────────────
+# This suite went 1/3 red, and two of the three failures were the suite
+# asserting a precondition the shipped config had deliberately deleted:
+#
+#   78ae2a5a 2026-08-30 fix(freepool): arbiter honours router arm exclusions
+#            -- created the allowed_arms wiring AND this suite. At that commit
+#            freepool's ladder entry did not list `light`, so a light task was
+#            genuinely excluded by the router.
+#   8cbeeed4 2026-08-31 feat(routing): arm admission -- ... router/arbiter
+#            agreement -- ADDED `light` to freepool's ladder `when:`, with a
+#            ten-line rationale in the yaml itself (ARMS-ADMISSION-01 /
+#            ROUTER-ARBITER-DISAGREE-ON-FREEPOOL-01): the arbiter's SIZE_MAP
+#            has always folded light -> the `standard` cell, the founder
+#            already signed that behaviour off (FP-06/FP-08), so the ladder
+#            now agrees with the arbiter instead of the arbiter being
+#            overruled.
+#
+# The same disagreement was settled twice, one day apart, in opposite
+# directions -- first by FORCING the arbiter to honour the exclusion, then by
+# REMOVING the exclusion. Both are in the tree. The observable consequence:
+# the shipped config produces `candidate_chain arms=freepool,codex,sonnet` for
+# a light task -- no exclusion at all, so there is nothing for the arbiter to
+# violate and the guard could not be exercised.
+#
+# The property under test is NOT "the shipped config excludes freepool for a
+# light task" -- that is policy, and policy moved. It is "the arbiter must
+# never re-admit an arm the router excluded IN THE SAME DISPATCH". So the
+# fixture manufactures the disagreement itself: it copies the real routing
+# yaml and removes `light` from freepool's LADDER entry only, restoring
+# exactly the shape the live 2026-08-30 bug had. The arbiter side is
+# untouched and real -- its SIZE_MAP still folds light -> standard, and its
+# capability cell still lists freepool as cost-eligible there, so it still
+# genuinely WANTS the arm the router just dropped.
+#
+# If the downgrade below stops applying (freepool's ladder entry gone, or
+# `light` no longer in it), the fixture FAILS LOUDLY naming what it looked
+# for. A precondition that quietly evaporates is what put this suite in the
+# red list for six days while reading as a product accusation.
 
 set -uo pipefail
 
@@ -78,6 +117,61 @@ setup_repo() { # <dir>
   git -C "$repo" config user.email t@e.com; git -C "$repo" config user.name t
   : > "$repo/seed"; git -C "$repo" add seed; git -C "$repo" commit -qm seed
   cp "$ROUTING" "$repo/.claude/ref/leadv2-routing.yaml"
+  # Restore the router/arbiter disagreement this suite exists to pin (see the
+  # header): drop `light` from freepool's LADDER `when:` only. Structural, not
+  # a copied line -- the entry is found by id, so a reordered or extended
+  # `when:` list still matches. The capability_matrix cell for freepool is a
+  # one-line flow mapping carrying `sizes:`, never `when:`, so it cannot be
+  # hit by accident.
+  # A fixture that cannot build its own scenario must stop the run, not hand
+  # the green assertions a config they were never written against.
+  python3 - "$repo/.claude/ref/leadv2-routing.yaml" <<'PY' || { fail "(fixture) routing downgrade failed" "see stderr above"; echo "---"; echo "PASS=$PASS FAIL=$FAIL"; exit 1; }
+import sys
+
+# Line scan, deliberately NOT one regex. The first attempt was
+#   ^ *- id: freepool\n(?:[ \t]+(?!- id:)[^\n]*\n)*? +when: \[([^\]]*)\]
+# and it HUNG: `[ \t]+` followed by `[^\n]*` is a nested quantifier over the
+# same text, so a non-matching `- id: freepool` block sent it into exponential
+# backtracking. Measured 2026-09-05: python pinned for 2.5 minutes with no
+# output. A fixture that HANGS is worse than one that fails -- it reads as a
+# slow suite, which is exactly the misdiagnosis this lane spent a run undoing.
+p = sys.argv[1]
+lines = open(p).read().splitlines(keepends=True)
+
+# There is more than one `- id: freepool` in this yaml (one of them carries no
+# `when:` at all), so scan EVERY occurrence and take the ones that do. If two
+# ever qualify, refuse rather than silently picking the first -- an ambiguous
+# anchor is how a fixture ends up downgrading something nobody meant.
+found = []                                   # [(entry_line, when_line)]
+for i, ln in enumerate(lines):
+    if ln.strip() != '- id: freepool':
+        continue
+    for k in range(i + 1, len(lines)):
+        st = lines[k].strip()
+        if st.startswith('- id:'):
+            break                            # next entry: this one has no when:
+        if st.startswith('when:'):
+            found.append((i, k))
+            break
+if not found:
+    sys.exit("FIXTURE PRECONDITION GONE: no `- id: freepool` entry in "
+             "leadv2-routing.yaml carries a `when:` list -- this suite's "
+             "scenario cannot be built; re-anchor it, do not silence it")
+if len(found) > 1:
+    sys.exit("FIXTURE ANCHOR AMBIGUOUS: %d `- id: freepool` entries carry a "
+             "`when:` (lines %s) -- refusing to guess which is the ladder"
+             % (len(found), [f[0] + 1 for f in found]))
+when_i = found[0][1]
+head, _, rest = lines[when_i].partition('[')
+body, _, tail = rest.partition(']')
+items = [x.strip() for x in body.split(',') if x.strip()]
+if 'light' not in items:
+    sys.exit("FIXTURE PRECONDITION GONE: freepool's ladder `when:` is %r, which "
+             "already lacks `light` -- the downgrade would be a no-op and the "
+             "green assertions would pass for the wrong reason" % (items,))
+lines[when_i] = head + '[' + ', '.join(x for x in items if x != 'light') + ']' + tail
+open(p, 'w').writelines(lines)
+PY
 }
 
 WORKER="$TMP/worker.sh"
@@ -123,7 +217,16 @@ printf '%s\n' "$out_green" > "$TMP/green.log"
 if printf '%s\n' "$out_green" | grep -q 'arm_excluded by=router arm=freepool task=[0-9a-f]\{8\} reason=arm_not_capable_for_size task_class=light'; then
   pass "(green) router still excludes freepool for a light task (when=standard,bulk)"
 else
-  fail "(green) router exclusion line missing (log: $TMP/green.log)"
+  # A missing exclusion means the SCENARIO is gone, not that the guard broke --
+  # say so by name, because reading this as a product accusation is exactly how
+  # this suite sat red for six days.
+  fail "(green) router did not exclude freepool for a light task -- the fixture's
+      precondition no longer holds. The exclusion is emitted at
+      leadv2-dispatch-code.sh:2455 (reason=arm_not_capable_for_size), driven by
+      the freepool ladder entry's when: list in plugins/leadv2/config/leadv2-routing.yaml;
+      the arbiter side that must honour it is lib/leadv2-route-arbiter.sh:336.
+      Check setup_repo's downgrade actually applied before blaming either" \
+      "log: $TMP/green.log"
 fi
 if printf '%s\n' "$out_green" | grep -qE 'route_resolved by=arbiter role=worker arm=freepool|arbiter_pick=freepool'; then
   fail "(green) arbiter picked freepool despite router exclusion (log: $TMP/green.log)"
@@ -139,19 +242,31 @@ mkdir -p "$MUT_PLUGIN_ROOT"
 cp -R "$SCRIPTS_ROOT" "$MUT_PLUGIN_ROOT/scripts"
 cp -R "${SCRIPTS_ROOT}/../config" "$MUT_PLUGIN_ROOT/config"
 MUT_BIN="${MUT_PLUGIN_ROOT}/scripts/leadv2-dispatch-code.sh"
-# Strip the allowed_arms python-side field and the csv arg, reverting the
-# descriptor build to its pre-fix shape (no allowed_arms key at all).
+# Drop ONLY the allowed_arms key from the descriptor the dispatcher builds, so
+# the arbiter's cell filter stops intersecting against the router's post-filter
+# chain (leadv2-route-arbiter.sh:336, `allowed is None or ...`) and falls back
+# to its own capability matrix alone -- the pre-78ae2a5a shape.
+#
+# 2026-09-05: this used to be a verbatim copy of the ENTIRE descriptor line,
+# and it rotted -- production gained complexity/duration_class/test_only, the
+# replace matched nothing, and the control could not run. The anchor is now
+# the smallest fragment that carries the meaning, so any further field added
+# beside it leaves the control working. The zero-match failure below stays:
+# a control that cannot find its anchor must be LOUD, never a silent pass.
 python3 - "$MUT_BIN" <<'PY'
-import re, sys
+import sys
 path = sys.argv[1]
 src = open(path).read()
-mutated = src.replace(
-    '\'import json,sys; allowed=[a for a in sys.argv[6].split(",") if a]; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[7],"allowed_arms":allowed}))\' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${_arb_allowed_csv}" "${sig8}"',
-    '\'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[6]}))\' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${sig8}"'
-)
-if mutated == src:
-    sys.exit("mutation anchor not found -- zero-match, hard failure")
-open(path, 'w').write(mutated)
+anchor = ',"allowed_arms":allowed'
+n = src.count(anchor)
+if n != 1:
+    sys.exit('mutation anchor %r found %d times in %s (expected exactly 1) -- '
+             'zero-match/ambiguous, hard failure. The wiring under test lives at '
+             'the _arb_desc build in leadv2-dispatch-code.sh; the arbiter side '
+             'that consumes it is lib/leadv2-route-arbiter.sh:336. If the key was '
+             'renamed or moved, re-anchor this control -- do not silence it.'
+             % (anchor, n, path))
+open(path, 'w').write(src.replace(anchor, ''))
 PY
 if [[ $? -ne 0 ]]; then
   fail "(red) mutation anchor not found in production file -- cannot prove the control" "zero-match"
