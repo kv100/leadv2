@@ -406,6 +406,13 @@ assert d["decision"] == "block"
 
 # ════════════════════════════════════════════════════════════════════════════
 # Case 10: hooks.json registration assertion
+# ONE-LANE-WATCH-01 (9f00e7ed, merged c49cc9fb) retired the idle-lead-guard
+# Stop registration in favour of the self-arming lane watcher
+# leadv2-lane-watch-v2 (SessionStart --arm-from-hook / SessionEnd
+# --disarm-from-hook). The old "idle-lead-guard last after promise-guard"
+# ordering assertion rotted the day that landed; the registration contract
+# now is: retired hook ABSENT, its ordering partner promise-guard still
+# present, replacement watcher registered on both of its events.
 # ════════════════════════════════════════════════════════════════════════════
 {
   HOOKS_JSON="$PLUGIN_DIR/hooks/hooks.json"
@@ -415,16 +422,18 @@ with open(sys.argv[1]) as f:
     d = json.load(f)
 stop_hooks = d["hooks"]["Stop"][0]["hooks"]
 ids = [h["command"] for h in stop_hooks]
-# Must contain idle-lead-guard
-assert any("leadv2-idle-lead-guard.sh" in c for c in ids), f"idle-lead-guard not found in {ids}"
-# Must be after promise-guard
-pg_idx = next(i for i, c in enumerate(ids) if "leadv2-promise-guard.sh" in c)
-ig_idx = next(i for i, c in enumerate(ids) if "leadv2-idle-lead-guard.sh" in c)
-assert ig_idx > pg_idx, f"idle-guard (idx {ig_idx}) must be after promise-guard (idx {pg_idx})"
-# Must be the last entry
-assert ig_idx == len(ids) - 1, f"idle-guard is not last (idx {ig_idx}, last {len(ids)-1})"
+assert not any("leadv2-idle-lead-guard.sh" in c for c in ids), \
+    f"retired idle-lead-guard still registered in Stop: {ids}"
+assert any("leadv2-promise-guard.sh" in c for c in ids), \
+    f"promise-guard (the old ordering partner) vanished from Stop: {ids}"
+arm = [h["command"] for h in d["hooks"]["SessionStart"][0]["hooks"]]
+disarm = [h["command"] for h in d["hooks"]["SessionEnd"][0]["hooks"]]
+assert any("leadv2-lane-watch-v2.sh" in c and "--arm-from-hook" in c for c in arm), \
+    f"lane-watch-v2 --arm-from-hook missing from SessionStart: {arm}"
+assert any("leadv2-lane-watch-v2.sh" in c and "--disarm-from-hook" in c for c in disarm), \
+    f"lane-watch-v2 --disarm-from-hook missing from SessionEnd: {disarm}"
 ' "$HOOKS_JSON" 2>/dev/null; then
-    pass "case 10: hooks.json has idle-lead-guard last after promise-guard"
+    pass "case 10: idle-lead-guard retired; promise-guard kept; lane-watch-v2 armed on both events"
   else
     fail "case 10: registration assertion failed"
   fi

@@ -309,7 +309,15 @@ if upc_multisession "$UPC"; then pass "multisession: 4th session (note+blocked_b
 # Mutant lives in a full copy of hooks/ so relative `source` neighbors resolve.
 cp -R "$(dirname "$UPC")" "$ROOT/hooks-mut"
 UPC_MUT="$ROOT/hooks-mut/$(basename "$UPC")"
-perl -0pi -e "s/others = \[sess for sess in s if sess\.get\('task_id'\) != mine\]/others = [sess for sess in s if sess.get('task_id') != mine][:3]/" "$UPC_MUT"
+# Mutation anchor matches the comprehension across line breaks ([^\]]* crosses
+# \n) — TERMINAL-LANES-STILL-READ-AS-LIVE-01 (b8db6058) rewrote it multi-line
+# and the old single-line literal silently stopped matching, turning this
+# control into a no-op that "stayed green". The grep below makes anchor rot a
+# loud failure instead of a meaningless pass.
+perl -0pi -e "s/(others = \[sess for sess in s[^\]]*\])/\${1}[:3]/" "$UPC_MUT"
+if ! grep -q '\[:3\]' "$UPC_MUT"; then
+  fail "negative-control anchor rotted: mutation did not apply to $UPC_MUT"
+fi
 if upc_multisession "$UPC_MUT"; then fail "multisession negative control stayed green"; else pass "multisession negative-control red (cap reintroduced => 4th session lost)"; fi
 
 printf -- '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
