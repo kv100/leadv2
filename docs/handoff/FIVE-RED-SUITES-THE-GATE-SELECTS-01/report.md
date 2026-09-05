@@ -699,3 +699,48 @@ production defect. But the two components run in the same order there, and the
 failure is silent: the script exits 0 and the stale board keeps its old
 timestamp-bearing content. It deserves a backlog row of its own. I did not file
 it — that is the lead's call and outside this lane's write set.
+
+---
+
+## `lead-worker-channel` — the third suite on the same root
+
+C5 drains a row from the lead inbox and finds it in the rendered board. C5b
+runs a second beat and asserts the consumed row does **not** repeat. It did
+repeat — because the second beat's board *was the first beat's file*. Same
+control-plane symlink, same freeze.
+
+The channel itself was never at fault, and the suite already proved that: C3
+("a second drain returns nothing") and C4 (twenty rows, two concurrent drains,
+each delivered exactly once) exercise the drain API directly and were green
+throughout. Only the case that looked at the contract *through a rendered
+beat* was reading a stale artifact. **11/1 → 12/0**, nothing weakened.
+
+### The control that fired for the wrong reason
+
+First attempt: swap `drain` for `peek` in the beat's call. It reddened the
+suite — at **C5**, not C5b. `peek` is not a subcommand, so the row never
+rendered at all and the fixture broke instead of the contract. A control that
+reddens a suite by breaking its fixture proves nothing about the behaviour
+under claim, and would have gone into the catalogue as a kill it never made.
+
+Retargeted at the contract itself: in `leadv2-inbox.sh`, the lead's read-offset
+never advances (`f.write(str(len(lines)))` → `f.write("0")`), so every drain
+re-delivers the whole inbox. **12/0 → 9/3** — C3, C4 and C5b, the same contract
+at three levels. Both attempts are recorded in the runner and in the catalogue
+note; the dead one was not quietly replaced.
+
+CI selection proven by changing `leadv2-inbox.sh`, a trigger this suite
+declares: `[SELECT] .../tests/test-lead-worker-channel.sh`.
+
+### A commit guard that fires on every commit in this checkout
+
+`scripts/open-threads-guard.sh` refused both commits: the shared control-plane
+copy of `docs/leadv2/open-threads.md` diverges from HEAD, so any commit "would
+lose hand-authored content". No commit of mine caused that and none can fix it
+— the file is a symlink into shared live state that other sessions write.
+
+Both commits were made with `PE_ALLOW_OPEN_THREADS_SHRINK=1` **and an explicit
+two-path pathspec**, so neither could carry that file whatever the index held;
+`git show --stat` on each confirms it. Recorded rather than silently overridden,
+because a guard that fires on every commit trains everyone to override it, and
+the next person will do so without the pathspec.
