@@ -1,0 +1,17 @@
+######## BEFORE — engine at the pin, unpatched ########
+FAIL: 1: no unreadable line — gate=[arms: codex,glm|fanout: 2/2 degraded=false launched=2 pool_ok=2 source=pool reason=none excluded=kimi=excluded:saf
+FAIL: 2: fanout: 2/2 degraded=false launched=2 pool_ok=2 source=pool reason=none excluded=kimi=excluded:safety,fable=unknown,opus=unknown,sonnet=autho
+PASS: the verdict itself is unchanged: a readable PASS still passes (rc=0)
+FAIL: 4: [leadv2-review-run] decision review_gate task=MUTE status=pass diff=bcbc12a6 arms=codex,glm
+FAIL: 5: gate=[] decision=[[leadv2-review-run] decision review_gate task=CLEAN status=pass diff=bcbc12a6 arms=codex,glm]
+FAIL: 6: rc=6 gate=[status: blocked|reason: empty_response|arm_rc: codex=0,glm=0|]
+[REVIEW-GATE-NAMES-THE-UNREADABLE] pass=1 fail=5
+
+######## AFTER — same engine + the fix ########
+PASS: a mute arm is named on the gate with its reason (unreadable: glm=unparsable_verdict)
+PASS: an unreadable arm degrades the gate (degraded=true, reason names arms_unreadable)
+PASS: the verdict itself is unchanged: a readable PASS still passes (rc=0)
+PASS: the pass decision carries unreadable= with the arm and reason
+PASS: a fully-readable fan-out says 'unreadable: none' rather than saying nothing
+PASS: no readable arm still blocks (rc=6) and now names the arms in the same vocabulary
+[REVIEW-GATE-NAMES-THE-UNREADABLE] pass=6 fail=0

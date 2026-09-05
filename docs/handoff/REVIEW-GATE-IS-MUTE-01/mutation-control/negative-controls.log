@@ -1,0 +1,35 @@
+baseline (unmutated pinned tree): [REVIEW-GATE-NAMES-THE-UNREADABLE] pass=6 fail=0
+
+==== REVIEW-GATE-CALLS-A-MUTE-ARM-HEALTHY
+sed: s|  _REVIEW_UNREADABLE="\${_REVIEW_UNREADABLE:+\${_REVIEW_UNREADABLE},}\$1=\$2"|  :|
+expected to kill: cases 1, 2, 4 — the mute arm vanishes and the gate calls itself undegraded
+--- the mutated line, in the context of its block ---
+1645:_rv_unreadable() { # <arm> <reason>
+1646-  :
+--- suite against the mutant ---
+FAIL: 1: no unreadable line — gate=[arms: codex,glm|fanout: 2/2 degraded=false launched=2 pool_ok=2 source=pool reason=none excluded=kimi=excluded:saf
+FAIL: 2: fanout: 2/2 degraded=false launched=2 pool_ok=2 source=pool reason=none excluded=kimi=excluded:safety,fable=unknown,opus=unknown,sonnet=autho
+PASS: the verdict itself is unchanged: a readable PASS still passes (rc=0)
+FAIL: 4: [leadv2-review-run] decision review_gate task=MUTE status=pass diff=bcbc12a6 arms=codex,glm unreadable=none
+PASS: a fully-readable fan-out says 'unreadable: none' rather than saying nothing
+PASS: no readable arm still blocks (rc=6) and now names the arms in the same vocabulary
+[REVIEW-GATE-NAMES-THE-UNREADABLE] pass=3 fail=3
+RESULT: ok — the suite goes RED under this mutation (rc=1)
+
+==== REVIEW-GATE-KNOWS-AND-DOES-NOT-SAY
+sed: s|UNREADABLE_LINE="$(printf 'unreadable: %s' "${_REVIEW_UNREADABLE:-none}")"|UNREADABLE_LINE=""|
+expected to kill: cases 1 and 5 — nothing on the gate file; case 2 stays green because degraded is still forced
+--- the mutated line, in the context of its block ---
+1645:_rv_unreadable() { # <arm> <reason>
+1646-  _REVIEW_UNREADABLE="${_REVIEW_UNREADABLE:+${_REVIEW_UNREADABLE},}$1=$2"
+--- suite against the mutant ---
+FAIL: 1: no unreadable line — gate=[arms: codex,glm|fanout: 2/2 degraded=true launched=2 pool_ok=2 source=pool reason=arms_unreadable excluded=kimi=ex
+PASS: an unreadable arm degrades the gate (degraded=true, reason names arms_unreadable)
+PASS: the verdict itself is unchanged: a readable PASS still passes (rc=0)
+PASS: the pass decision carries unreadable= with the arm and reason
+FAIL: 5: gate=[] decision=[[leadv2-review-run] decision review_gate task=CLEAN status=pass diff=bcbc12a6 arms=codex,glm unreadable=none]
+PASS: no readable arm still blocks (rc=6) and now names the arms in the same vocabulary
+[REVIEW-GATE-NAMES-THE-UNREADABLE] pass=4 fail=2
+RESULT: ok — the suite goes RED under this mutation (rc=1)
+
+==== controls: mute-arm-healthy=ok knows-and-does-not-say=ok
