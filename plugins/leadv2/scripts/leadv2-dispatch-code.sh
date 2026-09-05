@@ -1199,7 +1199,25 @@ _deliver_plan_into_lane() { # <sig8> <founder-task-id>
   dst="${WORK_ROOT}/docs/handoff/${task_id}"
   if [[ ! -f "${src}/context.yaml" ]]; then
     LANE_PLAN_DELIVERY_STATUS="source_absent"
-    emit decision "lane_plan_missing task=${sig8} reason=source_absent source=${src}/context.yaml"
+    # DISPATCH-SPAWNS-INTO-A-TREE-WITHOUT-ITS-MISSION-01 (measured 2026-09-05 on
+    # task 11b25531): this early return used to copy NOTHING, so a lane worktree
+    # -- a fresh checkout of a commit -- received no brief and no plan-*.md
+    # either, while the mission text the worker was spawned with names exactly
+    # those paths. The worker is not left without its mission (the mission is
+    # passed BY VALUE to every arm: glm/kimi get "${mission}" inline, the sonnet
+    # path writes it to a temp file first), so this is not a reason to refuse the
+    # spawn; it is a reason to carry what we do have. Absent context.yaml is
+    # still `source_absent` and still a skip -- strictly more delivery, no
+    # refusal changed, and the count says how much rather than leaving silence.
+    local _carried=0
+    if [[ -d "${src}" ]]; then
+      mkdir -p "${dst}" 2>/dev/null || true
+      for f in "${src}"/brief.md "${src}"/brief-*.md "${src}"/fix-round-*.md "${src}"/plan-*.md; do
+        [[ -f "${f}" ]] || continue
+        cp -f "${f}" "${dst}/$(basename "${f}")" 2>/dev/null && _carried=$((_carried + 1))
+      done
+    fi
+    emit decision "lane_plan_missing task=${sig8} reason=source_absent source=${src}/context.yaml carried_siblings=${_carried}"
     # FORK-STORM-KILLS-HOOKS-01 (acceptance 10): when this dispatch only got
     # this far because a stale watcher was reaped off the lane (see the
     # placement probe), the skip is a FAULT trace, not a deliberate skip —
