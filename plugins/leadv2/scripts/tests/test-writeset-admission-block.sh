@@ -113,9 +113,34 @@ run_pending_window_race() {
   set +e
   LEADV2_PROJECT_ROOT="$root" LEADV2_STATE_ROOT="$root" CLAUDE_PROJECT_DIR="$root" LEADV2_WRITESET_ENFORCE=warn \
     bash -c 'source "$1"; leadv2_active_register PENDING-A Standard "$2" a false >/dev/null' _ "$REGISTRY_SH" "$root"
+
+  # WRITESET-CAROUSEL-01: the pending guard no longer asks "is this row's write
+  # set undeclared?" alone -- it asks whether a LIVE WORKER sits under the row,
+  # because an undeclared write set is UNKNOWN overlap and only a running worker
+  # makes unknown dangerous. Registering an incumbent from inside this suite
+  # stamps the pid of the *interactive* session running the suite (via
+  # _lv2_durable_pid, which walks the PPID chain to the nearest claude), and that
+  # is exactly the bystander shape the guard now downgrades -- so this case
+  # would go green for the wrong reason. Stamp a genuinely worker-shaped process
+  # onto the incumbent instead, so the case keeps testing the race it was written
+  # for. Nothing here fakes the guard: _lv2_ws_live_worker, _pid_alive and
+  # _proc_kind all run for real against a real process.
+  bash -c 'exec -a "claude -p ws-incumbent-worker" sleep 120' >/dev/null 2>&1 &
+  _WS_WPID=$!
+  sleep 0.2
+  python3 -c '
+  import sys, yaml
+  path, tid, pid = sys.argv[1], sys.argv[2], int(sys.argv[3])
+  d = yaml.safe_load(open(path)) or {}
+  for r in (d.get("sessions") or []):
+      if r.get("task_id") == tid:
+          r["pid"] = pid
+  yaml.dump(d, open(path, "w"), default_flow_style=False, sort_keys=False)
+  ' "$root/docs/leadv2/active.yaml" "PENDING-A" "$_WS_WPID"
   out="$(LEADV2_PROJECT_ROOT="$root" LEADV2_STATE_ROOT="$root" CLAUDE_PROJECT_DIR="$root" LEADV2_WRITESET_ENFORCE=warn \
     bash -c 'source "$1"; leadv2_active_register PENDING-B Standard "$2" b false "" "" plugins/leadv2/scripts/leadv2-dispatch-code.sh 2>&1' _ "$REGISTRY_SH" "$root")"; rc=$?
   set -e
+  kill "${_WS_WPID}" 2>/dev/null
   if [[ "$rc" == 5 ]] && grep -q 'reason=pending_resolution' <<<"$out" && grep -q 'other=PENDING-A' <<<"$out"; then
     pass "H1: a lane mid-resolution (writes not yet persisted) refuses an intersecting concurrent register, even under warn"
   else

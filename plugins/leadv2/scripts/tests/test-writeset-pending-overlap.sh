@@ -146,12 +146,36 @@ export LEADV2_PROJECT_ROOT="$root" LEADV2_STATE_ROOT="$root" LEADV2_BURN_GOVERNO
 export LEADV2_WRITESET_PENDING_WINDOW_SEC=900
 git -C "$root" init -q && git -C "$root" config user.email t@e.com && git -C "$root" config user.name t
 leadv2_active_register "${INC}" Standard "$root" wt false "" "" "" "${REASON}" >/dev/null 2>&1
+# WRITESET-CAROUSEL-01: the pending guard no longer asks "is this row's write
+# set undeclared?" alone -- it asks whether a LIVE WORKER sits under the row,
+# because an undeclared write set is UNKNOWN overlap and only a running worker
+# makes unknown dangerous. Registering an incumbent from inside this suite
+# stamps the pid of the *interactive* session running the suite (via
+# _lv2_durable_pid, which walks the PPID chain to the nearest claude), and that
+# is exactly the bystander shape the guard now downgrades -- so this case
+# would go green for the wrong reason. Stamp a genuinely worker-shaped process
+# onto the incumbent instead, so the case keeps testing the race it was written
+# for. Nothing here fakes the guard: _lv2_ws_live_worker, _pid_alive and
+# _proc_kind all run for real against a real process.
+bash -c 'exec -a "claude -p ws-incumbent-worker" sleep 120' >/dev/null 2>&1 &
+_WS_WPID=$!
+sleep 0.2
+python3 -c '
+import sys, yaml
+path, tid, pid = sys.argv[1], sys.argv[2], int(sys.argv[3])
+d = yaml.safe_load(open(path)) or {}
+for r in (d.get("sessions") or []):
+    if r.get("task_id") == tid:
+        r["pid"] = pid
+yaml.dump(d, open(path, "w"), default_flow_style=False, sort_keys=False)
+' "$root/docs/leadv2/active.yaml" "${INC}" "$_WS_WPID"
 reg_err="$(LEADV2_PROJECT_ROOT="$root" LEADV2_STATE_ROOT="$root" \
   leadv2_active_register "WSO-CAND" Standard "$root" wt-cand false "" "" "cand/b.txt" 2>&1 >/dev/null)"
 echo "reg_rc=$?"
 echo "$reg_err" | grep -o 'reason=pending_resolution writes_reason=[a-z_]*' | head -1
 source "${FUNCS}"; set +e
 _emit_writeset_refusal "WSOTEST2" "cand/b.txt" "${reg_err}" "FOUNDER-TASK" 2>&1
+kill "${_WS_WPID}" 2>/dev/null
 EOF
 }
 out2="$(ws_case2 prepass_pending)" || true
