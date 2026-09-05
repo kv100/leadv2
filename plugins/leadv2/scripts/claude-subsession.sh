@@ -53,7 +53,7 @@ usage() {
   cat >&2 <<EOF
 Usage: claude-subsession.sh --role <architect|critic|product-owner|strategist|developer|security-auditor> \\
           --model <opus|sonnet> --task-id <id> --mission-file <path> \\
-          [--session-id <id>] [--effort <max|high>] [--wait]
+          [--session-id <id>] [--effort <low|medium|high|xhigh|max>] [--wait]
 EOF
   exit 1
 }
