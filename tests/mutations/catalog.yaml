@@ -634,3 +634,28 @@ mutations:
       is ever declared
     expected: killed
     note: "6/0 -> 5/1, same case, other half of the rule. The pair separates 'the check is disabled' from 'the check cannot recognise a watcher-only row'; either mutation alone would leave the other half unpinned"
+
+  - id: codex-tier-validation-accepts-a-banned-tier
+    product_flow: "a routing cell pinning a tier the codex launcher rejects is refused at RESOLUTION time and loudly, instead of winning the auction and dying inside the launcher at spawn -- which presented as a silent fallthrough to a costlier arm"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    suite: plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
+    anchor: |
+          top|standard|volume) return 0 ;;
+    patch: |
+      `top|standard|volume|spark) return 0 ;;` -- the tier codex-task.sh bans
+      outright now validates, so _codex_tier_validate emits no
+      route_tier_invalid and never exits 1
+    expected: killed
+    note: "14/0 -> 13/1, P3 and only P3. Under the mutation the fixture journal shows `route_resolved by=router model=codex` for tier=spark: the banned tier wins the auction and would then die inside codex-task.sh at spawn -- exactly the silent fallthrough to a costlier arm that validating at RESOLUTION time exists to prevent"
+
+  - id: resume-lane-absolute-path-never-resolves
+    product_flow: "--resume-lane accepts BOTH shapes: a bare lane ref looked up in the worktree dir, and an absolute path that `git worktree list` names as a linked worktree of PROJECT_ROOT"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    suite: plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
+    anchor: |
+              if [[ -n "${_abs_cand}" ]] && _lv2_is_lane_worktree_path "${_abs_cand}" "${project_root_phys}"; then
+    patch: |
+      `if false; then` -- the absolute-path branch never produces a candidate,
+      so every path form falls into the refusal arm
+    expected: killed
+    note: "14/0 -> 13/1, P6 only; P5 (the bare-name form) stays green. The two accepted shapes are pinned separately, so this mutation cannot excuse itself as 'the other form still resolves'. P6b (a genuinely bad ref refuses with the accepted shapes) also stays green, which separates 'the path form broke' from 'the refusal message broke'"

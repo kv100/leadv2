@@ -816,3 +816,65 @@ findings per file. The suite's own NC4 still fires — these controls prove the
 Both CI selections proven by changing production files
 (`leadv2-claude-profile-select.sh`, `leadv2-dispatch-code.sh`), markers
 reverted. Catalogue: **42 rows, every one `expected: killed`.**
+
+## `test-plugin-papercuts.sh` — 14/0 the whole time; the budget was the defect
+
+This one was not red. At full budget it is **14 passed / 0 failed** and 182s
+long, against a 120s wrapper. `rc=124` was a property of the budget.
+
+The first sample of "where does the time go" was **wrong, and wrong in the
+accusing direction**: filtering `ps` by NAME (`leadv2|codex|glm|claude`) put
+`leadv2-status-collector-guard.sh` (42 samples) and `leadv2-status-collector.sh`
+(35) at the top, which reads as a fixture leak arming real watchers — the very
+thing this fixture's own `LEADV2_PULSE_MODE=0` guard exists to prevent. Those
+were this machine's OTHER live sessions. Re-sampled scoped to the suite's own
+process group (`set -m`, so the background suite gets its own pgid): across 59
+samples the group contained exactly two things — `leadv2-dispatch-code.sh` (60)
+and `sleep 1` (44). Nothing external, nothing hung.
+
+The `sleep 1` is two codex post-spawn deadlines, both polling, both waiting for
+an artifact a **stubbed** launcher never writes, so both always run to full
+term here — once per codex-arm dispatch (P3b, P5, P6):
+
+| window | knob | default | per run |
+|---|---|---|---|
+| `_arm_early_verdict_window` | `LEADV2_ARM_EARLY_VERDICT_S` | 20s | ×3 = 60s |
+| `_codex_instant_complete_deadline_check` | `LEADV2_CODEX_INSTANT_COMPLETE_SECS` | 30s | ×3 = 90s |
+
+150s of a 182s run. Pinned to 0 — each knob's own documented disable value
+(`[[ "${deadline}" != "0" ]] || return 0`). **182s → 32s, still 14/0.**
+
+The second half is not budget at all. `_codex_instant_complete_deadline_check`
+scans via `_codex_newest_rollout_since`, which walks
+`${CODEX_HOME:-$HOME/.codex}/sessions` — **1955 real rollout files on this
+machine** — once a second for 30s, three times a run, because the fixture never
+pinned `CODEX_HOME`. Stated precisely, because the two halves differ: the file
+it **picks** is cwd-filtered, so a foreign rollout could not be misread as the
+fixture's; the `candidates=` count it reports is **not** filtered and feeds an
+emitted decision line (`arm_dead_instant_complete_ambiguous_rollout`). So a
+concurrent real codex session changed what this fixture's dispatch wrote to its
+own journal. `CODEX_HOME` now points at the sandbox.
+
+Written into the fixture rather than left implicit: disabling those two windows
+covers nothing this suite ever claimed. It claims tier validation, spawn
+fallthrough, resume placement and backlog-write refusal — no codex liveness.
+
+| control (production, by regex, inside a body) | result |
+|---|---|
+| `_codex_tier_validate`: `top\|standard\|volume\|spark) return 0 ;;` | 14/0 → **13/1**, P3 |
+| the absolute-path branch: `if false; then` | 14/0 → **13/1**, P6 |
+
+Control A is the informative one: under it the journal reads
+`route_resolved by=router model=codex` for `tier=spark` — the banned tier wins
+the auction and would die inside `codex-task.sh` at spawn. That is the silent
+fallthrough to a costlier arm the resolution-time check exists to prevent, and
+the suite sees it. Control B kills P6 while **P5 (bare name) and P6b (bad ref
+refuses with guidance) stay green**, so the two accepted shapes are pinned
+separately and neither mutation can excuse itself with the other form.
+
+CI selection proven by changing the production file
+(`leadv2-dispatch-code.sh`, marker reverted): `[SELECT] …/test-plugin-papercuts.sh`,
+`run-all: 106 selected, scope=changed`.
+
+Commits: `833adb6f` (fixture), catalogue + this section following.
+Catalogue: **50 rows, every one `expected: killed`.**
