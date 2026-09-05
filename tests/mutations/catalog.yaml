@@ -696,3 +696,17 @@ mutations:
       trusting whatever sits at the legacy filename
     expected: killed
     note: "case (b) goes red: with the registry at the legacy name the mutated resolver returns it (rc=0) instead of refusing with `NOT the phase-policy document`. Applied by regex inside the function body, never by line number, and it runs IN-SUITE as case (R) on every CI selection rather than by hand. (R) also refuses to pass when case (b) was not green first -- absence proves nothing unless presence was shown. Cases (f)/(g) cover the second half of the fix and discriminate: the phase policy gives tier=volume, the registry alone tier=standard"
+
+  - id: falsification-path-always-skips-baseline-red
+    product_flow: "the C4 (TEST-FALSIFICATION-GATE-01) block in the builder self-check charges a lane FAIL the instant a test-*.sh/*_test.sh file exits non-zero, with no baseline attribution at all -- so a suite red for reasons inherited from main blocks every lane that happens to touch it, while a lane that genuinely breaks a previously-green falsification test must still be caught. FALSIFICATION-PATH-HAS-NO-BASELINE-CLASSIFIER-01 wires the existing `_selfcheck_baseline_verdict` classifier (already correct on the C3 suites path) into C4 unchanged, so inherited-red is SKIPped and lane-introduced red still FAILs"
+    file: plugins/leadv2/scripts/lib/leadv2-builder-selfcheck.sh
+    suite: plugins/leadv2/scripts/tests/test-falsification-baseline-classifier.sh
+    anchor: |
+      _selfcheck_baseline_verdict() { # <suite_rel_path> -> prints PASS|FAIL|SKIP_RED|SKIP_UNRESOLVED
+        local rel="$1"
+    patch: |
+      printf 'SKIP_RED'; return -- inserted as the function's first statement,
+      forcing every falsification-path baseline lookup to answer SKIP_RED
+      regardless of the suite's actual state on either tree
+    expected: killed
+    note: "measured 2026-09-05 via leadv2-mutation-control.sh (working-tree snapshot, baseline-green gate passed first): killed, rc=0. This is control (B), the paired negative that matters -- without it, control (A) (inherited-red SKIPs) could pass on a classifier that always answers SKIP_RED, silently opening the falsification gate to any lane-introduced regression. Under the mutation, case (B) (green on baseline, red only in the lane) flips from the required FAIL row to a SKIP row, and the suite goes red proving the wiring -- not just the classifier's own logic -- is what's under test"

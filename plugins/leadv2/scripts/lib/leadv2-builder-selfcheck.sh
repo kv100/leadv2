@@ -485,7 +485,7 @@ $(tail -n 40 "$3" 2>/dev/null)
   elif (( depth >= 1 )); then
     : # re-entered gate: C3's own depth-guard row already surfaces this: avoid a duplicate
   else
-    local tf_rel tf_log tf_rc tf_base
+    local tf_rel tf_log tf_rc tf_base tf_bverdict
     for f in "${resolved_paths[@]:-}"; do
       tf_rel="${f#"${diff_root}"/}"
       tf_base="$(basename "${tf_rel}")"
@@ -499,10 +499,27 @@ $(tail -n 40 "$3" 2>/dev/null)
         _lv2_selfcheck_timeout_run "${timeout_s}" "${tf_log}" -- bash "${f}"
       tf_rc=$?
       if (( tf_rc != 0 )); then
-        failed=$((failed + 1))
-        _selfcheck_row "falsification" "${tf_rel}" "FAIL (test_failed:rc=${tf_rc})"
-        _selfcheck_fail_name "falsification:${tf_rel}:test_failed"
-        _selfcheck_raw "${tf_rel} (falsification proof)" "${tf_rc}" "${tf_log}"
+        tf_bverdict="$(_selfcheck_baseline_verdict "${tf_rel}")"
+        case "${tf_bverdict}" in
+          SKIP_RED)
+            _selfcheck_row "falsification" "${tf_rel}" "SKIP (baseline_red)"
+            skipped=$((skipped + 1))
+            checks=$((checks - 1))
+            _selfcheck_raw "${tf_rel} (lane red, baseline red -- inherited)" "${tf_rc}" "${tf_log}"
+            ;;
+          SKIP_UNRESOLVED)
+            _selfcheck_row "falsification" "${tf_rel}" "SKIP (baseline_unresolved)"
+            skipped=$((skipped + 1))
+            checks=$((checks - 1))
+            _selfcheck_raw "${tf_rel} (lane red, baseline unresolvable -- fail-open)" "${tf_rc}" "${tf_log}"
+            ;;
+          *)
+            failed=$((failed + 1))
+            _selfcheck_row "falsification" "${tf_rel}" "FAIL (test_failed:rc=${tf_rc})"
+            _selfcheck_fail_name "falsification:${tf_rel}:test_failed"
+            _selfcheck_raw "${tf_rel} (falsification proof)" "${tf_rc}" "${tf_log}"
+            ;;
+        esac
       elif grep -qE 'RED-then-GREEN: .*\(pre_rc=1 -> post_rc=0\)' "${tf_log}" 2>/dev/null; then
         _selfcheck_row "falsification" "${tf_rel}" "0"
       elif [[ "${_tf_blocking}" == "1" ]]; then
