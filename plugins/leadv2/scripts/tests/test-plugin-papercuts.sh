@@ -436,6 +436,35 @@ e2e_setup() {
   # fixture-leak regression guard: a test dispatch must NEVER arm real watchers
   export LEADV2_PULSE_MODE=0
   export LEADV2_SINGLE_LEAD_BEAT=0
+  # ── budget + hermeticity: the two codex post-spawn deadlines ────────────────
+  # Measured 2026-09-05 by sampling this suite's own process group every 2s:
+  # across 59 samples the ONLY things running were leadv2-dispatch-code.sh (60)
+  # and `sleep 1` (44). Nothing external, nothing hung -- the dispatcher was
+  # polling out two codex liveness deadlines, once per codex-arm dispatch (P3b,
+  # P5, P6):
+  #   _arm_early_verdict_window           LEADV2_ARM_EARLY_VERDICT_S=20
+  #   _codex_instant_complete_deadline_check  LEADV2_CODEX_INSTANT_COMPLETE_SECS=30
+  # Both wait for an artifact a STUBBED launcher never writes, so both always
+  # run to full term here: 3 x 50s = 150s of a 182s run. That is why the suite
+  # tripped a 120s wrapper -- `rc=124` was a property of the budget, not of the
+  # suite, which passes 14/0 at full budget. Pinned to 0 (both knobs' own
+  # documented disable value, `[[ "${deadline}" != "0" ]] || return 0`).
+  # NOT COVERED as a consequence, and never was: the two deadline windows
+  # themselves. This suite claims tier validation, spawn fallthrough, resume
+  # placement and backlog-write refusal -- none of them codex liveness.
+  export LEADV2_ARM_EARLY_VERDICT_S=0
+  export LEADV2_CODEX_INSTANT_COMPLETE_SECS=0
+  # Hermeticity, the reason the wait was not merely slow: the instant-complete
+  # scan is `_codex_newest_rollout_since`, which walks ${CODEX_HOME:-$HOME/.codex}
+  # /sessions -- 1955 real rollout files on this machine, re-walked once a second
+  # for 30s, three times a run. The file it PICKS is cwd-filtered, so a foreign
+  # rollout cannot be misread as the fixture's; but the `candidates=` count it
+  # reports is NOT filtered, and feeds an emitted decision line
+  # (arm_dead_instant_complete_ambiguous_rollout). A concurrent real codex
+  # session therefore changed what this fixture's dispatch wrote to its journal.
+  # CODEX_HOME is the seam; point it at the sandbox.
+  mkdir -p "$E2E_SANDBOX/codex-home/sessions"
+  export CODEX_HOME="$E2E_SANDBOX/codex-home"
   unset LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA 2>/dev/null || true
 }
 # fast offline judge: no `claude -p`, deterministic JSON
