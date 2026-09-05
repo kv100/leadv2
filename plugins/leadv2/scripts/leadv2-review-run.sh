@@ -80,6 +80,10 @@ while [[ $# -gt 0 ]]; do
     # Never assumed equal to --handoff; omitted -> the defense-in-depth DoD call
     # below falls back to ${HANDOFF}-scoped checks with an explicit dod_skip note.
     --task-dir) TASK_DIR_ARG="${2:-}"; shift 2 ;;
+    --task-size-class)   TASK_SIZE_CLASS="${2:-}"; shift 2 ;;
+    --class)             TASK_SIZE_CLASS="${2:-}"
+                         printf 'leadv2-review-run.sh: --class is ambiguous (size vs work-kind); use --task-size-class\n' >&2
+                         shift 2 ;;
     *) printf 'leadv2-review-run.sh: unknown arg: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -88,6 +92,28 @@ if [[ -z "${TASK}" || -z "${ROOT}" || -z "${HANDOFF}" || -z "${DIFF_FILE}" || -z
   printf 'leadv2-review-run.sh: --task, --root, --handoff, --diff and --author are all required\n' >&2
   exit 2
 fi
+
+
+# ESCALATION-SIGNAL-NEVER-REACHES-THE-ENGINES-01 (2026-09-05): resolve the SIZE
+# class -- Light|Standard|Heavy|Strategic -- and print it. NOT the work-KIND
+# class (deploy|ops|rollout|code) that context.yaml calls task_class and
+# leadv2-deploy-classify.sh:87 reads; two vocabularies, one word, and conflating
+# them is exactly the failure this repo spent 2026-09-05 unpicking in
+# leadv2-routing.yaml. An unrecognised value is REFUSED, never coerced to a
+# default: a silently-normalised class is a condition that looks evaluated and
+# is not. `unset` is printed as loudly as a value, because today no script
+# caller supplies one -- leadv2-review-run.sh is reached from
+# leadv2-dispatch-product-close.sh, which knows no size class at all, so any
+# escalation rule written against it would be branchless and silent.
+TASK_SIZE_CLASS="${TASK_SIZE_CLASS:-${LEADV2_TASK_SIZE_CLASS:-}}"
+case "${TASK_SIZE_CLASS}" in
+  Light|Standard|Heavy|Strategic) ;;
+  "") TASK_SIZE_CLASS="unset" ;;
+  *) printf 'leadv2-review-run.sh: --task-size-class must be Light|Standard|Heavy|Strategic (got: %s)\n' \
+       "${TASK_SIZE_CLASS}" >&2; exit 2 ;;
+esac
+printf 'leadv2-review-run.sh: task_size_class=%s source=%s\n' "${TASK_SIZE_CLASS}" \
+  "$([[ "${TASK_SIZE_CLASS}" == "unset" ]] && printf no_caller_supplies_it || printf caller)" >&2
 
 if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then
   LEADV2_TRACE_ID="${LEADV2_TRACE_ID:-${TASK}}"
