@@ -151,6 +151,33 @@ out="$(run "$(quota 10 20 20)" 1 '{"work_kind":"diagnose","size":"standard","tas
 ctl="$(run "$(quota 10 20 20)" 1 '{"work_kind":"code","size":"standard","task":"t"}')"
 if [[ "$out" == *'kind_unmapped=diagnose'* && "$ctl" != *'kind_unmapped='* ]]; then pass 'coerced work_kind is named on the decision line, and a known kind is not'; else fail "kind-unmapped out=$out ctl=$ctl"; fi
 
+# (g4) D14: one window readable, the other not. util() takes the worst of what it
+# could READ and prints that as the provider's headroom, so `util_glm=10` may mean
+# "10% used" or "10% used and the weekly window was never consulted". Skipping an
+# unreadable window is right (refusing on it would bench a provider we can partly
+# see); being silent about it is not. Control: both windows readable must NOT
+# carry the token.
+quota_partial_glm(){ python3 - "$1" "$2" "$3" <<'PY'
+import json,sys
+g,c,a=sys.argv[1:]
+wk=None if g=='null' else int(g)
+print(json.dumps({'glm':{'status':'ok','five_hour':{'pct':10},'weekly':{'pct':wk}},'codex':{'status':'ok','binding_window':'primary','windows':[{'kind':'primary','used_percent':int(c)}]},'anthropic':{'status':'ok','accounts':[{'active':True,'status':'ok','five_hour_pct':int(a),'seven_day_pct':int(a)}]}}))
+PY
+}
+out="$(run "$(quota_partial_glm null 20 20)" 1 '{"work_kind":"code","size":"standard","task":"t"}')"
+ctl="$(run "$(quota_partial_glm 10 20 20)" 1 '{"work_kind":"code","size":"standard","task":"t"}')"
+if [[ "$out" == *'partial_windows=glm:weekly'* && "$ctl" != *'partial_windows='* ]]; then pass 'headroom read from only some windows says so'; else fail "partial-windows out=$out ctl=$ctl"; fi
+
+# (g5) D16: quota_ceilings configures glm/codex/claude only, while the capability
+# matrix also carries freepool/kimi/anthropic/ordinary. over_ceiling() defaults an
+# unconfigured provider to 100, i.e. it can NEVER be capped -- a favourable
+# default nobody chose. The default stays (inventing a ceiling would bench a
+# provider on no evidence); the winner riding one is named. Control: a glm win
+# (configured ceiling) must NOT carry the token.
+out="$(run "$(quota 10 20 20)" 0 '{"work_kind":"recon","size":"standard","task":"t"}')"
+ctl="$(run "$(quota 10 20 20)" 1 '{"work_kind":"code","size":"standard","task":"t"}')"
+if [[ "$out" == *'ceiling_default=freepool'* && "$ctl" != *'ceiling_default='* ]]; then pass 'a winner with no configured ceiling is named'; else fail "ceiling-default out=$out ctl=$ctl"; fi
+
 # (h) ARBITER-DECISION-LOGIC-CENSUS-01: the `active` flag on an anthropic
 # account names which credential the session resolved to, not that its probe
 # succeeded. A broken (status!='ok', all-null pct) active-flagged account

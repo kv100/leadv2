@@ -215,6 +215,10 @@ def window_reset(name, window):
     if period is None: return h, None, 'unknown_window'
     if h is not None: return h, period, 'live'
     return period, period, 'default_full_period'
+# D14 store: filled by util() when a provider's headroom was read from only
+# SOME of its windows. Printed on the decision line; never consulted by the
+# routing choice, so this records the fact without changing any outcome.
+_partial_windows={}
 def util(provider):
     # T17 fix-round (C3): a provider whose probe is broken/unknown must be
     # PESSIMISTIC (maximally capped), never the cheapest-looking arm. The old
@@ -274,10 +278,20 @@ def util(provider):
     # -- new -- travels its own reset/period with it, so a provider with two
     # windows never borrows one window's pct with a DIFFERENT window's clock.
     best_name,best_pct,best_window=None,None,None
+    # D14: a window whose pct is unreadable is SKIPPED, so "the binding window"
+    # below means "the worst of the windows we could read", not "the worst
+    # window". With weekly unreadable and five_hour at 10%, this function says
+    # 10% and nothing anywhere says weekly was never consulted. The skip stays
+    # (refusing on one unreadable window would bench a provider we can partly
+    # see), but the fact is recorded and printed -- unknown is a third value,
+    # and a third value that only lives in a local variable is not one.
+    _skipped=[]
     for name,w in windows.items():
         p=num((w or {}).get(pct_key))
-        if p is None: continue
+        if p is None: _skipped.append(name); continue
         if best_pct is None or p>best_pct: best_name,best_pct,best_window=name,p,w
+    if best_pct is not None and _skipped:
+        _partial_windows.setdefault(provider, sorted(_skipped))
     # ARBITER-UNKNOWN-BECOMES-A-DEFAULT-IN-FIVE-DECISIONS-01: windows existed but
     # not one carried a number. That is the instrument failing to answer, exactly
     # like `status != ok` (:14) and "no ok account" (:260) -- both of which return
@@ -677,6 +691,14 @@ _extra = (' size_unmapped=%s' % size_unmapped) if size_unmapped else ''
 # without this token a diagnose task is indistinguishable in the journal from a
 # task that really was code.
 _extra += (' kind_unmapped=%s' % kind_unmapped) if kind_unmapped else ''
+# D14: headroom read from only SOME of a provider's windows -- the number on
+# this line is the worst of what we could READ, not the worst window.
+_extra += (' partial_windows=%s' % ','.join('%s:%s' % (p, '|'.join(w)) for p, w in sorted(_partial_windows.items()))) if _partial_windows else ''
+# D16: a provider absent from quota_ceilings silently gets ceiling 100, i.e. it
+# can never be capped. The default stays (adding a ceiling for a provider nobody
+# configured would bench it on no evidence) -- but the winner riding an
+# unconfigured ceiling is named, so `not capped` stops meaning two things.
+_extra += (' ceiling_default=%s' % w['provider']) if (w.get('provider') and not (ceil.get(w['provider']) or ceil.get(w['arm']))) else ''
 # FP-08 fix-round (H1/H3): the floor journal rides on the arbiter's OWN output
 # line for THIS invocation (never a cross-run state file a stale read could
 # misattribute), as explicit tokens -- not a Python bool printed raw, which
