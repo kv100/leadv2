@@ -8438,6 +8438,12 @@ ${mission}"
         # The worker is already live; make the failed postflight launch visible rather than
         # pretending close evidence will arrive.  Do not kill the independently-owned worker.
         log_err "product close gate could not be launched for task=${sig8}"
+      elif [[ -n "${LANE_DELIVERABLE_DECL:-}" ]]; then
+        # REPORT-ONLY-GATE-01 (codex r2 finding 1, RECOVER-WAVE1-TEN-01 union): non-product
+        # classes never run the product close gate, so a report declaration there is NOT
+        # enforced — surface that loudly instead of letting a declared report lane pass
+        # unjudged in silence.
+        emit decision "lane_deliverable task=${sig8} status=unenforced reason=non_product_class decl=${LANE_DELIVERABLE_DECL}"
       fi
       # V3-GLM-LADDER-01 Lever 3: attempted[] (not LAST_ARM_OUTCOME) is the durable
       # record of what was refused earlier in the loop -- by the time sonnet lands here,
@@ -8806,6 +8812,18 @@ cmd_advance_arm() {
   mission="$(cat "${mission_file}" 2>/dev/null)"
   [[ -n "${worktree}" && -d "${worktree}" ]] && WORK_ROOT="${worktree}"
 
+  # REPORT-ONLY-GATE-01 (codex r2 finding 2): recover the lane's deliverable
+  # declaration from the SAME persisted mission the replacement worker gets. Without
+  # this, a report lane recovered via advance-arm is re-judged as a diff lane and
+  # blocks no_work despite having produced its report.
+  local _adv_deliverable=""
+  _adv_deliverable="$(_mission_deliverable "${mission}")"
+  if [[ -n "${_adv_deliverable}" ]] && ! lv2_deliverable_parse "${_adv_deliverable}" >/dev/null; then
+    emit decision "lane_deliverable task=${sig8} status=ignored reason=unknown_kind decl=${_adv_deliverable} src=advance_arm"
+    _adv_deliverable=""
+  fi
+
+
   # T13 slice2 fix-round (F1, review): the --arm the close gate passes here is
   # a static CSV-position walk (_pc_next_arm_in_chain in product-close) -- this
   # spawn used to consume it directly, making advance-arm a 4th arm-SELECTION
@@ -8890,7 +8908,7 @@ cmd_advance_arm() {
     --handle "dispatch-${sig8}-build" \
     --task-id "${task_id}" --owner "$(basename "$0"):cmd_advance_arm" 2>/dev/null || true
   if [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]]; then
-    spawn_product_close "${sig8}" "${arm}" "${handle}" "$(IFS=,; printf '%s' "${candidate_arms[*]}")" "${writes}" "${task_id}" "${mission_file}"
+    spawn_product_close "${sig8}" "${arm}" "${handle}" "$(IFS=,; printf '%s' "${candidate_arms[*]}")" "${writes}" "${task_id}" "${mission_file}" "${_adv_deliverable:-}"
   fi
   printf 'arm_advance model=%s task=%s handle=%s\n' "${arm}" "${sig8}" "${handle}"
   exit 0

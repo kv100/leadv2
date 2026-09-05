@@ -1,10 +1,10 @@
 verdict: APPROVE
-next_action: continue
+next_action: deploy
 
-Resolved the one-hunk merge conflict in `leadv2-dispatch-product-close.sh` per the architect design; kept both sides. Staged, not committed (boundary forbids commit).
+No-op: the scoped merge conflict was already resolved and committed (35657f5) before this lane started.
 
-- Both suites green post-resolution: `test-report-only-gate.sh` 8/8 + 5/5 red-first; `run-core-offline.sh` 45/47 (2 pre-existing, unrelated, concurrency-caused failures).
-- Appended the required note to `docs/handoff/REPORT-ONLY-GATE-01/report.md`.
-- Did NOT commit (developer boundaries forbid commit/push/merge) — file is `git add`-staged for the lead.
+- `leadv2-dispatch-product-close.sh` has zero conflict markers; PASS branches already match the designed shape.
+- `test-report-only-gate.sh`: 13/13 + 5/5 red-first. `run-core-offline.sh`: 45 passed, 2 failed (unrelated pre-existing suites, see full.md).
+- `docs/handoff/REPORT-ONLY-GATE-01/report.md` already has the required note.
 
-Full: developer.full.md
+Full: full.md

@@ -38,10 +38,28 @@ lv2_deliverable_parse() { # <decl>
 # (root); rc 1 if neither exists. The report's canonical home is the lane worktree
 # (worker --cwd is LEADV2_LANE_WORK_ROOT), but a worker that ran in the main
 # checkout leaves it ROOT-side -- both are legitimate finds.
+# A symlink (the file itself, or any parent dir) is NOT a find: the report is copied
+# verbatim into the handoff and sent to an external reviewer, so a declaration must
+# never be able to harvest a host file outside its tree (codex review finding 2).
 lv2_report_locate() { # <diff_root> <root> <rel>
-  local diff_root="$1" root="$2" rel="$3" cand
-  for cand in "${diff_root}/${rel}" "${root}/${rel}"; do
-    [[ -f "${cand}" ]] && { printf '%s' "${cand}"; return 0; }
+  local diff_root="$1" root="$2" rel="$3" base cand phys_base phys_dir nlink
+  for base in "${diff_root}" "${root}"; do
+    [[ -d "${base}" ]] || continue
+    cand="${base}/${rel}"
+    [[ -f "${cand}" && ! -L "${cand}" ]] || continue
+    phys_base="$(cd "${base}" 2>/dev/null && pwd -P)" || continue
+    phys_dir="$(cd "$(dirname "${cand}")" 2>/dev/null && pwd -P)" || continue
+    # physical containment: pwd -P dereferences symlinked parents, so an escaped
+    # phys_dir means some path segment was a link out of the tree.
+    [[ "${phys_dir}" == "${phys_base}" || "${phys_dir}/" == "${phys_base}"/* ]] || continue
+    # a same-volume HARDLINK escapes containment without escaping the path (codex
+    # r2 finding 3): st_nlink > 1 means the inode is shared with something this find
+    # cannot see. A worker-written report is link-count 1 (BSD stat -f %l / GNU -c %h).
+    nlink="$(stat -f %l "${cand}" 2>/dev/null || stat -c %h "${cand}" 2>/dev/null || printf '1')"
+    [[ "${nlink}" =~ ^[0-9]+$ ]] || nlink=1
+    (( nlink <= 1 )) || continue
+    printf '%s' "${cand}"
+    return 0
   done
   return 1
 }
@@ -76,6 +94,14 @@ lv2_report_harvest() { # <abs> <handoff_dir>
   local abs="$1" handoff_dir="$2" dest tmp
   dest="${handoff_dir}/report.md"
   mkdir -p "${handoff_dir}" 2>/dev/null || return 1
+  # Fail closed on a non-regular destination (codex review finding 3): an existing
+  # DIRECTORY at report.md would make `mv` file the tmp INSIDE it and return success,
+  # advertising a deliverable that is not a file. Never silently delete the oddity.
+  # A SYMLINK destination is refused outright (codex r2 finding 4): `-f`/`-ef` follow
+  # links, so a dest symlinked at the worktree source would skip the copy and dangle
+  # the moment the worktree is swept.
+  [[ ! -L "${dest}" ]] || return 1
+  [[ ! -e "${dest}" || -f "${dest}" ]] || return 1
   if [[ "${abs}" -ef "${dest}" ]]; then
     printf '%s' "${dest}"
     return 0

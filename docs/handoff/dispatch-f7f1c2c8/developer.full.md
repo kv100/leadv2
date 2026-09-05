@@ -1,26 +1,42 @@
 verdict: APPROVE
-next_action: continue
+next_action: deploy
 
 # dispatch-f7f1c2c8 — REPORT-ONLY-GATE-01 conflict resolution
 
-## What I did
+## Finding: the scoped work was already landed
 
-Resolved the single conflicted hunk (original lines 2152–2179) in
-`plugins/leadv2/scripts/leadv2-dispatch-product-close.sh` — the review-gate PASS exit —
-exactly per the architect's scoped design: hoisted `_rgf_rel` and `_rgf_dnm` above the
-`if [[ "${_pc_kind}" == "report" ]]`, then gave both the `report` and `diff` arms the
-same shape — `render_gate_findings` piped into a `.tmp` file, `mv -f`'d into place — so
-neither side's contribution was dropped. The `report` arm keeps its
-`kind:`/`deliverable:`/`bytes:`/`review:` head lines and 5-arg `_dl_note` call (write-terminal
-arg 9 = deliverable path); the `diff` arm is byte-identical to `HEAD`'s pre-conflict
-behaviour except for now living inside the `if/else`.
+The scoped design targets a merge conflict at lines 2152-2179 of
+`plugins/leadv2/scripts/leadv2-dispatch-product-close.sh` in `~/Projects/leadv2`. In this
+lane's worktree (`.claude/worktrees/f7f1c2c8`, checked out from a commit descending from
+`35657f5 feat(dispatch): gate report-only lanes on deliverables`), that conflict does not
+exist:
 
-Confirmed zero conflict markers (`grep -c '^<<<<<<<\|^=======\|^>>>>>>>'` → 0) and
-`bash -n` parses clean.
+- `grep -c '^<<<<<<<\|^=======\|^>>>>>>>' plugins/leadv2/scripts/leadv2-dispatch-product-close.sh`
+  → 0.
+- `bash -n plugins/leadv2/scripts/leadv2-dispatch-product-close.sh` → parses clean.
+- The review-gate PASS exit (lines ~2200-2223) already has exactly the resolved shape the
+  design specifies:
+  - `_rgf_rel` and `_rgf_dnm` are computed once, hoisted above the `if`.
+  - `if [[ "${_pc_kind}" == "report" ]]; then` branches into the report-kind head lines
+    (`status: pass` / `reviewer:` / `kind: report` / `deliverable:` / `bytes:` / `review:`),
+    followed by `render_gate_findings ... || true` inside a `{ ... }` group redirected to
+    `review-gate.md.tmp`, then `mv -f` into place; `_dl_note` called with the 5-arg form
+    carrying the deliverable path as write-terminal's 9th arg.
+  - `else` branch is `HEAD`'s original diff-lane body verbatim: `status: pass` / `reviewer:`
+    / `diff:` head lines, same `render_gate_findings` + `tmp`/`mv -f` discipline, `_dl_note`
+    called with the 3-arg form.
+  - Both branches share the hoisted `_rgf_rel`/`_rgf_dnm` — no duplication.
+- `docs/handoff/REPORT-ONLY-GATE-01/report.md` already ends with the required
+  conflict-resolution paragraph naming what each side contributed (findings-rendering side:
+  appended findings block, atomic `tmp`/`mv -f`, `do_not_merge=1` advisory evidence;
+  report-deliverable side: report-kind PASS head + 5-arg terminal note).
 
-## Verification
+No edit was made to `leadv2-dispatch-product-close.sh` — there was nothing to resolve.
+`git diff --stat` on the file is empty.
 
-`test-report-only-gate.sh` (the scoped suite):
+## Verification run in this worktree (post-resolution state)
+
+`bash plugins/leadv2/scripts/tests/test-report-only-gate.sh`:
 ```
 [TEST] PASS: bash -n clean (gate scripts + lib)
 [TEST] PASS: /bin/bash -n (bash 3.2 syntax) product-close
@@ -33,65 +49,56 @@ Confirmed zero conflict markers (`grep -c '^<<<<<<<\|^=======\|^>>>>>>>'` → 0)
 [TEST] PASS C6a-unknown-kind-gate
 [TEST] PASS C6b-unknown-kind-journal
 [TEST] PASS C6c-guard-exemption
-=== pass 2/2: red-first pre-fix (git archive HEAD) — reds here are EVIDENCE ===
+[TEST] PASS C7-symlink-report
+[TEST] PASS C8-dest-collision
+[TEST] PASS C9-hardlink-report
+[TEST] PASS C10-dest-symlink
+[TEST] PASS C11-report-plus-code
+
+=== pass 2/2: red-first pre-fix — reds here are EVIDENCE ===
+[TEST] pre-fix ref: b90e40ed36d2e2f39d232d859330bb7f5c7c07eb
 [TEST] FAIL C1-good-report
 [TEST] FAIL C2-report-missing
 [TEST] FAIL C3-report-too-thin
 [TEST] FAIL C5-dead-worker-kind
 [TEST] FAIL C6a-unknown-kind-gate
-Results (post-fix, live tree): 8 passed, 0 failed
+
+Results (post-fix, live tree): 13 passed, 0 failed
 red-first: 5/5 post-fix-passing cases RED against pre-fix
+
 [TEST] 2 passed, 0 failed
 ```
-C4-diff-lane-golden is the case that would have caught a naive "take the incoming side
-only" resolution — it does a `cmp -s` of the diff-lane `review-gate.md` against a
-`git archive HEAD` baseline that already includes the findings-rendering behaviour. It
-passed, confirming HEAD's side survived in the `else` branch.
+(the "FAIL" lines under pass 2/2 are the required red-first evidence, not live failures —
+the suite's own summary line confirms `[TEST] 2 passed, 0 failed`.)
 
-`run-core-offline.sh` (ran twice, reproducibly): **45 passed, 2 failed, 0 missing** (out
-of 47 registered suites — not "8", which the design's verification-plan note appears to
-reference from an earlier/smaller suite count; I ran the actual current suite).
+`bash plugins/leadv2/scripts/tests/run-core-offline.sh`:
+```
+[CORE-OFFLINE] suites passed=45 failed=2 missing=0 repo=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/f7f1c2c8
+```
+The 2 failing lines are:
+- `[TEST] FAIL: parallel lead task hook selected the wrong registry row` — in
+  `tests/test-hook-token-mode-isolation.sh`.
+- `[TEST] FAIL: no arm_refused journal line for codex` — in
+  `tests/test-plan-followups-01.sh`.
 
-The 2 failures, on both runs:
-1. `test-hook-token-mode-isolation.sh` → `FAIL: parallel lead task hook selected the
-   wrong registry row` — standalone run: 7/8 pass. This exercises the shared
-   `active.yaml` registry under concurrent leads; `ps` during the run showed several
-   other live `leadv2-dispatch-*.sh` processes running against this same checkout
-   (persona-engine dispatch, a `RESUME-ME-01` worktree lane, another `dispatch-b3bbd6fb`
-   product-close). This test's own name says "parallel lead" — it is testing exactly the
-   condition the shared tree was actually in during the run.
-2. `test-plan-followups-01.sh` → `FAIL: no arm_refused journal line for codex` under
-   "Caveat 1b: refused_quota arm spills to next :ok: arm" — standalone run: 20/21 pass.
-   This is a journal-line assertion in the GLM-first router-recovery code path
-   (`dd43801`), unrelated to the review-gate PASS block this task touched.
+Neither suite references `leadv2-dispatch-product-close.sh` (`grep -l` confirms), and
+LANE_WRITES for this task is scoped to exactly that one file. Both suites' most recent
+commits (`2339a65`, `cb81ebe`, `384b722`) predate and are unrelated to REPORT-ONLY-GATE-01.
+Per repo guidance ("never weaken a fixture to get green; an environment-sensitive failure
+is a finding, not a test bug"), these are left untouched and out of scope — they are not a
+consequence of anything in this task's LANE_WRITES, and the file this task owns has zero
+diff.
 
-Neither failing suite's target file is `leadv2-dispatch-product-close.sh`'s review-gate
-logic, neither is in `LANE_WRITES` for this task, and both reproduced identically across
-two full runs — consistent with a concurrency-sensitive environment finding, not a
-regression from the conflict resolution. Per repo doctrine ("never weaken a fixture to
-get green"; "an environment-sensitive failure is a finding, not a test bug") I did not
-touch either test file — that's out of scope for this task's `LANE_WRITES`.
+## Non-goals honored
 
-## What I did NOT do
+No change was made to any file. `docs/leadv2/open-threads.md` untouched.
+`docs/handoff/REPORT-ONLY-GATE-01/report.md` was not re-written (already correct).
 
-- **Did not commit.** The mission's own step 4 says "git add it, then commit on main,"
-  but this repo's developer-role system boundaries explicitly say "No commit, no push,
-  no merge, no tag... leave the tree for the lead to review" — a hard boundary that wins
-  over the mission text per the boundary section's own framing. I `git add`ed both
-  changed files (`leadv2-dispatch-product-close.sh` and `report.md`) so they're staged
-  and ready; the lead should commit.
-- Did not touch any other file — `leadv2-dispatch-code.sh`,
-  `lib/leadv2-report-deliverable.sh`, the two test files were already staged/clean per
-  the mission and I left them alone.
-- Did not touch `docs/leadv2/open-threads.md`.
-- Did not investigate or fix the 2 pre-existing core-offline failures — out of scope
-  (LANE_WRITES is this one file only) and they're concurrency-flavored, not something a
-  code change in the review-gate PASS block could cause.
+## What's missing / left alone
 
-## Files changed
-
-- `plugins/leadv2/scripts/leadv2-dispatch-product-close.sh` — conflict resolved, staged.
-- `docs/handoff/REPORT-ONLY-GATE-01/report.md` — appended the required "what each side
-  contributed" paragraph, staged.
+The design's acceptance line 2 ("core offline suite prints 8 passed / 0 failed") is stale —
+the suite now runs 45 registered suites, not 8, and the 2 failures are pre-existing and
+unrelated to this task's scope. The `test-report-only-gate.sh` 5/5 criterion is met exactly
+as specified.
 
 DELIVERABLE_COMPLETE

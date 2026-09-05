@@ -2496,8 +2496,33 @@ if [[ "${_pc_kind}" == "report" ]]; then
     _stamp_review_terminal blocked
     exit 5
   fi
+  # codex r3 finding 2: a report lane must not LAUNDER code changes. Dirt in the lane
+  # worktree outside the declared report (and the usual journal/handoff noise) means the
+  # lane changed source that would never be diff-reviewed — block it as unscoped_lane_work
+  # rather than let it land under a report verdict. Gated on _lane_root exactly like the
+  # diff-lane dirty check below: with no lane worktree, ROOT-side founder edits must never
+  # be mistaken for lane work.
+  if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] \
+     && git -C "${_lane_root}" status --porcelain --untracked-files=all 2>/dev/null \
+        | grep -vE '^.. "?docs/leadv2/|^.. "?docs/handoff/' \
+        | grep -vF "${_pc_report_rel}" | grep -q .; then
+    printf 'status: blocked\nreason: unscoped_lane_work\nkind: report\ndeclared: %s\n' "${_pc_report_rel}" > "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=unscoped_lane_work kind=report terminal=refused cause=unscoped_lane_work declared=${_pc_report_rel}"
+    _dl_note refused unscoped_lane_work "declared=${_pc_report_rel} kind=report"
+    _stamp_review_terminal blocked
+    exit 5
+  fi
   # harvest: ROOT-side docs/handoff/dispatch-<TASK>/report.md survives the lane sweep
   _pc_report_dest="$(lv2_report_harvest "${_pc_report_abs}" "${HANDOFF}")"
+  # Fail closed on harvest failure (codex review finding 3): a pass that advertises a
+  # deliverable which was never materialised is worse than a blocked lane.
+  if [[ -z "${_pc_report_dest}" || ! -f "${_pc_report_dest}" ]]; then
+    printf 'status: blocked\nreason: harvest_failed\nkind: report\ndeclared: %s\n' "${_pc_report_rel}" > "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=harvest_failed kind=report terminal=no_work cause=harvest_failed declared=${_pc_report_rel}"
+    _dl_note no_work harvest_failed "declared=${_pc_report_rel}"
+    _stamp_review_terminal blocked
+    exit 5
+  fi
   _pc_report_deliverable="docs/handoff/dispatch-${TASK}/report.md"
   # Review-body substitution: the report IS the review body — the unmodified review
   # path below (findings renderer, verdict-marker check, review_body_lost guard,
@@ -2506,7 +2531,19 @@ if [[ "${_pc_kind}" == "report" ]]; then
   {
     printf '# REPORT-ONLY LANE — review the ANALYSIS, not a diff.\n'
     printf '# deliverable: %s   bytes: %s\n' "${_pc_report_rel}" "${_pc_report_bytes}"
-    head -c "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" "${_pc_report_abs}"
+    # Bind the founder's ask into the review input (codex r2 finding 6): an internally
+    # coherent but UNRELATED pre-existing report must not be able to pass — the reviewer
+    # judges the report against this mission excerpt, bounded like the report itself.
+    _pc_rl_mission="${LEADV2_DISPATCH_LANE_MISSION:-}"
+    [[ -n "${_pc_rl_mission}" && -f "${_pc_rl_mission}" ]] || _pc_rl_mission="${ROOT}/docs/handoff/dispatch-${TASK}/lane-mission.md"
+    if [[ -f "${_pc_rl_mission}" ]]; then
+      printf '# mission excerpt (first %s bytes — judge the report AGAINST this ask):\n' "${LEADV2_REPORT_MISSION_MAX_BYTES:-4000}"
+      head -c "${LEADV2_REPORT_MISSION_MAX_BYTES:-4000}" "${_pc_rl_mission}"
+      printf '\n\n'
+    fi
+    # bytes reviewed come from the HARVESTED destination, not the mutable worktree
+    # source (codex review finding 4): review approves exactly the durable deliverable.
+    head -c "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" "${_pc_report_dest}"
     printf '\n'
     if [[ "${_pc_report_bytes}" -gt "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" ]]; then
       printf '# [truncated for review at %s bytes; full report at %s]\n' "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" "${_pc_report_dest}"
@@ -3098,7 +3135,7 @@ fi
 # The lane still owns its process model / EXIT trap / _stamp_review_terminal /
 # review_crashed fallback -- the engine itself never calls those (it is a bare,
 # self-contained script callable with none of this lane's helper functions loaded).
-if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" ]]; then
+if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" && "${_pc_kind:-diff}" != "report" ]]; then
   if [[ "${REVIEW_ON}" != 1 ]]; then
     emit decision "review_gate task=${TASK} status=disabled reason=kill_switch"
     _dl_note landed review_gate_disabled
@@ -3332,7 +3369,7 @@ _pc_review_intro="Review ONLY the diff at ${diff_file}."
 if [[ "${_pc_kind}" == "report" ]]; then
   _pc_review_intro="This is a REPORT-ONLY lane. Review ONLY the analysis document at ${diff_file} (it begins with a '# REPORT-ONLY LANE' header naming the deliverable)."
   review_contract="${review_contract}
-PROSE RUBRIC (report-only lane — the file is an ANALYSIS, not a diff): (a) is every load-bearing claim backed by a quoted file/line reference or command output included in the report itself; (b) list every unsupported claim explicitly as a finding; (c) state whether the recommendation follows from the evidence presented; (d) emit the same REVIEW_VERDICT:/REVIEW_FINDINGS: markers as a code review. FAIL if any load-bearing claim is unsupported or the recommendation does not follow from the evidence."
+PROSE RUBRIC (report-only lane — the file is an ANALYSIS, not a diff): (a) is every load-bearing claim backed by a quoted file/line reference or command output included in the report itself; (b) list every unsupported claim explicitly as a finding; (c) state whether the recommendation follows from the evidence presented; (d) emit the same REVIEW_VERDICT:/REVIEW_FINDINGS: markers as a code review; (e) judge whether the report answers the MISSION excerpt in the review body header — an internally coherent but unrelated report FAILS. FAIL if any load-bearing claim is unsupported, the recommendation does not follow from the evidence, or the report does not answer the mission."
 fi
 
 # N-5 §2.3: arm-agnostic refusal fallback, generalising the old kimi-only bounded
