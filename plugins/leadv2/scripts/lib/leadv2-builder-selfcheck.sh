@@ -226,8 +226,19 @@ $(tail -n 40 "$3" 2>/dev/null)
   fi
 
   # ── resolve each changed path: diff_root -> project_root -> unresolved (SKIP, never RED) ──
-  local n=0 resolved
-  local -a resolved_paths=() resolved_rels=()
+  local n=0 resolved resolved_src
+  # REVIEW-SENTINELS-LANGUAGE-01: remember WHICH root supplied the bytes. In
+  # production diff_root is the lane worktree and project_root is the shared
+  # checkout, and they are NOT the same tree. A path can appear in the lane's diff
+  # and be absent from the lane's tree -- a deletion, or the old side of a rename --
+  # in which case the fallback below reads MAIN's copy of a file this lane removed.
+  # The syntax verdict was then filed under the bare basename, so `bash-n:foo.sh`
+  # read as "this lane wrote broken bash" when it could equally mean "main's copy of
+  # the file this lane deleted is broken". The check is deliberately KEPT (a caller
+  # whose diff_root does not carry the files must not lose its syntax gate -- that
+  # would turn a renaming into a disabling); what changes is that the name now says
+  # what was read.
+  local -a resolved_paths=() resolved_rels=() resolved_srcs=()
   for p in "${dedup[@]:-}"; do
     if (( n >= max_files )); then
       _selfcheck_row "resolve" "${p}" "SKIP (max_files_exceeded)"
@@ -236,10 +247,11 @@ $(tail -n 40 "$3" 2>/dev/null)
     fi
     n=$((n + 1))
     resolved=""
+    resolved_src=""
     if [[ -f "${diff_root}/${p}" ]]; then
-      resolved="${diff_root}/${p}"
+      resolved="${diff_root}/${p}"; resolved_src="lane"
     elif [[ -f "${project_root}/${p}" ]]; then
-      resolved="${project_root}/${p}"
+      resolved="${project_root}/${p}"; resolved_src="main_copy_not_lane"
     fi
     if [[ -z "${resolved}" ]]; then
       _selfcheck_row "resolve" "${p}" "SKIP (unresolved_path)"
@@ -248,20 +260,28 @@ $(tail -n 40 "$3" 2>/dev/null)
     fi
     resolved_paths+=("${resolved}")
     resolved_rels+=("${p}")
+    resolved_srcs+=("${resolved_src}")
   done
 
   # ── C1: bash -n on every resolved *.sh ──
-  local f rc log
-  for f in "${resolved_paths[@]:-}"; do
+  local f rc log _i _src _srcnote
+  for _i in "${!resolved_paths[@]}"; do
+    f="${resolved_paths[$_i]}"
     [[ "${f}" == *.sh ]] || continue
+    _src="${resolved_srcs[$_i]:-lane}"
+    _srcnote=""; [[ "${_src}" != "lane" ]] && _srcnote=" (read from project_root -- absent in the lane tree)"
     log="$(mktemp)"
     bash -n "${f}" > "${log}" 2>&1
     rc=$?
     checks=$((checks + 1))
-    _selfcheck_row "bash -n" "${f#"${diff_root}"/}" "${rc}"
+    _selfcheck_row "bash -n" "${f#"${diff_root}"/}${_srcnote}" "${rc}"
     if (( rc != 0 )); then
       failed=$((failed + 1))
-      _selfcheck_fail_name "bash-n:$(basename "${f}")"
+      if [[ "${_src}" == "lane" ]]; then
+        _selfcheck_fail_name "bash-n:$(basename "${f}")"
+      else
+        _selfcheck_fail_name "bash-n:$(basename "${f}"):${_src}"
+      fi
       _selfcheck_raw "bash -n ${f}" "${rc}" "${log}"
     fi
     rm -f "${log}"
@@ -269,17 +289,24 @@ $(tail -n 40 "$3" 2>/dev/null)
 
   # ── C2: py_compile on every resolved *.py, PYTHONPYCACHEPREFIX kept out of the tree (R4) ──
   local pycache_dir=""
-  for f in "${resolved_paths[@]:-}"; do
+  for _i in "${!resolved_paths[@]}"; do
+    f="${resolved_paths[$_i]}"
     [[ "${f}" == *.py ]] || continue
+    _src="${resolved_srcs[$_i]:-lane}"
+    _srcnote=""; [[ "${_src}" != "lane" ]] && _srcnote=" (read from project_root -- absent in the lane tree)"
     [[ -z "${pycache_dir}" ]] && pycache_dir="$(mktemp -d)"
     log="$(mktemp)"
     PYTHONPYCACHEPREFIX="${pycache_dir}" python3 -m py_compile "${f}" > "${log}" 2>&1
     rc=$?
     checks=$((checks + 1))
-    _selfcheck_row "py_compile" "${f#"${diff_root}"/}" "${rc}"
+    _selfcheck_row "py_compile" "${f#"${diff_root}"/}${_srcnote}" "${rc}"
     if (( rc != 0 )); then
       failed=$((failed + 1))
-      _selfcheck_fail_name "py_compile:$(basename "${f}")"
+      if [[ "${_src}" == "lane" ]]; then
+        _selfcheck_fail_name "py_compile:$(basename "${f}")"
+      else
+        _selfcheck_fail_name "py_compile:$(basename "${f}"):${_src}"
+      fi
       _selfcheck_raw "py_compile ${f}" "${rc}" "${log}"
     fi
     rm -f "${log}"
