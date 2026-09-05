@@ -7078,6 +7078,15 @@ Env: LEADV2_DISPATCH_ENFORCE=0 disables dedup (no-op/pass-through). LEADV2_DISPA
      LEADV2_BURN_GOVERNOR_BIN / LEADV2_CLAUDE_BURN_DIR override the governor script / its
      ~/.claude/burn telemetry dir (tests).
 EOF
+  # DISPATCH-EXITS-ZERO-ON-UNREADABLE-MISSION-01: the exit code was never the defect --
+  # this is exit 1, and an unrecognised flag reaches it through the `--*` branch below,
+  # measured 2026-09-05 (`--mission-file <path>` -> rc=1). What made it read as a
+  # successful no-op is that the ONE actionable line was printed FIRST and then buried
+  # under ~90 lines of help on the same stream, so anyone reading a tail -- or piping
+  # into one, where the pipeline's status is the filter's 0 and not this 1 -- sees only
+  # the help. Repeat the reason LAST so the final line of stderr is the one that says
+  # what to fix. Nothing about the status changes.
+  [[ -n "${1:-}" ]] && log_err "$1"
   exit 1
 }
 
@@ -7362,7 +7371,7 @@ cmd_resolve() {
       --task-id)      [[ $# -ge 2 ]] || { log_err "--task-id requires a value"; usage; }
                       founder_task_id="$2"; shift 2 ;;
       -h|--help)      usage ;;
-      --*)            log_err "unknown arg: $1"; usage ;;
+      --*)            log_err "unknown arg: $1"; usage "unknown arg: $1 -- nothing was dispatched; the mission is POSITIONAL (a string, @file, or -), there is no --mission-file flag on this entrypoint" ;;
       *)              mission="${mission}${mission:+ }$1"; shift ;;  # collect positional mission
     esac
   done

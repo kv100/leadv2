@@ -1753,6 +1753,24 @@ pc_silent_arm_probe() {
 # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (Fix 2, one-shot discipline): fires
 # ONLY from the silent-arm branch below. Marker file written BEFORE the advance attempt
 # (idempotent guard against a re-run of this same close gate re-advancing twice); kill
+_pc_produced_nothing_cause() { # -> quota_denied | no_artifacts_delivered | empty_output
+  # Named and separate so a suite can drive the REAL predicate over the three shapes
+  # instead of restating its rules. Evidence only, no side effects: the journal this
+  # close gate already reads, and the lane tree.
+  if [[ -f "${JOURNAL_BIN}" ]] \
+     && bash "${JOURNAL_BIN}" tail "dispatch-${TASK}" 100000 2>/dev/null \
+        | grep -q "arm_quota_failed task=${TASK} arm=${AUTHOR}"; then
+    printf 'quota_denied'; return 0
+  fi
+  if [[ -n "${FOUNDER_TASK_ID:-}" && -n "${_lane_root:-}" && -d "${_lane_root}" \
+        && ! -d "${_lane_root}/docs/handoff/${FOUNDER_TASK_ID}" ]]; then
+    # The lane tree carries no directory for its own task: the mission text named
+    # paths that are not there. A delivery fault, not the arm's.
+    printf 'no_artifacts_delivered'; return 0
+  fi
+  printf 'empty_output'
+}
+
 # switch and chain-exhaustion both skip the actual advance but are still journaled.
 _pc_arm_advance() {
   local marker="${HANDOFF}/.arm-advanced-${AUTHOR}"
@@ -1790,7 +1808,22 @@ _pc_arm_advance() {
     emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=no_mission_file"
     return 1
   fi
-  emit decision "arm_advance task=${TASK} from=${AUTHOR} to=${next_arm} reason=arm_produced_nothing"
+  # ARM-PRODUCED-NOTHING-IS-ONE-WORD-FOR-TWO-EVENTS-01 (measured 2026-09-05 on the
+  # live journal of task 11b25531): `arm_quota_failed arm=glm` is written, and the
+  # NEXT line rewrites it as `arm_advance ... reason=arm_produced_nothing`. Three
+  # different events arrive under that one word -- a provider that refused on quota,
+  # a model that ran and produced an empty diff, and a worker that was never shown
+  # the artifacts its mission names -- and each calls for a different decision: wait,
+  # change arm, fix delivery. A reader who sees only the word concludes something
+  # about the MODEL for two events the model had no part in.
+  #
+  # The word itself is UNCHANGED, deliberately: `reason=arm_produced_nothing` still
+  # appears on every one of the three, so nothing that greps it loses a row and no
+  # event is renamed out of existence. What is added is which of the three it was,
+  # from evidence already in hand at this point -- the journal this function already
+  # read for chain_csv, the silent probe's own stream state, and the lane tree.
+  local _pn_cause; _pn_cause="$(_pc_produced_nothing_cause)"
+  emit decision "arm_advance task=${TASK} from=${AUTHOR} to=${next_arm} reason=arm_produced_nothing produced_nothing_because=${_pn_cause} silent_state=${_PC_SILENT_STREAM_STATE:-unknown}"
   local adv_args=(--sig8 "${TASK}" --arm "${next_arm}" --mission-file "${mission_file}" --task-id "${FOUNDER_TASK_ID}")
   [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && adv_args+=(--worktree "${_lane_root}")
   [[ -n "${WRITES_CSV:-}" ]] && adv_args+=(--writes "${WRITES_CSV}")
