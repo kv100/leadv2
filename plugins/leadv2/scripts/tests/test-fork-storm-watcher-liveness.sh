@@ -131,7 +131,20 @@ WACTIVE="$(PROJECT_ROOT="${WROOT}" LEADV2_STATE_ROOT="${WSTATE}" LEADV2_STATE_BA
 [[ -n "${WACTIVE}" ]] || WACTIVE="${WROOT}/docs/leadv2/active.yaml"
 
 WLOG="${SANDBOX}/watcher.err"
+# LEADV2_SESSION_KIND=lead is the watcher's own documented test seam
+# (leadv2-hook-session-kind.sh:18, "pin -- test seam"), and without it this
+# case could only fail. BEAT-LOOP-ORPHANS-01 gave leadv2-lane-pulse-watch.sh a
+# session-kind gate: anything other than `lead` journals and `exit 0` at
+# :76-79, because headless worker sessions were arming pulse loops nobody could
+# disarm. A suite harness has no transcript, so it classifies as `unknown` and
+# fails closed -- the watcher exited silently before writing its pidfile, and
+# the case reported "watcher never wrote its pidfile (stderr: )" with an empty
+# stderr, which reads as a broken watcher rather than a refusing one.
+#
+# Pinning the seam does not weaken acc8: what it measures is the ORPHAN
+# self-termination below, which lives past the gate.
 LEADV2_STATE_ROOT="${WSTATE}" LEADV2_STATE_BASE="${WSTATE}" LEADV2_PROJECT_ROOT="${WROOT}" \
+  LEADV2_SESSION_KIND=lead \
   LEADV2_LANE_PULSE_BIN="/bin/true" \
   bash "${WATCHER}" --sig fskh0001 --root "${WROOT}" --interval 1 --timeout 120 \
   >"${WLOG}" 2>&1 &

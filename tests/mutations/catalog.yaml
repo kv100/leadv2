@@ -611,3 +611,26 @@ mutations:
       _lane_bootstrap=0 -- no grace for a never-started lane
     expected: killed
     note: "13/0 -> red on case 4b (rc=3, missing=classify,plan,gate1). Aimed FIRST at the dispatcher's copy of the same rule and killed nothing: case 4b calls `leadv2-phase-record.sh assert` directly, so the dispatcher's copy is not the code it exercises. The rule lives in two files and this suite covers one of them per case -- recorded rather than left looking like coverage it does not have"
+
+  - id: watcher-orphan-self-termination-disabled
+    product_flow: "FORK-STORM-KILLS-HOOKS-01: a lane-pulse watcher whose row has been frozen for ORPHAN_MAX seconds with no worker exits with a watcher_orphan pulse instead of lingering to the full timeout"
+    file: plugins/leadv2/scripts/leadv2-lane-pulse-watch.sh
+    suite: plugins/leadv2/scripts/tests/test-fork-storm-watcher-liveness.sh
+    anchor: |
+      ORPHAN_MAX="${LEADV2_LANE_PULSE_WATCH_ORPHAN_MAX_S:-1800}"
+    patch: |
+      ORPHAN_MAX=0, the documented "disabled" value
+    expected: killed
+    note: "6/0 -> 5/1, acc8: the watcher is still alive 10s after its row froze. Before 2026-09-05 acc8 could not fail for its own reason: the watcher exited at its BEAT-LOOP-ORPHANS-01 session-kind gate before writing a pidfile, and the case reported an empty stderr, which reads as a broken watcher rather than a refusing one"
+
+  - id: watcher-only-row-counts-as-a-live-lane
+    product_flow: "the orphan check recognises a row that pins ONLY this watcher (pid_role/worker_pid_role = watcher) -- that is what 'no worker exists' means"
+    file: plugins/leadv2/scripts/leadv2-lane-pulse-watch.sh
+    suite: plugins/leadv2/scripts/tests/test-fork-storm-watcher-liveness.sh
+    anchor: |
+      if s.get("worker_pid_role") != "watcher" and s.get("pid_role") != "watcher":
+    patch: |
+      `if True:` -- a watcher-only row is treated as a live lane, so no orphan
+      is ever declared
+    expected: killed
+    note: "6/0 -> 5/1, same case, other half of the rule. The pair separates 'the check is disabled' from 'the check cannot recognise a watcher-only row'; either mutation alone would leave the other half unpinned"
