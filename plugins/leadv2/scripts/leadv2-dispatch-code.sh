@@ -3868,13 +3868,19 @@ _prepass_file() { printf '%s/docs/handoff/dispatch-%s/architect-prepass.md' "${P
 # under WORK_ROOT (a repo-root dir name like `plugins` or `agent`). Each of those over-
 # declares the whole tree and would re-mix lanes at review time exactly like no
 # declaration at all.
-_prepass_writes() { # <sig8> -> CSV writes or empty
-  local f line entry norm
+_prepass_writes() { # <sig8> [kept|dropped] -> CSV
+  # LANE-WRITES-SILENTLY-DROPS-REAL-TOP-LEVEL-DIRS-01: mode `dropped` prints the
+  # entries L12 REJECTED, so the refusal downstream can name them instead of
+  # telling an author who declared correctly that they declared nothing. Same
+  # parse, same accept/reject decisions -- this adds a second view of them, never
+  # a third outcome. A second call rather than a global because every caller uses
+  # command substitution, and a global set inside a subshell never comes back.
+  local f line entry norm mode="${2:-kept}"
   f="$(_prepass_file "$1")"
   [[ -s "${f}" ]] || return 0
   line="$(grep -m1 -iE '^[[:space:]*_]*LANE_WRITES[*_]*:' "${f}" 2>/dev/null)" || return 0
   line="$(printf '%s' "${line}" | sed -E 's/^[[:space:]*_]*LANE_WRITES[*_]*:[[:space:]]*//I')"
-  local -a raw_entries kept=()
+  local -a raw_entries kept=() dropped=()
   IFS=',' read -ra raw_entries <<< "${line}"
   for entry in "${raw_entries[@]}"; do
     entry="$(printf '%s' "${entry}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
@@ -3883,11 +3889,15 @@ _prepass_writes() { # <sig8> -> CSV writes or empty
     while [[ "${norm}" == *//* ]]; do norm="${norm//\/\//\/}"; done
     norm="${norm%/}"
     [[ -z "${norm}" || "${norm}" == "." || "${norm}" == "/" ]] && continue
-    [[ -z "$(printf '%s' "${norm}" | tr -d '*/')" ]] && continue
-    if [[ "${norm}" != *'*'* && "${norm}" != */* && -d "${WORK_ROOT}/${norm}" ]]; then continue; fi
+    if [[ -z "$(printf '%s' "${norm}" | tr -d '*/')" ]]; then dropped+=("${entry}=whole_tree"); continue; fi
+    if [[ "${norm}" != *'*'* && "${norm}" != */* && -d "${WORK_ROOT}/${norm}" ]]; then dropped+=("${entry}=bare_existing_dir"); continue; fi
     kept+=("${norm}")
   done
-  (IFS=','; printf '%s' "${kept[*]:-}")
+  if [[ "${mode}" == "dropped" ]]; then
+    (IFS=','; printf '%s' "${dropped[*]:-}")
+  else
+    (IFS=','; printf '%s' "${kept[*]:-}")
+  fi
 }
 
 # _emit_writeset_refusal <sig8> <lane_writes> <register_stderr> <founder_task_id>
@@ -4063,10 +4073,28 @@ _lane_writes_guard() {
     emit decision "lane_writes task=${sig8} source=worktree substitutes_for=declaration"
     return 0
   fi
+  # LANE-WRITES-SILENTLY-DROPS-REAL-TOP-LEVEL-DIRS-01: "no declared write set" is
+  # an accusation aimed at the author, and until now it was also printed when the
+  # author declared correctly and L12 rejected every entry -- `scripts/` normalises
+  # to `scripts`, which is wildcard-free, slash-free and a real directory, so it is
+  # dropped as over-broad while `scripts/*`, the identical set spelled differently,
+  # is kept. The reason token and ARCHITECT_PREPASS_REASON are UNCHANGED (the parked
+  # cause vocabulary and everything that greps it stay as they were); what is added
+  # is the fact that entries existed and why they went. Nothing is widened here: an
+  # entry L12 rejects is still rejected, and the dispatch is still parked.
+  local _pw_dropped=""
+  _pw_dropped="$(_prepass_writes "${sig8}" dropped 2>/dev/null)"
   ARCHITECT_PREPASS_REASON="no_lane_writes"
-  emit decision "architect_prepass task=${sig8} status=failed reason=no_lane_writes remedy=LANE_WRITES:a,b,c"
-  log_err "dispatch parked: no declared write set (reason=no_lane_writes)"
-  log_err "  remedy: add a 'LANE_WRITES: a,b,c' line to the mission (comma-separated paths, no bullets/prose)"
+  if [[ -n "${_pw_dropped}" ]]; then
+    emit decision "architect_prepass task=${sig8} status=failed reason=no_lane_writes rejected_not_missing=1 dropped=${_pw_dropped} remedy=LANE_WRITES:a,b,c"
+    log_err "dispatch parked: every declared write-set entry was REJECTED, not missing (reason=no_lane_writes)"
+    log_err "  rejected: ${_pw_dropped}"
+    log_err "  bare_existing_dir: a wildcard-free entry that is a real directory under the work root is refused as over-broad (L12); spell the same set as 'scripts/*' and it is kept"
+  else
+    emit decision "architect_prepass task=${sig8} status=failed reason=no_lane_writes rejected_not_missing=0 remedy=LANE_WRITES:a,b,c"
+    log_err "dispatch parked: no declared write set (reason=no_lane_writes)"
+    log_err "  remedy: add a 'LANE_WRITES: a,b,c' line to the mission (comma-separated paths, no bullets/prose)"
+  fi
   return 1
 }
 
