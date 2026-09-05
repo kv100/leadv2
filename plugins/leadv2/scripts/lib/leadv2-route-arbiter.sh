@@ -60,6 +60,20 @@ route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   _arb_fatal() { printf '[route-arbiter] FATAL rc=%s reason=%s detail=%s\n' "$1" "$2" "$3" >&2; return "$1"; }
   [[ "$role" == worker || "$role" == reviewer ]] || _arb_fatal 64 bad_role "role='${role}' (expected worker|reviewer)" || return 64
   here="$(cd "$(leadv2_route_arbiter_script_dir)/.." && pwd)"
+  # SONNET-WON-21-MEASURED-GLM-LINES-ON-0905-01 (hole 1, measured 2026-09-05):
+  # 21 live decisions picked sonnet with glm MEASURED at 39-45% under an 80%
+  # ceiling, and the shape does not reproduce on today's arbiter. It could not be
+  # investigated, because a route_resolved line names no version of anything: not
+  # the arbiter that ran, not the matrix it read. Today that cost a whole detour
+  # -- the missing `kind=` token looked like proof that a stale plugin-cache copy
+  # was live (0.1.0 there still carries `glm protected: false`), and refuting it
+  # took a separate measurement. Hash the file that is ACTUALLY executing, which
+  # is the only form that answers "canonical or someone else's copy" -- a git
+  # revision would name the checkout, not the bytes, and worktrees and the plugin
+  # cache are exactly where the two diverge.
+  local _self_f _self_rev=""
+  _self_f="$(leadv2_route_arbiter_script_dir)/$(basename "${BASH_SOURCE[0]}")"
+  [[ -r "$_self_f" ]] && _self_rev="$( { shasum -a 256 "$_self_f" 2>/dev/null || sha256sum "$_self_f" 2>/dev/null; } | cut -c1-12)"
   routing="${LEADV2_ROUTE_ARBITER_ROUTING_YAML:-${here}/../config/leadv2-routing.yaml}"
   [[ -r "$routing" ]] || _arb_fatal 65 routing_yaml_unreadable "path='${routing}'" || return 65
   # T17 fix-round (H4): honour the repo's established quota-live seam name
@@ -106,6 +120,7 @@ route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   # build work; `full` is the flip FP-04's quality gate will make. Env seam for
   # tests/hermeticity: LEADV2_ROUTE_ARBITER_FREEPOOL_CONFIG.
   freepool_config="${LEADV2_ROUTE_ARBITER_FREEPOOL_CONFIG:-${here}/../config/freepool-arm.yaml}"
+  ROUTE_ARBITER_SELF_REV="${_self_rev}" \
   ROUTE_ARBITER_ROLE="$role" ROUTE_ARBITER_DESCRIPTOR="$descriptor" \
   ROUTE_ARBITER_QUOTA="$quota_json" ROUTE_ARBITER_FREEPOOL_RC="$free_rc" \
   ROUTE_ARBITER_FREEPOOL_REASON="${free_reason}" \
@@ -474,6 +489,16 @@ for _c in _fit:
     if require_trusted and not _c.get('protected',False): _arm_excluded[_a]='untrusted'
     elif allowed is not None and _a not in allowed: _arm_excluded[_a]='not_allowed'
 _excl_tok=(' arm_excluded=%s' % ','.join('%s:%s' % (a_,r_) for a_,r_ in sorted(_arm_excluded.items()))) if _arm_excluded else ''
+# ...and the pair that makes any of this re-derivable a week later: which BYTES
+# of arbiter ran, and which BYTES of matrix it read. Absent only when the digest
+# could not be taken, which is itself the honest third value.
+_arb_rev=os.environ.get('ROUTE_ARBITER_SELF_REV') or ''
+try:
+    import hashlib
+    _routing_rev=hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest()[:12]
+except Exception:
+    _routing_rev=''
+_rev_tok=((' arb_rev=%s' % _arb_rev) if _arb_rev else '')+((' matrix_rev=%s' % _routing_rev) if _routing_rev else '')
 # ARBITER-REMEMBERS-FAILURES-01 edit A (founder 2026-09-05) -- the arbiter must
 # remember which arms already failed THIS task.
 #
@@ -659,6 +684,7 @@ def _record(arm, model, tier, reason):
               'model_requested':str(d.get('model_requested','')),'arm':arm,'model':model,
               'tier':tier,'reason':reason,'task':str(d.get('task',''))[:200],
               'failure_memory':failure_memory,
+              'arb_rev':_arb_rev,'matrix_rev':_routing_rev,
               'failure_banned':{a:failure_banned[a] for a in failure_dropped},
               'probe_outage':list(_probe_outage)}
         with open(_jf_path,'a') as _jf: _jf.write(json.dumps(_rec)+'\n')
@@ -666,12 +692,12 @@ def _record(arm, model, tier, reason):
         pass
 if not capable:
     _record('refuse','none','none','no_capable_cell')
-    print('arm=refuse model=none tier=none reason=no_capable_cell kind=%s chain= %s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_tok))
+    print('arm=refuse model=none tier=none reason=no_capable_cell kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_tok,_rev_tok))
     raise SystemExit(68)
 ok=[c for c in capable if not capped(c.get('provider'))]
 if not ok:
     _record('refuse','none','none','all_arms_capped')
-    print('arm=refuse model=none tier=none reason=all_arms_capped kind=%s chain= %s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_tok))
+    print('arm=refuse model=none tier=none reason=all_arms_capped kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_tok,_rev_tok))
     raise SystemExit(3)
 # FP-08 fix-round (H1): demote freepool in the dimension the selector ACTUALLY
 # ranks by -- effective cost, the sort's dominant key. +100 clears the whole
@@ -894,6 +920,7 @@ _extra += (' headroom_priced=%s' % ','.join('%s:%g' % (p_, w_) for p_, w_ in sor
 # or because a policy filter emptied it before the price was read. Absent when
 # nothing was filtered -- that absence is the paired control.
 _extra += _excl_tok
+_extra += _rev_tok
 # FP-08 fix-round (H1/H3): the floor journal rides on the arbiter's OWN output
 # line for THIS invocation (never a cross-run state file a stale read could
 # misattribute), as explicit tokens -- not a Python bool printed raw, which

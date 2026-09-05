@@ -481,5 +481,57 @@ else
   fail "no_capable_cell policy=$g7g | vocabulary=$g7gc"
 fi
 
+
+# (g8) SONNET-WON-21-MEASURED-GLM-LINES-ON-0905-01, hole 1: a decision line names
+#      no version of anything, so a line cannot be tied to the code or the matrix
+#      that produced it. Measured 2026-09-05: 21 live decisions picked sonnet with
+#      glm MEASURED at 39-45% under an 80% ceiling, the shape does not reproduce on
+#      today's arbiter, and there is no way to learn which arbiter produced them.
+#      The digests must MOVE when the bytes move -- an identifier that is constant
+#      across different files identifies nothing, so the case pins the change, not
+#      the presence.
+cat >"$TMP/alt-matrix.yaml" <<'YML'
+router_v2:
+  quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  capability_matrix:
+    - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: true, sizes: [standard], kinds: [code]}
+YML
+cp "$ARBITER" "$TMP/alt-arbiter.sh"
+printf '\n# a byte that changes the file and nothing else\n' >> "$TMP/alt-arbiter.sh"
+revs(){ LEADV2_ROUTE_ARBITER_ROUTING_YAML="$2" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state" ROUTE_TEST_QUOTA="$(quota 13 20 45)" ROUTE_TEST_FREE_RC=0 bash -c 'source "$0"; route_arbiter worker "$1"' "$1" '{"kind":"code","size":"standard"}' 2>&1; }
+rm -f "$TMP/state"; g8_base="$(revs "$ARBITER" "$ROUTING")"
+rm -f "$TMP/state"; g8_alt_m="$(revs "$ARBITER" "$TMP/alt-matrix.yaml")"
+rm -f "$TMP/state"; g8_alt_a="$(revs "$TMP/alt-arbiter.sh" "$ROUTING")"
+tok(){ printf '%s\n' "$1" | sed -n "s/.*$2=\([0-9a-f]\{12\}\).*/\1/p" | head -1; }
+b_a="$(tok "$g8_base" arb_rev)"; b_m="$(tok "$g8_base" matrix_rev)"
+m_a="$(tok "$g8_alt_m" arb_rev)"; m_m="$(tok "$g8_alt_m" matrix_rev)"
+a_a="$(tok "$g8_alt_a" arb_rev)"
+if [[ -n "$b_a" && -n "$b_m" \
+   && "$m_m" != "$b_m" && "$m_a" == "$b_a" \
+   && "$a_a" != "$b_a" ]]; then
+  pass '(g8) the decision line names the arbiter bytes and the matrix bytes, and each moves only with its own file'
+else
+  fail "(g8) arb_rev/matrix_rev base=$b_a/$b_m alt-matrix=$m_a/$m_m alt-arbiter=$a_a"
+fi
+
+# (g8-refuse) The same identity on the refusal path -- and this half is not a
+#      formality: the digest is computed once, high up, precisely because
+#      _record()/the refusal prints run long before the winner's line is built.
+#      A first version of this edit computed it beside the winner tokens and
+#      would have raised NameError on every refusal; only a refusal case catches
+#      that, because every green path takes the winner branch.
+cat >"$TMP/empty-matrix.yaml" <<'YML'
+router_v2:
+  quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  capability_matrix:
+    - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: true, sizes: [standard], kinds: [docs]}
+YML
+rm -f "$TMP/state"; g8r="$(revs "$ARBITER" "$TMP/empty-matrix.yaml" || true)"
+if [[ "$g8r" == *'reason=no_capable_cell'* && "$g8r" == *"arb_rev=${b_a}"* && "$g8r" != *'Traceback'* ]]; then
+  pass '(g8-refuse) a refusal names the same arbiter bytes, and does not die building the token'
+else
+  fail "(g8-refuse) refusal=$(printf '%s' "$g8r" | tr '\n' ' ' | cut -c1-200)"
+fi
+
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
