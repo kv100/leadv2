@@ -542,3 +542,25 @@ mutations:
       profile anyway
     expected: killed
     note: "82/0 -> 77/5: T23c plus T14b/T14c/T21b/T21c, which pin the same refusal from three different fixtures. Before 2026-09-05 T23 asserted `profile=same-fresh ... candidates=2` -- a fail-open that no code path can reach; it and the production refusal both landed on 2026-09-03 in two commits whose own subjects say they are rescued, unfinished work"
+
+  - id: unpinned-claude-spawn-in-an-unlisted-file
+    product_flow: "BEAT-LOOP-ORPHANS-01 F2: every `claude -p` spawn site in the plugin tree pins a subsession role, so a headless worker can never arm a pulse loop nobody can disarm"
+    file: plugins/leadv2/scripts/ (a new file)
+    suite: plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
+    anchor: |
+      a new zz-mutant-spawn.sh containing an unpinned `claude -p` call
+    patch: |
+      the file is created in the scripts dir and removed after the run
+    expected: killed
+    note: "30/0 -> 29/1, naming plugins/leadv2/scripts/zz-mutant-spawn.sh:3. Proves the known-list added on 2026-09-05 did not turn the gate off -- it names two standing sites and stays able to find a new one"
+
+  - id: f2-known-list-excuses-a-file-not-a-violation
+    product_flow: "a SECOND unpinned spawn added to a file that already carries a known one -- the shape a list keyed on the file would wave through forever"
+    file: plugins/leadv2/scripts/leadv2-active-registry.sh
+    suite: plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
+    anchor: |
+      if ("claude" in out or "codex" in out) and (" -p" in out or "--print" in out):
+    patch: |
+      a second spawn-shaped line inserted directly under it
+    expected: killed
+    note: "30/0 -> 29/1, naming leadv2-active-registry.sh:324 as NEW rather than reading it as the known site having moved. Same subtlety as liveness-tristate-01: the list counts findings per file, so it excuses a violation and never a file"
