@@ -1,0 +1,24 @@
+### /Users/kostiantyn.vlasenko/Projects/leadv2/plugins/leadv2/config/leadv2-routing.yaml
+   arms=7 ladder=9 cap_matrix=9 active_account=max_20x
+   glm_policy_present=False phases=0 stop_rules=False downgrade_chain=False floor_rules=False
+   sha_of_parsed=aad5a800a33a6324
+   quota-read scan -> max_20x
+   codex-task regex build_threshold_pct -> (none)
+   codex-task regex review_threshold_pct -> (none)
+  review-signals patterns -> *safety-gate* *safety_gate* *safety*gate* *publish* *payments* *payment* 
+### /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/ref/leadv2-routing.yaml
+   arms=7 ladder=9 cap_matrix=9 active_account=max_20x
+   glm_policy_present=False phases=0 stop_rules=False downgrade_chain=False floor_rules=False
+   sha_of_parsed=c1fe88796634ce1e
+   quota-read scan -> max_20x
+   codex-task regex build_threshold_pct -> (none)
+   codex-task regex review_threshold_pct -> (none)
+  review-signals patterns -> *safety-gate* *safety_gate* *safety*gate* *publish* *payments* *payment* plugins/leadv2/scripts/* plugins/leadv2/hooks/* plugins/leadv2/config/* .claude/settings.json 
+### /Users/kostiantyn.vlasenko/Projects/persona-engine/.claude/ref/leadv2-routing.yaml
+   arms=0 ladder=0 cap_matrix=0 active_account=None
+   glm_policy_present=True phases=8 stop_rules=True downgrade_chain=True floor_rules=True
+   sha_of_parsed=d5cf73d774d8ca87
+   quota-read scan -> (none)
+   codex-task regex build_threshold_pct -> 80
+   codex-task regex review_threshold_pct -> 95
+  review-signals patterns -> 

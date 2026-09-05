@@ -1,3 +1,48 @@
+# ==============================================================================
+# WHICH FILE IS AUTHORITATIVE FOR WHICH DECISION
+# ROUTING-YAML-HAS-TWO-READERS-AND-TWO-FILES-01, 2026-09-05. Measured on disk and
+# in the readers -- not designed. Do not "correct" this from memory.
+#
+# THIS FILE IS: document A (router registry) at a TENANT path -- a copy of the canonical
+#               file, NOT a per-phase table
+#
+# Three files carry this NAME and hold TWO documents that share ZERO top-level keys:
+#   A  router registry         top-level `router_v2` + `router`
+#      - <leadv2>/plugins/leadv2/config/leadv2-routing.yaml   (canonical, shipped)
+#      - <leadv2>/.claude/ref/leadv2-routing.yaml             (hand-made copy, 2026-09-05)
+#   B  legacy per-phase table  top-level `phases` `stop_rules` `downgrade_chain` `floor_rules`
+#      - <persona-engine>/.claude/ref/leadv2-routing.yaml     (the ONLY document-B file)
+#   m3-market and respiro-ios have NO tenant file at all.
+#
+# Because the two documents are disjoint, "the tenant file overrides the plugin
+# file" is FALSE: for any given key exactly one document ever carries it. So
+# authority is per-DECISION, not per-file --
+#
+#   HOW an arm is chosen         router_v2.capability_matrix
+#       -> the PLUGIN copy ONLY. leadv2-route-arbiter.sh:52 reads
+#          ${LEADV2_ROUTE_ARBITER_ROUTING_YAML:-<plugin>/config/leadv2-routing.yaml}
+#          and never a tenant path. A capability_matrix written into a tenant
+#          file is INERT -- that cost a full lane on 2026-09-05 before anyone saw it.
+#   WHICH arms are offered       router.dispatch_ladder
+#       -> the TENANT file if it carries the key, else the plugin copy
+#          (leadv2-dispatch-code.sh:567 file-level, :2336 key-level fallback).
+#   which account quota is read  router_v2.active_account
+#       -> the PLUGIN copy ONLY (leadv2-quota-read.py:372).
+#   which paths are protected    router.glm_policy.protected path patterns
+#       -> the TENANT file if it carries the key, else the CANONICAL ROOT copy
+#          (lib/leadv2-review-signals.sh:82) -- canonical root, not this install.
+#   per-phase/step model, stop rules, downgrade chain, floors, and the
+#   codex quota gate under phases.glm_policy
+#       -> document B ONLY. leadv2-router.sh:33, leadv2-cost-estimate.sh:22,
+#          codex-task.sh:150 and leadv2-router-v2.sh:70 read the TENANT path with
+#          NO fallback, so in a repo whose tenant file is document A they degrade
+#          to their own defaults instead.
+#
+# 13 product read sites, 4 resolution disciplines (tenant-only / plugin-only /
+# file-level fallback / key-level fallback). Full census, with the measurement
+# behind every line above:
+# ~/Projects/leadv2/docs/handoff/ROUTING-YAML-HAS-TWO-READERS-AND-TWO-FILES-01/report.md
+# ==============================================================================
 # Tenant override for the plugin's own repo (leadv2), PLUGIN-REVIEW-ARMS-01 +
 # RECOVER-WAVE1-TEN-01 (2026-09-05). Base: plugins/leadv2/config/leadv2-routing.yaml
 # verbatim (including the 2026-09-05 router_v2.effort_matrix + failure_memory
