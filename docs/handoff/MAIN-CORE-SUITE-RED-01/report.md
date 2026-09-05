@@ -334,11 +334,19 @@ lane's diff, not from drift on main.
   `run-core-offline.sh` (its log shows `T13 slice2` red — a pre-existing
   baseline red re-measured 2026-09-01 — plus glm-chain case2/3/4 reds while
   foreign run-all processes were live, the known concurrent-core-offline
-  artifact; one shard child even executed
-  `.../worktrees/falsification-path-baseline-classifier/.../run-core-offline.sh`,
-  foreign bytes). The 9 passed include every other suite covering this
-  lane's changed files. Authoritative verdicts for the two suites under
-  repair remain the clone measurements (§1 runs C/D).
+  artifact — attribution note: `ps` during the run showed a foreign lane's
+  runner (pid 59224, started 00:50:44, still alive at 01:17) executing
+  `.../worktrees/falsification-path-baseline-classifier/.../run-core-offline.sh`;
+  MY runner's own log names MY worktree's `run-core-offline.sh` in its
+  `[RUN]` line, so the foreign-bytes child was that foreign process, not
+  mine). The 9 passed include every other suite covering this lane's
+  changed files. Authoritative verdicts for the two suites under repair
+  remain the clone measurements (§1 runs C/D).
+- Registry-touch timeline (post-hoc honesty check): live `active.yaml`
+  stayed at sha256 `704aa737…` through every suite run and through my
+  run-all's exit (log last write 01:15); it changed to `f8c922ef…` at
+  01:16:23, after my runner had exited, under live foreign-lane traffic —
+  not attributable to this lane's work.
 
 ## 6. Round-3 commits
 
