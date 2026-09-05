@@ -1160,6 +1160,45 @@ for r in (d.get("lanes") or []):
       eterm="$(_dispatch_terminal_last_field "${sig8}" "${term_file}" terminal)"
       ecommit="$(_dispatch_terminal_last_field "${sig8}" "${term_file}" commit)"
       edel="$(_dispatch_terminal_last_field "${sig8}" "${term_file}" deliverable)"
+      # SPAWN-CLOSED-BY-SOMEONE-ELSES-ATTEMPT-01 (measured 2026-09-05 on the live
+      # ledger). dispatch_any_terminal_exists() keys on sig8 ALONE -- deliberately,
+      # and its own doc comment is right about why (a refused/parked row IS the
+      # recorded outcome of the attempt that wrote it, and stamping `dead` over it
+      # poisons the sig8 for retry). But the reservation row this loop is holding
+      # names a DIFFERENT attempt, and refused/parked are pre-spawn causes: nobody
+      # refuses a worker that already started. So when a CONFIRMED spawn's sig8
+      # carries only a refusal, an attempt ran and its outcome was never recorded --
+      # and this loop, the one place that would have noticed, skips it in silence.
+      #
+      # Evidence (lane GUARDS-SELF-DISABLE-ON-THE-EMPTY-WRITE-SET-01, sig b5abfcfd):
+      # two confirmed reservations, arm=glm, 2026-09-04T19:58:34Z and 23:41:07Z, plus
+      # `worker_spawned arm=glm` in the journal; 24 terminal rows, ALL `refused`
+      # (22 writeset_pending + 2 undiffable_write_set), each carrying its own distinct
+      # attempt id -- the first one stamped 23 seconds AFTER the first spawn, by a
+      # different attempt. Read straight off the ledger the sig's last word is
+      # "refused", i.e. "we never ran it", which is false.
+      #
+      # NOT changing the skip: writing a terminal here is what the doc comment above
+      # forbids for good reason. Saying it out loud is what the line asked for --
+      # "record the outcome even when there is no row, OR say loudly that there is
+      # nowhere to record it. Silence here is indistinguishable from a live lane."
+      local eattempt
+      eattempt="$(_dispatch_terminal_last_field "${sig8}" "${term_file}" attempt)"
+      # `parked` is deliberately NOT included: its live causes are
+      # no_design_after_2_attempts (582), e2e_timeout (46) and
+      # all_review_arms_unavailable (10) -- all POST-spawn facts, so a parked row
+      # does record how the attempt went. `refused` is the retryable disposition
+      # that does not (this file's header, :14-15 and :267). The line states the
+      # SHAPE and leaves the judgement to the reader; it does not assert the worker
+      # died -- exactly as spawn_unaccounted= does on the arbiter's side, and for
+      # the same reason: some refusal causes (selfcheck_failed, 51 live rows) are
+      # themselves post-spawn.
+      case "${eterm}" in
+        refused)
+          log "reconcile: spawn_outcome_retryable_only sig=${sig8} lane=${lane_label:-unknown} spawn_epoch=${spawn_epoch:-0} last_terminal=refused last_cause=$(_dispatch_terminal_last_field "${sig8}" "${term_file}" cause) closed_by_attempt=${eattempt:-unknown} -- a CONFIRMED spawn whose last recorded word is a RETRYABLE refusal: that word is not an outcome for this spawn, and reconcile writes nothing here by design"
+          warned=$((warned + 1))
+          ;;
+      esac
       _dl_emit_row "${sig8}" "${lane_label}" "${spawn_epoch}" "${eterm:-recorded}" "${ecommit}" "${edel}" "${json_mode}"
       continue
     fi

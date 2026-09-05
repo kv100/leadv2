@@ -11,8 +11,25 @@ ARBITER="${SCRIPTS_DIR}/lib/leadv2-route-arbiter.sh"
 ROUTING="${SCRIPTS_DIR}/../config/leadv2-routing.yaml"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0
-pass(){ printf 'PASS: %s\n' "$1"; PASS=$((PASS+1)); }
-fail(){ printf 'FAIL: %s\n' "$1"; FAIL=$((FAIL+1)); }
+# ROUTE-ARBITER-SUITE-FLAKY-UNDER-CONCURRENCY-01: under `set -e` this suite could
+# exit mid-run printing NOTHING -- no SUMMARY, no case name, no line number -- and a
+# reader (twice, 2026-09-05) cannot tell that from a run still in progress. Two
+# measured runs of the same tree with the same edit gave 21/1 and 22/0; the identity
+# of the one failure was lost because the invoking command filtered through `tail -3`
+# and the FAIL line never survived. Keep a breadcrumb and print it on any exit that
+# did not reach the summary. Costs nothing on a green run.
+LAST_ASSERT="(none yet -- died before the first assertion)"
+SUMMARY_PRINTED=0
+_suite_abort_report() {
+  local rc=$?
+  [[ ${SUMMARY_PRINTED} -eq 1 ]] && return 0
+  printf 'ABORT: suite exited rc=%s WITHOUT a summary after %s assertion(s); last completed: %s\n' \
+    "${rc}" "$((PASS+FAIL))" "${LAST_ASSERT}" >&2
+  printf 'ABORT: no SUMMARY line means the run DIED, not that it is still running.\n' >&2
+}
+trap _suite_abort_report EXIT
+pass(){ LAST_ASSERT="$1"; printf 'PASS: %s\n' "$1"; PASS=$((PASS+1)); }
+fail(){ LAST_ASSERT="$1"; printf 'FAIL: %s\n' "$1"; FAIL=$((FAIL+1)); }
 
 cat >"$TMP/live.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -533,5 +550,6 @@ else
   fail "(g8-refuse) refusal=$(printf '%s' "$g8r" | tr '\n' ' ' | cut -c1-200)"
 fi
 
+SUMMARY_PRINTED=1
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

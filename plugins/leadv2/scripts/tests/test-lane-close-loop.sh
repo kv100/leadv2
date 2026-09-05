@@ -259,6 +259,55 @@ if [[ -z "${leak}" ]]; then
   ok "no test sig8 leaked into the real terminal ledger"
 else bad "test sig8 leaked into real ledger: ${leak}"; fi
 
+
+# ── (e) SPAWN-CLOSED-BY-SOMEONE-ELSES-ATTEMPT-01 ──────────────────────────────────
+# A CONFIRMED spawn whose sig8 carries only a RETRYABLE refusal, written by a
+# different attempt, is skipped by reconcile in silence — dispatch_any_terminal_exists()
+# keys on sig8 alone (deliberately, and its doc comment is right about why), so the
+# refusal another attempt wrote satisfies "already closed" for this one.
+#
+# Live evidence this pins (2026-09-05, ledger of repo leadv2): lane
+# GUARDS-SELF-DISABLE-ON-THE-EMPTY-WRITE-SET-01, sig b5abfcfd — two confirmed
+# reservations (arm=glm, 19:58:34Z and 23:41:07Z) and 24 terminal rows, ALL refused,
+# each with its own distinct attempt id, the first stamped 23s AFTER the first spawn.
+# Census over the same ledger: 35 of 328 confirmed spawns end on a `refused` word.
+#
+# The skip STAYS (writing a terminal here would stamp over another attempt's row and
+# poison the sig8 for retry — the very thing dispatch_any_terminal_exists exists to
+# prevent). What must not stay is the silence.
+write_reservation_row "dddddddd0000000000000000000000000000000000000000000000000000dddd" \
+  "SPAWN-CLOSED-BY-ANOTHER-ATTEMPT" 1788551914 "${MISSION_C}"
+printf '{"ts":"2026-09-04T19:58:58Z","task_sig":"dddddddd","founder_task_id":"SPAWN-CLOSED-BY-ANOTHER-ATTEMPT","terminal":"refused","cause":"writeset_pending","attempt":"dddddddd-1788551937-8029","evidence":"other attempt"}\n' >> "${TERM_FILE}"
+
+TERM_BEFORE_E="$(wc -l < "${TERM_FILE}" | tr -d ' ')"
+PROJECT_ROOT="${DISPATCH_ROOT}" bash "${LEDGER_BIN}" reconcile --repo "${EVIDENCE_REPO}" --lane dddddddd >/dev/null 2>"${BOX}/err_e"
+TERM_AFTER_E="$(wc -l < "${TERM_FILE}" | tr -d ' ')"
+
+if grep -q 'spawn_outcome_retryable_only sig=dddddddd' "${BOX}/err_e" \
+   && grep -q 'last_cause=writeset_pending' "${BOX}/err_e" \
+   && grep -q 'closed_by_attempt=dddddddd-1788551937-8029' "${BOX}/err_e"; then
+  ok "(e) a confirmed spawn closed only by another attempt's refusal is named, with the attempt"
+else
+  bad "(e) no spawn_outcome_retryable_only line: $(tr '\n' ' ' < "${BOX}/err_e" | cut -c1-220)"
+fi
+
+# The skip itself must be intact: naming it must not start writing rows.
+if [[ "${TERM_BEFORE_E}" == "${TERM_AFTER_E}" ]]; then
+  ok "(e) naming the gap writes nothing — the skip is unchanged"
+else
+  bad "(e) reconcile wrote rows it used to skip: ${TERM_BEFORE_E} -> ${TERM_AFTER_E}"
+fi
+
+# ── (e-control) the paired negative: a lane whose terminal is a REAL outcome must be
+# silent. Without this the assertion above would pass on a line that printed for every
+# lane, which is the failure mode we keep re-finding.
+PROJECT_ROOT="${DISPATCH_ROOT}" bash "${LEDGER_BIN}" reconcile --repo "${EVIDENCE_REPO}" --lane aaaaaaaa >/dev/null 2>"${BOX}/err_ec"
+if ! grep -q 'spawn_outcome_retryable_only' "${BOX}/err_ec"; then
+  ok "(e-control) a lane with a real recorded outcome is not named"
+else
+  bad "(e-control) fired on a lane whose outcome IS recorded: $(tr '\n' ' ' < "${BOX}/err_ec" | cut -c1-200)"
+fi
+
 # ── summary ───────────────────────────────────────────────────────────────────────
 printf '\n========================================\n'
 printf 'LANE-CLOSE-LOOP-01 test: pass=%d fail=%d\n' "${pass}" "${fail}"
