@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-route-arbiter-failure-memory.sh
+file=plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+anchor=s|    if unk\.get(provider): return False|    if False: return False|
+baseline_rc=0
+mutated_rc=1
+red_line=PASS: arm that failed twice on this task is not chosen again (glm-flash -> glm)
+diff_hash=7d5d179a856baa7e41375ecb039f07c52be3e5c91f5a71258d78e8aa9f2b5516
+lane_diff_hash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

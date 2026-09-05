@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-route-arbiter-failure-memory.sh
+file=plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+anchor=s|if arm: counts\[arm\]=counts\.get(arm,0)+1|if arm: pass|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: twice-failed arm still chosen output=arm=glm-flash kind=code model=glm-5.3-flash tier=standard effort=medium reason=cheapest_capable chain=glm-flash,glm,codex,sonnet,freepool util_glm=10 util_codex=10 util_claude=10 util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=5.00h_default_full_period reset_freepool=n/a floor_applied=1 floor_reason=standard/code floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=none remaining=90.0 reset_in=5.00h reset_basis=default_full_period failure_memory=no_history
+diff_hash=615157a58ff4790988bfa80cd54e6da4f95322f8d67d6c8e121ca26dc06c3f7e
+lane_diff_hash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
