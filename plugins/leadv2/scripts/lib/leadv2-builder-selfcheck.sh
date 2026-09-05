@@ -300,8 +300,20 @@ $(tail -n 40 "$3" 2>/dev/null)
     fi
     if (( ! _baseline_tried )); then
       _baseline_tried=1
-      _baseline_base="$(git -C "${diff_root}" merge-base HEAD origin/main 2>/dev/null || true)"
-      [[ -z "${_baseline_base}" ]] && _baseline_base="$(git -C "${diff_root}" merge-base HEAD main 2>/dev/null || true)"
+      # GATE-BLOCKS-ON-BASE-RED-UNLISTABLE-SUITES-01 (measured 2026-09-05): LOCAL
+      # main first, origin/main only as the fallback. We deliberately do not push,
+      # so origin/main is systematically stale -- at the time of measuring, local
+      # main was 465 commits ahead of it and 45 suites under plugins/leadv2/scripts/
+      # tests/ existed in the working tree but NOT at origin/main. Every one of
+      # those hits the `[[ ! -f "${base_suite}" ]]` branch below and returns FAIL,
+      # so a suite that is red for reasons inherited from main is charged to the
+      # builder with no way to attribute it -- which is exactly the "gate blocks on
+      # base-red suites" symptom. The classifier itself was never the problem; its
+      # reference point was. Nothing is weakened: a suite green on the baseline and
+      # red in the lane still returns FAIL, and a suite the lane itself introduces
+      # still has no baseline copy and still returns FAIL.
+      _baseline_base="$(git -C "${diff_root}" merge-base HEAD main 2>/dev/null || true)"
+      [[ -z "${_baseline_base}" ]] && _baseline_base="$(git -C "${diff_root}" merge-base HEAD origin/main 2>/dev/null || true)"
       if [[ -n "${_baseline_base}" ]]; then
         _baseline_dir="$(mktemp -d)"
         if git -C "${diff_root}" archive "${_baseline_base}" 2>/dev/null | tar -x -C "${_baseline_dir}" 2>/dev/null; then
