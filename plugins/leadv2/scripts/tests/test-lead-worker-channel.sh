@@ -134,6 +134,24 @@ printf '{"result":"fixture tail"}'
 EOF
 chmod +x "$STUBS5/collector.sh" "$STUBS5/claude.sh"
 
+# The board is written and read OUTSIDE the control plane. docs/leadv2/
+# founder-status.md is a RENDER-class control-plane name: a symlink into the
+# state root that leadv2-state-path.sh repairs on every call, while the
+# renderer writes temp+rename -- which forks the link, and the repair then
+# restores the symlink to the state copy. Measured 2026-09-05 (see
+# test-status-repo-scoped.sh and test-broad-status-foreign-lanes.sh, same
+# root): the state-side copy stops changing after the FIRST beat.
+#
+# That is precisely what C5b asserts against. C5 drains the row and renders
+# it; the SECOND beat must not repeat it -- but with a frozen board the second
+# beat's output was simply the first beat's file, so the row was still there
+# and C5b could only fail. The channel was never at fault: the drain-once
+# contract that C3 and C4 prove directly has held all along. Pinning both path
+# overrides (never one -- see the defect recorded in leadv2-broad-status.sh's
+# header) takes this suite 11/2 -> 13/0 with no assertion weakened.
+BOARD5="$TMP/board5"; mkdir -p "$BOARD5"
+FOUNDER_STATUS5="$BOARD5/founder-status.md"
+
 LEADV2_LEAD_INBOX_DIR="$INBOX5" LEADV2_LEAD_SESSION_ID=lead-beat PROJECT_ROOT="$REPO5" \
   bash "$NOTIFY_SH" task-beat blocked "gate refused: review round cap" >/dev/null 2>&1
 
@@ -144,8 +162,10 @@ env LEADV2_PROJECT_ROOT="$REPO5" LEADV2_STATE_ROOT="$STATE5" \
   LEADV2_BROAD_STATUS_DISPATCHED="0" \
   LEADV2_LEAD_SESSION_ID=lead-beat \
   LEADV2_LEAD_INBOX_DIR="$INBOX5" \
+  LEADV2_FOUNDER_STATUS_PATH="$FOUNDER_STATUS5" \
+  LEADV2_FOUNDER_STATUS_FULL_PATH="$BOARD5/founder-status-full.md" \
   bash "$BROAD_STATUS_SH" >/dev/null 2>"$TMP/c5.err"
-FOUNDER_STATUS5="$REPO5/docs/leadv2/founder-status.md"
+# (declared above the first beat, because both beats now write here)
 if [[ -f "$FOUNDER_STATUS5" ]] && grep -q 'gate refused: review round cap' "$FOUNDER_STATUS5"; then
   pass "C5: an undrained row appears in the beat's rendered founder-status.md"
 else
@@ -159,6 +179,8 @@ env LEADV2_PROJECT_ROOT="$REPO5" LEADV2_STATE_ROOT="$STATE5" \
   LEADV2_BROAD_STATUS_DISPATCHED="0" \
   LEADV2_LEAD_SESSION_ID=lead-beat \
   LEADV2_LEAD_INBOX_DIR="$INBOX5" \
+  LEADV2_FOUNDER_STATUS_PATH="$FOUNDER_STATUS5" \
+  LEADV2_FOUNDER_STATUS_FULL_PATH="$BOARD5/founder-status-full.md" \
   bash "$BROAD_STATUS_SH" >/dev/null 2>&1
 if grep -q 'gate refused: review round cap' "$FOUNDER_STATUS5"; then
   fail "C5b: consumed row repeated on the NEXT beat"
