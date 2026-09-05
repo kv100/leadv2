@@ -2091,6 +2091,87 @@ pc_stop_gate_autocommit() {
   rm -f "${_sg_index}"
 }
 
+# REVIEW-GATE-INFRA-01 D-A(i): a declared write under docs/leadv2/ or docs/handoff/
+# makes an empty scoped diff MECHANICALLY INEVITABLE, independent of anything the
+# worker actually did -- both are hard-excluded by _pc_git_diff / _pc_lane_dirty's
+# exclusion pattern, so the diff is empty BY CONSTRUCTION. Detectable from the
+# write-set alone, before the worker's build is even awaited -- bounce here with an
+# actionable, path-naming reason instead of waiting for the empty-diff classifier
+# below to blame the lane. Capped at 5 named paths + a "+N more" suffix, matching
+# the review-gate.md path list cap (R1 unbounded-list-is-its-own-leak).
+#
+# Deliberately NOT bounced here: a declared path that fails to resolve to a git work
+# tree. Design draft R2 originally treated that as mechanically inevitable too, but
+# it is not -- it is also the exact shape of a LEGITIMATE cross-repo declaration (the
+# work landed in a repo this gate's diff_root-relative resolution cannot see). Bouncing
+# early on it would preempt the downstream cross_repo_elsewhere classification (D-A-ii)
+# with a strictly worse verdict (undiffable_write_set) for the innocent case. Left to
+# pc_scope_diff's classifier, which can tell the two apart using lane-dirty evidence.
+_pc_join_capped() {  # <n...> -> first 5 comma-joined + "+N more" on stdout
+  local items=("$@")
+  local n=${#items[@]} out="" i cap=5
+  for ((i = 0; i < n && i < cap; i++)); do
+    [[ -n "${out}" ]] && out="${out},${items[$i]}"
+    [[ -z "${out}" ]] && out="${items[$i]}"
+  done
+  (( n > cap )) && out="${out},+$((n - cap)) more"
+  printf '%s' "${out}"
+}
+# REVIEW-GATE-INFRA-01 round 2 F3: single normalisation point for a declared write-set
+# entry. Strips whitespace and ONE trailing /** or /* glob suffix, then a trailing /,
+# so a dir/glob declared shape ("tests/", "tests/unit/**") collapses to the same literal
+# prefix a bare path would ("tests", "tests/unit"). Never strips a bare trailing "*"
+# (R4 — vanishingly rare as a real path, and stripping it would silently rewrite a
+# legitimate literal filename ending in *).
+_pc_norm_write() {  # <raw> -> normalised path on stdout
+  local w="$1"
+  w="${w#"${w%%[![:space:]]*}"}"; w="${w%"${w##*[![:space:]]}"}"
+  case "${w}" in
+    */\*\*) w="${w%/\*\*}" ;;
+    */\*) w="${w%/\*}" ;;
+  esac
+  w="${w%/}"
+  printf '%s' "${w}"
+}
+# REVIEW-GATE-INFRA-01 round 2 F1: bounce ONLY when every declared path is mechanically
+# undiffable (docs/leadv2/*, docs/handoff/*) — a mixed write-set proceeds with the voided
+# paths recorded in _PC_UNDIFFABLE_CSV (surfaced later as an additive `undiffable:` key)
+# and only the surviving paths in _PC_SCOPE_WRITES_CSV feed the scope diff.
+pc_precheck_writes() {
+  _PC_UNDIFFABLE_CSV=""
+  _PC_SCOPE_WRITES_CSV=""
+  [[ -n "${WRITES_CSV:-}" ]] || return 0
+  local raw_writes_pf w bad_paths=() good_paths=() bad_n=0 good_n=0
+  IFS=',' read -r -a raw_writes_pf <<< "${WRITES_CSV}"
+  for w in "${raw_writes_pf[@]}"; do
+    w="$(_pc_norm_write "${w}")"
+    [[ -z "${w}" ]] && continue
+    case "${w}" in
+      docs/leadv2|docs/leadv2/*|docs/handoff|docs/handoff/*)
+        bad_paths+=("${w}"); bad_n=$((bad_n + 1))
+        ;;
+      *)
+        good_paths+=("${w}"); good_n=$((good_n + 1))
+        ;;
+    esac
+  done
+  if [[ ${good_n} -eq 0 && ${bad_n} -gt 0 ]]; then
+    local joined
+    joined="$(_pc_join_capped "${bad_paths[@]}")"
+    printf 'status: blocked\nreason: undiffable_write_set\npaths: %s\n' "${joined}" > "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=undiffable_write_set terminal=refused cause=undiffable_write_set paths=${joined}"
+    _dl_note refused undiffable_write_set "paths=${joined}"
+    _stamp_review_terminal blocked
+    # reap any live worker before bouncing — mirrors the worker_timeout path (:1699-1700)
+    # so a fully-voided write-set never orphans a worker process.
+    _pc_reap_worker "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")" "$(_pc_meta_value "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")/meta.yaml" pid 2>/dev/null)" 2>/dev/null || true
+    exit 5
+  fi
+  [[ ${bad_n} -gt 0 ]] && _PC_UNDIFFABLE_CSV="$(IFS=,; printf '%s' "${bad_paths[*]}")"
+  _PC_SCOPE_WRITES_CSV="$(IFS=,; printf '%s' "${good_paths[*]}")"
+  return 0
+}
+
 # WARNING: pc_scope_diff() below defines helper functions in its body that are
 # NOT available until it is first invoked (line ~1277 in the original layout).
 # Top-level code that runs before pc_scope_diff() must not call those helpers.
