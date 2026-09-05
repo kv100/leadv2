@@ -689,6 +689,14 @@ arm_loop() { # arm_loop SESSION [extra env via env]
         && "$out2" != *"LANE-IDLE"* \
         && "$out3" == *"LANE-IDLE: no live lane, 2 task(s) queued"* ]]; then
     pass "case r2-5: LANE-IDLE emitted once per queued-count, re-emitted when it changes"
+  elif ! python3 -c 'import yaml' 2>/dev/null; then
+    # Naming the cause instead of leaving a mystery. This case needs the
+    # watcher to be ABLE to count, and the counter parses YAML with PyYAML,
+    # which on a developer machine lives under $HOME and on a bare runner does
+    # not exist at all. Before LANE-IDLE-UNKNOWN this failure looked like a
+    # lane-watch defect; it is an environment gap, and it is still a failure —
+    # a case that cannot run is never quietly a pass.
+    fail "case r2-5: PyYAML is absent, so the watcher cannot count the queue at all -- environment gap, not a lane-watch defect (install PyYAML for python3: $(command -v python3))"
   else
     fail "case r2-5: out1=[$out1] out2=[$out2] out3=[$out3]"
   fi
@@ -709,6 +717,34 @@ arm_loop() { # arm_loop SESSION [extra env via env]
     pass "case r2-7: queued work plus a live lane stays silent"
   else
     fail "case r2-7: LANE-IDLE fired despite a live lane, got out=[$out]"
+  fi
+}
+
+# ── unreadable queue: UNKNOWN is said out loud, never rendered as zero ────
+#
+# This runs identically with and without PyYAML installed: a file that IS
+# present and is NOT parseable fails at the parse step when a parser exists
+# and at the import step when it does not, so the watcher reaches the same
+# state either way. That is what makes this case hermetic where r2-5 is not.
+#
+# The behaviour it pins: before 2026-09-05 the counter answered 0 for an
+# unreadable queue (`except Exception: items = None` plus `|| printf '0'`),
+# so a machine with no YAML parser saw a watcher that never once said
+# LANE-IDLE and looked exactly like a watcher with nothing to report.
+{
+  new_fixture
+  printf 'tasks:\n  - id: [broken\n    status: "queued\n' > "$FIXTURE_ROOT/docs/tasks.yaml"
+  u1="$(once sessRU)"
+  u2="$(once sessRU)"
+  if [[ "$u1" == *"LANE-IDLE-UNKNOWN"* && "$u1" == *"UNKNOWN, not zero"* \
+        && "$u1" == *"$FIXTURE_ROOT/docs/tasks.yaml"* && "$u1" != *"LANE-IDLE: no live lane"* ]]; then
+    if [[ "$u2" != *"LANE-IDLE-UNKNOWN"* ]]; then
+      pass "case r2-unknown: an unreadable queue is reported once as UNKNOWN, not as zero"
+    else
+      fail "case r2-unknown: repeated on the second beat, u2=[$u2]"
+    fi
+  else
+    fail "case r2-unknown: expected LANE-IDLE-UNKNOWN, got u1=[$u1]"
   fi
 }
 

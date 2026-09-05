@@ -323,26 +323,54 @@ _lw_provider_output_age_min() {
 # docs/tasks.yaml (statuses queued/ready/pending — the same predicate the
 # retired idle-lead-guard used). No file or unparseable YAML -> 0, so a
 # project without a task store can never trigger LANE-IDLE.
+# Three answers, not two. "No task store" is a real zero and stays one. But a
+# file that EXISTS and cannot be read is not zero — and it used to be:
+# `except Exception: items = None` plus `|| printf '0'` turned a missing YAML
+# parser into "there is no queued work", which is the one sentence that
+# silences LANE-IDLE completely. Measured 2026-09-05: PyYAML on this machine
+# lives under $HOME/Library/Python/3.14/site-packages, so on any host without
+# that user-site install — a CI runner, a fresh VPS, a container — the counter
+# returned 0 forever and the watcher's one honest alarm was permanently mute.
+# Silence is indistinguishable from health, so unknown gets its own exit code
+# and the caller says so out loud.
+#   rc 0 -> stdout is the count
+#   rc 2 -> stdout is 'unreadable'; the count is UNKNOWN
 _lw_queued_task_count() {
   local f="${LEADV2_LANE_WATCH_TASKS_FILE:-${1}/docs/tasks.yaml}"
   [ -f "$f" ] || { printf '0'; return 0; }
-  python3 - "$f" "${LEADV2_LANE_WATCH_QUEUED_STATUSES:-queued,ready,pending}" <<'PY' 2>/dev/null || printf '0'
+  local _out _rc
+  _out="$(python3 - "$f" "${LEADV2_LANE_WATCH_QUEUED_STATUSES:-queued,ready,pending}" 2>/dev/null <<'PY'
 import sys
 try:
     import yaml
+except Exception:
+    sys.exit(3)            # no parser at all -> UNKNOWN, never zero
+try:
     with open(sys.argv[1]) as fh:
         items = yaml.safe_load(fh)
 except Exception:
-    items = None
+    sys.exit(3)            # present but unparseable -> UNKNOWN, never zero
 if isinstance(items, dict):
     items = items.get("tasks")
+if items is None:
+    items = []             # `tasks:` with nothing under it IS an honest zero
 if not isinstance(items, list):
-    items = []
+    sys.exit(3)            # a shape we cannot count is not a count of zero
 statuses = set(s.strip() for s in sys.argv[2].split(",") if s.strip())
 print(sum(1 for it in items
           if isinstance(it, dict)
           and str(it.get("status", "")).strip() in statuses))
 PY
+)"
+  _rc=$?
+  case "$_out" in
+    ''|*[!0-9]*) _rc=3 ;;
+  esac
+  if [ "$_rc" -ne 0 ]; then
+    printf 'unreadable'
+    return 2
+  fi
+  printf '%s' "$_out"
 }
 
 # _lw_discover_lanes WORKTREES_DIR -> space-separated lane names. A lane is
@@ -440,9 +468,23 @@ _lw_run_once() {
   # wrote). Reported once per queued-count so a polling loop does not spam;
   # re-reports when the count changes, clears when a lane goes live or the
   # queue drains.
-  local queued; queued="$(_lw_queued_task_count "$project_root")"
+  local queued queued_rc
+  queued="$(_lw_queued_task_count "$project_root")"; queued_rc=$?
   local idle_file="${state_dir}/idle_reported"
-  if [ "$queued" -gt 0 ] && [ "$live_lanes" -eq 0 ]; then
+  local unknown_file="${state_dir}/idle_unknown_reported"
+  if [ "$queued_rc" -ne 0 ]; then
+    # The queue exists and could not be read. Falling through to the idle test
+    # here would compare 'unreadable' against 0 and quietly take the else
+    # branch — the watcher would look exactly as it does when all work is
+    # done. Said once, cleared when the count becomes readable again.
+    if [ ! -f "$unknown_file" ]; then
+      printf 'LANE-IDLE-UNKNOWN: %s exists but its queued-count is unreadable (no YAML parser, or unparseable) — idleness is UNKNOWN, not zero\n' \
+        "${LEADV2_LANE_WATCH_TASKS_FILE:-${project_root}/docs/tasks.yaml}"
+      : > "$unknown_file" 2>/dev/null || true
+    fi
+    rm -f "$idle_file" 2>/dev/null || true
+  elif [ "$queued" -gt 0 ] && [ "$live_lanes" -eq 0 ]; then
+    rm -f "$unknown_file" 2>/dev/null || true
     local last_idle
     last_idle="$(cat "$idle_file" 2>/dev/null || true)"
     case "$last_idle" in ''|*[!0-9]*) last_idle=0 ;; esac
@@ -451,7 +493,7 @@ _lw_run_once() {
       printf '%s' "$queued" > "$idle_file" 2>/dev/null || true
     fi
   else
-    rm -f "$idle_file" 2>/dev/null || true
+    rm -f "$idle_file" "$unknown_file" 2>/dev/null || true
   fi
 
   local last_beat=0

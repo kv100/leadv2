@@ -1,0 +1,20 @@
+BASELINE (unmutated pin3)
+    ordinary HOME : rc=0 PASS=35 FAIL=0
+    scrubbed HOME : rc=1 PASS=33 FAIL=2
+
+--- unreadable-queue-answers-zero ---
+    mutation: 4 line(s) changed inside _lw_queued_task_count / its caller
+    expected to kill: r2-unknown, in BOTH environments
+    ordinary HOME : rc=1  PASS=34 FAIL=1
+    scrubbed HOME : rc=1  PASS=33 FAIL=2
+    failing cases (ordinary):
+      [TEST] FAIL: case r2-unknown: expected LANE-IDLE-UNKNOWN, got u1=[LANE-BEAT: no active lanes [watcher pid=92606 is bookkeeping, not work — worker= is the liveness verdict]]
+      [TEST] FAIL: case r2-unknown: expected LANE-IDLE-UNKNOWN, got u1=[LANE-BEAT: no active lanes [watcher pid=92606 is bookkeeping, not work — worker= is the liveness verdict]]
+--- watcher-knows-and-does-not-say ---
+    mutation: 2 line(s) changed inside _lw_queued_task_count / its caller
+    expected to kill: r2-unknown (the state is computed, never announced)
+    ordinary HOME : rc=1  PASS=34 FAIL=1
+    scrubbed HOME : rc=1  PASS=33 FAIL=2
+    failing cases (ordinary):
+      [TEST] FAIL: case r2-unknown: expected LANE-IDLE-UNKNOWN, got u1=[LANE-BEAT: no active lanes [watcher pid=23475 is bookkeeping, not work — worker= is the liveness verdict]]
+      [TEST] FAIL: case r2-unknown: expected LANE-IDLE-UNKNOWN, got u1=[LANE-BEAT: no active lanes [watcher pid=23475 is bookkeeping, not work — worker= is the liveness verdict]]

@@ -298,3 +298,29 @@ mutations:
       /lane_hash.*!= e3b0c442/s|.*|  :|
     expected: killed
     note: "kills case 6 only — every producer-side case stays green. The mirror of an existing guard: artifact_hash had been protected from this exact hash since it was written; lane_hash beside it had not"
+
+  # FIVE-RED-SUITES-THE-GATE-SELECTS-01 (2026-09-05). The lane watcher's one
+  # honest alarm. Measured: PyYAML lives under $HOME on this machine, so on a
+  # bare runner the counter answered 0 forever and LANE-IDLE was permanently
+  # mute -- silence being indistinguishable from health.
+  - id: unreadable-queue-answers-zero
+    product_flow: "docs/tasks.yaml exists but cannot be parsed (no YAML parser, or broken YAML) and the watcher reports it as zero queued work, so LANE-IDLE never fires and an idle lead looks exactly like a busy one"
+    file: plugins/leadv2/scripts/leadv2-lane-watch-v2.sh
+    suite: plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
+    anchor: |
+      sys.exit(3)            # no parser at all -> UNKNOWN, never zero
+    patch: |
+      /no parser at all/s|.*|    print(0); sys.exit(0)|; /present but unparseable/s|.*|    print(0); sys.exit(0)|
+    expected: killed
+    note: "removes the PROPERTY, not one implementation -- both refusals become an answer of zero. Kills case r2-unknown in BOTH the ordinary and a scrubbed-$HOME environment; that is the point, since the property under test is exactly the one that must not depend on the environment"
+
+  - id: watcher-knows-the-queue-is-unreadable-and-does-not-say
+    product_flow: "the watcher computes that the queued count is unreadable and then takes no branch for it, so the operator sees the same output as a watcher with nothing to report"
+    file: plugins/leadv2/scripts/leadv2-lane-watch-v2.sh
+    suite: plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
+    anchor: |
+      if [ "$queued_rc" -ne 0 ]; then
+    patch: |
+      /if \[ "\$queued_rc" -ne 0 \]; then/s|.*|  if false; then|
+    expected: killed
+    note: "the arbiter/review-gate shape one floor up: knowing and not saying. Kills case r2-unknown in both environments. A third assertion written alongside these two (r2-unknown-b) survived BOTH controls -- it asserted the ABSENCE of a LANE-IDLE count, which an answer of zero also satisfies -- and was deleted rather than kept for the count"
