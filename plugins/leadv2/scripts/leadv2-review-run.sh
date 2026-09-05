@@ -186,6 +186,12 @@ resolve_review_pool_call() {
   # The caller captures THIS function's stdout as resolver_out -- the original
   # tail passed python's stdout straight through; the buffer must be re-printed.
   printf '%s\n' "${_resolver_out}"
+  # PLUGIN-REVIEW-ARMS-01 §3.1 union (RECOVER-WAVE1-TEN-01): re-emit the resolver's
+  # rc and first stderr line on stdout so the caller's resolver_out carries them --
+  # the unreviewed artifact below (§3.1 8-field shape) reads exactly these two keys.
+  # HEAD's persistent artifact above keeps the FULL stderr; this line is the digest.
+  printf 'resolver_rc=%s\n' "${_resolver_rc}"
+  printf 'resolver_stderr=%s\n' "$(head -n1 "${_resolver_err_file}" 2>/dev/null)"
 }
 
 # ---------------------------------------------------------------------------
@@ -1379,6 +1385,8 @@ resolver_out="$(resolve_review_pool_call)"
 reviewer="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reviewer=//p' | head -n1)"
 pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
 refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
+resolver_rc="$(printf '%s\n' "${resolver_out}" | sed -n 's/^resolver_rc=//p' | head -n1)"
+resolver_stderr="$(printf '%s\n' "${resolver_out}" | sed -n 's/^resolver_stderr=//p' | head -n1)"
 SECURITY_REVIEW_ENABLED=0
 if _engine_security_pass_enabled; then
   SECURITY_REVIEW_ENABLED=1
@@ -1394,12 +1402,19 @@ if [[ -n "${reviewer}" && "${reviewer}" == "${AUTHOR}" ]]; then
 fi
 
 if [[ -z "${reviewer}" ]]; then
+  # PLUGIN-REVIEW-ARMS-01 §3.1: the full 8-field diagnostic shape, field-for-field the
+  # lane writer's (_pc_write_unreviewed, leadv2-dispatch-product-close.sh) -- the engine
+  # path is the future default and must never emit a lossier artifact than the lane it
+  # replaces. refusal:/resolver_rc:/resolver_stderr:/merge_blocked: used to be silently
+  # absent, leaving a bare empty `pool:` as the last informative line (the live
+  # dispatch-4c9ddb05 failure mode). Literal "-" for empty, same as the lane writer.
   refusal="${refusal:-all_review_arms_unavailable}"
   {
-    printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: \n' "${AUTHOR}" "${pool}"
+    printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: %s\nrefusal: %s\nresolver_rc: %s\nresolver_stderr: %s\nmerge_blocked: true\n' \
+      "${AUTHOR}" "${pool:--}" "${tried:--}" "${refusal}" "${resolver_rc:--}" "${resolver_stderr:--}"
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} refusal=${refusal} tried="
+  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool:--} tried=${tried:--} refusal=${refusal} resolver_rc=${resolver_rc:--}"
   exit 9
 fi
 
