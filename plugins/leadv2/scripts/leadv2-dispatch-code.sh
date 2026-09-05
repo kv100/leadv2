@@ -1992,7 +1992,16 @@ _arm_exception_bump() {
       if [[ -r "${path}" ]]; then
         grep '^sig8=' "${path}" 2>/dev/null
       fi
-      printf 'sig8=%s\n' "${sig8}"
+      # ARM-EXCEPTION-LEDGER-IS-WRITE-ONLY-01 (2026-09-05): each row now carries
+      # its reason and a timestamp, so a READER can count what it actually needs
+      # instead of trusting the aggregate `count=`. Today every bump reaching
+      # here is a GLM refusal, because there is exactly one call site -- but that
+      # is an accident of arithmetic, not a guarantee: a second arm bumping this
+      # same file would silently poison any consumer that reads `count=` as a
+      # per-arm count. Appended fields only -- the sig8 dedupe (grep -qF) and the
+      # carry-forward (grep '^sig8=') are unchanged, and the one existing reader
+      # (leadv2-broad-status.sh) parses only count= and last_reason=.
+      printf 'sig8=%s reason=%s ts=%s\n' "${sig8}" "${reason}" "$(date -u +%s)"
     } >"${path}.tmp" && mv "${path}.tmp" "${path}"
   ) 9>"${path}.lock"
   true
