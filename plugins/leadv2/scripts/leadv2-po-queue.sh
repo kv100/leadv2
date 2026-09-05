@@ -42,11 +42,15 @@ die()  { log "ERROR: $*"; exit 1; }
 # ── Usage ──────────────────────────────────────────────────────────────────
 usage() {
   cat >&2 <<'EOF'
-Usage:
-  leadv2-po-queue.sh claim   --task-id <id> [--prefer <regex>]
-  leadv2-po-queue.sh release --task-id <id> --item <id> [--status done|failed]
-  leadv2-po-queue.sh peek
-  leadv2-po-queue.sh validate
+DEPRECATED -- every subcommand below refuses with exit 2. Use
+leadv2-queue-claim.sh / leadv2-queue-release.sh against queue/*.yaml instead.
+Kept as the address of the old surface, not as a working one.
+
+Usage (ALL REFUSED, listed so an old caller can see what it was reaching for):
+  leadv2-po-queue.sh claim   --task-id <id> [--prefer <regex>]   REFUSED
+  leadv2-po-queue.sh release --task-id <id> --item <id> [--status done|failed]   REFUSED
+  leadv2-po-queue.sh peek       REFUSED
+  leadv2-po-queue.sh validate   REFUSED
 
 Exit codes:
   0 = success
