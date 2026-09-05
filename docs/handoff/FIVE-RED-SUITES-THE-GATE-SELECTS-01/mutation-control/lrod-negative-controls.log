@@ -1,0 +1,15 @@
+BASELINE (unmutated pin3)
+    suite: passed=10 failed=0
+
+--- orphan-gate-deleted ---
+    changed: 2 line(s) inside _arm_lane_pulse_watch
+    expected to kill: nothing -- recorded to show the orphan gate is UNCOVERED here
+    suite: rc=0  passed=10 failed=0
+--- arming-refused-for-every-kind ---
+    changed: 2 line(s) inside _arm_lane_pulse_watch
+    expected to kill: the lead-path cases (watcher never starts) -- the worker case still passes
+    suite: rc=1  passed=6 failed=4
+      [TEST] FAIL: lane-pulse watcher stub never started -- cannot prove the fix (check LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN wiring)
+      [TEST] FAIL: lane_alive(dispatch-lrod0001) stayed alive after the controlled watcher exited (rc=0)
+      [TEST] FAIL: production registry could not adopt the controlled watcher pid
+      [TEST] FAIL: registry pid is not the live controlled watcher pid (row=65650 watcher=none)

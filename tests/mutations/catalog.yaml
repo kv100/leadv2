@@ -419,3 +419,21 @@ mutations:
       replace `rc=${_rl_rc} detail=` with `skip=` so the reason is dropped
     expected: killed
     note: "on its first run this control killed NOTHING -- the detail was present but untested, and an untested diagnostic is the first thing to rot. That is what had let the arity failure live as a capacity refusal for its whole life. A case was added (reserve_failure_names_its_cause, hermetic: the registry is pointed at a directory where a file belongs) and the control now kills it"
+
+  # FIVE-RED-SUITES-THE-GATE-SELECTS-01 (2026-09-05). The lane-pulse arming
+  # gate. BEAT-LOOP-ORPHANS-01 made `unknown` fail closed; a suite harness has
+  # no transcript, so it classified as unknown, no watcher was ever armed, and
+  # four assertions about a registry pid that could not exist went red. The
+  # suite now declares LEADV2_SESSION_KIND=lead -- the pin the production code
+  # offers for exactly this case.
+  - id: lane-pulse-arming-refused-for-every-kind
+    product_flow: "a lead dispatch arms the lane-pulse watcher whose pid the active.yaml row is re-pinned to; with no watcher the row stays pinned to the dispatcher's own pid and the lane looks alive forever after the dispatcher exits"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    suite: plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
+    anchor: |
+      if [[ "${_LV2_KIND}" != "lead" ]]; then
+    patch: |
+      inside _arm_lane_pulse_watch only, replace that condition with `if true`
+      so no session kind ever arms
+    expected: killed
+    note: "10/0 -> 6/4, and the four failures are exactly the four the suite carried before the pin was declared. The OPPOSITE mutation (`if false`, so every kind arms) kills nothing: the orphan gate itself is UNCOVERED here, because a second dispatch never reaches the arming call in this fixture. A case written for it survived both controls and was deleted rather than kept -- the gap is recorded in the suite instead"

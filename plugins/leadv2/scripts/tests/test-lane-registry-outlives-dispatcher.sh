@@ -134,6 +134,16 @@ setup_env() {
   export LEADV2_ARM_EARLY_VERDICT_S=0
   export LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN="${WATCH_STUB}"
   export LEADV2_PULSE_MODE=1
+  # BEAT-LOOP-ORPHANS-01 added a session-kind gate to _arm_lane_pulse_watch:
+  # only a `lead` classification arms a persistent loop, and `unknown` FAILS
+  # CLOSED. A suite harness has no transcript, so it classifies as unknown and
+  # the watcher was never armed -- which surfaced here as "watcher stub never
+  # started", then cascaded into three more failures about a registry pid that
+  # could not exist. The production code offers this pin for exactly this
+  # case; declaring it is what this suite means when it says it exercises the
+  # dispatcher's lead path. (The non-lead branch is covered separately, below
+  # -- an assumption worth pinning is worth pinning on both sides.)
+  export LEADV2_SESSION_KIND=lead
   export LEADV2_SINGLE_LEAD_BEAT=0
   # Force arm=glm -- the T17 route_arbiter (cheapest-capable pick) would
   # otherwise reroute to freepool/codex regardless of LEADV2_ROUTER_V2; point
@@ -337,6 +347,26 @@ if [[ "${BOARD_RESULT}" == "present" ]]; then
 else
   bad "board snapshot dropped ephemeral own-repo lane (${BOARD_RESULT}): ${BOARD_JSON}"
 fi
+
+# ── a case that was written here and deleted ────────────────────────────────
+#
+# Everything above declares LEADV2_SESSION_KIND=lead, so the natural pairing
+# is "a worker session arms nothing" -- the BEAT-LOOP-ORPHANS-01 rule that
+# this suite silently came to depend on. That case was written, and its
+# negative control (delete the session-kind gate in _arm_lane_pulse_watch, so
+# every kind arms) did NOT kill it: the second dispatch never reaches the
+# arming call at all in this fixture, so the assertion held for a reason that
+# had nothing to do with the gate. A case that cannot be killed is not a case,
+# and it was removed rather than kept for the count.
+#
+# The gap is real and is stated rather than papered over: **the orphan gate
+# has no coverage here.** Covering it needs a fixture that can run a second
+# dispatch cleanly, which is more than this suite is for.
+#
+# The opposite mutation IS caught: making the gate refuse every kind takes
+# this suite from 11/0 to 7/4, and the four failures are exactly the four it
+# carried before the pin was declared.
+
 
 printf '\n[LANE-REGISTRY-OUTLIVES-DISPATCHER-01] passed=%d failed=%d\n' "${PASS}" "${FAIL}"
 (( FAIL == 0 ))
