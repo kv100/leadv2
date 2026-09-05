@@ -295,7 +295,7 @@ fi
 if [[ "$LEAD_KIND" == "unknown" ]]; then
   # Fail-open arming by a session the predicate could not classify — one
   # journal line so the heuristic gap is visible (BEAT-LOOP-ORPHANS-01).
-  leadv2_loop_arm_journal "${STATE_DIR}/loop-arm-journal.log" single-lead-beat-hook unknown
+  leadv2_loop_arm_journal "${STATE_DIR}/loop-arm-journal.log" single-lead-beat-hook unknown armed
 fi
 if [[ -x "$PULSE_BEAT_SH" ]]; then
   LEADV2_PROJECT_ROOT="$PROJECT_ROOT" LEADV2_BEAT_OWNER_SESSION="$SAFE_SID" \

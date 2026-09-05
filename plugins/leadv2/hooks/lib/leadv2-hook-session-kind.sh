@@ -223,12 +223,19 @@ leadv2_loop_owner_check() {  # <owner_file> <loop_name>
 # leadv2_loop_arm_journal <journal_file> <loop_name> <kind>
 # One line per arming decision that was not a clean lead arm — currently only
 # the fail-open `unknown` case. Best-effort: journaling must never break arming.
-leadv2_loop_arm_journal() {  # <journal_file> <loop_name> <kind>
-  local f="$1" name="$2" kind="$3"
+leadv2_loop_arm_journal() {  # <journal_file> <loop_name> <kind> [outcome]
+  # SESSION-KIND-UNKNOWN-REFUSES-CLOSED-01: `event=loop_armed_by_<kind>_session`
+  # is emitted at BOTH the arming site and the refusal sites, so the journal
+  # could not distinguish "this loop started" from "this loop declined to
+  # start" -- 871 production records, none of them legible on that point. The
+  # event name is load-bearing for test-beat-loop-orphans.sh and stays; the
+  # fact goes into an additive `outcome=` field. Callers that do not pass one
+  # are recorded as `unspecified`, never silently as `armed`.
+  local f="$1" name="$2" kind="$3" outcome="${4:-unspecified}"
   local sid="${LEADV2_LOOP_OWNER_SID:-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-none}}}"
-  printf '%s event=loop_armed_by_%s_session loop=%s kind=%s reason=%s sid=%s pid=%s entrypoint=%s\n' \
+  printf '%s event=loop_armed_by_%s_session loop=%s kind=%s outcome=%s reason=%s sid=%s pid=%s entrypoint=%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '?')" "$kind" "$name" "$kind" \
-    "${LEADV2_SESSION_KIND_REASON:-none}" \
+    "$outcome" "${LEADV2_SESSION_KIND_REASON:-none}" \
     "$sid" "$$" "${CLAUDE_CODE_ENTRYPOINT:-none}" >> "$f" 2>/dev/null || true
   return 0
 }

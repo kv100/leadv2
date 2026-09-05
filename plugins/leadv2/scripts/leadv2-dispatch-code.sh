@@ -5279,7 +5279,7 @@ _arm_lane_pulse_watch() {  # <sig8> — fail-open, never blocks dispatch
   # pin) arms a persistent loop.
   if [[ "${_LV2_KIND}" != "lead" ]]; then
     leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
-      lane-pulse-watch "${_LV2_KIND}" 2>/dev/null || true
+      lane-pulse-watch "${_LV2_KIND}" refused 2>/dev/null || true
     return 0
   fi
   LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
@@ -5303,7 +5303,7 @@ _arm_single_lead_beat() {  # fail-open, armed once (loop's own pidfile guards re
   # unknown never arm; only `lead` (incl. the LEADV2_SESSION_KIND=lead pin).
   if [[ "${_LV2_KIND}" != "lead" ]]; then
     leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
-      single-lead-beat-loop "${_LV2_KIND}" 2>/dev/null || true
+      single-lead-beat-loop "${_LV2_KIND}" refused 2>/dev/null || true
     return 0
   fi
   LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
