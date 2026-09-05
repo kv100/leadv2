@@ -123,6 +123,15 @@ KNOWN_KINDS={'code','docs','review','plan','audit','safety','fanout-class-funnel
 # construction. `recon` (read-only exploration) is a first-class kind with its own
 # cheap matrix rows (config/leadv2-routing.yaml), not a code branch.
 kind=str(d.get('work_kind') or d.get('kind') or 'code').lower()
+# ARBITER-UNKNOWN-BECOMES-A-DEFAULT-IN-FIVE-DECISIONS-01 (D5): an unrecognised
+# work_kind is coerced to 'code' so routing still happens -- but the decision
+# line then PRINTS kind=code, so a wrong value looks like a right one and the
+# journal cannot be used to find the mismatch. This is live, not theoretical:
+# leadv2-task-judge.sh:200 really emits work_kind='diagnose', and 'diagnose' is
+# not in KNOWN_KINDS, so every diagnose task has been routing as ordinary code.
+# Same treatment the SIZE vocabulary already got at :137/:666 (`size_unmapped`):
+# keep the fail-open coercion, and say out loud that it happened.
+kind_unmapped = None if kind in KNOWN_KINDS else kind
 if kind not in KNOWN_KINDS: kind='code'
 MATRIX_KIND={'build':'code'}  # recon keeps its own name -- it has its own rows
 mkind=MATRIX_KIND.get(kind,kind)
@@ -664,6 +673,10 @@ except Exception: pass
 # affected which arm actually ran.
 rotated=[w['arm']]+[a for a in chain if a != w['arm']]
 _extra = (' size_unmapped=%s' % size_unmapped) if size_unmapped else ''
+# D5, same shape as size_unmapped above: `kind=` prints the COERCED value, so
+# without this token a diagnose task is indistinguishable in the journal from a
+# task that really was code.
+_extra += (' kind_unmapped=%s' % kind_unmapped) if kind_unmapped else ''
 # FP-08 fix-round (H1/H3): the floor journal rides on the arbiter's OWN output
 # line for THIS invocation (never a cross-run state file a stale read could
 # misattribute), as explicit tokens -- not a Python bool printed raw, which

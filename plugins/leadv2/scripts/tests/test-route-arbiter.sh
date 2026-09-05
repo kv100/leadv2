@@ -139,6 +139,18 @@ PY
 out="$(run "$(quota_null_windows_glm 20 20)" 1 '{"kind":"code","size":"standard"}')"
 if [[ "$out" != *'arm=glm '* && "$out" != *'arm=glm-flash '* && "$out" == *'util_glm=unknown_capped'* ]]; then pass 'answering probe with no numbers reads unknown, not free'; else fail "null-windows-glm output=$out"; fi
 
+# (g3) ARBITER-UNKNOWN-BECOMES-A-DEFAULT-IN-FIVE-DECISIONS-01 (D5): an
+# unrecognised work_kind is coerced to 'code' so routing still happens -- but the
+# decision line then prints kind=code, and a wrong value that looks right cannot
+# be found in the journal afterwards. Live case, not hypothetical:
+# leadv2-task-judge.sh:200 emits work_kind='diagnose' and 'diagnose' is not in
+# KNOWN_KINDS. The coercion stays (fail-open); what must be true is that it is
+# NAMED. Control pair: 'code' itself must NOT carry the token, or the assertion
+# would pass on a line that always prints it.
+out="$(run "$(quota 10 20 20)" 1 '{"work_kind":"diagnose","size":"standard","task":"t"}')"
+ctl="$(run "$(quota 10 20 20)" 1 '{"work_kind":"code","size":"standard","task":"t"}')"
+if [[ "$out" == *'kind_unmapped=diagnose'* && "$ctl" != *'kind_unmapped='* ]]; then pass 'coerced work_kind is named on the decision line, and a known kind is not'; else fail "kind-unmapped out=$out ctl=$ctl"; fi
+
 # (h) ARBITER-DECISION-LOGIC-CENSUS-01: the `active` flag on an anthropic
 # account names which credential the session resolved to, not that its probe
 # succeeded. A broken (status!='ok', all-null pct) active-flagged account
