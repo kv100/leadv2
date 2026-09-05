@@ -504,3 +504,15 @@ mutations:
       status = "live" in the error branch
     expected: killed
     note: "8/0 -> 7/1, S3 red and naming the row. S3 had never run at all: it installed its stub with `env VAR=x snap`, and snap is a shell function -- rc=127, empty output, and a failure line that read `S3: `"
+
+  - id: lead-inbox-read-offset-never-advances
+    product_flow: "LEAD-WORKER-CHANNEL-01: every beat drains the durable lead inbox, and a row delivered once is never delivered again"
+    file: plugins/leadv2/scripts/leadv2-inbox.sh
+    suite: plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
+    anchor: |
+      f.write(str(len(lines)))
+    patch: |
+      f.write("0") inside the offset-advance block, so the lead's read-offset
+      stays at zero and every drain re-delivers the whole inbox
+    expected: killed
+    note: "12/0 -> 9/3: C3 and C4 (the drain API directly) and C5b (the same contract through a rendered beat). C5b could not fail before 2026-09-05 -- the suite read the board at the control-plane symlink, so the second beat's output was simply the first beat's file and the consumed row was still there. A first attempt at this control swapped `drain` for `peek` in the beat's call and killed C5 instead: `peek` is not a subcommand, the row never rendered, and the control fired for the wrong reason"
