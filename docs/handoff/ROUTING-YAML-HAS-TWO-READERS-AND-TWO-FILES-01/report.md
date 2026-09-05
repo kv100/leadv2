@@ -152,7 +152,8 @@ the old one with a loud deprecation line, and fail loudly — never
 awkward one: it wants a key from each document (§4.2), so the rename forces that
 contradiction into the open rather than leaving it latent.
 
-**Not started.** Step 1 is committed; the rename is a separate change.
+**Done** — see §8. Landed as two commits so that no window exists in which
+neither name resolves: the readers learned both names first, the file moved second.
 
 ## 7. What I could and could not verify across the three repos
 
@@ -168,3 +169,84 @@ contradiction into the open rather than leaving it latent.
   respiro-ios after this change. Nothing was executed in those two repos — the
   change is comment-only and the parser diff is empty, which is the strongest
   evidence available without dispatching real work there.
+
+## 8. Step 3 as executed (measured)
+
+Two commits, in this order on purpose, so that no window exists in which neither
+name resolves:
+
+1. **`a91410d5` (leadv2) — the readers learn both names.**
+   `lib/leadv2-phase-policy-path.sh` selects the phase-policy document by its
+   **shape**, never by its filename, and every miss is loud. Wired into
+   `leadv2-router.sh`, `leadv2-cost-estimate.sh`, `codex-task.sh` and
+   `leadv2-router-v2.sh`; each keeps the historical path on `rc=1`, so a miss
+   changes messaging, never behaviour.
+2. **`a90c5183a` / `fd02710e1` (persona-engine) — the file moves.**
+   `.claude/ref/leadv2-routing.yaml` → `.claude/ref/leadv2-phase-policy.yaml`,
+   plus `leadv2-preflight.sh:213`, which checked the old filename by hand and
+   would otherwise have gone red on a correct rename.
+
+### The fifth reader, found by measurement rather than by reading
+
+Simulating the rename before doing it moved
+`lib/leadv2-glm-policy-resolve.py`'s answer from **`tier=volume` to
+`tier=standard`**: `codex_default_tier` lives under `phases.glm_policy`, i.e. in
+document B, while `_resolve_routing_yaml_path` only ever searches document-A
+locations. It now takes `--phase-policy-yaml` as an additional source for that
+one block — absent, every byte of the old behaviour is preserved — and
+`leadv2-review-run.sh` / `leadv2-plan-run.sh` pass it. Post-rename: `tier=volume`,
+identical to before.
+
+Had the rename landed alone, that would have been a silent routing change in the
+only repo that had the file.
+
+### Before/after, run against persona-engine
+
+| check | before | after |
+|---|---|---|
+| `leadv2-router.sh` `intake:classify` | `model=bash+python` | identical |
+| `leadv2-router.sh` `build:multi_file` | `model=glm+agent-tool` | identical |
+| `leadv2-router.sh` `review:standard` | `model=codex-adversarial+sonnet-critic` | identical |
+| `leadv2-router.sh` `plan:standard` | `model=sonnet+codex+critic-sonnet` | identical |
+| review-pool resolver tier | `volume` | `volume` |
+| dispatch ladder entries | 9 (plugin, key-level fallback) | 9 (plugin, file-level fallback) |
+| protected-path signal, `agent/safety/safety-gate.py` | `true` | `true` |
+| `leadv2-preflight.sh` | 134 passed / 43 failed | 134 passed / 43 failed |
+
+In the plugin's own repo `leadv2-router.sh` still returns `rc=2` for every
+phase/step — unchanged — but now prints
+`NOT FOUND: … is NOT the phase-policy document (it declares router_v2 …)`
+instead of failing silently, which is how this whole row started.
+
+### Coverage
+
+`plugins/leadv2/scripts/tests/test-phase-policy-document.sh`, **8 passed /
+0 failed**. The production resolver is sourced and called and the production
+`leadv2-glm-policy-resolve.py` runs as a real process; only the filesystem below
+them is a fixture. Cases (f)/(g) discriminate — the phase policy answers
+`tier=volume`, the registry alone `tier=standard`.
+
+Negative control **(R)** lives in the suite, so it runs on every CI selection:
+inside the old-name branch the document-shape test is replaced by a bare
+readability test (by regex inside the function body, never by line number) and
+case (b) must go red. It refuses to pass when (b) was not green first, printing
+`control NOT EVALUATED`. It bit.
+
+Catalog row 53. CI selection proven by touching the production lib:
+`[SELECT] …/test-phase-policy-document.sh`, `run-all: 87 selected, scope=changed`.
+
+### One instrument error, caught before it became an accusation
+
+Sourcing `lib/leadv2-review-signals.sh` from **zsh** made every protected-path
+check answer `false` — including `agent/safety/safety-gate.py` against
+`*safety-gate*`. Under `bash`, the runner's actual shell, the same call answers
+`protected_path:true`. The product was never wrong; the instrument was.
+
+### A shared-tree incident worth recording
+
+The rename was staged with `git mv` and then committed **by another session**: it
+landed inside `a90c5183a` ("test(mutations): catalog the arbiter
+unknown-reads-as-free mutation"), which swept the staged `R100` along with its
+own file. Nothing was lost and the content is correct, but the rename is
+attributed to an unrelated commit message. In a shared checkout the **index** is
+shared too — stage and commit must be a single step, never spread across turns.
