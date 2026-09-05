@@ -1,0 +1,39 @@
+live registry: /Users/kostiantyn.vlasenko/.claude/leadv2-state/leadv2/active.yaml
+candidate write set: plugins/leadv2/scripts/leadv2-active-registry.sh
+  rows=24  pid-less AND undeclared=22
+
+== BEFORE — registry at cd1a4d2e^
+  rc=5
+  [registry] writeset conflict: other=3e1922c7 reason=pending_resolution writes_reason=undeclared
+  (+18 LEADV2_WRITESET_UNKNOWN lines elided — legacy rows outside the window)
+  VERDICT: REFUSED (conflict code)
+
+== AFTER  — registry at HEAD
+  rc=5
+  [registry] writeset pending downgraded: other=3e1922c7 reason=no_live_worker pid=None proc_kind=no_pid
+  [registry] writeset pending downgraded: other=ARM-CAPABILITY-FROM-OUTCOMES-01 reason=no_live_worker pid=None proc_kind=no_pid
+  [registry] writeset pending downgraded: other=daeee945 reason=no_live_worker pid=None proc_kind=no_pid
+  [registry] writeset pending downgraded: other=de4fcc31 reason=no_live_worker pid=None proc_kind=no_pid
+  [registry] writeset conflict: other=RECOVER-WAVE1-TEN-01 paths=plugins/leadv2/scripts/leadv2-active-registry.sh
+  (+22 LEADV2_WRITESET_UNKNOWN lines elided — legacy rows outside the window)
+  VERDICT: REFUSED (conflict code)
+
+########## same snapshot, a candidate that overlaps nothing ##########
+live registry: /Users/kostiantyn.vlasenko/.claude/leadv2-state/leadv2/active.yaml
+candidate write set: docs/handoff/WRITESET-CAROUSEL-01/report.md
+  rows=24  pid-less AND undeclared=22
+
+== BEFORE — registry at cd1a4d2e^
+  rc=5
+  [registry] writeset conflict: other=3e1922c7 reason=pending_resolution writes_reason=undeclared
+  (+18 LEADV2_WRITESET_UNKNOWN lines elided — legacy rows outside the window)
+  VERDICT: REFUSED (conflict code)
+
+== AFTER  — registry at HEAD
+  rc=0
+  [registry] writeset pending downgraded: other=3e1922c7 reason=no_live_worker pid=None proc_kind=no_pid
+  [registry] writeset pending downgraded: other=ARM-CAPABILITY-FROM-OUTCOMES-01 reason=no_live_worker pid=None proc_kind=no_pid
+  [registry] writeset pending downgraded: other=daeee945 reason=no_live_worker pid=None proc_kind=no_pid
+  [registry] writeset pending downgraded: other=de4fcc31 reason=no_live_worker pid=None proc_kind=no_pid
+  (+22 LEADV2_WRITESET_UNKNOWN lines elided — legacy rows outside the window)
+  VERDICT: ADMITTED
