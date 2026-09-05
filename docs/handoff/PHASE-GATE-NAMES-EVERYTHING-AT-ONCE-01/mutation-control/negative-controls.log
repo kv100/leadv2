@@ -1,0 +1,62 @@
+PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01 negative controls - 2026-09-05T02:41:55Z
+repo=/Users/kostiantyn.vlasenko/Projects/leadv2 head=c668e5ab
+
+===== UNMUTATED BASELINE =====
+PASS: a scoped refusal names the class's FULL mandatory contract (missing=plan,gate1 required=classify,plan,gate1,build,test,review,live_verify,close)
+PASS: required= rides on its own line: a merely-mandatory phase never lands in missing=
+PASS: unmet= spans the whole contract, not just this scope (unmet=plan,gate1,build,test,review,live_verify,close)
+PASS: nothing the later full-scope refusal names is new (full missing=plan,gate1,build,test,review,live_verify,close)
+PASS: the bootstrap admission names the full contract before any work is done
+PASS: an unhashable artifact refuses (rc=5) and writes nothing
+PASS: a missing artifact refuses (rc=5) and writes nothing
+PASS: a real artifact whose other evidence has not landed is still recorded, stamped unverified
+PASS: classify/diverge are never refused (assert does not verify them either)
+PASS: a refused record leaves the lane's bootstrap grace intact
+[PHASE-GATE-NAMES-EVERYTHING] pass=10 fail=0
+suite exit=0 (must be 0)
+
+===== NEGATIVE CONTROL: PHASE-GATE-NAMES-ONLY-ITS-OWN-SCOPE =====
+mutation PHASE-GATE-NAMES-ONLY-ITS-OWN-SCOPE applied: 1 site, inside a function body
+mutant still parses
+--- mutated line in context (proof it landed inside the function) ---
+1101-  fi
+1102-  local required_csv unmet_csv
+1103:  required_csv=""
+1104-  unmet_csv="$(IFS=,; printf '%s' "${unmet_full[*]-}")"
+1105-
+--- suite against the mutated writer ---
+FAIL: a1: rc=3 missing=plan,gate1 required=
+FAIL: a2: missing=plan,gate1 must not carry a phase that is only mandatory
+PASS: unmet= spans the whole contract, not just this scope (unmet=plan,gate1,build,test,review,live_verify,close)
+FAIL: a4: full-scope refusal names phases the first refusal never mentioned (full=plan,gate1,build,test,review,live_verify,close first-required=)
+FAIL: a5: rc=0 out=admitted=bootstrap would_be_missing=classify,plan,gate1 required= unmet=classify,plan,gate1,build,test,review,live_verify,close
+PASS: an unhashable artifact refuses (rc=5) and writes nothing
+PASS: a missing artifact refuses (rc=5) and writes nothing
+PASS: a real artifact whose other evidence has not landed is still recorded, stamped unverified
+PASS: classify/diverge are never refused (assert does not verify them either)
+PASS: a refused record leaves the lane's bootstrap grace intact
+[PHASE-GATE-NAMES-EVERYTHING] pass=6 fail=4
+suite exit=1 (0 here would mean the control FAILED to falsify)
+
+===== NEGATIVE CONTROL: PHASE-RECORD-WRITES-THE-DEAD-RECORD-ANYWAY =====
+mutation PHASE-RECORD-WRITES-THE-DEAD-RECORD-ANYWAY applied: 1 site, inside a function body
+mutant still parses
+--- mutated line in context (proof it landed inside the function) ---
+831-      _log_err "  nothing was written: an unprovable record does not satisfy the gate AND ends this lane's bootstrap grace, so it leaves the lane worse off than no record at all"
+832-      _log_err "  fix the artifact, then re-run this same command ('leadv2-phase-record.sh assert <sig8> --class <class>' prints the whole required set at once)"
+833:      _emit "phase_record_refused" "task=${task_id:-$sig8} phase=${phase} reason=artifact_integrity"
+834-      _proof="unverified"
+835-    else
+--- suite against the mutated writer ---
+PASS: a scoped refusal names the class's FULL mandatory contract (missing=plan,gate1 required=classify,plan,gate1,build,test,review,live_verify,close)
+PASS: required= rides on its own line: a merely-mandatory phase never lands in missing=
+PASS: unmet= spans the whole contract, not just this scope (unmet=plan,gate1,build,test,review,live_verify,close)
+PASS: nothing the later full-scope refusal names is new (full missing=plan,gate1,build,test,review,live_verify,close)
+PASS: the bootstrap admission names the full contract before any work is done
+FAIL: b1: rc=0 file_exists=yes
+FAIL: b2: rc=0
+PASS: a real artifact whose other evidence has not landed is still recorded, stamped unverified
+PASS: classify/diverge are never refused (assert does not verify them either)
+FAIL: b5: record rc=0 assert rc=3 out=missing=classify,plan,gate1 required=classify,plan,gate1,build,test,review,live_verify,close unmet=classify,plan,gate1,build,test,review,live_verify,close
+[PHASE-GATE-NAMES-EVERYTHING] pass=7 fail=3
+suite exit=1 (0 here would mean the control FAILED to falsify)

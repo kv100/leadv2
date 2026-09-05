@@ -20,8 +20,11 @@
 # shows WHICH cases each mutation reddens; note that the canonical runner's
 # `red_line=` field quoted a PASS line on the second control, so read the verdict
 # from its exit status and from negative-controls.log, not from that field).
+# 2026-09-05 PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01: +2 entries, 12/12 killed
+# (artifacts under docs/handoff/PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01/
+# mutation-control/).
 # The kill rate has no earlier value in this repo — this catalog is the first
-# — so "kill rate must not drop" starts at 3/3, then 8/8, now 10/10.
+# — so "kill rate must not drop" starts at 3/3, then 8/8, then 10/10, now 12/12.
 
 mutations:
   - id: phase8-backlog-row-call-removed
@@ -156,3 +159,29 @@ mutations:
       if False: return False
     expected: killed
     note: "kills exactly 1 case (probe outage still refused); every edit-A case stays green. Reproduces the measured production bug: util_codex=unknown_capped in 122 of 143 decisions, six lanes killed by all_arms_capped when the instrument failed, not the quota"
+
+  # PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01 (2026-09-05). Both anchors are inside
+  # a function body of leadv2-phase-record.sh, and each control is specific: the
+  # first reddens only the name-the-contract cases, the second only the
+  # refuse-the-dead-record cases.
+  - id: phase-gate-names-only-its-own-scope
+    product_flow: "one refusal must name the class's WHOLE mandatory contract, so no phase is ever discovered by re-dispatching (each discovery cost a full dispatch cycle, ~2 min)"
+    file: plugins/leadv2/scripts/leadv2-phase-record.sh
+    suite: plugins/leadv2/scripts/tests/test-phase-gate-names-everything.sh
+    anchor: |
+      required_full[*]
+    patch: |
+      required_full_DISABLED[*]
+    expected: killed
+    note: "kills 4 cases (a1,a2,a4,a5); every defect-2 case stays green. The anchor deliberately avoids a ${...}-bearing pattern — macOS BSD sed degenerates those into an empty match"
+
+  - id: phase-record-writes-the-dead-record-anyway
+    product_flow: "a `done` record whose artifact cannot hash is knowably dead at write time and must refuse, writing nothing — writing it ends the lane's bootstrap grace without satisfying the gate, turning an admissible lane into a refused one"
+    file: plugins/leadv2/scripts/leadv2-phase-record.sh
+    suite: plugins/leadv2/scripts/tests/test-phase-gate-names-everything.sh
+    anchor: |
+      exit 5
+    patch: |
+      _proof="unverified"
+    expected: killed
+    note: "kills 3 cases (b1,b2,b5); every defect-1 case stays green. b5 shows the real harm: with the record written, the very next assert refuses (missing=classify,plan,gate1) instead of admitting the lane at bootstrap"

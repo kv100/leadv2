@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-phase-gate-names-everything.sh
+file=plugins/leadv2/scripts/leadv2-phase-record.sh
+anchor=s|^      exit 5$|      _proof="unverified"|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: b1: rc=0 file_exists=yes
+diff_hash=ca72756f857896b859e87cd742771ae63495fb84cb71eca4a327f25cfa5c474a
+lane_diff_hash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

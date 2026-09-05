@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-phase-gate-names-everything.sh
+file=plugins/leadv2/scripts/leadv2-phase-record.sh
+anchor=s|required_full\[\*\]|required_full_DISABLED[*]|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: a1: rc=3 missing=plan,gate1 required=
+diff_hash=9c6f77d5d9bbeae244125e22f4e557590a2044608f8380f315c5c4d97a4da7ac
+lane_diff_hash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
