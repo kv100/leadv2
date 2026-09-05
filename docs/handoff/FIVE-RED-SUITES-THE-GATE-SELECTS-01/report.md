@@ -744,3 +744,75 @@ two-path pathspec**, so neither could carry that file whatever the index held;
 `git show --stat` on each confirms it. Recorded rather than silently overridden,
 because a guard that fires on every commit trains everyone to override it, and
 the next person will do so without the pathspec.
+
+---
+
+## `claude-profile-select` — both halves of T23 asserted a shape that never existed
+
+79/2 → **82/0** (three assertions where there were two).
+
+T23 and the D3 rescue landed on the same day, 2026-09-03, in two commits whose
+own subjects say what they are: *"rescue uncommitted lane work after worker
+death"* and *"checkpoint of a worker that died mid-write — NOT finished work"*.
+The suite and the production file disagree because **neither half was
+finished**, not because the product regressed. Worth naming as a shape: when a
+suite and its subject contradict, the date and the commit subject on each side
+decide which one to believe — not which one is easier to change.
+
+- The warn carries `sub=` and `account=`, not `identity=`. The `identity=` form
+  is from `f6c580d8` (2026-08-27) and was replaced by the same rescue commit
+  that added this case.
+- `profile=same-fresh … candidates=2` is **unreachable by design**. Two slots on
+  one real account is "the incident" in the script's own header table, and its
+  documented response is to select nothing — `profile=- reason=same_account` —
+  so the caller keeps the profile it inherited instead of silently collapsing
+  two slots onto one account. No code path reaches a candidate count after a
+  same_account hit. "fail-open, as with T14" was carried over from T14, whose
+  case has no same_account hit at all.
+
+T23's intent is untouched and is now asserted on both sides: the stale sibling
+is warned about **and kept** (D3), the pair is then detected and named, and the
+incident response is pinned with it.
+
+| control | result |
+|---|---|
+| a `continue` after the `expiresAt_stale` warn — the pre-D3 hole reopened | 82/0 → **77/5**, T23b among them |
+| the `same_account` refusal removed | 82/0 → **77/5**, T23c plus T14b/T14c/T21b/T21c |
+
+Control A leaves T23a green **on purpose**: T23a asserts the warn, which still
+fires. The *kept* half of the contract is what A proves. Said out loud rather
+than left to look like a gap.
+
+## `beat-loop-orphans` — a standing red that had stopped being pressure
+
+29/1 → **30/0**, with both known sites named in the passing line.
+
+F2 greps the plugin tree for `claude -p` spawn sites that do not pin a
+subsession role, and failed on any finding at all — with the two standing ones
+named nowhere. That is a `known-red-suites.txt` entry living inside the file:
+nobody scanning a red list can tell a new violation from the standing one, and
+the proof is that this suite arrived in a fifteen-suite red census as *red*, not
+as pressure. Same disease as `liveness-tristate-01`, same treatment.
+
+`leadv2-dispatch-code.sh:4860` and `leadv2-active-registry.sh:323` are now
+pinned by file:line. Exactly that set is green and says so by name; anything
+else is red and names the file:line. A listed site that **moved** passes while
+printing the line to update; one that **disappeared** prints a note to shrink
+the list. The list may only shrink — and both entries have a filed task to pin
+the sites themselves. Both halves are needed: the list is what lets the suite
+catch a new violation *today*, the task is what stops the list becoming
+permanent.
+
+| control | result |
+|---|---|
+| an unpinned spawn in a new, unlisted file | 30/0 → **29/1**, names `zz-mutant-spawn.sh:3` |
+| a **second** unpinned spawn inside a **listed** file | 30/0 → **29/1**, names `leadv2-active-registry.sh:324` as NEW |
+
+The second control is the one that matters: a list keyed on the *file* would
+read that as "the known one moved" and excuse it forever, so the list counts
+findings per file. The suite's own NC4 still fires — these controls prove the
+**list**, NC4 proves the **gate**.
+
+Both CI selections proven by changing production files
+(`leadv2-claude-profile-select.sh`, `leadv2-dispatch-code.sh`), markers
+reverted. Catalogue: **42 rows, every one `expected: killed`.**
