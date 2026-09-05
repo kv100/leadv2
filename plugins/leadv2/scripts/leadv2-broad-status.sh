@@ -106,6 +106,39 @@ set +e
 # `now_epoch - epoch_in_file < BEAT_S` (BEAT_S = LEADV2_SINGLE_LEAD_BEAT_S,
 # default 1800) is FRESH; otherwise STALE. Both numbers are epoch seconds,
 # so the comparison is timezone-proof by construction.
+# PULSE-BEATS-IN-IDLE-REPOS-01: what "ДОСКА ПУСТА — ничего не выполняется, N мин"
+# undertakes to assert. Measured 2026-09-06: in an idle repo the beat is nearly free
+# (one 483-byte untracked founder-status.md, rewritten in place), so the beating is
+# not the defect. The WORDING is: platform/ carried "ничего не выполняется, 4315 мин"
+# -- a three-day outage alarm for a repo where no work was ever assigned. An idle
+# repo and a stalled repo produced the same alarm, and the minute counter escalated
+# in both. This file already draws exactly this distinction once, for a collector
+# that did not answer versus a board that is really empty (LANE-DETAIL-BLIND-01); the
+# third case was missing.
+#
+# No threshold is invented and no alarm is suppressed -- the headline and the counter
+# are untouched. What is added is the fact the reader needs to tell the two apart:
+# when this repo last had a lane, and how many it has ever had. Empty output when
+# there is no history to state, so the headline degrades to exactly today's text.
+_board_empty_history_note() { # -> prose fragment, or empty
+  local hd="${PROJECT_ROOT}/docs/handoff" n last
+  [[ -d "${hd}" ]] || return 0
+  n="$(find "${hd}" -maxdepth 1 -type d -name 'dispatch-*' 2>/dev/null | wc -l | tr -d ' ')"
+  [[ -n "${n}" && "${n}" != "0" ]] || return 0
+  last="$(find "${hd}" -maxdepth 1 -type d -name 'dispatch-*' -exec stat -f '%m' {} \; 2>/dev/null \
+          | sort -rn | head -1)"
+  [[ -z "${last}" ]] && last="$(find "${hd}" -maxdepth 1 -type d -name 'dispatch-*' -printf '%T@\n' 2>/dev/null \
+          | cut -d. -f1 | sort -rn | head -1)"
+  if [[ -n "${last}" ]]; then
+    printf 'последняя линия здесь: %s; линий за всё время: %s' \
+      "$(date -r "${last}" '+%Y-%m-%d' 2>/dev/null || date -d "@${last}" '+%Y-%m-%d' 2>/dev/null)" "${n}"
+  else
+    printf 'линий за всё время: %s' "${n}"
+  fi
+}
+LEADV2_BOARD_EMPTY_HISTORY="$(_board_empty_history_note 2>/dev/null || true)"
+export LEADV2_BOARD_EMPTY_HISTORY
+
 EMPTY_SINCE_PATH="${LEADV2_BOARD_EMPTY_SINCE_PATH:-$PROJECT_ROOT/docs/leadv2/.board-empty-since}"
 FOUNDER_STATUS_EPOCH_PATH="${LEADV2_FOUNDER_STATUS_EPOCH_PATH:-$PROJECT_ROOT/docs/leadv2/.founder-status-epoch}"
 _stamp_epoch() {
@@ -1091,7 +1124,12 @@ try:
                 fh.write(str(now_epoch))
             os.replace(_tmp, empty_since_path)
         empty_minutes = max(0, (now_epoch - since_epoch) // 60)
+        # PULSE-BEATS-IN-IDLE-REPOS-01: the counter alone cannot tell an idle repo
+        # from a stalled one. Append the two facts that can, when they exist.
+        _hist = (os.environ.get("LEADV2_BOARD_EMPTY_HISTORY") or "").strip()
         empty_headline = f"⚠ ДОСКА ПУСТА — ничего не выполняется, {empty_minutes} мин"
+        if _hist:
+            empty_headline = f"{empty_headline} ({_hist})"
     else:
         try:
             os.remove(empty_since_path)
