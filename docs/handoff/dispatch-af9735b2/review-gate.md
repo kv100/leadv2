@@ -1,0 +1,9 @@
+status: unreviewed
+reason: all_arms_unavailable
+author: sonnet
+pool: -
+tried: -
+refusal: all_review_arms_unavailable
+resolver_rc: 0
+resolver_stderr: /Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-af9735b2/review-pool-resolver.err
+merge_blocked: true

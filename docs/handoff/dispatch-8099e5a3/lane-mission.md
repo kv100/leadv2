@@ -1,0 +1,109 @@
+# WAVE-B1-SALVAGE-THE-SEVENTEEN-01 — перенести 17 застрявших веток на текущий main
+
+Волна В1 — «перенос готовых веток в main». 20 веток проверены лидом 2026-09-04:
+**3 слиты** (`de4fcc31`, `3c0940cd`, `DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01`),
+**17 упираются в конфликты**. Твоя задача — эти 17.
+
+## Список (не расширяй его и не сокращай молча)
+
+```
+6409fada  7c9da953  PLUGIN-PAPERCUTS-01  DISPATCH-PHASE-DEADLOCK-01
+PHASE-BOOTSTRAP-ADMIT-02  PREPASS-PROVIDER-FALLBACK-01-R5  PREPASS-PROVIDER-FALLBACK-01-R6
+f7f1c2c8  66d6209a  100a892d  049e0e9e  d784b987  83c44855  PLUGIN-RELIABILITY-01
+CLAUDE-PROFILE-DEFAULT-TOKEN-EXPIRED-01  DARK-SUITES-UNREACHABLE-BY-RUNNER-01  5e57c5ff
+```
+
+## Инструмент уже есть — не пиши свой
+
+`plugins/leadv2/scripts/leadv2-lane-salvage.sh <lane-id> --force` черри-пикает рабочие коммиты
+линии на свежую ветку `salvage/<lane-id>` от ТЕКУЩЕГО main, не сливая старую ветку.
+Прямое слияние старой ветки запрещено: оно откатывает main на сотни файлов
+(`LANE-MERGE-SILENTLY-REVERTS-MAIN-01`).
+
+**Ловушка, на которую лид уже попался сегодня — не повтори.** Скрипт печатает
+`SALVAGE_RESULT verdict=conflict ... carried=0/4` и при этом **выходит с кодом 0**. Цикл,
+который смотрел на код возврата, отрапортовал «17 OK», а веток не создалось ни одной.
+**Читай строку `SALVAGE_RESULT`, а не `$?`.** Это заведено отдельной задачей
+`SALVAGE-EXITS-ZERO-ON-CONFLICT-01`; чинить её здесь НЕ надо, просто не доверяй коду возврата.
+
+## Что делать с каждой из 17
+
+1. Прогнать salvage. Если `verdict=ok` и `carried=N/N` — ветка `salvage/<id>` готова, переходи
+   к шагу 3.
+2. Если `verdict=conflict` — разрешить конфликт **руками, по одному коммиту**. Известная форма
+   конфликта (замерена на `6409fada`): `plugins/leadv2/scripts/tests/test-phase-precondition.sh`,
+   строки ~385-394 — обе стороны добавляли кейсы в один и тот же участок сюиты.
+   **Разрешение — ОБЪЕДИНЕНИЕ, не выбор стороны.** Кейс с main остаётся дословно, кейс ветки
+   добавляется рядом. Взять одну сторону — значит молча выбросить половину проверок; это
+   отдельная болезнь, лид её уже ловил.
+   Если конфликт НЕ этой формы — опиши его в отчёте и разрешай по тому же принципу: сохраняем
+   обе стороны, если они не противоречат; если противоречат — не угадывай, оставь ветку
+   нерешённой и напиши почему.
+3. Слить `salvage/<id>` в main: `git merge --no-ff`. **Немедленно после каждого слияния**
+   проверить, что в `docs/leadv2/` ровно **16 симлинков**
+   (`find docs/leadv2 -maxdepth 1 -type l | wc -l`). Если стало 15 — восстановить
+   (`ln -s ~/.claude/leadv2-state/leadv2/<имя> docs/leadv2/<имя>`) и записать это в отчёт.
+   Сегодня `active.yaml` погибал ПЯТЬ раз именно на этом шаге.
+
+## Границы — жёсткие
+
+- **НИКОГДА** не сливай старую ветку `worktree-*` напрямую в main. Только `salvage/*`.
+- **НИКОГДА** `git add -A`, `git reset --hard`, `git clean`, `git stash` — дерево общее,
+  в нём параллельно работают чужие линии.
+- **НИКОГДА** не коммить `docs/leadv2/{active.yaml,bus.jsonl,merge-queue.jsonl,open-threads.md,questions,.bus-offsets,.bus.lock,.merge.lock,active.yaml.lock}`
+  и чужие `docs/handoff/*/phases.d/`. Если они всплыли в конфликте — берётся сторона main.
+- Не сливай контрольные точки `98cec2c0`, `abd48ba4`, `a7f7131c`.
+- Не пушь в origin.
+- **Не гоняй полный `tests/run-all.sh` в живом чекауте** — он перенаправляет пять симлинков
+  control-plane во временный каталог и удаляет их цели. Только
+  `LEADV2_RUN_ALL_SELECT_ONLY=1 ... --scope changed`.
+- `tests/known-red-suites.txt` / `known-failures.txt` — только на уменьшение.
+
+## Проверка после каждого слияния
+
+Базовая линия main до тебя: сюита `plugins/leadv2/scripts/tests/test-route-arbiter.sh` даёт
+`pass=10 fail=1` (единственный красный — `fallback`, foreign project root; он БЫЛ красным).
+После твоих слияний она обязана давать тот же результат. Новый красный = ты что-то занёс,
+разбирайся, а не записывай в известные-красные.
+
+Для каждой слитой ветки прогони те сюиты, файлы которых она трогала
+(`LEADV2_RUN_ALL_SELECT_ONLY=1 bash tests/run-all.sh --scope changed` даёт список за секунды —
+он и скажет, что запускать).
+
+## Отчёт
+
+`docs/handoff/WAVE-B1-SALVAGE-THE-SEVENTEEN-01/report.md`, таблица на 17 строк:
+
+| ветка | verdict salvage | carried | конфликтные файлы | разрешено как | слито (sha) | симлинки после |
+
+Плюс явная строка: сколько из 17 доехало до main, сколько осталось и почему именно.
+**Ветка, которую ты не смог перенести, — это нормальный результат, если названа причина.**
+Ненормальный результат — «OK» без sha слияния.
+
+## Готово =
+
+Таблица на 17 строк + sha каждого слияния + подтверждение 16 симлинков после последнего +
+`pass=10 fail=1` на арбитражной сюите. Число «слито N» без sha — не готово.
+
+---
+If you hit a decision you cannot safely make yourself (including destructive
+options, a policy conflict, or missing authorization), ask via the async
+question channel and wait for the answer rather than guessing or stalling:
+  bash "${CLAUDE_PLUGIN_ROOT}/../../scripts/leadv2-ask.sh" "dispatch-8099e5a3" "<question>" \
+    --option "a|<reversible label>" --option "b|<label>" --default-option "a" [--timeout <sec=1800>]
+It blocks until answered via `/leadv2 reply <q-id> <option>` and prints the
+chosen option. Every question must declare its clearly reversible option with
+`--default-option`; on timeout the lane proceeds on it and the decision is
+journaled and surfaced in open-threads. Without a default, the task is parked
+human-needed and its slot is freed. Do not use this for routine progress or
+confirmation-seeking; only for a decision you cannot make yourself.
+
+Before you finish, run your own falsification set and paste its raw output into
+your final report: `bash -n` every shell file you changed, `python3 -m
+py_compile` every Python file you changed, and the repo's changed-scope test
+runner. Show the red output you got and the green output after your fix. A lane
+whose self-check is missing or red is refused before any reviewer is spent on
+it -- you will have burned the lane for nothing.
+
+Commit your work on the lane branch before ending your session; an uncommitted
+exit is treated as an incident.

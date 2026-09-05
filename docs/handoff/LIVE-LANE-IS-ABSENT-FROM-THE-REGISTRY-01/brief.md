@@ -1,82 +1,115 @@
-# LIVE-LANE-IS-ABSENT-FROM-THE-REGISTRY-01 — реестр показывает ноль, пока линия работает
+# LIVE-LANE-IS-ABSENT-FROM-THE-REGISTRY-01 — a registration that missed and reported success
 
-Статус: заведено 2026-09-04, не начато. Замерено на живой линии, не выведено из кода.
+## The defect, from the one line that survived
 
-## Наблюдение
+Across forty lane journals exactly **one** registration line exists:
 
-В 07:28 диспатчер запустил линию `WORKER-STREAM-IS-OVERWRITTEN-BY-THE-NEXT-ATTEMPT-01`
-(sig8 `ab933592`, арм glm-flash) и вышел с кодом 0. Через 28 минут одновременно верно:
+```text
+active_register_miss task=07401216 rc=0
+```
 
-| источник | что говорит | замер |
-|---|---|---|
-| процессы | **жива** | 13 совпадений `ps -axo command \| grep WORKER-STREAM-IS-OVERWRITTEN`, среди них `glm-coder.sh __supervisor`, `__run_child`, `tee` |
-| лог арма | **жива** | `~/.claude/cache/glm-runs/260904-072854-…-7ec8` mtime тикает (07:56) |
-| журнал линии | **жива** | `product_close task=ab933592 status=waiting_worker … waited=1520s` каждые 5 минут |
-| `docs/leadv2/active.yaml` | **ноль** | `sessions: []`, mtime 04:33Z — то есть файл переписан ПОСЛЕ старта линии и линии в нём нет |
-| пульс анти-тишины | **ноль** | `[ПУЛЬС 04:56Z] линий нет` |
+A miss that returned `0`. Everything downstream believes it: the pulse says `линий нет` while a lane
+is demonstrably running (measured 2026-09-04 — a live glm arm writing into its worktree while every
+status surface reported an empty board). The registry is not wrong about a row it holds; it is
+silent about a row it never wrote.
 
-В журнале линии **нет ни одной строки** со словами `register` / `active.yaml` / `registry`.
+**Your task is not to make the pulse prettier.** It is to find the path on which registration does
+not happen, and make that path say so out loud.
 
-## Почему это дороже, чем выглядит
+## Where to look, and what not to assume
 
-Реестр — источник для всех поверхностей живости. Пока он пуст, «линий нет» — это не отчёт о
-простое, а отчёт о слепоте, и он неотличим от настоящего простоя. Ровно на этом строится
-самая дорогая наша ошибка: лид видит ноль, считает воркера мёртвым и передиспатчит — а
-передиспатч затирает поток первой попытки (`WORKER-STREAM-IS-OVERWRITTEN-BY-THE-NEXT-ATTEMPT-01`,
-та самая линия, которая сейчас невидима). 2026-09-03 это стоило пяти «мёртвых» воркеров и
-четырёх уничтоженных потоков.
+- `plugins/leadv2/scripts/lib/leadv2-active-registry.sh` — the registry itself, and the call site in
+  the dispatcher that reaches it. The dispatcher file `leadv2-dispatch-code.sh` is owned by another
+  session: **read it, do not edit it.** If the fix belongs there, put the exact replacement text in
+  your report and say plainly that it is not landed.
+- Two registries have already been observed diverging, and `docs/leadv2/active.yaml` is git-tracked,
+  so every worktree carries a frozen copy. `~/.claude/leadv2-state/leadv2/active.yaml` is the live
+  one. State which store you measured, in the sentence, every time.
+- `BASH_SOURCE[0]` is unset under `bash -c`, which moves the resolved path of a sourced library.
+  That is a known way for this code to write somewhere nobody reads. A sibling defect was exactly
+  this shape: `leadv2-phase-record.sh` resolves its store from an inherited `LEADV2_PROJECT_ROOT`
+  and wrote 25 directories of phase records into the wrong repository, rc=0, no output.
+- `rc=0` from a helper proves the helper returned, not that it wrote. Check for the row, by path.
 
-Показательно, что `leadv2-broad-status.sh` уже носит в себе оговорки на этот случай (:221
-«Таблица линий за этот beat недоступна — это НЕ значит, что линий нет», :762, :810). Поверхность
-знает про свою слепоту и предупреждает о ней текстом — но пульс, который реально читает founder,
-печатает голое «линий нет».
+## What to build
 
-## Вилка разрешена замером 2026-09-04 — дефектов ДВА, не один
+1. **A reproduction**: the narrowest command that registers a lane and leaves no row, with the
+   store's path named. If the miss is conditional, name the condition.
+2. **The path speaks**: on the failing path the code must report the miss in a way a reader cannot
+   confuse with success — a non-zero return a caller can act on, or a journal line whose text says
+   the row was not written. `active_register_miss … rc=0` is precisely the shape being removed; do
+   not reproduce it under a new name.
+3. **Its own suite** — `plugins/leadv2/scripts/tests/test-active-register-miss.sh`, carrying a
+   `# run-all-triggers:` declaration so CI selects it (self-registration has landed; do NOT edit
+   `tests/run-all.sh`).
 
-Проверка по журналам уже отработавших линий (предложена e9, исполнена fb), 40 последних линий:
+## Acceptance
 
-- **`register` встречается ровно в одной** — `dispatch-07401216`, и строка эта:
-  `2026-09-03T18:33:21Z [decision] active_register_miss task=07401216 rc=0`. То есть журнал
-  **умеет** нести регистрацию, и то, что он однажды понёс, — это **промах регистрации, отчитавшийся
-  успехом** (`rc=0`). Инструмент замера валиден: `reg=0` у остальных 39 означает, что диспатчер не
-  выдал даже строки промаха.
-- **`reg=0` и ДО, и ПОСЛЕ `056e49bd` (2026-09-04 06:37).** Линии от 2026-09-03 22:0x — за девять
-  часов до коммита — так же пусты. Значит отсутствие регистрации **не** следствие выноса реестра
-  из git.
-- Но механизм коллизии, который назвала e9, **подтверждён отдельно**: `docs/leadv2/active.yaml`
-  на `main` untracked, а на ветках `worktree-INVISIBLE-DELIVERABLES-CENSUS-01` и
-  `worktree-LANE-MERGE-SILENTLY-REVERTS-MAIN-01` — **TRACKED**. Любое касание такой ветки отодвигает
-  живой реестр в `active.yaml~<ref>` и кладёт на его место замороженную копию. Файлы-свидетели
-  датированы Aug 31 и Sep 3 (04:38, 04:49) — то есть тоже раньше коммита.
+- The reproduction, run before and after: before, a row is missing and the caller sees `0`; after,
+  the caller sees the failure. Paste both.
+- **A negative control per changed function**, mutation applied INSIDE the function body, reported as
+  the observed `baseline_rc` / `mutated_rc` / `restored_rc` triple. Never a `diff_hash`, never a code
+  inferred from a tool's verdict.
+- **Under each mutation exactly ONE assertion may go red, and it must be the named one.** A mutation
+  that reddens several cases means the cases share a cause and are not independent evidence. A
+  control that reddens the suite by crashing it or breaking the parse does not count — that proves
+  the file stopped running, not that the consequence broke.
+- Before running a mutant, assert it **differs from the original byte for byte**: a mutation whose
+  anchor stopped matching writes nothing and reads as a control that passed.
+- Falsification: remove the assertion on any message text, keep the assertion on state — the control
+  must stay RED.
+- **Ten consecutive runs**, all exit codes reported. A disagreement between runs IS the finding and
+  outranks the rest.
 
-**Вывод: это два независимых дефекта, и лечить надо оба.**
-1. Standard-линии не эмитят регистрацию вовсе (старше 056e49bd минимум на девять часов) — и когда
-   всё же эмитят, промах отчитывается `rc=0`. Это первичная причина пустого реестра.
-2. `active.yaml` отслеживается на ~60 неслитых ветках В1. Пока это так, **каждое слияние В1 будет
-   заново вносить коллизию**, даже если пункт 1 починить. Лечение — вынести файл из индекса на
-   ветках, а не только на main.
+## Bounds
 
-## Что выяснить в первую очередь (не предполагать)
+- Do NOT edit `leadv2-dispatch-code.sh`, `leadv2-claude-profile-select.sh`,
+  `lib/leadv2-route-arbiter.sh`, `tests/run-all.sh`, `tests/known-red-suites.txt`.
+- Do NOT touch `docs/leadv2/` — shared runtime state; nine such files had to be subtracted from a
+  sibling lane's merge, and a live pulse reads them while you work.
+- Do not commit to `main`. Do not weaken an assertion. Never `reset --hard`, `clean`, `stash`, or
+  `worktree prune` — live lanes stand next to yours in a shared tree.
+- Green under bash AND zsh, failing on disagreement. Note that `declare -F` answers "defined" under
+  zsh for a function that does not exist; do not build a guard on it.
+- Deletion check before you finish: `git diff --diff-filter=D --name-only main...HEAD` — THREE dots.
+- A file counts as saved when it appears in `git ls-files`, checked by eye: `.gitignore` swallows
+  handoff paths silently and `git add` exits 0 while doing nothing.
+- Your report lands in the dispatch directory of the MAIN repo, not in this worktree. State its full
+  path in your final message.
+- If any instruction here rests on a false premise, stop and say so with the measurement. That is a
+  complete and welcome answer; papering over it is not.
 
-1. **Регистрирует ли диспатчер standard-линии вообще**, или регистрация есть только у части армов
-   / классов. В каталоге линии лежит `arm-registered` — то есть регистрация арма произошла;
-   вопрос, доходит ли она до `active.yaml`.
-2. **Не стирает ли реестр кто-то другой.** `active.yaml` перезаписан в 04:33Z, через ~4 минуты
-   после старта линии, и вышел пустым. Рядом лежат `active.yaml~HEAD`, `~HEAD_0`,
-   `~worktree-0e7cd03d`, `~worktree-ca7c1056` — фрагментация реестра уже известна
-   (`REGISTRY-IS-TWELVE-FILES-NOT-ONE-01`). Эта линия может оказаться её следствием, а может быть
-   отдельным дефектом «никогда не регистрировали». **Различить замером, а не рассуждением.**
-3. Диспатчер знает, что линия жива (`waiting_worker`, `waited=1520s`), а реестр не знает. Два
-   источника расходятся; поверхности читают тот, который врёт.
+## ADDENDUM (added after dispatch, 2026-09-04) — the symptom you were given has a SECOND cause, measured
 
-## Приёмка
+Do not use "the board says no lanes" as your reproduction. It was just reproduced with the writer
+working correctly.
 
-- Контроль **на каждую ветку**, которую называет имя случая: односайтовый `sed`, `baseline_rc=0` /
-  `mutated_rc=1`, буквальная красная строка. `diff_hash` не доказательство; мутант, краснеющий
-  падением, — не контроль.
-- **Приёмочный сигнал недоступен для записи тому, кто его проверяет.** Сюита этой линии не имеет
-  права сама писать ряд в реестр и по нему же приниматься — это ровно тот способ, которым
-  `test-lead-session-identity.sh` сфабриковала себе зелень 2026-09-04.
-- Сквозной контроль обязателен: запустить настоящую линию через диспатчер, дождаться живых
-  процессов, и потребовать непустой ряд в `active.yaml` с её task_id. Отсутствие ряда при живых
-  процессах = красный.
+Measured at 05:26Z while TWO lanes were provably live (streams written 0 s earlier, worker pids
+confirmed alive):
+
+```
+live registry ~/.claude/leadv2-state/leadv2/active.yaml: 36 rows, 12 with a live phase
+LIVE-LANE-IS-ABSENT-FROM-THE-REGISTRY-01  rows_in_live_registry=1   phase: build  pid: 91205 (alive)
+STATE-LAYER-CANNOT-SAY-IT-FAILED-01       rows_in_live_registry=1
+founder-status.md at the same moment: neither lane named; two dead codex tasks listed instead
+```
+
+Regenerating the surface by hand printed the cause on stderr:
+
+```
+[broad-status] repo-scoped: 26 foreign lane row(s) not dispatched by this repo dropped
+```
+
+So the empty board here is the READER dropping rows by repo scope (the PULSE-REPO-SCOPED-03 filter),
+not the writer failing to register. The rows were complete: task_id, worktree, branch, started_at,
+phase, pid, pid_birth. The drop is announced on stderr and swallowed by the rendered artifact — the
+reader knows, the surface does not say.
+
+**What this does and does not change for you.** It does NOT refute your evidence: the line
+`active_register_miss task=07401216 rc=0` is a real journal line and a miss that returned zero is
+still the defect worth removing. It DOES remove the empty board as proof of it. Hunt the miss
+itself — the path, the condition, the store by name — and if you cannot reproduce a miss at all,
+say so with the measurement. "The premise did not reproduce" is a complete and welcome answer here.
+
+The reader-side defect is NOT yours: it is D5 territory and it has been reported. Do not widen your
+write set to chase it.

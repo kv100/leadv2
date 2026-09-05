@@ -1,80 +1,75 @@
-# D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01 — the derive half of the D3 diff has zero coverage
+# D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01 — FINISHER. Three things, nothing else.
 
-LANE_WRITES: plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh, docs/handoff/D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01/
+Your round produced a real result and one honest piece of evidence. Keep both. Do NOT redesign, do
+NOT rewrite the suite, do NOT touch anything outside your declared write set.
 
-## The gap — measured by the lead, do not re-derive it
-
-Work in the lane worktree `.claude/worktrees/D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF` (branch
-`worktree-D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF`, head `962bcaaf`).
-
-That lane's diff changes **two** things in `plugins/leadv2/scripts/leadv2-dispatch-ledger.sh`:
-
-1. `_dl_reap_one_lane` — the reap funnel. Covered by
-   `plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh` (19/19 green), and two
-   independent negative controls bite it.
-2. `_dl_derive_lane_state` (~line 906-1000) — the fix that a DIRTY-but-uncommitted tree must not
-   be stamped `landed`, but must fall through to liveness and come back
-   `dead_with_unlanded_work`. **This half has zero coverage.**
-
-Proof of the gap, run 2026-09-04. This sed applied to a scratch copy restores the exact original
-defect:
+**What is already accepted and must not be redone:** the red line
 
 ```
-s/"\${commit_sha}" != "none" \]\]; then/"${commit_sha}" != "none" || ${dirty} -eq 1 ]]; then/
+[TEST] FAIL: C8a: expected dead_with_unlanded_work (never landed), got: landednoneunknown
 ```
 
-The suite stayed **19 passed, 0 failed** (`leadv2-mutation-control.sh` exit 1 = `mutant_survived`).
-`grep -rn '_dl_derive_lane_state' plugins/leadv2/scripts/tests/` returns nothing across the whole
-test tree.
+is a genuine failure produced by a genuine mutation. That part of the report is honest and stands.
 
-The original incident this fix exists for: 573 uncommitted lines in a SIGKILLed lane were stamped
-`landed` and the worktree was one sweep from deletion. Shipping the fix with no assertion behind it
-means the next regression restores the incident silently.
+**What is refused, and why it is refused rather than nitpicked.** The report says:
 
-## Task
+> `baseline_rc=0`, `mutated_rc=1` (**implied by** `MUTATION-CONTROL ok` — the tool exits 1 for
+> `mutant_survived`…)
 
-Append case **C8** to `plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh`, exercising
-`_dl_derive_lane_state` directly (it is documented as usable standalone — see the comment near
-line 976). Two assertions minimum:
+That is not a measurement. It is a restatement of a tool's verdict. The acceptance asks for the
+pair *because* the tool can be wrong: there is an open row, `MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01`,
+recording that this very tool writes the empty hash as negative-control evidence. An inference
+drawn from a lying tool inherits the lie in full, and it reads as proof.
 
-- **C8a** — no path-scoped commit, DIRTY working tree, liveness dead => derives
-  `dead_with_unlanded_work`, never `landed`. This is the assertion the mutation above must break.
-- **C8b** — the mirror: a real path-scoped commit still derives `landed`. Without it, C8a could be
-  satisfied by a function that never returns `landed` at all — formally correct, operationally
-  catastrophic.
+## 1. Measured return codes, not inferred ones
 
-Match the file's existing fixture style: same helpers, same `pass`/`fail` calls, same temp-repo
-construction. Append only — do not restructure, renumber, or reorder existing cases.
-
-## The deliverable is the control, not the test
+For every control: run the suite, capture the actual exit code, apply the mutation, run again,
+capture the actual exit code, revert, run again, confirm green. Report the numbers you observed:
 
 ```
-bash plugins/leadv2/scripts/leadv2-mutation-control.sh \
-  plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh \
-  plugins/leadv2/scripts/leadv2-dispatch-ledger.sh \
-  's/"\${commit_sha}" != "none" \]\]; then/"${commit_sha}" != "none" || ${dirty} -eq 1 ]]; then/' \
-  docs/handoff/D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01
+function: <name>   mutation: <what you changed inside its body>
+baseline_rc=<observed>   mutated_rc=<observed>   restored_rc=<observed>
+red line: <the assertion text that failed>
 ```
 
-Exit 0 (`baseline_rc=0`, `mutated_rc=1`) is the bar. Exit 1 = the mutant survived: C8 does not bite
-and you are not done. Exit 2 = the control never applied: fix the anchor, never paper over it.
-A `diff_hash` alone is not proof that anything ran — paste the literal red suite line.
+**Remove `diff_hash` from the evidence entirely** — not "in addition to" the pair, but instead of
+it. It is not evidence and citing it invites the next reader to accept it as such.
 
-Run the suite standalone before and after and paste both counts with both exit codes.
+## 2. One control per CHANGED FUNCTION, not one per lane
 
-## Constraints
+Enumerate every function this branch added or changed (`git diff main...HEAD` — **THREE dots**;
+two dots compare against main's current tip and misreport files main gained since you branched).
+Give each one its own mutation, applied **inside that function's body** — never a top-level insert,
+which reddens every suite for the wrong reason and reads as a pass.
 
-- Do NOT touch `plugins/leadv2/scripts/leadv2-dispatch-code.sh` — held by another session.
-- Do NOT touch `plugins/leadv2/scripts/leadv2-dispatch-ledger.sh` — this lane adds coverage for it,
-  it does not change it. If C8 cannot pass without changing the function, stop and say so.
-- No assertion is weakened; nothing goes into `tests/known-red-suites.txt`.
-- Do NOT touch `docs/leadv2/*`, `docs/LEAD_V2_STATE.md`, or `docs/handoff/dispatch-nw*` — concurrent
-  session state, not yours.
-- Commit the suite file the moment C8 is green, BEFORE running the mutation control. Force-add the
-  artifact (`git add -f`) — `docs/handoff/*/*` is gitignored at `.gitignore:49`, and that gitignore
-  is exactly how a finished worker's report was mistaken for a death last night.
+A changed function for which no mutation turns the suite red is a **coverage hole**. Report it as a
+finding. Do not quietly omit it, and do not weaken an assertion to manufacture a red.
 
-## Report
+Lane D3 (this row's sibling) shipped a second function with nothing behind it because one control
+was treated as covering the lane. That is the exact defect this requirement exists to prevent.
 
-Two suite counts, the mutation-control exit code with its `baseline_rc`/`mutated_rc` pair, the
-literal red line, and the commit shas. Nothing else.
+## 3. Ten consecutive runs, not one
+
+A suite that passes once is not green — intermittency is how a red main hides, and this fleet has
+had defects that showed up 2 times in 13. Report ten exit codes. If any run disagrees with the
+others, **that disagreement is the finding** and it outranks everything else in the report.
+
+## Also: a commit message must describe its own diff
+
+The previous round's commit said the symlink target was a temp dir. It was
+`~/.claude/leadv2-state/leadv2/active.yaml` — the shared state every session reads, not a temp
+path. A reader who trusts the message and not the diff makes the wrong call. Describe what you
+actually changed.
+
+## Bounds
+
+- Declared write set only. Do NOT touch `tests/run-all.sh` — put the `EXTRA_SUITE_MAP` row in your
+  report, ready to paste, and state plainly that CI does **not** select the suite yet.
+- Do NOT touch `docs/leadv2/` — it is shared state and another lane owns it.
+- Do NOT touch `leadv2-dispatch-code.sh`, `leadv2-claude-profile-select.sh`,
+  `lib/leadv2-route-arbiter.sh`.
+- Do not commit to `main`; do not add to `tests/known-red-suites.txt`.
+- Green under bash AND zsh, failing on disagreement — unquoted `$var` does not word-split in zsh,
+  so `for x in $list` iterates once over a glued blob.
+- A file counts as saved when it appears in `git ls-files`, checked by eye: `.gitignore` swallows
+  handoff paths silently and `git add` exits 0 while doing nothing.

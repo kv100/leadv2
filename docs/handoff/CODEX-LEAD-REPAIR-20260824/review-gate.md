@@ -1,0 +1,16 @@
+arms: codex
+fanout: 1/1 degraded=false launched=1 pool_ok=1 source=pool reason=none excluded=-
+verified: 0/0
+status: fail
+critical: 0
+high: 5
+medium: 0
+low: 0
+findings_source: finding_lines
+findings:
+- [High] plugins/leadv2/scripts/leadv2-dispatch-code.sh:3527 — The supposed owner check fails open on missing or unreadable YAML (3489-3501) and is separated from the bare task-id unregister, so a concurrent row refresh or worker handoff can s…
+- [High] plugins/leadv2/scripts/leadv2-dispatch-code.sh:5328 — After sourcing the registry enables errexit and pipefail, so a register failure or nonmatching session ID makes this unguarded assignment pipeline return nonzero (controlled shell…
+- [High] plugins/leadv2/scripts/leadv2-dispatch-code.sh:3394 — An INT or TERM after worktree creation and before line 3449 invokes only the global exit cleanup, which has no ws_base, leaving the disposable checkout registered and on disk despi…
+- [High] plugins/leadv2/scripts/leadv2-dispatch-code.sh:589 — Setting LEADV2_DISPATCH_ARCHITECT_FALLBACK=0 cannot restore the advertised byte-for-byte prior behavior because the same diff still changes CSV admission counting, v2 refusal handl…
+- [High] plugins/leadv2/scripts/leadv2-dispatch-code.sh:3290 — The Git worktree, descendant-kill, Codex, and GLM contracts driving fallback have no required live probe because the only added test explicitly never runs Git, the dispatcher, regi…
+report: docs/handoff/dispatch-PREPASS-PROVIDER-FALLBACK-01-R7/review-codex.md

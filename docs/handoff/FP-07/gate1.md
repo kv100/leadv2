@@ -1,0 +1,1 @@
+Gate-1 for FP-07: founder order 2026-08-28 in persona-engine lead session — "давай все задачи что ты не закрыл доделаем"; plan = docs/handoff/FP-07/mission.md + freepool-backlog §FP-07. Accepted by founder directly in chat.

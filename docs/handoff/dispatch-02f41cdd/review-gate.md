@@ -1,0 +1,9 @@
+status: fail
+critical: 0
+high: 1
+medium: 4
+low: 5
+findings_source: none
+findings: unavailable
+findings_reason: parse_failed
+report: docs/handoff/dispatch-02f41cdd-review/critic.full.md

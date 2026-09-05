@@ -1,0 +1,133 @@
+# BACKLOG-ONLY-GROWS-CLOSING-IS-MANUAL-01 — закрытие линии должно снимать строку бэклога
+
+**Приказ основателя 2026-09-04:** «надо чтобы задачи при закрытии удаляли тогда оттуда».
+
+## Что измерено, а что нет
+
+Измерено 2026-09-04 в `docs/tasks.yaml`: 224 открытых строки, дубликатов 0, «тонких» 0,
+и **не менее 37** из 195 строк с распознаваемым ID уже имеют коммит слияния в `main`.
+«Не менее» — потому что счёт шёл по заголовку коммита, а он врёт в обе стороны.
+Точное число не измерено и измерять его НЕ надо: задача не в переписи, а в том, чтобы
+следующая закрытая линия сняла свою строку сама.
+
+Механизм закрытия уже существует и работает: `scripts/task-close.sh` пишет в Supabase RPC
+`public.human_close_work_items`, а строка исчезает из сгенерированного зеркала
+`docs/tasks.yaml` при следующем `scripts/task-sync-yaml.sh`. **Ничего из этого писать заново
+не надо.** Дыра ровно одна: `leadv2-phase8-close.sh` эмитит ledger-событие `task_close`
+(строка ~473) и на этом останавливается — он никогда не вызывает `task-close.sh`.
+
+## Шаг 1 — перепись, до единой правки
+
+Ответь на четыре вопроса ФАКТАМИ из кода, не рассуждением. Каждый ответ — файл:строка.
+
+1. **Откуда phase8-close узнаёт ИМЯ задачи основателя?** У него есть `TASK_ID` — но у
+   диспатченной линии это сигнатура (`dispatch-4e975d5a`), а строка бэклога заведена на
+   `D1-SINGLE-WRITER-FOR-LANE-STATE`. Связка пишется в журнал как
+   `dispatch_task_bound task=<sig> founder_task=<ID>`. Найди ВСЕ места, где эта связка
+   доступна на момент закрытия (журнал, `HANDOFF_DIR`, переменная окружения, active.yaml),
+   и выбери то, что есть на КАЖДОМ пути закрытия, а не только на диспатченном.
+2. **Как имя задачи превращается в fingerprint строки?** `docs/tasks.yaml` ключуется на
+   `intent`, а `intent` начинается с ID. Резолвер должен быть однозначным: 0 совпадений и
+   ≥2 совпадений — оба НЕ закрывают ничего и оба логируются. Никогда не закрывай по
+   частичному совпадению.
+3. **Какие пути закрытия существуют помимо phase8?** Интерактивный лид, диспатченная линия,
+   отказ (`refused`), `no_work`. Закрывать строку можно ТОЛЬКО на исходе, который означает
+   сделанную работу. Отказ и `no_work` строку не трогают — иначе бэклог начнёт врать в
+   другую сторону, а это хуже, чем расти.
+4. **Что уже пыталось это делать и почему не сработало?** Проверь историю `git log -S` по
+   `task-close` в plugin-репо. Если попытка была и её сняли — причина снятия важнее твоего
+   плана.
+
+Перепись кладёшь в `docs/handoff/BACKLOG-ONLY-GROWS-CLOSING-IS-MANUAL-01/census.md`.
+**Если перепись покажет, что дыра не там, где сказано выше — пиши это прямо и останавливайся.**
+Посылка миссии сама может быть устаревшим артефактом; сегодня три из трёх проверенных строк
+бэклога оказались с мёртвой посылкой.
+
+## Шаг 2 — правка
+
+Одна: на успешном исходе phase8-close резолвит строку и вызывает `scripts/task-close.sh`
+с `--reason`, называющим линию. Не блокирующая: провал закрытия строки НЕ валит закрытие
+линии (лог `log_error`, продолжаем) — по той же причине, по которой это делает ledger-emit.
+
+Правило репо: `docs/tasks.yaml` — генерируемое зеркало, править его руками запрещено, и
+phase8 сам это проверяет на строке ~99. Твой путь идёт через RPC, зеркало не трогает.
+
+## Шаг 3 — доказательство (обязательное, иначе работа не принята)
+
+Сюита `tests/contract/phase8-closes-the-backlog-row.sh` с заголовком
+`# run-all-triggers: leadv2-phase8-close` (само-регистрация; `EXTRA_SUITE_MAP` удалён).
+
+1. **Настоящая функция под утверждением.** Гоняем НАСТОЯЩИЙ `leadv2-phase8-close.sh`,
+   подделываем на уровень ниже — сам `task-close.sh` заменяем перехватчиком, который
+   записывает свои аргументы. Сюита, которая мокает то, что проверяет, не доказывает ничего.
+2. **Объявленный негативный контроль, и ты его ЗАПУСКАЕШЬ.** Мутация вносится ВНУТРЬ тела
+   функции (вставка по номеру строки, попавшая на верхний уровень, красит все сюиты по
+   неверной причине и читается как успех — так уже было 2026-08-25). Мутации, минимум три:
+   (а) вызов `task-close.sh` удалён — сюита обязана покраснеть; (б) закрытие происходит и на
+   `refused` — обязана покраснеть; (в) резолвер закрывает при ≥2 совпадениях — обязана
+   покраснеть. Покажи вывод каждой красной.
+   **Осторожно:** если правило окажется реализовано в двух местах, единичная мутация одного
+   из них оставит утверждение выполнимым и контроль перестанет кусаться. Проверь, что копия
+   одна.
+3. **CI её ВЫБИРАЕТ.** Докажи через `LEADV2_RUN_ALL_SELECT_ONLY=1 bash tests/run-all.sh
+   --scope changed` (секунды вместо десяти минут). НИКОГДА не гоняй полный `tests/run-all.sh`
+   в живом чекауте: он перенаправляет пять симлинков control-plane во временный каталог и
+   удаляет их цели — это случилось сегодня.
+   Доказательство выбора снимай в ДВУХ чистых точках, а не мутацией файла: `sed -i` по сюите
+   делает её грязной, и `--scope changed` выберет её по имени файла, а не по правилу — это
+   ложный зелёный, я уже на него попадался.
+4. **Строка в каталоге мутаций** `tests/mutations/catalog.yaml`. Kill rate не имеет права
+   упасть.
+
+## Границы
+
+- Не трогай `docs/tasks.yaml` руками ни одной командой.
+- Не трогай `tests/known-red-suites.txt` / `known-failures.txt` иначе как на уменьшение.
+- Не делай перепись 224 строк — она уже назначена отдельным отложенным решением
+  `SD-BACKLOG-TRIAGE-AFTER-WAVES-01` и запускается, когда волны дойдут до нуля.
+- Не пушь в origin.
+
+## Готово =
+
+`census.md` + правка + `phase8-closes-the-backlog-row.sh` + вывод трёх красных негативных
+контролей + строка каталога + вывод `[SELECT]`, где сюита выбрана. Утверждение «должно
+работать» без вывода — не готово.
+
+## Шов плагин → репо (добавлено лидом, читать до Шага 2)
+
+`leadv2-phase8-close.sh` принадлежит ПЛАГИНУ (`~/Projects/leadv2`) и работает во всех репо.
+`scripts/task-close.sh` — репо-нативный: он ходит в Supabase-RPC именно persona-engine.
+Проверено 2026-09-04: сегодня в phase8-close НЕТ ни одного вызова репо-нативного
+`${PROJECT_ROOT}/scripts/...` — прецедента нет, шов ты создаёшь первым.
+
+Значит правило: плагин вызывает `${PROJECT_ROOT}/scripts/task-close.sh` **только если файл
+существует и исполняем**; если его нет — тихо пропустить (`log_info`, не `log_error`), потому
+что в m3-market и respiro-ios его нет и никогда не было. Плагин НЕ имеет права требовать
+наличия репо-нативного скрипта.
+
+Правки — в `~/Projects/leadv2`, сюита — в `plugins/leadv2/scripts/tests/`, а НЕ в
+`tests/contract/` persona-engine. Заголовок само-регистрации остаётся тот же.
+Один инод: никогда не делай реальную копию plugin-owned файла внутри проекта.
+
+---
+If you hit a decision you cannot safely make yourself (including destructive
+options, a policy conflict, or missing authorization), ask via the async
+question channel and wait for the answer rather than guessing or stalling:
+  bash "${CLAUDE_PLUGIN_ROOT}/../../scripts/leadv2-ask.sh" "dispatch-96d97702" "<question>" \
+    --option "a|<reversible label>" --option "b|<label>" --default-option "a" [--timeout <sec=1800>]
+It blocks until answered via `/leadv2 reply <q-id> <option>` and prints the
+chosen option. Every question must declare its clearly reversible option with
+`--default-option`; on timeout the lane proceeds on it and the decision is
+journaled and surfaced in open-threads. Without a default, the task is parked
+human-needed and its slot is freed. Do not use this for routine progress or
+confirmation-seeking; only for a decision you cannot make yourself.
+
+Before you finish, run your own falsification set and paste its raw output into
+your final report: `bash -n` every shell file you changed, `python3 -m
+py_compile` every Python file you changed, and the repo's changed-scope test
+runner. Show the red output you got and the green output after your fix. A lane
+whose self-check is missing or red is refused before any reviewer is spent on
+it -- you will have burned the lane for nothing.
+
+Commit your work on the lane branch before ending your session; an uncommitted
+exit is treated as an incident.
