@@ -432,5 +432,54 @@ else
   fail "arbiter-substitution sub=$(printf '%s' "$sub_out" | grep -c arbiter_lib_substituted) plain=$(printf '%s' "$plain_out" | grep -c arbiter_lib_substituted)"
 fi
 
+
+# (g7) GLM-NEVER-WINS-THE-ARBITER-01: a cell that fits kind AND size but is cut by
+#      require_trusted must be NAMED. The 2026-09-03 line `arm=sonnet
+#      reason=cheapest_capable chain=sonnet util_glm=13` was true and unreadable:
+#      the whole glm family had been removed before any price was compared (glm
+#      carried protected: false until 2026-09-04), and the line carried no token
+#      saying so, which is why the defect was filed against two innocent filters.
+#      The fixture pins its OWN matrix rather than the live yaml, so the case
+#      keeps measuring the FILTER after a policy flip changes who is trusted.
+cat >"$TMP/untrusted-glm.yaml" <<'YML'
+router_v2:
+  quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  capability_matrix:
+    - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: false, sizes: [standard], kinds: [code]}
+    - {arm: sonnet, provider: claude, model: sonnet, cost: 5, protected: true, sizes: [standard], kinds: [code]}
+YML
+run_y(){ LEADV2_ROUTE_ARBITER_ROUTING_YAML="$1" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state" ROUTE_TEST_QUOTA="$2" ROUTE_TEST_FREE_RC=0 bash -c 'source "$0"; route_arbiter worker "$1"' "$ARBITER" "$3" 2>&1; }
+rm -f "$TMP/state"
+g7p="$(run_y "$TMP/untrusted-glm.yaml" "$(quota 13 20 45)" '{"kind":"code","size":"standard","protected":true}')"
+rm -f "$TMP/state"
+g7c="$(run_y "$TMP/untrusted-glm.yaml" "$(quota 13 20 45)" '{"kind":"code","size":"standard"}')"
+if [[ "$g7p" == *'arm=sonnet '* && "$g7p" == *'arm_excluded=glm:untrusted'* \
+   && "$g7c" == *'arm=glm '* && "$g7c" != *'arm_excluded='* ]]; then
+  pass 'a require_trusted cut names the arm it removed (and is silent when nothing was cut)'
+else
+  fail "arm_excluded protected=$g7p | unprotected=$g7c"
+fi
+
+# (g7-gap) The same fact on the refusal line. `no_capable_cell` is read as a
+#      routing.yaml vocabulary gap; when a POLICY filter emptied the set instead,
+#      the refusal must say which arms it emptied it of, or the accusation lands
+#      on the config.
+cat >"$TMP/untrusted-only.yaml" <<'YML'
+router_v2:
+  quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  capability_matrix:
+    - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: false, sizes: [standard], kinds: [code]}
+YML
+rm -f "$TMP/state"
+g7g="$(run_y "$TMP/untrusted-only.yaml" "$(quota 13 20 45)" '{"kind":"code","size":"standard","protected":true}' || true)"
+rm -f "$TMP/state"
+g7gc="$(run_y "$TMP/untrusted-only.yaml" "$(quota 13 20 45)" '{"kind":"docs","size":"standard","protected":true}' || true)"
+if [[ "$g7g" == *'reason=no_capable_cell'* && "$g7g" == *'arm_excluded=glm:untrusted'* \
+   && "$g7gc" == *'reason=no_capable_cell'* && "$g7gc" != *'arm_excluded='* ]]; then
+  pass 'no_capable_cell separates a policy cut from a real config gap'
+else
+  fail "no_capable_cell policy=$g7g | vocabulary=$g7gc"
+fi
+
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

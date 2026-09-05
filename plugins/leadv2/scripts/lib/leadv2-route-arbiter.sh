@@ -451,6 +451,29 @@ cells=((data.get('router_v2') or {}).get('capability_matrix') or [])
 complexity=str(d.get('complexity','unknown')).lower()
 duration_class=str(d.get('duration_class','unknown')).lower()
 capable=[c for c in cells if mkind in c.get('kinds',[]) and size in c.get('sizes',[]) and (not require_trusted or c.get('protected',False)) and (allowed is None or c.get('arm') in allowed)]
+# GLM-NEVER-WINS-THE-ARBITER-01 (measured 2026-09-05): `reason=cheapest_capable
+# chain=sonnet` is a TRUE statement about a candidate set of ONE, and it reads
+# exactly like "the cheap arms were considered and lost on price". On 2026-09-03
+# the whole glm family was removed by require_trusted BEFORE any price was
+# compared -- glm carried `protected: false` in the matrix until GLM-DOES-ANY-
+# WORK-01 flipped it on 2026-09-04 -- and the line said nothing about it. The
+# defect was therefore filed against the wrong filter twice (task_class Light,
+# floor_mode) while the real cutter printed no token at all.
+#
+# Only TWO clauses of the comprehension above can drop a cell that already fits
+# the work's kind AND size: require_trusted and the caller's `allowed` list.
+# Those are the silent ones, and those are the ones named here. A kind/size
+# mismatch is deliberately NOT reported -- most cells miss on it by design, and
+# `kind_unmapped=`/`size_unmapped=` already cover the vocabulary case.
+#
+# Selection is untouched: this re-reads the same cells and decides nothing.
+_fit=[c for c in cells if mkind in c.get('kinds',[]) and size in c.get('sizes',[])]
+_arm_excluded={}
+for _c in _fit:
+    _a=_c.get('arm')
+    if require_trusted and not _c.get('protected',False): _arm_excluded[_a]='untrusted'
+    elif allowed is not None and _a not in allowed: _arm_excluded[_a]='not_allowed'
+_excl_tok=(' arm_excluded=%s' % ','.join('%s:%s' % (a_,r_) for a_,r_ in sorted(_arm_excluded.items()))) if _arm_excluded else ''
 # ARBITER-REMEMBERS-FAILURES-01 edit A (founder 2026-09-05) -- the arbiter must
 # remember which arms already failed THIS task.
 #
@@ -643,12 +666,12 @@ def _record(arm, model, tier, reason):
         pass
 if not capable:
     _record('refuse','none','none','no_capable_cell')
-    print('arm=refuse model=none tier=none reason=no_capable_cell kind=%s chain= %s%s%s' % (kind,ufmt(),_outage,_fm_tok))
+    print('arm=refuse model=none tier=none reason=no_capable_cell kind=%s chain= %s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_tok))
     raise SystemExit(68)
 ok=[c for c in capable if not capped(c.get('provider'))]
 if not ok:
     _record('refuse','none','none','all_arms_capped')
-    print('arm=refuse model=none tier=none reason=all_arms_capped kind=%s chain= %s%s%s' % (kind,ufmt(),_outage,_fm_tok))
+    print('arm=refuse model=none tier=none reason=all_arms_capped kind=%s chain= %s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_tok))
     raise SystemExit(3)
 # FP-08 fix-round (H1): demote freepool in the dimension the selector ACTUALLY
 # ranks by -- effective cost, the sort's dominant key. +100 clears the whole
@@ -866,6 +889,11 @@ _extra += (' headroom_unknown=%s' % _headroom_unknown[w['provider']]) if (_hw_w 
 # all, so a moved choice can be read straight off the line. Absent when nothing
 # was priced -- which is also the control that keeps the assertion honest.
 _extra += (' headroom_priced=%s' % ','.join('%s:%g' % (p_, w_) for p_, w_ in sorted(_headroom_priced.items()))) if _headroom_priced else ''
+# ...and the same fact on the winner's line, where it answers the question the
+# 09-03 evidence could not: was the chain short because nothing cheaper exists,
+# or because a policy filter emptied it before the price was read. Absent when
+# nothing was filtered -- that absence is the paired control.
+_extra += _excl_tok
 # FP-08 fix-round (H1/H3): the floor journal rides on the arbiter's OWN output
 # line for THIS invocation (never a cross-run state file a stale read could
 # misattribute), as explicit tokens -- not a Python bool printed raw, which
