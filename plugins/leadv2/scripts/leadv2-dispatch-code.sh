@@ -7799,6 +7799,22 @@ cmd_resolve() {
     if [[ -z "${lane_writes}" ]]; then
       lane_writes="$(_prepass_writes "${sig8}")"
       [[ -n "${lane_writes}" ]] && emit decision "lane_writes task=${sig8} source=prepass writes=${lane_writes}"
+      # LANE-WRITES-IS-EMPTY-98-PERCENT-01, re-measured 2026-09-05 over 30,267 prepass
+      # artifacts: the row's headline is refuted -- 28,227 of them (93.3%) DO carry a
+      # LANE_WRITES line, only 2,040 carry none, and just 18 have every entry rejected
+      # (all of those literally declare "none"). What is real, and what the row was
+      # feeling, is PARTIAL loss: 1,386 declarations have some entries kept and some
+      # dropped, so the lane runs with a scope quietly SMALLER than its author wrote.
+      # The refusal path already names rejected entries; this path never refuses, so
+      # until now it said nothing at all. Report it, change nothing: the kept set is
+      # exactly what it was.
+      if [[ -n "${lane_writes}" ]]; then
+        local _lw_narrowed
+        _lw_narrowed="$(_prepass_writes "${sig8}" dropped 2>/dev/null)"
+        if [[ -n "${_lw_narrowed}" ]]; then
+          emit decision "lane_writes_narrowed task=${sig8} kept=${lane_writes} dropped=${_lw_narrowed}"
+        fi
+      fi
     fi
     # The developer receives the independently-produced design -- but INLINE, and only
     # when one actually exists. Two failures on 2026-07-29 came from this line: it replaced
