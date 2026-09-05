@@ -1,0 +1,31 @@
+baseline (unmutated scratch tree): [SUITE-SELECTION-COVERAGE] pass=4 fail=0
+
+==== SUITE-SELECTION-GUARD-IGNORES-THE-MARKER
+file: plugins/leadv2/scripts/tests/test-suite-selection-coverage.sh
+sed:  s|grep -q '\^# run-all-triggers:' "$f"|grep -q '^# NEVER-MATCHES-run-all-triggers:' "$f"|
+expected to kill: case 1 — with the marker unreadable every suite becomes an orphan
+--- the mutated line, in context ---
+2:# run-all-triggers: run-all leadv2-run-all
+--- suite against the mutant ---
+FAIL: 1: test-acceptance-shape.sh test-active-register-miss.sh test-active-registry-failclosed.sh test-active-registry-update-phase.sh test-admission-class.sh t
+PASS: every name in unselected-by-design.txt names a suite that exists
+PASS: every declaration carries one of the four allowed reasons
+PASS: run-all.sh parses every marker in the tree (LIST_TRIGGERS rc=0, 720 rows)
+[SUITE-SELECTION-COVERAGE] pass=3 fail=1
+RESULT: ok — the suite goes RED under this mutation (rc=1)
+
+==== A-SUITE-SILENTLY-LOSES-ITS-TRIGGER
+file: plugins/leadv2/scripts/tests/test-active-registry-failclosed.sh
+sed:  s|^# run-all-triggers:.*$|# (marker removed by the negative control)|
+expected to kill: case 1 — the un-marked, un-declared suite is named as an orphan
+--- the mutated line, in context ---
+18:# (marker removed by the negative control)
+--- suite against the mutant ---
+FAIL: 1: test-active-registry-failclosed.sh 
+PASS: every name in unselected-by-design.txt names a suite that exists
+PASS: every declaration carries one of the four allowed reasons
+PASS: run-all.sh parses every marker in the tree (LIST_TRIGGERS rc=0, 719 rows)
+[SUITE-SELECTION-COVERAGE] pass=3 fail=1
+RESULT: ok — the suite goes RED under this mutation (rc=1)
+
+==== controls: ignores-marker=ok loses-trigger=ok

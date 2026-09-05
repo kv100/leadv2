@@ -220,3 +220,55 @@ mutations:
       s/return _proc_kind(pid) != "interactive"/return True/
     expected: killed
     note: "kills exactly 1 case (3); every no-process case stays green. _proc_kind() was built for this exact question by PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01 and the write-set guard never consulted it"
+
+  # SUITE-SELECTION-COVERS-140-OF-390-01 (2026-09-05). The first control mutates
+  # the guard's own predicate; the second mutates the SUITE CORPUS, which is the
+  # honest control here — it reproduces the production defect (a suite silently
+  # losing its trigger) rather than a proxy for it.
+  - id: suite-selection-guard-ignores-the-marker
+    product_flow: "a suite no change-scoped run ever selects proves nothing when it is green — 260 of 427 suites were in that state, including three named test-active-regist* while leadv2-active-registry.sh changed under them"
+    file: plugins/leadv2/scripts/tests/test-suite-selection-coverage.sh
+    suite: plugins/leadv2/scripts/tests/test-suite-selection-coverage.sh
+    anchor: |
+      grep -q '^# run-all-triggers:' "$f"
+    patch: |
+      s|grep -q '\^# run-all-triggers:' "$f"|grep -q '^# NEVER-MATCHES-run-all-triggers:' "$f"|
+    expected: killed
+    note: "kills case 1 only (every suite becomes an orphan); the declaration-file cases and the parser case stay green. Proves the guard reads the marker instead of assuming it"
+
+  - id: a-suite-silently-loses-its-trigger
+    product_flow: "the regression this guard exists to catch: a suite drops its `# run-all-triggers:` line and quietly leaves the change-scoped selection set without anything going red"
+    file: plugins/leadv2/scripts/tests/test-active-registry-failclosed.sh
+    suite: plugins/leadv2/scripts/tests/test-suite-selection-coverage.sh
+    anchor: |
+      # run-all-triggers:
+    patch: |
+      s|^# run-all-triggers:.*$|# (marker removed by the negative control)|
+    expected: killed
+    note: "kills case 1 and names EXACTLY the one suite that lost its marker — the mutation is applied to the corpus, not to the guard, so it reproduces the real defect"
+
+  # REVIEW-GATE-IS-MUTE-01 (2026-09-05). Both anchors are inside the verdict/
+  # fan-out block of leadv2-review-run.sh. The first restores the measured
+  # production output byte for byte; the second keeps the knowledge and removes
+  # only the saying, which is a different failure and reddens different cases.
+  - id: review-gate-calls-a-mute-arm-healthy
+    product_flow: "a review arm that RAN and produced no readable verdict contributed nothing, and the gate said `degraded=false` and listed it in `arms:` anyway — the lane merged on one opinion believing it had two"
+    file: plugins/leadv2/scripts/leadv2-review-run.sh
+    suite: plugins/leadv2/scripts/tests/test-review-gate-names-the-unreadable.sh
+    anchor: |
+      _REVIEW_UNREADABLE="${_REVIEW_UNREADABLE:+${_REVIEW_UNREADABLE},}$1=$2"
+    patch: |
+      s|  _REVIEW_UNREADABLE="\${_REVIEW_UNREADABLE:+\${_REVIEW_UNREADABLE},}\$1=\$2"|  :|
+    expected: killed
+    note: "kills cases 1, 2, 4; the verdict-unchanged, all-readable and no-readable-arm cases stay green. The mutant reproduces the live 2026-09-05 measurement exactly: `degraded=false ... reason=none` and `unreadable=none` beside a mute arm"
+
+  - id: review-gate-knows-and-does-not-say
+    product_flow: "the gate computes which arms it could not read and then does not print it — the same shape as the arbiter's unknown flag, which existed and never reached a decision"
+    file: plugins/leadv2/scripts/leadv2-review-run.sh
+    suite: plugins/leadv2/scripts/tests/test-review-gate-names-the-unreadable.sh
+    anchor: |
+      UNREADABLE_LINE="$(printf 'unreadable: %s'
+    patch: |
+      s|UNREADABLE_LINE="\$(printf 'unreadable: %s' "\${_REVIEW_UNREADABLE:-none}")"|UNREADABLE_LINE=""|
+    expected: killed
+    note: "kills cases 1 and 5 only — degraded is still forced true, so case 2 stays green. Proves the gate FILE is asserted, not just the decision line"
