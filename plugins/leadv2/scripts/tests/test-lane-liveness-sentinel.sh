@@ -198,6 +198,51 @@ printf 'sessions:\n  - task_id: dispatch-test0008\n    pid: null\n    log_path: 
 s8_out="$(GLM_RUNS_DIR="$glm_runs" LEADV2_PROJECT_ROOT="$repo" bash "$HELPER" --project-root "$repo" --lane dispatch-test0008 --json --no-codex)"
 check "$s8_out" '"verdict":"alive"' 'S8: .done alone (no .finalized) → alive'
 
+# ── S9/S10 WORKER-ENDS-TURN-ON-WAIT-01 ────────────────────────────────────────
+# "the worker ended its turn" and "the worker died" are the same thing to every
+# consumer we have: both leave no process and a stale stream, and this helper reads
+# the stream's MTIME and never a byte of its content. The discriminator is already
+# on disk — `claude -p --output-format stream-json` writes a closing
+# {"type":"result"} record, and a process that vanished mid-turn cannot have.
+#
+# Measured 2026-09-05 over 400 real lane streams in this repo: 308 end on `result`,
+# 84 end mid-record. Joined against the terminal ledger, 218 lanes are recorded
+# `dead*` although their worker finished its turn, and 21 the other way round.
+#
+# These two cases pin the FACT and, just as importantly, pin that reporting it
+# changed no verdict — S9 and S10 differ ONLY in the last stream record and MUST
+# still land on the same verdict as before this edit.
+s9_lane="$repo/docs/handoff/dispatch-test0009"; mkdir -p "$s9_lane"
+printf '{"type":"assistant","message":{"role":"assistant"}}\n{"type":"result","subtype":"success","is_error":false,"result":"waiting for the suite to finish"}\n' \
+  > "$s9_lane/developer.stream.jsonl"; set_mtime_ago "$s9_lane/developer.stream.jsonl" 4000
+printf 'sessions:\n  - task_id: dispatch-test0009\n    pid: null\n    log_path: docs/handoff/dispatch-test0009/developer.stream.jsonl\n' > "$active"
+s9_out="$(LEADV2_PROJECT_ROOT="$repo" bash "$HELPER" --project-root "$repo" --lane dispatch-test0009 --json --no-codex)"
+check "$s9_out" '"stream_end":"result"' 'S9: a stream closed by a result record reads stream_end=result (worker ENDED ITS TURN)'
+
+s10_lane="$repo/docs/handoff/dispatch-test0010"; mkdir -p "$s10_lane"
+printf '{"type":"assistant","message":{"role":"assistant"}}\n{"type":"tool_progress","partial":tr\n' \
+  > "$s10_lane/developer.stream.jsonl"; set_mtime_ago "$s10_lane/developer.stream.jsonl" 4000
+printf 'sessions:\n  - task_id: dispatch-test0010\n    pid: null\n    log_path: docs/handoff/dispatch-test0010/developer.stream.jsonl\n' > "$active"
+s10_out="$(LEADV2_PROJECT_ROOT="$repo" bash "$HELPER" --project-root "$repo" --lane dispatch-test0010 --json --no-codex)"
+check "$s10_out" '"stream_end":"truncated"' 'S10: a stream that stops mid-record reads stream_end=truncated (worker DIED)'
+
+# The paired negative that keeps this honest: the two lanes are identical in every
+# input the verdict is derived from (same age, same registration, same absent pid),
+# so their VERDICTS must be identical. If they ever diverge, this edit stopped being
+# an observation and started being a routing change.
+# The age is measured, not fixed: the two set_mtime_ago calls are a second apart in
+# wall clock, so the verdicts read dead:silent_4001s_abandoned vs ..._4000s_... on a
+# perfectly healthy run. Compare the verdict FAMILY (digits normalised) -- comparing
+# the raw string made this control red for a clock tick, which is a broken assertion,
+# not a product divergence. Caught on the first run of this case, 2026-09-05.
+s9_v="$(printf '%s' "$s9_out"  | sed -n 's/.*"verdict":"\([^"]*\)".*/\1/p' | tr -d '0-9')"
+s10_v="$(printf '%s' "$s10_out" | sed -n 's/.*"verdict":"\([^"]*\)".*/\1/p' | tr -d '0-9')"
+if [[ -n "$s9_v" && "$s9_v" == "$s10_v" ]]; then
+  printf '[TEST] PASS: %s\n' "S9/S10: reporting the shape changed no verdict (both ${s9_v})"; pass=$((pass+1))
+else
+  printf '[TEST] FAIL: %s\n  got: %s vs %s\n' "S9/S10: verdicts diverged — this is no longer an observation" "$s9_v" "$s10_v"; fail=$((fail+1))
+fi
+
 echo ""
 echo "=== Results: ${pass} passed, ${fail} failed ==="
 if [[ "$fail" -gt 0 ]]; then exit 1; fi

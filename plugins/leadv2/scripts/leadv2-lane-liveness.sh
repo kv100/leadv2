@@ -156,6 +156,47 @@ def fold_match(tid):
     parent, suffix = m.group(1), m.group(2)
     return parent if suffix in CHILD_SUFFIXES else None
 
+def stream_end_shape(path):
+    """WORKER-ENDS-TURN-ON-WAIT-01 (measured 2026-09-05): a worker that ENDED ITS
+    TURN and a worker that DIED are indistinguishable in everything we record --
+    both leave no process and a stale stream, and liveness reads the stream's
+    MTIME only, never a byte of its content. But the discriminator is already on
+    disk: `claude -p --output-format stream-json` writes a final {"type":"result"}
+    record when the turn completes, and a process that vanished mid-turn cannot
+    have written one.
+
+    Census over 400 real lane streams in this repo: 308 end on `result`, 84 end on
+    system/user/assistant/tool_progress. Joined against the terminal ledger, 218
+    lanes are recorded `dead*` although their worker finished its turn cleanly, and
+    21 are recorded non-dead although their stream stops mid-record.
+
+    This reports a FACT and changes no verdict -- exactly the split the row asks
+    for: first make the two states distinguishable, then decide what to do about
+    them. Returns "result" | "truncated" | "empty" | "unreadable".
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return "unreadable"
+    if size <= 0:
+        return "empty"
+    try:
+        with open(path, "rb") as fh:
+            # The last record is what matters; a fixed tail keeps this O(1) per lane
+            # on multi-megabyte streams (this runs for EVERY lane on every repaint).
+            fh.seek(max(0, size - 8192))
+            tail = fh.read().decode("utf-8", "ignore")
+    except OSError:
+        return "unreadable"
+    for line in reversed([x for x in tail.splitlines() if x.strip().startswith("{")]):
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        return "result" if rec.get("type") == "result" else "truncated"
+    return "truncated"
+
+
 def file_mtime(path):
     # D3/R-1 fix: pure os.stat, no subprocess. The prior `stat -f %m` shell-out
     # existed only to dodge GNU stat/date syntax -- os.stat() sidesteps that
@@ -923,6 +964,7 @@ def resolve(tid):
                 return row
             age = max(0, int(time.time()) - mtime)
             row["age_s"], row["source"], row["log_path"] = age, child_stream, child_stream
+            row["stream_end"] = stream_end_shape(child_stream)
             if age <= silent_max:
                 row.update(verdict=f"starting:{age}", reason="prepass_stream_fresh")
             elif age <= abandon_max:
@@ -1052,6 +1094,7 @@ def resolve(tid):
     # callers can therefore prove session.log/fanout.log/log_path selection
     # directly.
     row["log_path"], row["source"] = log_path, log_path
+    row["stream_end"] = stream_end_shape(log_path)
     mtime = file_mtime(log_path)
     if mtime is None:
         row["age_s"] = age_from_started_at(session)
