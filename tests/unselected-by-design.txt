@@ -1,0 +1,48 @@
+# unselected-by-design — suites that `run-all.sh --scope changed` must NOT select
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01, 2026-09-05.
+#
+# Silence is not a third answer. Every suite in the four discovery directories is
+# now either selectable by a change-scoped run (it carries a `# run-all-triggers:`
+# marker, or its name matches a production stem) or listed HERE with a reason.
+# A suite that is in neither place is a bug in this file, not an acceptable state.
+#
+# These still run under `--scope all` and, where listed, under run-core-offline.
+# Being here means "no production file change should pull this in", never
+# "never run me".
+#
+# Format: <suite basename> <TAB> <reason>
+# Reasons:
+#   writes-production   the suite writes over a file in plugins/leadv2/{scripts,hooks}/
+#                       and must never be pulled in by an unrelated change — one of
+#                       these destroyed a live lane's working copy on 2026-09-05
+#   needs-network       reaches an external API / ssh / gh; not hermetic
+#   no-production-file  tests the harness itself or pure fixtures; there is no
+#                       production file whose change should select it
+#   dead                the production file it tests no longer exists
+
+test-fp07-codex-rg-no-match.sh	writes-production
+test-claim-evidence-gate.sh	writes-production
+test-e2e-gate-arch-01.sh	writes-production
+test-e2e-gate-lane-root.sh	writes-production
+test-leadv2-router-v2-toggle.sh	writes-production
+test-one-copy-drift-hook-postsync.sh	writes-production
+test-review-gate-shows-findings.sh	writes-production
+test-known-red-allowlist-nested-match.sh	writes-production
+test-deny-floor.sh	writes-production
+test-quota-read-anthropic-liveness.sh	needs-network
+test-core-offline-lock-01.sh	no-production-file
+test-core-offline-root-arith.sh	no-production-file
+test-core-offline-shard-scope-01.sh	no-production-file
+test-core-offline-shards-01.sh	no-production-file
+test-core-offline-tmpdir-01.sh	no-production-file
+test-lane-behind-base.sh	no-production-file
+test-leadv2-causal-critique.sh	no-production-file
+test-leadv2-learn-freeform-flag.sh	no-production-file
+test-plan-arms-role-scoped.sh	no-production-file
+test-plan-run-arms-role-scoped.sh	no-production-file
+test-status-collector-facts.sh	no-production-file
+test-status-surface-parity.sh	no-production-file
+test-tracked-evidence-paths.sh	no-production-file
+test-workflows-copies-are-symlinks.sh	no-production-file
+test-glm-first-exception-admitted.sh	dead
