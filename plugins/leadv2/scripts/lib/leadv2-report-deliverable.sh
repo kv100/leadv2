@@ -29,6 +29,10 @@ lv2_deliverable_parse() { # <decl>
   # reject empty / absolute / traversal / interior-empty-segment paths
   [[ -n "${path}" && "${path}" != /* && "${path}" != "." && "${path}" != "/" ]] || return 1
   [[ "${path}" == ".." || "${path}" == ../* || "${path}" == */.. || "${path}" == */../* ]] && return 1
+  # reject repo control metadata (codex r4 finding 5): .git/config et al. are inside the
+  # tree and pass containment, but a declared "report" must never ship repository
+  # configuration — including credential-bearing remote URLs — to external review.
+  [[ "${path}" == ".git" || "${path}" == .git/* ]] && return 1
   case "/${path}/" in *//*) return 1 ;; esac
   printf 'report\x1f%s' "${path}"
 }
@@ -54,8 +58,11 @@ lv2_report_locate() { # <diff_root> <root> <rel>
     [[ "${phys_dir}" == "${phys_base}" || "${phys_dir}/" == "${phys_base}"/* ]] || continue
     # a same-volume HARDLINK escapes containment without escaping the path (codex
     # r2 finding 3): st_nlink > 1 means the inode is shared with something this find
-    # cannot see. A worker-written report is link-count 1 (BSD stat -f %l / GNU -c %h).
-    nlink="$(stat -f %l "${cand}" 2>/dev/null || stat -c %h "${cand}" 2>/dev/null || printf '1')"
+    # cannot see. A worker-written report is link-count 1. GNU form FIRST: on GNU stat,
+    # `-f %l` ALSO parses (filesystem mode: max filename length, usually 255), which
+    # would reject every report on Linux — and BSD stat has no `-c`, so the fallback
+    # order is unambiguous on both platforms (codex r4 finding 6).
+    nlink="$(stat -c %h "${cand}" 2>/dev/null || stat -f %l "${cand}" 2>/dev/null || printf '1')"
     [[ "${nlink}" =~ ^[0-9]+$ ]] || nlink=1
     (( nlink <= 1 )) || continue
     printf '%s' "${cand}"

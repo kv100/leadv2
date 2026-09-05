@@ -2496,16 +2496,42 @@ if [[ "${_pc_kind}" == "report" ]]; then
     _stamp_review_terminal blocked
     exit 5
   fi
-  # codex r3 finding 2: a report lane must not LAUNDER code changes. Dirt in the lane
-  # worktree outside the declared report (and the usual journal/handoff noise) means the
-  # lane changed source that would never be diff-reviewed — block it as unscoped_lane_work
-  # rather than let it land under a report verdict. Gated on _lane_root exactly like the
-  # diff-lane dirty check below: with no lane worktree, ROOT-side founder edits must never
-  # be mistaken for lane work.
-  if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] \
-     && git -C "${_lane_root}" status --porcelain --untracked-files=all 2>/dev/null \
-        | grep -vE '^.. "?docs/leadv2/|^.. "?docs/handoff/' \
-        | grep -vF "${_pc_report_rel}" | grep -q .; then
+  # codex r3 finding 2 + r4 findings 1/2: a report lane must not LAUNDER code changes.
+  # Two probes, both fail-closed, both gated on a resolved lane worktree exactly like the
+  # diff-lane dirty check below (with no lane worktree, ROOT-side founder edits must never
+  # be mistaken for lane work — and the ROOT-side report find is the design's own
+  # documented fallback for a worker that ran in the main checkout):
+  #   (1) COMMITTED changes: the pre-overwrite diff_file holds the lane's full diff vs
+  #       the dispatch base — a worker that committed source changes leaves a clean
+  #       status but a non-empty diff, so emptiness is checked BEFORE the prose
+  #       substitution clobbers it;
+  #   (2) WORKTREE dirt: status records are parsed, not substring-filtered — renames and
+  #       copies into the report path (`R old -> analysis/report.md`) are impure (the old
+  #       side is a source change), and the ONLY allowed record is a plain add/modify
+  #       whose path EXACTLY equals the declared report (journal/handoff noise exempt,
+  #       as in the diff-lane dirty check). A quoted porcelain path that fails the exact
+  #       compare fails closed.
+  _pc_report_pure=0
+  if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]]; then
+    # (1) committed + untracked changes vs the dispatch base, EXCLUDING the declared
+    # report path itself (the temp-index `add -N` in _pc_git_diff makes untracked files
+    # visible, so the report's own appearance must be filtered out, not relied on).
+    _pc_base_for_report="$(_pc_diff_base "${_lane_root}")"
+    if [[ -n "$(_pc_git_diff "${_lane_root}" "${_pc_base_for_report:-HEAD}" . ':(exclude)docs/leadv2' ':(exclude)docs/handoff' ":(exclude)${_pc_report_rel}")" ]]; then
+      _pc_report_pure=1
+    fi
+    if [[ "${_pc_report_pure}" != "1" ]]; then
+      while IFS= read -r _pc_st; do
+        [[ -z "${_pc_st}" ]] && continue
+        _pc_st_path="${_pc_st:3}"
+        [[ "${_pc_st_path}" == *" -> "* ]] && { _pc_report_pure=1; continue; }
+        case "${_pc_st_path}" in docs/leadv2/*|docs/handoff/*|"\"docs/leadv2/*"|"\"docs/handoff/*") continue ;; esac
+        case "${_pc_st:0:2}" in '??'|'A '|' M'|'M ') ;; *) _pc_report_pure=1 ;; esac
+        [[ "${_pc_st_path}" == "${_pc_report_rel}" ]] || _pc_report_pure=1
+      done < <(git -C "${_lane_root}" status --porcelain --untracked-files=all 2>/dev/null)
+    fi
+  fi
+  if [[ "${_pc_report_pure}" == "1" ]]; then
     printf 'status: blocked\nreason: unscoped_lane_work\nkind: report\ndeclared: %s\n' "${_pc_report_rel}" > "${HANDOFF}/review-gate.md"
     emit decision "review_gate task=${TASK} status=blocked reason=unscoped_lane_work kind=report terminal=refused cause=unscoped_lane_work declared=${_pc_report_rel}"
     _dl_note refused unscoped_lane_work "declared=${_pc_report_rel} kind=report"
@@ -3128,6 +3154,13 @@ if [[ -n "${FOUNDER_TASK_ID}" ]]; then
   fi
 fi
 
+# REPORT-ONLY-GATE-01 (codex review finding 5): the review engine does not carry
+# report-lane semantics (kind/deliverable/prose rubric), so an engine-mode PASS would
+# land a diff-shaped gate for a report lane. A report lane falls through to the inline
+# body instead -- skipped loudly, never silently.
+if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" && "${_pc_kind:-diff}" == "report" ]]; then
+  emit decision "review_engine task=${TASK} status=skipped reason=report_lane"
+fi
 # ONE-PATH-EVERYWHERE-01: when LEADV2_REVIEW_ENGINE=1, this lane's whole inline review
 # body (below) is replaced by a call to the sole-owner engine, leadv2-review-run.sh.
 # Flag DEFAULTS TO 0 -- when unset (the production default, everywhere, per the rollout

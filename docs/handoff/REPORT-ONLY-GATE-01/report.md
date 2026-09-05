@@ -23,6 +23,11 @@ plus the two blocked report-lane shapes:
 A diff lane blocked for other reasons (`unscoped_lane_work`, `asked_into_void`) gets the
 same additive `kind: diff` after `reason:`; existing keys are byte-identical.
 
+One further blocked shape exists after the cross-provider review round (below):
+`status: blocked` · `reason: harvest_failed` · `kind: report` · `declared: <rel path>` —
+the report was located and substantive but could not be materialised ROOT-side, so the
+lane fails closed rather than pass while advertising a deliverable that is not there.
+
 ## How a lane declares it
 
 `LANE_DELIVERABLE: report:<repo-relative path>` — precedence mirrors `LANE_WRITES`:
@@ -50,6 +55,86 @@ guard, findings rendering and pass/fail paths are untouched — a wrong analysis
 rejected by the same machinery that rejects a wrong diff. A report lane that passes
 stamps the unchanged `landed` terminal with `deliverable=docs/handoff/dispatch-<TASK>/report.md`
 and no commit sha.
+
+## Cross-provider review round (Codex adversarial, 2026-08-16)
+
+`codex-task.sh adversarial-review --base <pre-fix ref>` over the whole task diff returned
+`REVIEW_VERDICT: fail` with 5 high findings (saved as
+`docs/handoff/dispatch-5e57c5ff/review-codex.md`). Four were fixed in the same lane:
+
+1. **Symlink exfiltration** — `lv2_report_locate` now refuses a symlinked report file and
+   verifies the file's *physical* directory stays beneath the lane worktree / main
+   checkout (`pwd -P` containment), so a declaration can never harvest a host file into
+   the handoff and external review. Regression: test C7.
+2. **Harvest unverified** — the gate fails closed on harvest failure with a new blocked
+   cause `harvest_failed`, and `lv2_report_harvest` refuses a non-regular destination
+   (an existing directory at `report.md` used to make `mv` file the tmp inside it and
+   return success). Regression: test C8.
+3. **Reviewed bytes ≠ durable deliverable** — the review body is now read from the
+   *harvested* `docs/handoff/dispatch-<TASK>/report.md`, not the mutable worktree
+   source: review approves exactly the file a human later opens.
+4. **Review-engine mode dropped report semantics** — with `LEADV2_REVIEW_ENGINE=1`
+   (non-default, not production), a report lane now skips the engine loudly
+   (`review_engine … status=skipped reason=report_lane`) and falls through to the inline
+   review body, which carries the kind/deliverable/prose-rubric contract.
+
+The fifth — *a pre-existing file at the declared path satisfies the declaration without
+lane-attributable change* — is **accepted by design**: the mission (founder-authored)
+declares the deliverable path, the gate is deliberately dumb (§2.3: "non-trivial must be
+a fact a human can re-check by eye"), and the prose review judges the content. A
+pre-dispatch digest comparison would be a design change (new spawn-time state plumbing)
+and re-introduces exactly the both-directions misfiring the mission rejected in a
+heuristic. If a lane ever needs it, that is a follow-up task, not this one.
+
+## Cross-provider review round 2 (Codex adversarial, 2026-08-16)
+
+`review-codex-r2.md` returned fail with 6 highs. Five fixed, one held by design:
+
+1. **Arm recovery dropped the declaration** — `advance-arm` re-spawned the close gate
+   without `LEADV2_DISPATCH_LANE_DELIVERABLE`, so a recovered report lane was re-judged
+   as a diff lane (`no_work` despite its report). Fixed: `cmd_advance_arm` re-harvests
+   the declaration from the same persisted `lane-mission.md` the replacement worker
+   gets, and threads it as `spawn_product_close`'s 8th arg.
+2. **Hardlinks bypass containment** — `lv2_report_locate` refuses `st_nlink > 1`
+   (BSD `stat -f %l` / GNU `stat -c %h`): a worker-written report is link-count 1.
+   Regression: test C9.
+3. **Symlink at the destination satisfied harvest** — `-f`/`-ef` follow links, so a
+   `report.md` symlink to the worktree source skipped the copy and dangled after the
+   sweep. Harvest refuses a symlink destination outright. Regression: test C10.
+4. **Non-product classes never enforce a declaration** — unchanged behaviour (they never
+   ran the close gate), but now surfaced loudly:
+   `lane_deliverable … status=unenforced reason=non_product_class` instead of silence.
+5. **Reviewer never saw the mission** — the review body now embeds a bounded mission
+   excerpt (`LEADV2_REPORT_MISSION_MAX_BYTES`, default 4000) and the prose rubric gained
+   (e): an internally coherent but unrelated report FAILs.
+6. **Only a 60k prefix is reviewed** — **held by design**: `LEADV2_REPORT_REVIEW_MAX_BYTES`
+   head-truncation with an in-body notice naming the full harvested file is the scoped
+   design (§2.4). Full-report mandatory review is a follow-up if report sizes grow.
+
+The advance-arm threading (fix 1) is verified by inspection + syntax + the unchanged
+6b/6c dispatch-harness cases; a full offline advance-arm fixture would need the close
+gate's silent-arm probe machinery and is not in this suite.
+
+## Cross-provider review round 3 (Codex adversarial, 2026-08-16)
+
+`review-codex-r3.md` returned fail with 2 highs:
+
+1. **Report lane could launder code changes** — fixed: after the substantive check, a
+   report lane whose worktree is dirty *outside* the declared report (excluding the
+   usual `docs/leadv2` / `docs/handoff` noise, and gated on a resolved lane worktree
+   exactly like the diff-lane dirty check, so ROOT-side founder edits are never mistaken
+   for lane work) blocks as `unscoped_lane_work` with `kind: report` and a `refused`
+   terminal — source changes cannot land unreviewed under a report verdict.
+   Regression: test C11.
+2. **TOCTOU on the report pathname** — mitigated by construction, held: the report is
+   read only after `pc_await_worker_exit` (there is no concurrent writer to race), and
+   since round 1 the reviewed bytes come from the harvested snapshot, never a re-opened
+   path. A dirfd/O_NOFOLLOW implementation is not expressible in the repo's bash-3.2
+   portability envelope; if a sandboxed-worker threat model ever lands, that is the
+   follow-up.
+
+Final suite state: **13/13** post-fix, **5/5** red-first against pre-fix `b90e40e`,
+diff-lane golden compare byte-identical (C4), product-close family suites green.
 
 ## Files
 

@@ -8433,6 +8433,12 @@ ${mission}"
         _lane_mission_path="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-mission.md"
         mkdir -p "$(dirname "${_lane_mission_path}")" 2>/dev/null
         printf '%s' "${mission}" > "${_lane_mission_path}" 2>/dev/null || _lane_mission_path=""
+        # codex r4 finding 4: persist the VALIDATED declaration (CLI/row wins over the
+        # mission line) beside the mission, so advance-arm recovery re-threads the exact
+        # value -- not a re-derivation that silently drops a --lane-deliverable override.
+        if [[ -n "${LANE_DELIVERABLE_DECL:-}" ]]; then
+          printf '%s' "${LANE_DELIVERABLE_DECL}" > "${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-deliverable" 2>/dev/null || true
+        fi
       fi
       if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}" "${_lane_mission_path}" "${LANE_DELIVERABLE_DECL:-}"; then
         # The worker is already live; make the failed postflight launch visible rather than
@@ -8812,12 +8818,17 @@ cmd_advance_arm() {
   mission="$(cat "${mission_file}" 2>/dev/null)"
   [[ -n "${worktree}" && -d "${worktree}" ]] && WORK_ROOT="${worktree}"
 
-  # REPORT-ONLY-GATE-01 (codex r2 finding 2): recover the lane's deliverable
-  # declaration from the SAME persisted mission the replacement worker gets. Without
-  # this, a report lane recovered via advance-arm is re-judged as a diff lane and
-  # blocks no_work despite having produced its report.
+  # REPORT-ONLY-GATE-01 (codex r2 finding 2 + r4 finding 4): recover the lane's
+  # deliverable declaration. Prefer the VALIDATED declaration persisted at spawn time
+  # (it carries the higher-precedence --lane-deliverable / row value); fall back to
+  # re-harvesting the mission line. Without this, a report lane recovered via
+  # advance-arm is re-judged as a diff lane and blocks no_work despite its report.
   local _adv_deliverable=""
-  _adv_deliverable="$(_mission_deliverable "${mission}")"
+  local _adv_decl_file="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-deliverable"
+  if [[ -f "${_adv_decl_file}" ]]; then
+    _adv_deliverable="$(cat "${_adv_decl_file}" 2>/dev/null)"
+  fi
+  [[ -n "${_adv_deliverable}" ]] || _adv_deliverable="$(_mission_deliverable "${mission}")"
   if [[ -n "${_adv_deliverable}" ]] && ! lv2_deliverable_parse "${_adv_deliverable}" >/dev/null; then
     emit decision "lane_deliverable task=${sig8} status=ignored reason=unknown_kind decl=${_adv_deliverable} src=advance_arm"
     _adv_deliverable=""
