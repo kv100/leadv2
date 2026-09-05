@@ -82,7 +82,16 @@ else
 fi
 
 # Update last_seen in STATE.md
-sed -i.bak "s/^- last_seen_at:.*/- last_seen_at: $NOW/" "$STATE_FILE" && rm -f "${STATE_FILE}.bak"
+sed -i.bak "s/^- last_seen_at:.*/- last_seen_at: $NOW/" "$STATE_FILE"
+rm -f "${STATE_FILE}.bak"
+# PATCHERS-REPORT-SUCCESS-ON-ZERO-MATCHES-01: assert the POST-CONDITION, not that
+# the file changed -- a resume in the same second writes an identical timestamp and
+# a "did it change" check would abort correctly-working code. A STATE.md with no
+# `- last_seen_at:` line at all is malformed, and that is what must be loud.
+grep -q "^- last_seen_at: ${NOW}$" "$STATE_FILE" || {
+  printf 'FATAL: no "- last_seen_at:" line in %s -- timestamp NOT updated\n' "$STATE_FILE" >&2
+  exit 1
+}
 
 echo ""
 echo "--- Ready ---"

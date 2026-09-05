@@ -1017,6 +1017,9 @@ _write_auto_abort_decision() {
 
   # Mark state=paused in LEAD_V2_STATE.md
   if [[ -f "$state_md" ]]; then
+    # PATCHERS-REPORT-SUCCESS-ON-ZERO-MATCHES-01: zero matches is LEGITIMATE here
+    # -- the file may already read `status: paused` (a second pause) or carry a
+    # status this branch does not own. No assert; the justification is the fix.
     sed -i.bak 's/^status: active/status: paused/' "$state_md" 2>/dev/null || true
     rm -f "${state_md}.bak" 2>/dev/null || true
   fi
