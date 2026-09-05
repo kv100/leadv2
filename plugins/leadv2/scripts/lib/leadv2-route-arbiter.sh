@@ -47,18 +47,38 @@ _arb_fault_detail() {  # <arbiter stdout> -> "arb_reason=<r> arb_kind=<k>"
 
 route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   local role="${1:-}" descriptor="${2:-}" here routing live free_gate free_rc quota_json
-  [[ "$role" == worker || "$role" == reviewer ]] || return 64
+  # ROUTE-ARBITER-DIES-SILENTLY-ON-LINUX-01, the bash half. The filed row named ONE
+  # mute exit (python's `except: raise SystemExit(2)`); measuring it turned up four
+  # more, right here -- every precondition below returned a bare number with zero
+  # bytes on stdout AND stderr. The rc values are distinct and callers do branch on
+  # them (leadv2-dispatch-code.sh journals arbiter_broken rc=<n>), but a human or a
+  # suite reading the streams saw nothing at all, so "no arbiter available",
+  # "routing config unreadable" and "the quota probe itself failed" were one
+  # indistinguishable silence. Found by a suite case written for the python guard
+  # that pointed the routing yaml at a missing file and got back nothing.
+  # Codes are UNCHANGED -- only the silence goes.
+  _arb_fatal() { printf '[route-arbiter] FATAL rc=%s reason=%s detail=%s\n' "$1" "$2" "$3" >&2; return "$1"; }
+  [[ "$role" == worker || "$role" == reviewer ]] || _arb_fatal 64 bad_role "role='${role}' (expected worker|reviewer)" || return 64
   here="$(cd "$(leadv2_route_arbiter_script_dir)/.." && pwd)"
   routing="${LEADV2_ROUTE_ARBITER_ROUTING_YAML:-${here}/../config/leadv2-routing.yaml}"
-  [[ -r "$routing" ]] || return 65
+  [[ -r "$routing" ]] || _arb_fatal 65 routing_yaml_unreadable "path='${routing}'" || return 65
   # T17 fix-round (H4): honour the repo's established quota-live seam name
   # (LEADV2_QUOTA_LIVE -- leadv2-burn-governor.sh, leadv2-glm-quota-gate.sh,
   # leadv2-main-model-check.sh) before falling to the arbiter-only spelling,
   # so a caller/test that stubs the common seam also stubs the arbiter.
   live="${LEADV2_ROUTE_ARBITER_QUOTA_LIVE:-${LEADV2_QUOTA_LIVE:-${here}/leadv2-quota-live.sh}}"
-  [[ -x "$live" || -f "$live" ]] || return 66
+  [[ -x "$live" || -f "$live" ]] || _arb_fatal 66 quota_probe_missing "path='${live}'" || return 66
   # A single quota-live json invocation obtains GLM, Codex and Claude windows.
-  quota_json="$(bash "$live" json 2>/dev/null)" || return 67
+  # Its stderr used to go to /dev/null, so a probe that failed loudly arrived as a
+  # bare rc 67 -- our own log lying zero about an error the probe had already
+  # written down. Keep the redirect off the happy path's output, keep the message.
+  local _q_err; _q_err="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/arb-q.$$")"
+  quota_json="$(bash "$live" json 2>"${_q_err}")" || {
+    _arb_fatal 67 quota_probe_failed "probe='${live}' stderr='$(head -c 300 "${_q_err}" 2>/dev/null | tr '\n' ' ')'"
+    rm -f "${_q_err}" 2>/dev/null
+    return 67
+  }
+  rm -f "${_q_err}" 2>/dev/null
   free_gate="${LEADV2_ROUTE_ARBITER_FREEPOOL_GATE:-${here}/lib/leadv2-freepool-gate.sh}"
   free_rc=1
   free_reason=""
@@ -94,13 +114,41 @@ route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   ROUTE_ARBITER_EVENTS_JOURNAL="${LEADV2_ROUTE_ARBITER_EVENTS_JOURNAL:-${HOME}/.claude/cache/leadv2-events/leadv2.jsonl}" \
   python3 - "$routing" <<'PY'
 import json, os, sys, tempfile
+# ROUTE-ARBITER-DIES-SILENTLY-ON-LINUX-01 (2026-09-05). These four loads shared one
+# `except Exception: raise SystemExit(2)`, and a bare SystemExit(int) prints NOTHING:
+# rc=2 with zero bytes on stdout AND stderr. That is indistinguishable from a crash,
+# a missing interpreter and a refusal, so the measured Linux failure (identical call,
+# rc=2, both streams empty, while macOS routed normally) started every investigation
+# with no information at all -- and, because every arbiter-dependent suite runs
+# through this call, it made those suites meaningless on Linux rather than red.
+#
+# The dominant cause is a DEPENDENCY, not a platform bug: macOS python3 ships PyYAML
+# and a bare debian image does not, so `import yaml` raises here and the whole
+# arbiter dies mute. Splitting the four loads costs nothing and turns a silent rc=2
+# into a sentence naming which input could not be read. rc stays 2 -- callers already
+# treat it as the fail-open-to-ladder signal (leadv2-dispatch-code.sh arbiter_broken)
+# and changing it would change routing behaviour, which this fix must not do.
+def _fatal(reason, detail, hint=''):
+    sys.stderr.write('[route-arbiter] FATAL rc=2 reason=%s detail=%s%s\n'
+                     % (reason, detail, (' hint=%s' % hint) if hint else ''))
+    raise SystemExit(2)
 try:
     import yaml
+except Exception as _e:
+    _fatal('pyyaml_missing', '%s: %s' % (type(_e).__name__, _e),
+           'install PyYAML (apt: python3-yaml, pip: pyyaml). macOS python3 ships it, a bare linux image does not.')
+try:
     data=yaml.safe_load(open(sys.argv[1])) or {}
+except Exception as _e:
+    _fatal('routing_yaml_unreadable', '%s: %s path=%s' % (type(_e).__name__, _e, (sys.argv[1] if len(sys.argv) > 1 else '<none>')))
+try:
     d=json.loads(os.environ['ROUTE_ARBITER_DESCRIPTOR'])
+except Exception as _e:
+    _fatal('descriptor_unreadable', '%s: %s' % (type(_e).__name__, _e))
+try:
     q=json.loads(os.environ['ROUTE_ARBITER_QUOTA'])
-except Exception:
-    raise SystemExit(2)
+except Exception as _e:
+    _fatal('quota_unreadable', '%s: %s' % (type(_e).__name__, _e))
 role=os.environ['ROUTE_ARBITER_ROLE']; free_ok=os.environ.get('ROUTE_ARBITER_FREEPOOL_RC')=='0'
 # FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01: the gate's named refusal reason
 # (arm_down|gate_broken|pin_drift), parsed upstream from the gate's stderr

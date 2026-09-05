@@ -591,7 +591,29 @@ fi
 # measured defect here, not the downgrade itself.
 _ROUTE_FAIL_OPEN=""
 ROUTE_ARBITER_LIB="${LEADV2_ROUTE_ARBITER_LIB:-${SCRIPT_DIR}/lib/leadv2-route-arbiter.sh}"
-[[ -f "${ROUTE_ARBITER_LIB}" ]] || ROUTE_ARBITER_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh"
+# TEST-ROUTE-ARBITER-CASE-E-RED-ON-MAIN-01 (2026-09-05): the structural guard on
+# the next line (df19ece6, 2026-08-30) silently substitutes the CANONICAL arbiter
+# when the resolved one is absent. That is the right behaviour -- a consumer repo
+# with a broken symlink still routes -- but it was mute, so a broken install and a
+# healthy one produced byte-identical output. Two costs, both paid: a repo whose
+# arbiter went missing kept working while nobody learned it was running someone
+# else's file, and test-route-arbiter.sh case (e), which makes the arbiter absent
+# by pointing LEADV2_ROUTE_ARBITER_LIB at a deleted path, has been red on main
+# ever since -- its premise became unreachable and the failure named no cause.
+# The substitution stays; from here it says so. stderr and not the journal on
+# purpose: this runs at file scope, before the emitters exist.
+if [[ ! -f "${ROUTE_ARBITER_LIB}" ]]; then
+  _lv2_arb_missing="${ROUTE_ARBITER_LIB}"
+  ROUTE_ARBITER_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh"
+  if [[ -f "${ROUTE_ARBITER_LIB}" ]]; then
+    printf '[leadv2-dispatch-code] arbiter_lib_substituted missing=%s using=%s reason=canonical_fallback\n' \
+      "${_lv2_arb_missing}" "${ROUTE_ARBITER_LIB}" >&2
+  else
+    printf '[leadv2-dispatch-code] arbiter_lib_absent missing=%s canonical=%s reason=no_arbiter_anywhere\n' \
+      "${_lv2_arb_missing}" "${ROUTE_ARBITER_LIB}" >&2
+  fi
+  unset _lv2_arb_missing
+fi
 [[ -f "${ROUTE_ARBITER_LIB}" ]] && source "${ROUTE_ARBITER_LIB}" || true
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
@@ -1963,11 +1985,22 @@ except Exception:
 # after=unexplained rather than nothing -- the silent case the census says does not
 # exist would then say so itself instead of hiding as a missing token.
 # Observability only: no candidate, cost or order is touched by this function.
-_route_arm_source_suffix() { # <landed> <arbiter_pick> <depth> <last_attempt>
-  local landed="$1" pick="$2" depth="$3" last="$4"
+# The ladder depth is read from `attempted` HERE rather than passed in, because
+# the callers cannot safely touch it: on the fail-open path (arbiter lib absent,
+# test-route-arbiter.sh case (e)) the array is never declared, and `set -u` turns
+# ${#attempted[@]} at the callsite into `unbound variable` mid-dispatch. Bash's
+# dynamic scoping lets this function see the caller's local, so the guard lives in
+# one place. Caught by case (e) on 2026-09-05 -- the case that catches it is the
+# one that was ALREADY red for its own older reason, so the suite stayed green.
+_route_arm_source_suffix() { # <landed> <arbiter_pick>
+  local landed="$1" pick="$2" n=0 last=""
   [[ -z "${pick}" || "${landed}" == "${pick}" ]] && return 0
+  if declare -p attempted >/dev/null 2>&1; then
+    n=${#attempted[@]}
+    (( n > 0 )) && last="${attempted[n-1]}"
+  fi
   printf ' arbiter_pick=%s arm_source=ladder_fallback depth=%s after=%s' \
-    "${pick}" "${depth:-0}" "${last:-unexplained}"
+    "${pick}" "${n}" "${last:-unexplained}"
 }
 
 _arm_exception_bump() {
@@ -8522,7 +8555,7 @@ ${mission}"
         fi
         [[ -n "${_exc_reason}" ]] && { _arm_exception_bump "${_exc_reason}" "${sig8}" || true; }
       fi
-      _ROUTE_ARM_SRC="$(_route_arm_source_suffix "${candidate}" "${_arb_arm:-}" "${#attempted[@]}" "${attempted[*]: -1}")"
+      _ROUTE_ARM_SRC="$(_route_arm_source_suffix "${candidate}" "${_arb_arm:-}")"
       emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}${_ROUTE_ARM_SRC}${_ROUTE_FAIL_OPEN}"
       printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s%s%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}" "${_ROUTE_ARM_SRC}" "${_ROUTE_FAIL_OPEN}"
       # FP-06: dispatch-attempt terminal -- the confirmed live spawn IS this
@@ -8698,7 +8731,7 @@ ${mission}"
       ;;
     4)
       if [[ "${spawn}" != "1" ]]; then
-        _ROUTE_ARM_SRC="$(_route_arm_source_suffix "${candidate}" "${_arb_arm:-}" "${#attempted[@]}" "${attempted[*]: -1}")"
+        _ROUTE_ARM_SRC="$(_route_arm_source_suffix "${candidate}" "${_arb_arm:-}")"
         emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}${_ROUTE_ARM_SRC}${_ROUTE_FAIL_OPEN}"
         printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s%s%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}" "${_ROUTE_ARM_SRC}" "${_ROUTE_FAIL_OPEN}"
         emit decision "dispatch_rolled_back reason=no_spawn_dry_run task=${sig8}"

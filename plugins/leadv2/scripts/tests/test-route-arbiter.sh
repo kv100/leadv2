@@ -80,11 +80,20 @@ s2="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"standard"}')"
 if [[ "$s1" == *'arm=glm-flash '* && "$s2" == *'arm=glm-flash '* ]]; then pass 'standard cell deterministically picks glm-flash (cost, not stickiness)'; else fail "standard-cell outputs=$s1 | $s2"; fi
 
 # (e) The dispatcher must retain the ladder when its arbiter file is absent.
+# TEST-ROUTE-ARBITER-CASE-E-RED-ON-MAIN-01: this case was red on main from
+# 2026-08-30 to 2026-09-05 and the failure named no cause. Pointing
+# LEADV2_ROUTE_ARBITER_LIB at a deleted path stopped making the arbiter absent
+# when df19ece6 added a structural guard that falls back to the CANONICAL
+# checkout -- so the real arbiter loaded, `arbiter_broken` was never emitted, and
+# the case asserted a state it could no longer produce. Measured 2026-09-05: of
+# the two tokens it requires, route_resolved was present and arbiter_broken was
+# not; the working directory changed only which noise preceded that same verdict.
+# LEADV2_CANONICAL_ROOT is pinned into the fixture so the fallback misses too.
 REPO="$TMP/repo"; mkdir -p "$REPO/.claude/ref" "$REPO/docs/leadv2"
 git -C "$REPO" init -q -b main; git -C "$REPO" config user.email t@t; git -C "$REPO" config user.name t
 touch "$REPO/seed"; git -C "$REPO" add seed; git -C "$REPO" commit -qm seed
 WORKER="$TMP/worker.sh"; printf '#!/usr/bin/env bash\nprintf "PID=%%s LABEL=t SESSION_ID=t\\n" "$$"\n' >"$WORKER"; chmod +x "$WORKER"
-out="$(CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DIR="$TMP/cache" LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" LEADV2_ROUTE_ARBITER_LIB="$TMP/deleted-route-arbiter.sh" GLM_POLICY_RESOLVER="$TMP/missing.py" bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'fallback test' --kind code --protected --no-spawn --writes src/x.py 2>&1 || true)"
+out="$(CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DIR="$TMP/cache" LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" LEADV2_ROUTE_ARBITER_LIB="$TMP/deleted-route-arbiter.sh" LEADV2_CANONICAL_ROOT="$TMP/no-canonical" GLM_POLICY_RESOLVER="$TMP/missing.py" bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'fallback test' --kind code --protected --no-spawn --writes src/x.py 2>&1 || true)"
 if [[ "$out" == *'arbiter_broken'* && "$out" == *'route_resolved'* ]]; then pass 'missing arbiter falls open to ladder and dispatch resolves'; else fail "fallback output=$out"; fi
 
 # (f) T17 C1: an out-of-vocabulary --kind (the real caller values
@@ -370,6 +379,57 @@ if [[ "$starve_off" == *'arm=codex '* && "$starve_off" != *'headroom_'* ]]; then
   pass 'LEADV2_ARBITER_HEADROOM_GRADIENT=0 restores the cliff in one flag'
 else
   fail "headroom-killswitch starve_off=$starve_off"
+fi
+
+
+# (s1) ROUTE-ARBITER-DIES-SILENTLY-ON-LINUX-01: four input loads shared one
+# `except Exception: raise SystemExit(2)`, and a bare SystemExit(int) prints
+# nothing — rc=2 with zero bytes on stdout AND stderr, indistinguishable from a
+# crash, a missing interpreter or a refusal. Measured on real linux 2026-09-05
+# (python:3.11-slim, no PyYAML): before, rc=2 stderr_bytes=0; after, rc=2
+# stderr_bytes=207 naming pyyaml_missing. With PyYAML installed the SAME call on
+# the SAME linux returns rc=0 and a 552-byte route line, so the platform half of
+# that row is refuted: it is a dependency, not a platform bug.
+# Here the reachable-on-macOS half of the same guard is asserted: an unreadable
+# routing yaml. Control: a healthy run must print no FATAL at all.
+fatal_out="$(LEADV2_ROUTE_ARBITER_ROUTING_YAML="$TMP/no-such-routing.yaml" \
+  LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" \
+  LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-fatal" ROUTE_TEST_QUOTA="$(quota 10 20 20)" ROUTE_TEST_FREE_RC=1 \
+  bash -c 'source "$0"; route_arbiter worker "$1"' "$ARBITER" '{"kind":"code","size":"standard"}' 2>&1 || true)"
+ok_out="$(run "$(quota 10 20 20)" 1 '{"kind":"code","size":"standard"}' 2>&1)"
+# rc is 65 here, not 2: the mute exit the row named was python's SystemExit(2),
+# but measuring it turned up four MORE mute exits in the bash preconditions, and
+# an unreadable routing yaml is caught by that half first (return 65). The codes
+# are deliberately unchanged -- callers journal them as arbiter_broken rc=<n>;
+# only the silence is gone. My first version of this assertion said rc=2 and
+# failed against a correct product line.
+if [[ "$fatal_out" == *'FATAL rc=65 reason=routing_yaml_unreadable'* && "$ok_out" != *'FATAL'* ]]; then
+  pass 'an unreadable input names itself instead of exiting mute'
+else
+  fail "silent-exit fatal=$fatal_out ok=$ok_out"
+fi
+
+# (s2) TEST-ROUTE-ARBITER-CASE-E-RED-ON-MAIN-01, the product half. When the
+# resolved arbiter path does not exist, leadv2-dispatch-code.sh falls back to the
+# CANONICAL checkout (df19ece6, 2026-08-30). That is right — a consumer repo with
+# a broken symlink still routes — but it was mute, so a broken install and a
+# healthy one produced byte-identical output, and case (e) above went red for six
+# days with its failure naming no cause. Control: an untouched run resolves its
+# own arbiter and must NOT claim a substitution.
+sub_out="$(CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-sub" \
+  LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
+  LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" LEADV2_ROUTE_ARBITER_LIB="$TMP/deleted-route-arbiter.sh" \
+  bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'substitution test' --kind code --no-spawn --writes src/x.py 2>&1 || true)"
+plain_out="$(CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-plain" \
+  LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
+  LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
+  bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'plain test' --kind code --no-spawn --writes src/x.py 2>&1 || true)"
+if [[ "$sub_out" == *'arbiter_lib_substituted'* && "$plain_out" != *'arbiter_lib_substituted'* ]]; then
+  pass 'a dispatcher running someone else'"'"'s arbiter says so'
+else
+  fail "arbiter-substitution sub=$(printf '%s' "$sub_out" | grep -c arbiter_lib_substituted) plain=$(printf '%s' "$plain_out" | grep -c arbiter_lib_substituted)"
 fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
