@@ -684,3 +684,15 @@ mutations:
       the pre-fix shape, where the journal carried the rc alone
     expected: killed
     note: "13/1 -> the two (g) presence assertions fail. Runs on every CI selection: the control is case (g-red) INSIDE the suite, not a hand-applied mutation. It also refuses to pass when the green half did not hold (prints `control NOT EVALUATED`), because absence proves nothing unless presence was shown first -- measured 2026-09-05, when a broken fixture made this control green over a completely inert scenario"
+
+  - id: phase-policy-resolver-accepts-any-file-at-the-legacy-name
+    product_flow: "four readers want the PHASE POLICY document (phases / stop_rules / floor_rules / phases.glm_policy.codex_quota_gate) while a DIFFERENT document -- the router registry -- shares its old filename. The resolver must select by the document's SHAPE and refuse the wrong one out loud, because a silent substitution here routes every phase/step off the wrong table"
+    file: plugins/leadv2/scripts/lib/leadv2-phase-policy-path.sh
+    suite: plugins/leadv2/scripts/tests/test-phase-policy-document.sh
+    anchor: |
+      if _lv2_is_phase_policy_doc "${_old}"; then
+    patch: |
+      replaced with `if [[ -r "${_old}" ]]; then` -- the pre-fix behaviour of
+      trusting whatever sits at the legacy filename
+    expected: killed
+    note: "case (b) goes red: with the registry at the legacy name the mutated resolver returns it (rc=0) instead of refusing with `NOT the phase-policy document`. Applied by regex inside the function body, never by line number, and it runs IN-SUITE as case (R) on every CI selection rather than by hand. (R) also refuses to pass when case (b) was not green first -- absence proves nothing unless presence was shown. Cases (f)/(g) cover the second half of the fix and discriminate: the phase policy gives tier=volume, the registry alone tier=standard"
