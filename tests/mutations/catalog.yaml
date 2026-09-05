@@ -564,3 +564,25 @@ mutations:
       a second spawn-shaped line inserted directly under it
     expected: killed
     note: "30/0 -> 29/1, naming leadv2-active-registry.sh:324 as NEW rather than reading it as the known site having moved. Same subtlety as liveness-tristate-01: the list counts findings per file, so it excuses a violation and never a file"
+
+  - id: sonnet-launcher-never-receives-the-resolved-effort
+    product_flow: "EFFORT-IS-NOT-WIRED-01: the arbiter resolves an effort tier and the dispatcher forwards it onto each arm's own launch parameter -- claude-subsession.sh takes --effort and no --tier"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    suite: plugins/leadv2/scripts/tests/test-effort-routing.sh
+    anchor: |
+      [[ -n "${RESOLVED_EFFORT:-}" ]] && _sonnet_effort_args=(--effort "${RESOLVED_EFFORT}")
+    patch: |
+      _sonnet_effort_args=() -- the resolved effort never reaches the launcher
+    expected: killed
+    note: "13/0 -> red on the sonnet argv case. Before 2026-09-05 this case could not fail for its own reason: the fixture pinned its arm by quota shaping, which stopped isolating anything once glm-flash was added (c944b6e0) and glm became eligible for every kind (dbcb092f)"
+
+  - id: glm-family-effort-flag-not-applied
+    product_flow: "the resolved effort reaches the glm-family launcher as a flag (leadv2-dispatch-code.sh:5730, effort_applied ... mechanism=flag)"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    suite: plugins/leadv2/scripts/tests/test-effort-routing.sh
+    anchor: |
+      emit decision "effort_applied by=router arm=${arm} task=${sig8} effort=${_glm_effort} think=${_glm_think}
+    patch: |
+      the decision is emitted as effort_skipped instead
+    expected: killed
+    note: "13/0 -> red on the glm case. This case used to assert effort_dropped reason=no_effort_control for glm; glm gained an effort knob and the case was never updated. The arms that genuinely have none -- kimi (:5794) and freepool (:5844) -- are UNCOVERED by this suite, stated in the suite's own text rather than faked"
