@@ -14,8 +14,14 @@
 # (artifacts under docs/handoff/PHASE-GATE-DEFAULT-CLASS-ESCAPES-IT-01/
 # mutation-control/; the warn-trace control ran as a unified-diff patch —
 # macOS BSD sed degenerates its `${...}`-bearing anchor into an empty match).
+# 2026-09-05 ARBITER-REMEMBERS-FAILURES-01: +2 entries, 10/10 killed (artifacts
+# under docs/handoff/ARBITER-REMEMBERS-FAILURES-01/mutation-control/ — two
+# leadv2-mutation-control.sh runs, plus run.sh, an independent harness whose log
+# shows WHICH cases each mutation reddens; note that the canonical runner's
+# `red_line=` field quoted a PASS line on the second control, so read the verdict
+# from its exit status and from negative-controls.log, not from that field).
 # The kill rate has no earlier value in this repo — this catalog is the first
-# — so "kill rate must not drop" starts at 3/3, now 8/8.
+# — so "kill rate must not drop" starts at 3/3, then 8/8, now 10/10.
 
 mutations:
   - id: phase8-backlog-row-call-removed
@@ -124,3 +130,29 @@ mutations:
     patch: |
       _arb_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*reason=\([^ ]*\).*/\1/p')"
     expected: killed
+
+  # ARBITER-REMEMBERS-FAILURES-01 (founder 2026-09-05). Both anchors sit INSIDE a
+  # function body of the arbiter's python heredoc, so the mutant changes routing
+  # behaviour rather than merely breaking the file — a top-level insert would
+  # redden every suite for the wrong reason and read like a successful control.
+  - id: arbiter-failure-memory-stops-counting
+    product_flow: "an arm that spawned and produced nothing twice on THIS task signature must lose its turn to the next arm in the chain"
+    file: plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+    suite: plugins/leadv2/scripts/tests/test-route-arbiter-failure-memory.sh
+    anchor: |
+      if arm: counts[arm]=counts.get(arm,0)+1
+    patch: |
+      if arm: pass
+    expected: killed
+    note: "kills 4 cases (the ban, its absence from chain=, threshold=2, all-banned yielding); every edit-B case stays green, so the control is specific"
+
+  - id: arbiter-unknown-is-capped-again
+    product_flow: "a provider whose quota probe did not answer is NOT a busy provider: it stays selectable (demoted) and is named by probe_outage= instead of being absorbed into all_arms_capped"
+    file: plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+    suite: plugins/leadv2/scripts/tests/test-route-arbiter-failure-memory.sh
+    anchor: |
+      if unk.get(provider): return False
+    patch: |
+      if False: return False
+    expected: killed
+    note: "kills exactly 1 case (probe outage still refused); every edit-A case stays green. Reproduces the measured production bug: util_codex=unknown_capped in 122 of 143 decisions, six lanes killed by all_arms_capped when the instrument failed, not the quota"
