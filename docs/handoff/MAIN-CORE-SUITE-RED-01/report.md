@@ -189,3 +189,154 @@ a fresh `git clone --local -b main`**, not this lane's own working tree.
 All four fixes were re-confirmed green by copying this lane's final
 committed files onto that fresh main clone and re-running each suite
 there.
+
+---
+
+# Round 3 — environment-dependence verdict, the two remaining reds, controls
+
+## 1. Verdict: neither suite depends on live/shared state
+
+The round-3 mission hypothesized `case 10` touches "registration in the
+live lane registry". Measured: it does not — and the lead's own correction
+landed on main (`587625e7`, `docs/handoff/MAIN-CORE-SUITE-RED-01/round-3-correction.md`)
+reached the same conclusion via a neighboring session before this round
+started. The runs below are this round's independent confirmation.
+
+Discriminating experiment pair (both in this lane worktree, same edits,
+identical commands):
+
+| Run | Registry in reach | test-idle-lead-guard | test-phase-precondition |
+|-----|-------------------|----------------------|-------------------------|
+| A (ambient, live lanes running) | live `~/.claude/leadv2-state` | rc=1, PASS=18 FAIL=1 (case 10) | rc=1, pass=80 fail=2 (F1 ×2) |
+| B (`LEADV2_STATE_ROOT=/tmp/r3/state-root-empty.c0JZ`, `LEADV2_PROJECT_ROOT` threaded to a non-repo dir) | empty dir | rc=1, PASS=18 FAIL=1 (case 10) — identical verdict | rc=1, pass=80 fail=2 (F1 ×2) — identical |
+
+Verdicts do not move when the live registry is swapped for an empty dir →
+**not dependent on live shared state**. What the verdict DOES track is the
+checkout's own bytes:
+
+| Run | Checkout | idle | prec |
+|-----|----------|------|------|
+| D | pure main clone (`587625e7`) | rc=1 (case 10) | rc=1 (G3, pass=81 fail=1) |
+| C | main clone + this lane's 4 files | rc=0, PASS=19 FAIL=0 | rc=0, pass=82 fail=0 |
+
+Code-level corroboration (why no live read is even possible):
+- `test-idle-lead-guard.sh` header documents full isolation; all four
+  `LEADV2_IDLE_GUARD_*` overrides point at `mktemp -d` fixtures
+  (tests/test-idle-lead-guard.sh:4-8, :111). Case 10 is a static read of
+  `$PLUGIN_DIR/hooks/hooks.json` — a checked-in file, no registry involved.
+- `test-phase-precondition.sh` `e2e_setup()` cds into the throwaway fixture
+  repo and exports `LEADV2_STATE_BASE="${E2E_STATE}"` (throwaway) plus
+  sandbox overrides for every dispatch dependency
+  (tests/test-phase-precondition.sh:377-414) — the
+  FOREIGN-PROJECT-ROOT-GUARD-01 fix.
+
+**Isolation proof (mission-required):** live registry
+`~/.claude/leadv2-state/leadv2/active.yaml` sha256
+`704aa737fd7d38ee3ed27825b41e84c265cc4dcdb1c2db587ee830b74a1c3bb4`
+before run A, and identical after A, B, C, D, the paired-negative runs and
+the final base-red runs. Not one suite run in this round touched it.
+
+## 2. What the two remaining reds are, and what was done
+
+### 2a. `test-idle-lead-guard` case 10 — in-lane red is a stale-checkout artifact; fix complete; assert unsilenced
+
+Binary question from the lead's correction — should `leadv2-idle-lead-guard.sh`
+be registered in hooks.json? **No.** Evidence:
+
+- `git show --stat c49cc9fb -- plugins/leadv2/hooks/hooks.json` → merge
+  ONE-LANE-WATCH-01 "one self-arming lane watcher replaces the idle-guard
+  pair" rewired hooks.json there (19 insertions, 14 deletions).
+- Probe of `git show main:plugins/leadv2/hooks/hooks.json`:
+  `main Stop has idle-lead-guard: False`, `main SessionStart arm: True`,
+  `main SessionEnd disarm: True`.
+- Live plugin cache
+  (`~/.claude/plugins/local/leadv2/plugins/leadv2/hooks/hooks.json`):
+  `grep -o "leadv2-idle-lead-guard..."` → 0 matches; `grep -c
+  lane-watch-v2` → 2. The live install registers the replacement, not the
+  retired hook.
+- `git grep -l "leadv2-idle-lead-guard" main -- plugins/leadv2` → only
+  `commands/leadv2.md` (docs), `scripts/leadv2-lane-watch-v2.sh` (three
+  comments where the successor documents its inheritance), a test fixture,
+  and this suite. No hook-path caller exists.
+
+So main's pre-round-2 case 10 asserts a contract that does not exist, and
+the lane's da8407a8 rewrite (retired hook absent + promise-guard kept +
+lane-watch-v2 on both events) asserts the live one — green on the main
+clone (run C). No hooks.json edit is needed anywhere; the correction's
+"if the answer is 'register it', report and stop" branch does not trigger.
+
+Why the lead's in-worktree run was red: this lane forked at `10fe3d6e`,
+`git merge-base --is-ancestor c49cc9fb HEAD` → NOT an ancestor — the lane's
+checked-in hooks.json predates the retirement (`git diff main --stat` on
+it: 118 lines drift; probe: worktree Stop still has idle-lead-guard=True,
+arm/disarm=False). hooks.json is outside LANE_WRITES, so the lane is not
+allowed to freshen it; the merge reconciles it. Expected and documented in
+round 2; now also self-explaining (below).
+
+**Round-3 code change (lead order: "сними 2>/dev/null с этого ассерта"):**
+the assert's stderr is captured instead of discarded; the FAIL line now
+carries the single explaining line (the AssertionError, which names the
+broken sub-contract and lists the actual hook array). In-lane run after
+the change:
+
+```
+[TEST] FAIL: case 10: registration assertion failed — AssertionError: retired idle-lead-guard still registered in Stop: ['"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-force-reflect.sh"', ..., '"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-idle-lead-guard.sh"']
+[TEST] idle-lead-guard: PASS=18 FAIL=1
+```
+
+The instrument no longer hides the answer. On the main clone the same
+edited suite is green: rc=0, PASS=19 FAIL=0.
+
+### 2b. `test-phase-precondition` — both fails are one stale-file case; nothing to re-fix
+
+The two FAIL lines are the two assertions of case F1 (unhashable
+directory-artifact refusal): "should refuse with rc=5 (got rc=0)" and
+"refused record must not be written". Controlled pair, same test code:
+in this worktree rc=0 from the product file (→ fail=2); on the
+current-main clone F1 passes (pass=82 fail=0, run C). The only variable
+is the vintage of `plugins/leadv2/scripts/leadv2-phase-record.sh`, which
+is 390 lines drifted behind main in this lane (`git diff main --stat`),
+off-limits to this lane (occupied file list). Round-2's actual fix
+(glm-stub envelope) is intact and green on current main; **no code change
+made or needed this round for this suite.**
+
+## 3. Paired negative control (round-3 change)
+
+On the main clone (lane files applied): re-added
+`leadv2-idle-lead-guard.sh` to hooks.json's Stop array via a python
+mutation → rc=1, `FAIL: case 10: registration assertion failed —
+AssertionError: retired idle-lead-guard still registered in Stop: [... 7
+entries ...]` (the new diagnostics name the regression). `git checkout --
+hooks.json` → rc=0, PASS=19 FAIL=0.
+
+## 4. Base must stay red — final check
+
+Pure main clone at `587625e7` (lane files removed):
+- test-idle-lead-guard: rc=1, PASS=18 FAIL=1 (case 10) — red.
+- test-phase-precondition: rc=1, `FAIL: G3: dispatch should exit 0 (got 4)`,
+  pass=81 fail=1 — red.
+
+Base is still red at current main tip → the green in run C comes from this
+lane's diff, not from drift on main.
+
+## 5. Falsification set
+
+- `bash -n plugins/leadv2/scripts/tests/test-idle-lead-guard.sh` → OK
+  (only shell file changed this round).
+- Python files changed: none (inline python only; `py_compile` N/A;
+  `tests/mutations/catalog.yaml` is YAML data).
+- `tests/run-all.sh --scope changed` → result appended in §6 when it
+  completes.
+
+## 6. Round-3 commits
+
+- `3b0d30f5` ("fix(MAIN-CORE-SUITE-RED-01): round-3 case-10 diagnostics …")
+  intentionally carries, besides the one-file test edit, three files that
+  were sitting pre-staged in this worktree's index since round 2:
+  `tests/mutations/catalog.yaml` (round 2's mutation-pair catalog — the
+  artifacts round 2 failed to commit), and
+  `docs/handoff/dispatch-faee3fc5/developer.{full,summary}.md` (this
+  dispatch's own handoff artifacts). All three are this lane's own
+  material, none touch the forbidden runtime-state paths, and leaving them
+  staged was how round 2's work nearly got lost. Salvaging them under a
+  lane-tagged subject is the fix, not a mistake.
