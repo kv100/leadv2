@@ -1682,6 +1682,34 @@ case "${1:-}" in
     dispatch_ledger_write_terminal "$1" "${2:-}" "$3" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" "${9:-}" "${10:-}"
     exit $?
     ;;
+  reopen)
+    # LEDGER-HAS-NO-REOPEN-01. Asked for, and answered with a bare usage dump, which
+    # left "there is no reopen" indistinguishable from "you typed it wrong". The
+    # contract exists and is worth stating, because half of it is already true:
+    #
+    #   refused | parked | no_work   ALREADY reopenable, with no subcommand at all.
+    #       The write-once gate does not block them and dispatch_terminal_exists()
+    #       reports the sig8 as UNFINISHED, so the next attempt simply writes its own
+    #       row. Nothing to add here.
+    #   landed | dead | dead_with_unlanded_work | pass_unlanded
+    #       write-once BY DESIGN. A reopen that flipped one of these would destroy the
+    #       exact property that makes the ledger worth reading -- a confirmed close must
+    #       not become reopenable by accident -- so it is refused at this layer, not
+    #       missing by oversight. The ledger is append-only and two sessions append to it
+    #       concurrently; "return the old row to open" is not a thing it can mean.
+    #       Correcting a wrong one is a NEW dispatch, i.e. a new sig8 with its own rows.
+    #
+    # rc stays 2, the same code a usage error returned, so nothing that branches on the
+    # status changes; what changes is that the stream now says which of the two cases
+    # the caller is in.
+    printf 'reopen: not a subcommand, and deliberately so.\n' >&2
+    printf '  refused|parked|no_work are ALREADY reopenable: the write-once gate does not\n' >&2
+    printf '  block them and `exists` reports the sig8 unfinished, so just dispatch again.\n' >&2
+    printf '  landed|dead|dead_with_unlanded_work|pass_unlanded are write-once by design;\n' >&2
+    printf '  correcting one is a NEW dispatch (a new sig8), never a flip of the old row.\n' >&2
+    printf '  Check which case you are in: %s state <sig8>\n' "$(basename "$0")" >&2
+    exit 2
+    ;;
   exists)
     shift
     [[ $# -ge 1 ]] || usage

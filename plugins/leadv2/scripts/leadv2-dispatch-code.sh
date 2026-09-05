@@ -3842,6 +3842,26 @@ sanitize_field() { printf '%s' "$1" | tr -d '"\\' | tr '\n' ' ' | tr -cd 'A-Za-z
 # A fast path must be explicit.  Do not infer "docs" from a filename or assume a
 # diagnosis is harmless merely because its prose contains no change verb: unknown means
 # product and gets all three gates.
+# GLM-FAILED-TWICE-UNREACHABLE-01: the glm_failed_twice escalation is unreachable from
+# this flag ON PURPOSE, and this predicate is where that is decided. `--glm-failures` is
+# caller-supplied and NOTHING backs it -- there is no GLM-failure ledger -- so trusting it
+# would let any caller flip glm->sonnet on request alone and defeat GLM-FIRST. Values at or
+# above the trip threshold are therefore forced to 0 and the ignore is journaled; values
+# below it were already no-ops. The real, evidence-backed escalation is elsewhere and
+# untouched by this: arm_advance walks the chain per round, and _record_quota_lockout
+# benches a provider from an OBSERVED post-spawn failure (primary_arm_benched
+# source=postspawn_failure:<arm>).
+#
+# Named as its own function so the cap can be driven directly. Before this it lived inline
+# in cmd_dispatch, reachable only by running a real dispatch, and no suite pinned it --
+# which means removing the cap in the name of "making glm_failed_twice reachable" would
+# have gone green while making GLM-FIRST bypassable on request.
+_glm_failures_flag_is_ignored() { # <raw> -> rc 0 when the value must be forced to 0
+  local _n=0
+  [[ "$1" =~ ^[0-9]+$ ]] && _n="$1"
+  (( _n >= 2 ))
+}
+
 LEADV2_NON_PRODUCT_KINDS="plugin|tooling|tool|docs|documentation|diagnosis|diagnostic|investigation"
 classify_product_work() { # <kind> <mission> -> product|non_product<TAB>reason
   local kind mission
@@ -7997,9 +8017,7 @@ exit is treated as an incident."
   # trip threshold are already no-ops, so nothing to cap there. Applies to a raw env
   # override too -- the export below always uses this capped local, never a passed-through
   # value, so DC_GLM_FAILURES can't be smuggled in from the caller's environment either.
-  local glmfails_num=0
-  [[ "${glmfails}" =~ ^[0-9]+$ ]] && glmfails_num="${glmfails}"
-  if (( glmfails_num >= 2 )); then
+  if _glm_failures_flag_is_ignored "${glmfails}"; then
     emit decision "glm_failures_flag_ignored value=${glmfails} reason=unverified_caller_input_not_ledger_backed task=${sig8}"
     glmfails=0
   fi
