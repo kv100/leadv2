@@ -551,5 +551,32 @@ else
 fi
 
 SUMMARY_PRINTED=1
+
+# (h) QUOTA-PROBE-FAILS-CLOSED-01. The product side of this row is already fixed --
+# founder edit B of ARBITER-REMEMBERS-FAILURES-01, 2026-09-05: `unknown` is a THIRD
+# state, an unknown arm is NOT capped, it stays in the candidate set and is demoted by
+# UNKNOWN_PROBE_PENALTY so it ranks after every arm we actually measured. What was NOT
+# covered is the shape that produced the bug: EVERY probe silent at once. Case (b)
+# above pins the opposite pole (all three MEASURED at 99 must still refuse
+# all_arms_capped) and cases (g)/(g2) pin one broken probe against healthy rivals --
+# but nothing pinned that a total instrument outage stops being reported as an
+# exhausted quota. That is exactly the regression that killed six lanes on 2026-09-04
+# with reason=all_arms_capped while what had actually failed was the measurer.
+#
+# The pair is the whole point, and both halves already exist here: (h) says a total
+# outage must NOT refuse and must NAME itself probe_outage=; (b) says a real, measured
+# exhaustion must STILL refuse. Fixing one without the other is a released brake.
+quota_all_broken(){ python3 - <<'PY'
+import json
+print(json.dumps({'glm':{'status':'error'},'codex':{'status':'error'},'anthropic':{'status':'error'}}))
+PY
+}
+out="$(run "$(quota_all_broken)" 1 '{"kind":"code","size":"standard"}' || true)"
+if [[ "$out" != *'reason=all_arms_capped'* && "$out" == *'probe_outage='* ]]; then
+  pass 'a total probe outage is named probe_outage=, never reported as an exhausted quota'
+else
+  fail "all-probes-broken output=$out"
+fi
+
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
