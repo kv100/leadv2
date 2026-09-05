@@ -20,11 +20,20 @@
 # shows WHICH cases each mutation reddens; note that the canonical runner's
 # `red_line=` field quoted a PASS line on the second control, so read the verdict
 # from its exit status and from negative-controls.log, not from that field).
-# 2026-09-05 PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01: +2 entries, 12/12 killed
+# 2026-09-05 PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01: +2 entries, both killed
 # (artifacts under docs/handoff/PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01/
 # mutation-control/).
-# The kill rate has no earlier value in this repo — this catalog is the first
-# — so "kill rate must not drop" starts at 3/3, then 8/8, then 10/10, now 12/12.
+#
+# THE RUNNING TOTAL IN THIS HEADER WAS WRONG AND IS NOW DERIVED, NOT CARRIED.
+# The line here used to read "now 8/8" while the file already held ELEVEN
+# entries: the three smart-arbiter-* rows were added without updating it. Both
+# 2026-09-05 lanes then incremented the stale number (10/10, 12/12) instead of
+# counting. Corrected 2026-09-05 by counting: **15 entries, all expected:
+# killed.** Do not increment this sentence — recount it:
+#     python3 -c "import yaml;d=yaml.safe_load(open('tests/mutations/catalog.yaml'));\
+#                 print(len(d['mutations']))"
+# An entry is never deleted to make the number look better; a number that is
+# carried instead of measured is the same disease one layer up.
 
 mutations:
   - id: phase8-backlog-row-call-removed
