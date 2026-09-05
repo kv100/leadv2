@@ -4323,7 +4323,7 @@ _phase_precondition_guard() {
       # the trace names the would-be-missing phases instead of a bare pass.
       local _boot_csv=""
       [[ "${assert_out}" == *admitted=bootstrap* ]] \
-        && _boot_csv="$(printf '%s' "${assert_out}" | sed -n 's/.*admitted=bootstrap would_be_missing=//p' | head -1)"
+        && _boot_csv="$(printf '%s\n' "${assert_out}" | sed -n 's/.*admitted=bootstrap would_be_missing=//p' | head -1)"
       if [[ -n "${_boot_csv}" ]]; then
         emit decision "phase_precondition_bootstrap task=${sig8} class=${cls} would_be_missing=${_boot_csv} mode=${mode} scope=${scope}"
       else
@@ -4332,7 +4332,16 @@ _phase_precondition_guard() {
       return 0
       ;;
     3)
-      local missing_csv="${assert_out#missing=}"
+      # PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01: assert now answers on three
+      # lines (missing= in this scope, required= the class's whole mandatory
+      # contract, unmet= everything still outstanding across that contract), so
+      # the old whole-output `${assert_out#missing=}` would swallow the other
+      # two lines into the refusal text and into the remedy loop below. Take
+      # the tokens by name.
+      local missing_csv required_csv unmet_csv
+      missing_csv="$(printf '%s\n' "${assert_out}" | sed -n 's/^missing=//p' | head -1)"
+      required_csv="$(printf '%s\n' "${assert_out}" | sed -n 's/^required=//p' | head -1)"
+      unmet_csv="$(printf '%s\n' "${assert_out}" | sed -n 's/^unmet=//p' | head -1)"
       if [[ "$mode" == "1" ]]; then
         # PHASE-BOOTSTRAP-ADMIT-02: distinguish "this lane has never started"
         # from "phases were skipped". cmd_resolve records `classify` as done
@@ -4379,8 +4388,20 @@ _phase_precondition_guard() {
             return 0
           fi
         fi
-        emit decision "phase_precondition_refused task=${sig8} class=${cls} missing=${missing_csv} mode=1"
+        emit decision "phase_precondition_refused task=${sig8} class=${cls} missing=${missing_csv} required=${required_csv} unmet=${unmet_csv} mode=1"
         log_err "dispatch refused: missing mandatory phases: ${missing_csv}"
+        # PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01: the gate has known the class's
+        # entire mandatory contract since before it refused, so it says it in
+        # ONE refusal instead of making the operator discover it by re-dispatch.
+        # Measured 2026-09-05: a Standard lane refused for `plan,gate1` in the
+        # pre-build scope owes `plan,gate1,build,test,review,live_verify,close`
+        # in the same state — five phases that cost a full dispatch cycle each
+        # (~2 min) to find out about one at a time.
+        if [[ -n "${required_csv}" ]]; then
+          log_err "  full mandatory set for class ${cls}: ${required_csv}"
+          [[ -n "${unmet_csv}" ]] && log_err "  still unmet across that whole set: ${unmet_csv}"
+          log_err "  (this refusal is scoped to ${scope}; the rest becomes mandatory later in the same lane)"
+        fi
         local mp
         # DISPATCH-PHASE-DEADLOCK-01: a printed remedy that cannot itself
         # satisfy the gate it is offered for is not a remedy (measured cost:

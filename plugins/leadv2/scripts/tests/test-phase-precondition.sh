@@ -1085,10 +1085,15 @@ LEADV2_PROJECT_ROOT="${G10_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G10_CACHE}" \
 LEADV2_PROJECT_ROOT="${G10_REPO}" bash "$PHASE_RECORD" record "$G10_SIG8" test --status done \
   --artifact "test-out.txt" --owner test >/dev/null 2>&1
 
-# Record build with a directory artifact (unverifiable) → should be unverified
-mkdir -p "${G10_REPO}/build-dir"
+# PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01: a DIRECTORY artifact no longer
+# produces an unverified row — that record refuses, because "this file does not
+# hash to this sha" is decided at write time and nothing downstream repairs it.
+# The UNVERIFIED column is still reachable, and this is now how: a real file
+# artifact (integrity passes) whose build-branch git check does not pass on this
+# clean seeded tree. The row exists, unproven, exactly as the column intends.
+printf 'build artifact\n' > "${G10_REPO}/build-out.txt"
 LEADV2_PROJECT_ROOT="${G10_REPO}" bash "$PHASE_RECORD" record "$G10_SIG8" build --status done \
-  --artifact "build-dir" --owner test >/dev/null 2>&1
+  --artifact "build-out.txt" --owner test >/dev/null 2>&1
 
 G10_SHOW="$(LEADV2_PROJECT_ROOT="${G10_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G10_CACHE}" \
   bash "$PHASE_RECORD" show "$G10_SIG8" 2>/dev/null)"
@@ -1192,7 +1197,7 @@ _e2e_teardown
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── F1: record stamps proof=unverified when _verify_artifact would refuse ─────
-printf 'test: F1 record stamps unverified when proof fails\n'
+printf 'test: F1 record refuses an unprovable artifact, and still stamps unverified when the evidence merely has not landed yet\n'
 F1_SANDBOX="$(mktemp -d /tmp/leadv2-pc-f1-XXXXXX)"
 _lv2_pc_register_sandbox "$F1_SANDBOX"
 F1_REPO="${F1_SANDBOX}/repo"
@@ -1203,17 +1208,41 @@ mkdir -p "${F1_REPO}"
 F1_SIG8="f1aa0001"
 mkdir -p "${F1_REPO}/docs/handoff/dispatch-${F1_SIG8}/phases.d"
 
-# Record build with a DIRECTORY artifact — _verify_artifact cannot sha256 it
-mkdir -p "${F1_REPO}/build-output"
-LEADV2_PROJECT_ROOT="${F1_REPO}" bash "$PHASE_RECORD" record "$F1_SIG8" build --status done \
-  --artifact "build-output" --owner test >/dev/null 2>&1
-
-# The yaml should say proof: unverified
+# PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01 (second defect). This block used to
+# assert that a DIRECTORY artifact is written anyway with `proof: unverified`
+# and a WARN naming its own future refusal. That record was worse than no
+# record: it cannot satisfy the gate, and its mere existence ends the lane's
+# bootstrap grace, so writing it converts a lane that would have been admitted
+# into one that is refused. It now refuses at write time and writes nothing.
 F1_YAML="${F1_REPO}/docs/handoff/dispatch-${F1_SIG8}/phases.d/build.yaml"
+mkdir -p "${F1_REPO}/build-output"
+F1_RC=0
+LEADV2_PROJECT_ROOT="${F1_REPO}" bash "$PHASE_RECORD" record "$F1_SIG8" build --status done \
+  --artifact "build-output" --owner test >/dev/null 2>&1 || F1_RC=$?
+if [[ "$F1_RC" -eq 5 ]]; then
+  ok
+else
+  fail "F1: recording an unhashable (directory) artifact should refuse with rc=5 (got rc=$F1_RC)"
+fi
+# ...and refusing means WRITING NOTHING. A refusal that still left the record
+# behind would end the bootstrap grace exactly as before.
+if [[ ! -e "$F1_YAML" ]]; then
+  ok
+else
+  fail "F1: refused record must not be written (got: $(cat "$F1_YAML" 2>/dev/null))"
+fi
+
+# The unverified state is still reachable, and must still be rendered: a REAL
+# file artifact passes integrity but the build branch's git check does not pass
+# on this clean seeded tree. That evidence genuinely may land later, so it is
+# recorded, stamped unverified, and warned about — not refused.
+printf 'build artifact\n' > "${F1_REPO}/build-output.txt"
+LEADV2_PROJECT_ROOT="${F1_REPO}" bash "$PHASE_RECORD" record "$F1_SIG8" build --status done \
+  --artifact "build-output.txt" --owner test >/dev/null 2>&1
 if grep -q '^proof: unverified' "$F1_YAML" 2>/dev/null; then
   ok
 else
-  fail "F1: build with directory artifact should have proof: unverified (got: $(cat "$F1_YAML" 2>/dev/null))"
+  fail "F1: build whose evidence has not landed yet should have proof: unverified (got: $(cat "$F1_YAML" 2>/dev/null))"
 fi
 
 # show should render UNVERIFIED

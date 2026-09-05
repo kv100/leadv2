@@ -113,6 +113,10 @@
 #       --task-id <founder task id> for the active.yaml mirror
 #       --owner <script:function>   default: $(basename "$0")
 #
+# exit 5 (record) = the phase was asked to be recorded `done` but its proof does
+#                   not verify. Nothing is written. See
+#                   PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01.
+#
 #   leadv2-phase-record.sh assert <sig8> --class <Trivial|Light|Standard|Heavy>
 #       [--waiver <phase>=<reason>]...
 #       [--writes <csv>]
@@ -778,6 +782,65 @@ cmd_record() {
     sha="$(_sha256 "$artifact")"
   fi
 
+  # PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01 (second defect): resolve the proof
+  # BEFORE writing anything. This block used to sit inside the heredoc below: a
+  # `done` record whose artifact failed verification was written anyway, with
+  # `proof: unverified`, and the writer printed
+  #   "WARN: phase 'plan' recorded done but proof NOT verified — assert will refuse"
+  # — announcing its own future refusal and proceeding. That record is worse
+  # than no record twice over. It does not satisfy the gate, AND its mere
+  # existence ends the lane's bootstrap grace (cmd_assert's _lane_bootstrap is
+  # "phases.d has any record at all", and _phase_precondition_guard's is "any
+  # record other than classify"), so writing an unprovable `plan` converts a
+  # lane that would have been admitted into one that is refused. A write that is
+  # known at write time to fail the very check it exists to pass must refuse at
+  # write time.
+  #
+  # Scope mirrors cmd_assert exactly: classify and diverge are the phases assert
+  # does not verify, so they are the phases this refusal does not apply to. The
+  # verifier is the same _verify_artifact call, on the same arguments.
+  local _proof=""
+  if [[ "$status" == "done" ]]; then
+    if _verify_artifact "$sig8" "$phase" "$artifact" "$sha" "$commit" "$reason" 2>/dev/null; then
+      case "$phase" in
+        test|live_verify|e2e) _proof="attested" ;;
+        plan|gate1) _proof="${_VA_STRENGTH:-verified}" ;;
+        *) _proof="verified" ;;
+      esac
+    elif [[ "$phase" == "classify" || "$phase" == "diverge" ]]; then
+      _proof="verified"
+    elif [[ -n "$artifact" ]] && ! _artifact_integrity "$artifact" "$sha" 2>/dev/null; then
+      # THE NARROW, DECIDABLE CASE — and it is deliberately narrower than "the
+      # whole verifier said no". Verification at WRITE time is not the same
+      # question as verification at ASSERT time: several phases finish earning
+      # their evidence after the record lands. `record-review` (dispatch-code)
+      # writes the phase record and the provenance ledger row in one flow, so a
+      # review record legitimately fails _verify_artifact at the instant it is
+      # written and passes seconds later; refusing on the verifier's whole
+      # answer broke exactly that path (measured 2026-09-05: six green cases of
+      # test-phase-precondition.sh -- G7b/c/e/f/g, G9a -- went red because the
+      # review and deploy records were refused and never existed).
+      #
+      # Artifact integrity is the part that IS decided at write time and can
+      # never become true later: the named file is absent, unreadable, or its
+      # content does not hash to the sha being recorded alongside it. Nothing
+      # downstream repairs that, so this record is knowably dead on arrival and
+      # refuses now instead of announcing its own future refusal and proceeding.
+      _log_err "record: refusing to record phase '$phase' for $sig8 as done — its artifact does not exist or does not match the recorded sha, so assert can never accept it"
+      _log_err "  artifact: ${artifact}"
+      _log_err "  nothing was written: an unprovable record does not satisfy the gate AND ends this lane's bootstrap grace, so it leaves the lane worse off than no record at all"
+      _log_err "  fix the artifact, then re-run this same command ('leadv2-phase-record.sh assert <sig8> --class <class>' prints the whole required set at once)"
+      _emit "phase_record_refused" "task=${task_id:-$sig8} phase=${phase} reason=artifact_integrity"
+      exit 5
+    else
+      # Everything else keeps today's behaviour: the artifact is real, but some
+      # piece of evidence the verifier also wants is not in place YET. Recorded
+      # unverified, and said out loud -- this one genuinely may become true.
+      _proof="unverified"
+      _log "WARN: phase '$phase' for $sig8 recorded done with proof NOT yet verified — assert will refuse until the rest of its evidence lands"
+    fi
+  fi
+
   # Atomic write: mktemp in same dir + mv -f
   local tmp_file
   tmp_file="$(mktemp "${phases_d}/.${phase}.XXXXXX")" || { _log_err "record: mktemp failed"; exit 4; }
@@ -792,27 +855,9 @@ cmd_record() {
     printf 'started_at: %s\n' "$started_at"
     printf 'ended_at: %s\n' "$ended_at"
     printf 'reason: %s\n' "$reason"
-    # §3 honesty: run the SAME _verify_artifact path that assert uses.
-    # proof=verified only when _verify_artifact accepts via its machine-checked
-    # path; otherwise unverified. test/live_verify/e2e are always "attested"
-    # (sha256 match only, not semantic proof). PHASE-BOOTSTRAP-ADMIT-02:
-    # plan/gate1 accepted via the lead-authored-brief / explicit-gate-decision
-    # fallback are ALSO "attested" (real evidence, not machine-derived) --
-    # _verify_artifact reports which kind via the _VERIFY_PROOF_KIND global.
-    # Running/n/a/waived phases get an empty proof — it does not apply.
-    local _proof=""
-    if [[ "$status" == "done" ]]; then
-      if _verify_artifact "$sig8" "$phase" "$artifact" "$sha" "$commit" "$reason" 2>/dev/null; then
-        case "$phase" in
-          test|live_verify|e2e) _proof="attested" ;;
-          plan|gate1) _proof="${_VA_STRENGTH:-verified}" ;;
-          *) _proof="verified" ;;
-        esac
-      else
-        _proof="unverified"
-        _log "WARN: phase '$phase' for $sig8 recorded done but proof NOT verified — assert will refuse"
-      fi
-    fi
+    # §3 honesty: _proof was resolved above, BEFORE this file was opened, and an
+    # unprovable `done` never reaches this point — it refused. Running/n/a/waived
+    # phases get an empty proof: it does not apply to them.
     printf 'proof: %s\n' "$_proof"
     [[ -n "$commit" ]] && printf 'commit: %s\n' "$commit"
   } > "$tmp_file"
@@ -837,6 +882,50 @@ cmd_record() {
   fi
 
   return 0
+}
+
+# ── _phase_satisfied <sig8> <phase> <accepted-waivers-csv> -> 0 satisfied ─────
+# PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01: lifted verbatim out of cmd_assert's
+# mandatory loop so the identical check can run over BOTH the current scope
+# (which decides the refusal) and the full contract (which the refusal now
+# names). One checker, two questions — never two checkers that can disagree.
+_phase_satisfied() {
+  local sig8="$1" pname="$2" waivers_csv="${3:-}"
+
+  local aw
+  for aw in $(printf '%s' "$waivers_csv" | tr ',' ' '); do
+    [[ "$aw" == "$pname" ]] && return 0
+  done
+
+  local pfile
+  pfile="$(_phase_file "$sig8" "$pname")"
+  [[ -f "$pfile" ]] || return 1
+
+  local p_status
+  p_status="$(grep '^status:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
+  case "$p_status" in
+    done|waived)
+      local p_artifact p_sha p_commit p_reason
+      p_artifact="$(grep '^artifact:' "$pfile" 2>/dev/null | sed 's/^artifact:[[:space:]]*//' || true)"
+      p_sha="$(grep '^artifact_sha256:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
+      p_commit="$(grep '^commit:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
+      # PHASE-BOOTSTRAP-ADMIT-02: gate1's explicit-decision fallback reads this
+      # back on re-assert (e.g. a Phase-4 re-entry days later), same as
+      # p_artifact/p_sha/p_commit above -- sed, not awk, since a decision
+      # reason is free text and may contain spaces.
+      p_reason="$(grep '^reason:' "$pfile" 2>/dev/null | sed 's/^reason:[[:space:]]*//' || true)"
+      if [[ "$pname" != "classify" && "$pname" != "diverge" ]]; then
+        _verify_artifact "$sig8" "$pname" "$p_artifact" "$p_sha" "$p_commit" "$p_reason" && return 0
+        return 1
+      fi
+      return 0
+      ;;
+    n/a)
+      return 0
+      ;;
+  esac
+  # running (and anything else) is not proven
+  return 1
 }
 
 # ── assert subcommand ─────────────────────────────────────────────────────────
@@ -969,56 +1058,50 @@ for w in (d.get('waivers_allowed') or []):
     _emit "phase_waived" "task=${sig8} phase=${w_phase} reason=${w_reason}"
   done
 
-  # Resolve mandatory set
-  local missing=()
-  while IFS=' ' read -r kind pname reason_text; do
-    [[ "$kind" == "MANDATORY" ]] || continue
-
-    # Skip accepted waivers
-    local waived=""
-    for aw in "${accepted_waivers[@]}"; do
-      [[ "$aw" == "$pname" ]] && waived="1"
-    done
-    [[ -n "$waived" ]] && continue
-
-    # Check if phase record exists and is proven
-    local pfile
-    pfile="$(_phase_file "$sig8" "$pname")"
-    if [[ -f "$pfile" ]]; then
-      local p_status
-      p_status="$(grep '^status:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
-      case "$p_status" in
-        done|waived)
-          # Verify artifact
-          local p_artifact p_sha p_commit p_reason
-          p_artifact="$(grep '^artifact:' "$pfile" 2>/dev/null | sed 's/^artifact:[[:space:]]*//' || true)"
-          p_sha="$(grep '^artifact_sha256:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
-          p_commit="$(grep '^commit:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
-          # PHASE-BOOTSTRAP-ADMIT-02: gate1's explicit-decision fallback reads
-          # this back on re-assert (e.g. a Phase-4 re-entry days later), same
-          # as p_artifact/p_sha/p_commit above -- sed, not awk, since a
-          # decision reason is free text and may contain spaces.
-          p_reason="$(grep '^reason:' "$pfile" 2>/dev/null | sed 's/^reason:[[:space:]]*//' || true)"
-
-          # For non-conditional phases, verify artifact
-          if [[ "$pname" != "classify" && "$pname" != "diverge" ]]; then
-            if _verify_artifact "$sig8" "$pname" "$p_artifact" "$p_sha" "$p_commit" "$p_reason"; then
-              continue
-            fi
-          else
-            continue
-          fi
-          ;;
-        n/a)
-          continue
-          ;;
-        running)
-          # Running is not proven
-          ;;
-      esac
-    fi
-    missing+=("$pname")
-  done < <(_resolve_mandatory "$cls" "$writes" "$scope")
+  # Resolve mandatory set, in THIS scope and — PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01
+  # — across the FULL contract as well, so one refusal can name everything the
+  # lane will eventually have to satisfy instead of revealing it an installment
+  # at a time.
+  local waivers_csv
+  waivers_csv="$(IFS=,; printf '%s' "${accepted_waivers[*]-}")"
+  local missing=() required_full=() unmet_full=()
+  if [[ "$scope" == "full" ]]; then
+    while IFS=' ' read -r kind pname reason_text; do
+      [[ "$kind" == "MANDATORY" ]] || continue
+      required_full+=("$pname")
+      if ! _phase_satisfied "$sig8" "$pname" "$waivers_csv"; then
+        missing+=("$pname"); unmet_full+=("$pname")
+      fi
+    done < <(_resolve_mandatory "$cls" "$writes" full)
+  else
+    # pre-build scope. The scoped loop decides the refusal; the full loop only
+    # NAMES the rest of the contract, and the phases it adds (build/test/review/
+    # deploy/live_verify/e2e/close) are disjoint from the scoped set
+    # (classify/diverge/plan/gate1), so no phase is verified twice here either.
+    local scoped_pnames=" "
+    while IFS=' ' read -r kind pname reason_text; do
+      [[ "$kind" == "MANDATORY" ]] || continue
+      scoped_pnames="${scoped_pnames}${pname} "
+      _phase_satisfied "$sig8" "$pname" "$waivers_csv" || missing+=("$pname")
+    done < <(_resolve_mandatory "$cls" "$writes" "$scope")
+    local _m
+    while IFS=' ' read -r kind pname reason_text; do
+      [[ "$kind" == "MANDATORY" ]] || continue
+      required_full+=("$pname")
+      if [[ "$scoped_pnames" == *" ${pname} "* ]]; then
+        # Already answered by the scoped loop above — reuse it rather than
+        # re-running a checker that can have side effects.
+        for _m in ${missing[@]+"${missing[@]}"}; do
+          [[ "$_m" == "$pname" ]] && unmet_full+=("$pname") && break
+        done
+      else
+        _phase_satisfied "$sig8" "$pname" "$waivers_csv" || unmet_full+=("$pname")
+      fi
+    done < <(_resolve_mandatory "$cls" "$writes" full)
+  fi
+  local required_csv unmet_csv
+  required_csv="$(IFS=,; printf '%s' "${required_full[*]-}")"
+  unmet_csv="$(IFS=,; printf '%s' "${unmet_full[*]-}")"
 
   if [[ ${#missing[@]} -gt 0 ]]; then
     local csv
@@ -1037,9 +1120,20 @@ for w in (d.get('waivers_allowed') or []):
       # lines). Print the admission on stdout so _phase_precondition_guard can
       # journal it through its own working emit.
       printf 'admitted=bootstrap would_be_missing=%s\n' "$csv"
+      printf 'required=%s\n' "$required_csv"
+      printf 'unmet=%s\n' "$unmet_csv"
       exit 0
     fi
     printf 'missing=%s\n' "$csv"
+    # PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01: the gate knows the class's whole
+    # mandatory contract before it refuses anything, so it must say it once.
+    # Measured 2026-09-05 on a Standard lane with only classify recorded: the
+    # pre-build refusal says `missing=plan,gate1`, while the SAME lane in the
+    # SAME state owes `plan,gate1,build,test,review,live_verify,close` — five
+    # phases the operator only meets on a later dispatch cycle, at roughly two
+    # minutes a discovery.
+    printf 'required=%s\n' "$required_csv"
+    printf 'unmet=%s\n' "$unmet_csv"
     exit 3
   fi
 
