@@ -468,3 +468,39 @@ mutations:
       same injection as above, into the file that IS on the known list
     expected: killed
     note: "14/0 -> 13/1, and it names BOTH lines rather than reading the standing violator as having merely moved. This is why the moved-branch counts findings per file instead of matching the file alone: a list that excuses a file rather than a violation is a blindfold"
+
+  - id: repo-scoping-ownership-test-unconditional
+    product_flow: "PULSE-REPO-SCOPED-03: a foreign-repo lane row belongs on this board only when THIS repo dispatched it (docs/leadv2/tasks/<task_id>/ is the ownership mark)"
+    file: plugins/leadv2/scripts/leadv2-broad-status.sh
+    suite: plugins/leadv2/scripts/tests/test-status-repo-scoped.sh
+    anchor: |
+      or (_fr_tid and os.path.isdir(os.path.join(root, "docs", "leadv2", "tasks", _fr_tid)))
+    patch: |
+      replaced with `or True` inside the repo-scoping filter loop, so every
+      foreign row survives regardless of ownership
+    expected: killed
+    note: "7/0 -> 6/1, C3 names the unowned foreign lane on the board. The case could not fail before 2026-09-05: the suite read the board at the control-plane symlink, whose content stops changing after the first beat"
+
+  - id: foreign-error-rows-no-longer-named
+    product_flow: "LANE-OBSERVABILITY-02: a foreign repo whose READ failed renders as a named degraded line, and neither zeroes the board nor masquerades as a lane"
+    file: plugins/leadv2/scripts/leadv2-broad-status.sh
+    suite: plugins/leadv2/scripts/tests/test-broad-status-foreign-lanes.sh
+    anchor: |
+      foreign_error_rows = [r for r in table_rows if isinstance(r, dict) and r.get("error")]
+    patch: |
+      replaced with `foreign_error_rows = []` inside render.py, so a
+      {"repo":..,"error":..} row is treated as an ordinary lane
+    expected: killed
+    note: "8/0 -> 7/1, R2 red. Also could not fail before 2026-09-05 for the same reason: R2 was asserting against R1's frozen board"
+
+  - id: failed-foreign-liveness-guesses-alive
+    product_flow: "D5: a foreign repo whose lane-liveness call FAILED degrades to status=unknown -- never alive, never dead, never a cached guess"
+    file: plugins/leadv2/scripts/leadv2-lanes-snapshot.sh
+    suite: plugins/leadv2/scripts/tests/test-broad-status-foreign-lanes.sh
+    anchor: |
+      elif error_reason is not None:
+          status = "unknown"
+    patch: |
+      status = "live" in the error branch
+    expected: killed
+    note: "8/0 -> 7/1, S3 red and naming the row. S3 had never run at all: it installed its stub with `env VAR=x snap`, and snap is a shell function -- rc=127, empty output, and a failure line that read `S3: `"
