@@ -173,7 +173,8 @@ mk_repo(){
   local repo="$1"
   mkdir -p "$repo"
   ( cd "$repo" && git init -q -b main && git config user.email t@e.com && git config user.name t \
-    && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed ) >/dev/null 2>&1
+    && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed ) >/dev/null 2>&1 \
+    || { printf 'FATAL mk_repo: fixture repo setup failed for %s\n' "$repo" >&2; return 1; }
 }
 
 dispatch_env(){ # <repo> <cache-dir> -> prints nothing; caller exports around bash "$DC"

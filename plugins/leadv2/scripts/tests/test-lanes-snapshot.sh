@@ -123,7 +123,7 @@ test_6_syntax() {
       ok=0
     fi
   done
-  [[ "$ok" -eq 1 ]] && pass "Test 6: bash -n OK on all 3 scripts"
+  if [[ "$ok" -eq 1 ]]; then pass "Test 6: bash -n OK on all 3 scripts"; fi
 }
 
 # ── Test 3: adoption triple-proof matrix ────────────────────────────────────

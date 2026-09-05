@@ -89,7 +89,8 @@ _new_fixture() {
 }
 
 _commit_now() { # <repo> <message>
-  ( cd "$1" && git commit --allow-empty -q -m "$2" )
+  ( cd "$1" && git commit --allow-empty -q -m "$2" ) \
+    || { printf 'FATAL _commit_now: commit failed in %s (%s)\n' "$1" "$2" >&2; return 1; }
 }
 
 _commit_aged() { # <repo> <message> <age_s>

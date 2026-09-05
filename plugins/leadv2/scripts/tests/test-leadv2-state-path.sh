@@ -85,7 +85,12 @@ test_2_gitignore_covers_path() {
 
   log "Test 2 negative control: gitignore rule removed -> check-ignore must go red"
   local giline mutated_rc=0
-  giline=$(grep -n '^/docs/leadv2/active\.yaml$' "$ROOT/.gitignore" | head -1 | cut -d: -f1)
+  # SUITES-DIE-SILENTLY-UNDER-SET-E-01: a missing rule is already handled loudly
+  # three lines down, but under `set -e` the failing pipeline killed the suite
+  # before that handler could ever run -- it was dead code. Route the miss into
+  # it instead of adding a second, competing error path.
+  giline=$(grep -n '^/docs/leadv2/active\.yaml$' "$ROOT/.gitignore" | head -1 | cut -d: -f1) \
+    || giline=""
   if [[ -z "$giline" ]]; then
     fail "could not locate the gitignore rule to mutate"
     return
