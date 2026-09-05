@@ -194,3 +194,29 @@ mutations:
       _proof="unverified"
     expected: killed
     note: "kills 3 cases (b1,b2,b5); every defect-1 case stays green. b5 shows the real harm: with the record written, the very next assert refuses (missing=classify,plan,gate1) instead of admitting the lane at bootstrap"
+
+  # WRITESET-CAROUSEL-01 (2026-09-05). Both anchors are inside the body of
+  # _lv2_ws_live_worker() in leadv2-active-registry.sh, and the two controls are
+  # disjoint: the first reddens only the no-process cases, the second only the
+  # bystander-lead case.
+  - id: writeset-pidless-row-counts-as-a-worker
+    product_flow: "an incumbent lane row with an undeclared write set and NO process under it is UNKNOWN overlap, not conflict — blocking on it refuses every dispatch in the repo on behalf of a lane that does not exist"
+    file: plugins/leadv2/scripts/leadv2-active-registry.sh
+    suite: plugins/leadv2/scripts/tests/test-writeset-carousel.sh
+    anchor: |
+      if pid in (None, "", "null", "None"):
+    patch: |
+      /if pid in (None, "", "null", "None"):/{n;s/return False/return True/;}
+    expected: killed
+    note: "kills 3 cases (1,4,6); the live-worker and proven-overlap cases stay green. Reproduces the measured production bug: at 2026-09-05T02:52Z the live registry held 18 rows of exactly this shape (pid: None, writes undeclared), five of them inside the 900s window, and each one on its own refused every dispatch — a lead that cleared one blocker was refused by the next, 47 seconds old"
+
+  - id: writeset-bystander-lead-counts-as-a-worker
+    product_flow: "a lane row carrying an INTERACTIVE lead session's pid is alive and is not a worker; treating it as one makes the row immortal, because the liveness check answers `alive` truthfully forever"
+    file: plugins/leadv2/scripts/leadv2-active-registry.sh
+    suite: plugins/leadv2/scripts/tests/test-writeset-carousel.sh
+    anchor: |
+      return _proc_kind(pid) != "interactive"
+    patch: |
+      s/return _proc_kind(pid) != "interactive"/return True/
+    expected: killed
+    note: "kills exactly 1 case (3); every no-process case stays green. _proc_kind() was built for this exact question by PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01 and the write-set guard never consulted it"
