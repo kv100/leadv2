@@ -1,0 +1,55 @@
+baseline (unmutated canonical): [WRITESET-CAROUSEL] pass=6 fail=0
+
+════ WRITESET-PIDLESS-ROW-COUNTS-AS-A-WORKER
+sed: /if pid in (None, "", "null", "None"):/{n;s/return False/return True/;}
+expected to kill: cases 1, 4, 6 — a row with no process at all blocks again, which is the carousel itself
+--- mutated line, in the context of its function ---
+    # Fail-closed on genuine ambiguity: a pid that is alive but whose kind
+    # cannot be read ("other"/"unknown") still counts as a worker and still
+    # blocks. The only answers that release the block are the ones we can prove:
+    # no pid at all, a dead pid, or a live pid that is an interactive lead.
+    pid = other.get("pid")
+    if pid in (None, "", "null", "None"):
+        return True
+    if not _pid_alive(pid):
+        return False
+    return _proc_kind(pid) != "interactive"
+
+def _lv2_ws_pending(other):
+--- suite against the mutant ---
+FAIL: 1: rc=5 [registry] writeset conflict: other=INC-NOPID reason=pending_resolution writes_reason=undeclared
+PASS: a write-less incumbent WITH a live process still refuses (rc=5, pending_resolution)
+PASS: a live LEAD pid attached to a lane no longer holds the lock (proc_kind=interactive)
+FAIL: 4: rc=5 [registry] writeset conflict: other=INC-NOPID reason=pending_resolution writes_reason=undeclared
+PASS: a PROVEN path overlap still refuses, pid or no pid (paths= named)
+FAIL: 6: rc=5 [registry] writeset conflict: other=CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 reason=pending_resolution writes_reason=undeclared
+[WRITESET-CAROUSEL] pass=3 fail=3
+RESULT: ok — the suite goes RED under this mutation (rc=1)
+
+════ WRITESET-BYSTANDER-LEAD-COUNTS-AS-A-WORKER
+sed: s/return _proc_kind(pid) != "interactive"/return True/
+expected to kill: case 3 — a live interactive LEAD pid attached to a lane holds the lock forever again
+--- mutated line, in the context of its function ---
+    # Fail-closed on genuine ambiguity: a pid that is alive but whose kind
+    # cannot be read ("other"/"unknown") still counts as a worker and still
+    # blocks. The only answers that release the block are the ones we can prove:
+    # no pid at all, a dead pid, or a live pid that is an interactive lead.
+    pid = other.get("pid")
+    if pid in (None, "", "null", "None"):
+        return False
+    if not _pid_alive(pid):
+        return False
+    return True
+
+def _lv2_ws_pending(other):
+--- suite against the mutant ---
+PASS: a write-less incumbent with NO process no longer refuses (and the downgrade is journaled)
+PASS: a write-less incumbent WITH a live process still refuses (rc=5, pending_resolution)
+FAIL: 3: rc=5 [registry] writeset conflict: other=INC-LEADPID reason=pending_resolution writes_reason=undeclared
+PASS: the downgrade lands in the unknown policy, not past it (enforce=block still refuses, rc=6)
+PASS: a PROVEN path overlap still refuses, pid or no pid (paths= named)
+PASS: the live 02:52Z registry shape (5 young pid-less rows) stops blocking, and all 5 are named
+[WRITESET-CAROUSEL] pass=5 fail=1
+RESULT: ok — the suite goes RED under this mutation (rc=1)
+
+════ controls: pidless=ok bystander=ok
