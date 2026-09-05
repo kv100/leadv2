@@ -586,3 +586,28 @@ mutations:
       the decision is emitted as effort_skipped instead
     expected: killed
     note: "13/0 -> red on the glm case. This case used to assert effort_dropped reason=no_effort_control for glm; glm gained an effort knob and the case was never updated. The arms that genuinely have none -- kimi (:5794) and freepool (:5844) -- are UNCOVERED by this suite, stated in the suite's own text rather than faked"
+
+  - id: bootstrap-grace-never-ends
+    product_flow: "PHASE-GATE-IS-INVERTED-01: the bootstrap grace is a one-shot on the very first dispatch -- the instant a lane records any phase other than the auto-stamped classify, the guard falls through to the refusal"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    suite: plugins/leadv2/scripts/tests/test-phase-gate-inversion.sh
+    anchor: |
+      if [[ "${_pp_phase_name}" != "classify" ]]; then
+                      _pp_bootstrap=""
+    patch: |
+      the condition becomes `if false`, so real phase history never clears the
+      grace and every lane is admitted -- faee3fc5's inversion shape
+    expected: killed
+    note: "13/0 -> red on case 1, which now spawns a worker it should have refused. Before 2026-09-05 case 1 could not fail for its own reason: its lane carried NO records, so the documented bootstrap exemption admitted it -- and case 4b in the same file asserts that very admission. Two mutually exclusive fixtures: one had to be red whatever the product did"
+
+  - id: never-started-lane-loses-its-bootstrap-grace
+    product_flow: "a lane that has never started (zero phase records) is admitted by leadv2-phase-record.sh's OWN store probe, not by any caller's attestation"
+    file: plugins/leadv2/scripts/leadv2-phase-record.sh
+    suite: plugins/leadv2/scripts/tests/test-phase-gate-inversion.sh
+    anchor: |
+      if [[ "$scope" == "pre-build" ]]; then
+          _lane_bootstrap=1
+    patch: |
+      _lane_bootstrap=0 -- no grace for a never-started lane
+    expected: killed
+    note: "13/0 -> red on case 4b (rc=3, missing=classify,plan,gate1). Aimed FIRST at the dispatcher's copy of the same rule and killed nothing: case 4b calls `leadv2-phase-record.sh assert` directly, so the dispatcher's copy is not the code it exercises. The rule lives in two files and this suite covers one of them per case -- recorded rather than left looking like coverage it does not have"

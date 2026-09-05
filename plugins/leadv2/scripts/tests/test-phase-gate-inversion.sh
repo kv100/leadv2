@@ -169,12 +169,65 @@ record_lead_phases() {
   # under test is exactly plan+gate1, not the class table.
   ( cd "$repo" && PROJECT_ROOT="$repo" LEADV2_PROJECT_ROOT="$repo" bash "$PHASE_RECORD" record "$sig8" diverge \
       --status n/a --reason 'fixture: no diverge round for this lane' --owner lead:fixture ) >/dev/null 2>&1
+  # Then ask the STORE what it still wants, and record that too.
+  #
+  # This helper used to name plan/gate1/diverge and stop. By 2026-09-05 the
+  # pre-build set had gained a `classify` the list never gained, so case 2 --
+  # "an APPROVED lane is admitted" -- was refused for missing=classify and read
+  # as a gate inversion. It is not one: the guard named exactly what it wanted.
+  # A hand-copied list of somebody else's contract rots; `assert` answers with
+  # the same `missing=` line the dispatcher's own guard reads
+  # (leadv2-dispatch-code.sh:4343), so bind to that.
+  local _still
+  _still="$( cd "$repo" && PROJECT_ROOT="$repo" LEADV2_PROJECT_ROOT="$repo" \
+    bash "$PHASE_RECORD" assert "$sig8" --class Standard --pre-build 2>&1 \
+    | sed -n 's/^missing=//p' | head -1 || true )"
+  local _ph
+  IFS=',' read -r -a _ph <<< "${_still:-}"
+  for _p in "${_ph[@]}"; do
+    [[ -n "$_p" ]] || continue
+    ( cd "$repo" && PROJECT_ROOT="$repo" LEADV2_PROJECT_ROOT="$repo" bash "$PHASE_RECORD" record "$sig8" "$_p" \
+        --status done --reason "fixture: $_p recorded by the lead" --owner lead:fixture ) >/dev/null 2>&1 || true
+  done
+}
+
+# record_lane_started <repo> <sig8> — a lane that HAS begun and then skipped its
+# planning, which is the shape the gate refuses. Distinct from a lane that never
+# started at all: PHASE-BOOTSTRAP-ADMIT-02 admits the never-started one through
+# the guard's own store probe, and case 4b below asserts exactly that.
+record_lane_started() {
+  local repo="$1" sig8="$2"
+  # NOT `classify`: the guard defines bootstrap as "no phase record for any
+  # phase OTHER than the auto-stamped classify" and says so in the code
+  # (leadv2-dispatch-code.sh:4366-4371), because cmd_resolve stamps classify
+  # unconditionally on every call. Measured 2026-09-05: a classify-only lane is
+  # still admitted. The same comment names the minimal real marker -- "even a
+  # mere `diverge` n/a" -- so use exactly that. It records history without
+  # faking any planning the case is about.
+  ( cd "$repo" && PROJECT_ROOT="$repo" LEADV2_PROJECT_ROOT="$repo" bash "$PHASE_RECORD" record "$sig8" diverge \
+      --status n/a --reason 'fixture: lane started, no diverge round' --owner lead:fixture ) >/dev/null 2>&1 || true
 }
 
 # ── case 1: brand-new Standard lane, no plan/gate1 ⇒ refused before spawn ────
 printf 'test: 1 new Standard dispatch without plan/gate1 is refused before spawn\n'
 REPO1="$TMP/repo1"; mk_repo "$REPO1"
 M1='PGI case1 fixture Standard lane writes production code'
+# The lane must have STARTED for this case to be about what it claims.
+#
+# With zero records the guard takes its bootstrap exemption and admits --
+# measured 2026-09-05, and it says so in one line:
+#   phase_precondition_bootstrap ... would_be_missing=classify,plan,gate1
+# That is not the inversion this suite hunts; it is PHASE-BOOTSTRAP-ADMIT-02
+# working, and case 4b below asserts the very same admission on purpose. As
+# written, case 1 and case 4b were mutually exclusive fixtures: one of them had
+# to be red whatever the product did.
+#
+# The distinction the gate actually draws is "never started" vs "phases were
+# SKIPPED". Recording classify puts this lane on the second side of it, which
+# is the side this case is about -- the refusal below must then name plan and
+# gate1, and it does.
+S1="$(mission_sig8 "$M1")"
+record_lane_started "$REPO1" "$S1"
 run_dispatch c1 "$REPO1" "$M1"; RC1=$?
 if [[ $RC1 -eq 3 ]]; then ok; else fail "case1: new Standard dispatch should exit 3 (got $RC1, out=$(tail -3 "$TMP/c1.out" 2>/dev/null | tr '\n' ' '))"; fi
 if [[ ! -f "$TMP/spawn-c1/spawned.txt" ]]; then ok; else fail "case1: refused dispatch spawned a worker ($(cat "$TMP/spawn-c1/spawned.txt"))"; fi
