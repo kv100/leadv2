@@ -486,6 +486,15 @@ mkdir -p "${MC_TASK_DIR}"
 # _dod_resolve_base() uses. Pin it to this fixture's own base commit so every
 # call below resolves a real, stable merge-base.
 MC_BASE_SHA="$(cd "${MC_REPO}" && git rev-parse HEAD)"
+# MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01: the base above WAS HEAD --
+# the fixture had exactly one commit, so `git diff <base> HEAD` was empty and
+# every artifact this block produced carried the sha256 of an empty diff as its
+# lane identity. The cases still passed, because the gate recomputed the same
+# empty hash and the two compared equal: the check confirmed itself on zero
+# information. A real lane always has commits after its start sha, so give the
+# fixture one and pin the base BEFORE it. Nothing else about these cases moves.
+( cd "${MC_REPO}" && printf '\n# lane work\n' >> lib/target.sh \
+    && git add -A && git -c user.email=t@t -c user.name=t commit -q -m "lane work" )
 
 ( cd "${MC_REPO}" && LEADV2_LANE_START_SHA="${MC_BASE_SHA}" bash "${MUT_CTL_SH}" \
     suite.sh lib/target.sh 's/ + / - /' "${MC_TASK_DIR}" ) \

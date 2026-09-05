@@ -274,6 +274,18 @@ _dod_valid_mutation_artifact() { # <artifact_file> <expected_diff_hash> -> rc 0=
   [[ "${mutated_rc}" != "0" ]] || return 1
   [[ "${artifact_hash}" =~ ^[0-9a-f]{64}$ ]] || return 1
   [[ "${artifact_hash}" != e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ]] || return 1
+  # MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01: the two lines above have
+  # guarded the MUTATION hash against the empty-diff sha since they were
+  # written; the lane hash one line below had no such guard and was only ever
+  # compared against `expected`, which _dod_worker_diff_hash() recomputes the
+  # same way from the same repository. In the degenerate case -- a lane in the
+  # canonical checkout, where base == HEAD and the diff is empty -- BOTH sides
+  # are that same empty-diff hash and compare EQUAL. The check then passes with
+  # maximum confidence on zero information: not "unknown became permission",
+  # but unknown became positive CONFIRMATION. Require the lane hash to be a
+  # real identity before comparing it to anything.
+  [[ "${lane_hash}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "${lane_hash}" != e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ]] || return 1
   [[ "${lane_hash}" == "${expected}" ]] || return 1
   return 0
 }

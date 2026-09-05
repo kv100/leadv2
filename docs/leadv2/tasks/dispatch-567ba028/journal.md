@@ -1,0 +1,61 @@
+- 2026-08-06T16:26:25Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T16:26:27Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T16:26:27Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T16:26:27Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-06T16:26:27Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-06T16:26:28Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786033585-37497 handle=glm-test-run
+- 2026-08-06T16:26:28Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T16:26:31Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=no_routing_yaml
+- 2026-08-06T16:26:31Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/83c44855
+- 2026-08-06T16:31:08Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T16:31:09Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T16:31:10Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T16:31:10Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-06T16:31:10Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-06T16:31:10Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786033868-12833 handle=glm-test-run
+- 2026-08-06T16:31:11Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T16:31:31Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=no_routing_yaml
+- 2026-08-06T16:31:31Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/83c44855
+- 2026-08-06T18:46:35Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T18:46:36Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T18:46:36Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T18:46:36Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-06T18:46:37Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-06T18:46:37Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786041995-82935 handle=glm-test-run
+- 2026-08-06T18:46:37Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T18:46:57Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-08-06T18:46:57Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/83c44855
+- 2026-08-07T00:28:04Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-07T00:28:05Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-07T00:28:05Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-07T00:28:06Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-07T00:28:06Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-07T00:28:06Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786062484-76077 handle=glm-test-run
+- 2026-08-07T00:28:06Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-07T00:28:09Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-08-07T00:28:09Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/83c44855
+- 2026-08-07T00:29:52Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-07T00:29:53Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-07T00:29:53Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-07T00:29:53Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-07T00:29:53Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-07T00:29:54Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786062592-13621 handle=glm-test-run
+- 2026-08-07T00:29:54Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-07T00:29:57Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-08-07T00:29:57Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/83c44855
+- 2026-08-07T00:43:59Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-07T00:44:00Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-07T00:44:00Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-07T00:44:00Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-07T00:44:00Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-07T00:44:01Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786063438-73719 handle=glm-test-run
+- 2026-08-07T00:44:01Z [decision] mission-version task=- sig=567ba028 rev=? head="plugin-only degraded mode test  --- If you hit a decision you cannot safely make yourself "
+- 2026-08-07T00:44:04Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-08-07T00:45:42Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-07T00:45:43Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-07T00:45:43Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-07T00:45:43Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-07T00:45:44Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-07T00:45:44Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786063542-520 handle=glm-test-run
+- 2026-08-07T00:45:44Z [decision] mission-version task=- sig=567ba028 rev=? head="plugin-only degraded mode test  --- If you hit a decision you cannot safely make yourself "
+- 2026-08-07T00:45:47Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default

@@ -84,9 +84,45 @@ fi
 # post-commit recomputation structurally unable to ever match. See
 # lib/leadv2-dod-gate.sh's _dod_worker_diff_hash() comment for the full
 # chicken-and-egg explanation; both sides exclude identically.
+# MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01 (founder 2026-09-05).
+# The emptiness guard below used to read `[[ -z "${LANE_DIFF_HASH}" ]]` -- it
+# tested the guard's own OUTPUT instead of its INPUT, and `shasum` of empty
+# input is not an empty string, it is a perfectly well-formed hash
+# (e3b0c442...7852b855). A guard that checks its own output can never fire for
+# the case it exists for.
+#
+# The case is not rare: a lane working in the CANONICAL checkout rather than on
+# its own branch has main == HEAD, so `git diff <base> HEAD` is empty every
+# single time. Measured across all 63 artifacts in the tree on 2026-09-05: 8
+# carried the empty-diff hash as their lane identity, from 5 different lanes.
+#
+# What was lost is IDENTITY, not proof -- all 8 carried a real, distinct
+# `diff_hash`, so the mutation genuinely applied in every one and the suites
+# genuinely went red. The artifact still proves "this suite reddens"; it stops
+# proving "it reddens ON THIS WORK", and with the field constant across lanes
+# every such artifact is indistinguishable from every other.
+#
+# `git diff --quiet` exits 0 when there is NO diff. It is tested SEPARATELY from
+# the hash on purpose: the hash pipeline itself is left byte-identical, because
+# lib/leadv2-dod-gate.sh's _dod_worker_diff_hash() recomputes it with the same
+# command and the two must never drift.
+if git -C "${ROOT}" diff --quiet "${MC_BASE}" HEAD -- . ':(exclude,glob)**/mutation-control/**' 2>/dev/null; then
+  printf 'leadv2-mutation-control: control_not_applied reason=empty_lane_diff base=%s\n' "${MC_BASE:0:12}"
+  printf '  This lane has no committed diff against its resolved base, so the artifact would carry\n'
+  printf '  the sha256 of an empty diff as its identity -- a value every such artifact shares, which\n'
+  printf '  is why it is refused rather than written.\n'
+  printf '  Set LEADV2_LANE_START_SHA=<sha of the commit before this lane started> and re-run.\n'
+  exit 2
+fi
 LANE_DIFF_HASH="$(git -C "${ROOT}" diff "${MC_BASE}" HEAD -- . ':(exclude,glob)**/mutation-control/**' 2>/dev/null | shasum -a 256 2>/dev/null | awk '{print $1}')"
 if [[ -z "${LANE_DIFF_HASH}" ]]; then
   printf 'leadv2-mutation-control: control_not_applied reason=no_merge_base\n'
+  exit 2
+fi
+# Belt and braces: whatever path produced it, that one hash is never an identity.
+if [[ "${LANE_DIFF_HASH}" == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]]; then
+  printf 'leadv2-mutation-control: control_not_applied reason=empty_lane_diff base=%s\n' "${MC_BASE:0:12}"
+  printf '  Set LEADV2_LANE_START_SHA=<sha of the commit before this lane started> and re-run.\n'
   exit 2
 fi
 
