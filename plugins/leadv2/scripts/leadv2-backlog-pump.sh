@@ -1093,7 +1093,18 @@ cmd_check() {
     fi
   done <<<"$raw"
 
-  log "check complete: examined=${examined} dispatched=${dispatched} live=${active} remaining_capacity=${cap} below_floor=${below_floor}"
+  # PULSE-BEATS-IN-IDLE-REPOS-01 / PULSE-BEATS-A-FILE-NOBODY-REWRITES-01: `live=` is
+  # not "is anyone working" and not "is anyone working anywhere" -- it is the number of
+  # LIVE LANE ROWS IN THIS REPOSITORY'"'"'S REGISTRY, counted by the liveness probe joined
+  # against ${ACTIVE_YAML}. Until this line said which of the three it meant, `live=0`
+  # was unfalsifiable, and an unfalsifiable instrument is useless: a reader could not
+  # tell a broken pulse from a correct one reporting an idle repo while lanes ran in a
+  # sibling. Measured 2026-09-05: two `live=0` beats in persona-engine while the
+  # reporting session'"'"'s lanes were live in leadv2 -- the pulse was RIGHT both times.
+  # This names the claim; it changes no count and no decision.
+  local _live_scope
+  _live_scope="$(basename "$(dirname "${ACTIVE_YAML}")" 2>/dev/null)"
+  log "check complete: examined=${examined} dispatched=${dispatched} live=${active} live_scope=${_live_scope:-unknown} live_means=lane_rows_in_this_repo_registry remaining_capacity=${cap} below_floor=${below_floor}"
 }
 
 _surface_to_founder() {  # $1=task_id $2=reason -> append to open-threads.md

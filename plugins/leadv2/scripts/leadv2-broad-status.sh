@@ -199,6 +199,24 @@ _emit_ready_line() {  # <rows|-> [degraded]
   if [[ "$age" =~ ^[0-9]+$ ]] && [[ "$age" -ge "${LEADV2_SINGLE_LEAD_BEAT_S:-1800}" ]]; then
     stale_suffix=" stale=1"
   fi
+  # PULSE-BEATS-A-FILE-NOBODY-REWRITES-01: at= is the file's mtime/epoch stamp, and
+  # mtime freshness is not CONTENT freshness -- anything that touches the artifact
+  # without rewriting it (a copy, a sync, a `touch`, a writer that opens and fails)
+  # leaves a fresh stamp on stale text, and the beat then announces the past as the
+  # present. The artifact's first line carries its OWN stamp, so the comparison the
+  # relay contract asks a reader to perform by eye is available right here. Do it
+  # here instead: publish content_at= and, when the two stamps disagree, say stale=1.
+  # Nothing is suppressed -- a beat still fires; it now carries whether the bytes
+  # behind it moved.
+  local content_at=""
+  content_at="$(head -1 "$FOUNDER_STATUS_PATH" 2>/dev/null \
+    | sed -n 's/^\([0-9]\{4\}-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z\).*/\1/p')"
+  if [[ -n "$content_at" ]]; then
+    stale_suffix="${stale_suffix} content_at=${content_at}"
+    if [[ "$content_at" != "${at_iso}" && "$stale_suffix" != *" stale=1"* ]]; then
+      stale_suffix=" stale=1${stale_suffix}"
+    fi
+  fi
   printf '%s [SUPERVISE-URGENT] BROAD_STATUS_READY at=%s path=%s rows=%s dispatched=%s%s%s\n' \
     "$(_now_iso)" "$at_iso" "$abs_path" "$rows" "$DISPATCHED" \
     "${degraded:+ degraded=1}" "$stale_suffix" >>"$LOG_FILE"
