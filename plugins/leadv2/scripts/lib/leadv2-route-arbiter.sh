@@ -15,6 +15,36 @@ leadv2_route_arbiter_script_dir() {
   cd -P "$(dirname "$source")" && pwd
 }
 
+# ── _arb_fault_detail <arbiter-stdout> ────────────────────────────────────────
+# DISPATCH-FAILS-OPEN-ON-NO-CAPABLE-CELL-01. Every caller that falls open when
+# route_arbiter returns non-zero used to journal the rc ALONE:
+#     arbiter_broken task=<sig> rc=68 reason=fail_open_to_ladder
+# while the arbiter's own line said WHY:
+#     arm=refuse model=none tier=none reason=no_capable_cell kind=code chain= ...
+# Measured 2026-09-05 across every lane journal in this repo: rc=68 fired 4
+# times (all one task, 2026-09-04T19:58..09-05T00:33) and not once was the
+# missing capability recoverable afterwards -- the boundary dropped it. The
+# fail-open itself is deliberate (a routing-config vocabulary gap must not
+# become a hard refusal; leadv2-dispatch-code.sh:8141) and is NOT changed here.
+# What changes is that it stops being silent.
+#
+# Lives in this lib because leadv2-dispatch-code.sh:587 and
+# leadv2-dispatch-product-close.sh:33 both source it -- one owner, five
+# readers, rather than the same parse copied a fifth time.
+#
+# Empty-safe by construction: an unparsable or empty stdout yields
+# `arb_reason=unparsed`, never an empty token, so the journal line keeps a
+# fixed shape for anything grepping it.
+_arb_fault_detail() {  # <arbiter stdout> -> "arb_reason=<r> arb_kind=<k>"
+  local _out="${1:-}" _r _k
+  # grep -oE + head -1 is this codebase's idiom for token extraction (BSD sed
+  # has no \| alternation, and a greedy sed s/.*reason=// takes the LAST token
+  # on a line that carries several).
+  _r="$(printf '%s\n' "${_out}" | grep -oE '(^| )reason=[^ ]+' | head -1 | sed 's/.*=//')"
+  _k="$(printf '%s\n' "${_out}" | grep -oE '(^| )kind=[^ ]+' | head -1 | sed 's/.*=//')"
+  printf 'arb_reason=%s arb_kind=%s' "${_r:-unparsed}" "${_k:-unknown}"
+}
+
 route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   local role="${1:-}" descriptor="${2:-}" here routing live free_gate free_rc quota_json
   [[ "$role" == worker || "$role" == reviewer ]] || return 64

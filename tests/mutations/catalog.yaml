@@ -672,3 +672,15 @@ mutations:
       capability matrix alone: the pre-78ae2a5a shape
     expected: killed
     note: "1/3 -> 4/0 after the re-anchor, and the control is the suite's OWN red half, run every time: with the key deleted the arbiter re-picks the arm the router just excluded (arbiter_pick=freepool). The green half needs a manufactured precondition -- the shipped config stopped producing this disagreement at 8cbeeed4 (2026-08-31), so the fixture removes 'light' from freepool's ladder when: in its own copy of the yaml; if that downgrade ever stops applying the fixture prints FIXTURE PRECONDITION GONE and stops the run instead of passing for the wrong reason"
+
+  - id: fail-open-drops-the-arbiters-own-reason
+    product_flow: "when route_arbiter refuses, the dispatcher falls open to the v1 ladder ON PURPOSE (a routing-config vocabulary gap must not become a hard refusal) -- but the fall-open must NAME the arbiter's reason, and the route it then produces must be marked, or the share of work taking that path cannot be counted at all"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    suite: plugins/leadv2/scripts/tests/test-route-arbiter.sh
+    anchor: |
+      _ROUTE_FAIL_OPEN=" after=fail_open arb_rc=${_arb_rc} ${_arb_fault_fail_open_to_ladder}"
+    patch: |
+      set to "" and the same detail dropped from the arbiter_broken emit --
+      the pre-fix shape, where the journal carried the rc alone
+    expected: killed
+    note: "13/1 -> the two (g) presence assertions fail. Runs on every CI selection: the control is case (g-red) INSIDE the suite, not a hand-applied mutation. It also refuses to pass when the green half did not hold (prints `control NOT EVALUATED`), because absence proves nothing unless presence was shown first -- measured 2026-09-05, when a broken fixture made this control green over a completely inert scenario"

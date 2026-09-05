@@ -500,7 +500,7 @@ resolve_review_pool_call() {
         emit decision "arbiter_broken task=${TASK} role=reviewer rc=0 reason=arbiter_arm_not_available ${_ra_util}" || true
       fi
     else
-      emit decision "arbiter_broken task=${TASK} role=reviewer rc=${_ra_rc} reason=fail_open_to_review_pool" || true
+      emit decision "arbiter_broken task=${TASK} role=reviewer rc=${_ra_rc} reason=fail_open_to_review_pool $(_arb_fault_detail "${_ra_out}")" || true
     fi
   else
     emit decision "arbiter_broken task=${TASK} role=reviewer rc=127 reason=missing_fail_open_to_review_pool" || true

@@ -142,5 +142,133 @@ PY
 out="$(run "$(quota_broken_active_claude 10 10 72)" 0 '{"kind":"code","size":"standard","protected":true}')"
 if [[ "$out" == *'util_claude=72'* ]]; then pass 'broken-active claude account falls back to the real ok account, not pct=0'; else fail "broken-active-claude output=$out"; fi
 
+# ── (g) DISPATCH-FAILS-OPEN-ON-NO-CAPABLE-CELL-01 ────────────────────────────
+# The fail-open itself is deliberate (leadv2-dispatch-code.sh:8141 — a routing
+# config vocabulary gap must not become a hard refusal) and is NOT what this
+# case pins. What it pins is that the fail-open stops being SILENT.
+#
+# Measured 2026-09-05 over every lane journal in this repo: rc=68 fired 4 times
+# (one task, 2026-09-04T19:58..09-05T00:33, 2 of them reaching a spawn), and in
+# none of them was the missing capability recoverable afterwards — the boundary
+# journalled the rc alone while the arbiter's own line said
+# `reason=no_capable_cell`. The route that followed was an ordinary-looking
+# `route_resolved by=router`, so the share of work taking this path could not be
+# counted at all.
+#
+# Forcing a REAL rc=68: keep the ladder as shipped, and cut capability_matrix
+# down to a cell no dispatchable ladder arm can match. The dispatcher sends its
+# own post-filter chain as allowed_arms; the arbiter intersects that with the
+# matrix; an empty intersection is exactly no_capable_cell.
+G_REPO="$TMP/repo-g"; mkdir -p "$G_REPO/.claude/ref" "$G_REPO/docs/leadv2"
+git -C "$G_REPO" init -q -b main; git -C "$G_REPO" config user.email t@t; git -C "$G_REPO" config user.name t
+touch "$G_REPO/seed"; git -C "$G_REPO" add seed; git -C "$G_REPO" commit -qm seed
+python3 - "$ROUTING" "$G_REPO/.claude/ref/leadv2-routing.yaml" <<'PY' || { fail "(g) fixture: could not build the empty-intersection routing yaml"; }
+import sys, yaml
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as fh:
+    data = yaml.safe_load(fh)
+cells = data.get('router_v2', {}).get('capability_matrix')
+if not cells:
+    sys.exit("FIXTURE PRECONDITION GONE: router_v2.capability_matrix is empty or "
+             "absent in leadv2-routing.yaml -- re-anchor this case, do not silence it")
+# `haiku` is review-only and never dispatchable as a build arm, so no ladder
+# candidate can intersect with it. Synthesised, not filtered, so the case does
+# not depend on haiku having a cell today.
+keep = dict(cells[0])
+keep.update({'arm': 'haiku', 'provider': 'anthropic', 'model': 'haiku'})
+data['router_v2']['capability_matrix'] = [keep]
+with open(dst, 'w') as fh:
+    yaml.safe_dump(data, fh)
+PY
+G_WORKER="$TMP/worker-g.sh"; printf '#!/usr/bin/env bash\nprintf "PID=%%s LABEL=t SESSION_ID=t\\n" "$$"\n' >"$G_WORKER"; chmod +x "$G_WORKER"
+
+run_g() {  # <dispatch-bin> <tag> -> stdout+journal of one --no-spawn dispatch
+  # Each call claims its OWN write path. `--writes src/x.py` (this file's
+  # habit elsewhere) is refused before routing is reached:
+  #   dispatch_refused reason=writeset_overlap blocked_by=dispatch-<other>
+  # because the overlap guard reads a registry OUTSIDE the fixture repo, so a
+  # row left by an earlier case -- or by a real lane on this machine -- wins.
+  # Measured 2026-09-05: that refusal, not the routing config, was why this
+  # case saw no rc=68 at all.
+  #
+  # And the cut-down matrix only reaches the ARBITER through
+  # LEADV2_ROUTE_ARBITER_ROUTING_YAML. leadv2-route-arbiter.sh:52 defaults to
+  # the PLUGIN's own config/leadv2-routing.yaml and never reads
+  # $PROJECT_ROOT/.claude/ref/leadv2-routing.yaml -- that per-repo file is the
+  # DISPATCHER's ladder source (see test-arm-capability-honoured). Two readers,
+  # two files, one filename: without this seam the fixture yaml is inert and the
+  # probe resolves arm=sonnet off the REAL matrix, with live util numbers.
+  # cwd MUST be inside $G_REPO: the foreign-project-root guard
+  # (FOREIGN-PROJECT-ROOT-GUARD-01) compares the env root against the
+  # cwd-derived git root and, when they differ, re-roots to CWD — so a dispatch
+  # launched from the real checkout silently reads the REAL routing yaml and the
+  # fixture's empty intersection never happens. Measured here: without the cd,
+  # this case failed with "WARN: foreign project root detected" and no rc=68 at
+  # all. The same trap is documented in test-plugin-papercuts.sh's e2e_setup.
+  ( cd "$G_REPO" && \
+  CLAUDE_PROJECT_ROOT="$G_REPO" LEADV2_PROJECT_ROOT="$G_REPO" \
+  LEADV2_ROUTE_ARBITER_ROUTING_YAML="$G_REPO/.claude/ref/leadv2-routing.yaml" \
+  LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-g$2" LEADV2_DISPATCH_E2E_GATE=0 \
+  LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
+  LEADV2_REQUIRE_PHASES=0 LEADV2_DISPATCH_SUBSESSION_BIN="$G_WORKER" \
+  bash "$1" "no-capable-cell probe $2" --kind code --no-spawn --writes "src/no-capable-cell-$2.py" 2>&1 || true )
+}
+
+g_out="$(run_g "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 1)"
+g_green_held=1
+# PRESENCE, not absence: the line must appear and must NAME the missing thing.
+if printf '%s\n' "$g_out" | grep -q 'arbiter_broken .*rc=68 .*arb_reason=no_capable_cell'; then
+  pass '(g) rc=68 fail-open journals the arbiter reason by name'
+else
+  g_green_held=0
+  fail "(g) rc=68 fail-open did not name its reason" "$(printf '%s\n' "$g_out" | grep -m1 'arbiter_broken' || echo '<no arbiter_broken line at all — the fixture did not reach a fail-open>')"
+fi
+if printf '%s\n' "$g_out" | grep -q 'route_resolved .*after=fail_open'; then
+  pass '(g) the route produced by a fail-open is marked and can be counted'
+else
+  g_green_held=0
+  fail "(g) route_resolved carries no after=fail_open marker" "$(printf '%s\n' "$g_out" | grep -m1 'route_resolved' || echo '<no route_resolved>')"
+fi
+
+# (g-red) DECLARED NEGATIVE CONTROL, run here rather than once by hand: strip
+# the detail from the emit in a THROWAWAY copy and both assertions above must
+# stop holding. Anchored on the smallest fragment that carries the meaning, and
+# a zero match is a hard failure — a control that cannot find its anchor must be
+# loud, never a silent pass.
+G_MUT_ROOT="$TMP/mutated-g"; mkdir -p "$G_MUT_ROOT"
+cp -R "$SCRIPTS_DIR" "$G_MUT_ROOT/scripts"
+G_MUT_BIN="$G_MUT_ROOT/scripts/leadv2-dispatch-code.sh"
+g_mut_rc=0
+python3 - "$G_MUT_BIN" <<'PY' || g_mut_rc=$?
+import sys
+p = sys.argv[1]; s = open(p).read()
+anchor = '_ROUTE_FAIL_OPEN=" after=fail_open arb_rc=${_arb_rc} ${_arb_fault_fail_open_to_ladder}"'
+n = s.count(anchor)
+if n != 1:
+    sys.exit('mutation anchor found %d times (expected 1) -- the fail-open marker '
+             'moved or was renamed; re-anchor this control, do not silence it' % n)
+s = s.replace(anchor, '_ROUTE_FAIL_OPEN=""')
+s = s.replace('reason=fail_open_to_ladder ${_arb_fault_fail_open_to_ladder}"',
+              'reason=fail_open_to_ladder"')
+open(p, 'w').write(s)
+PY
+if [[ ${g_mut_rc} -ne 0 ]]; then
+  fail "(g-red) mutation anchor not found — control cannot be proven" "zero-match"
+else
+  g_red="$(run_g "$G_MUT_BIN" 2)"
+  if printf '%s\n' "$g_red" | grep -q 'arb_reason=no_capable_cell' \
+     || printf '%s\n' "$g_red" | grep -q 'after=fail_open'; then
+    fail "(g-red) mutation did not flip the outcome — the control is not falsifiable" "$(printf '%s\n' "$g_red" | grep -m1 'arbiter_broken')"
+  elif [[ "${g_green_held}" != "1" ]]; then
+    # Absence proves nothing when the thing was never present: with a broken
+    # fixture the mutated run shows nothing either, and this case would pass for
+    # the wrong reason. Measured 2026-09-05, first run of this case.
+    fail "(g-red) control NOT EVALUATED — the green half did not hold, so the mutation had nothing to remove" "fix (g) first"
+  else
+    pass '(g-red) with the detail stripped, both the reason and the marker disappear'
+  fi
+fi
+
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

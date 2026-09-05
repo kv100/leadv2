@@ -582,6 +582,14 @@ fi
 # T17: the arbiter is intentionally optional at load time. A missing/corrupt
 # copy falls through to the established ladder and is made observable at the
 # call site, rather than making dispatch unavailable.
+# DISPATCH-FAILS-OPEN-ON-NO-CAPABLE-CELL-01: set (with a LEADING space) at
+# every arbiter fail-open below, appended verbatim to the route_resolved
+# line the v1 ladder then produces. Empty by default, so an untouched
+# dispatch emits byte-for-byte the line it emitted before. Without this the
+# resulting route is indistinguishable from a normal v1 route and the share
+# of work going through a fail-open cannot be counted at all -- which is the
+# measured defect here, not the downgrade itself.
+_ROUTE_FAIL_OPEN=""
 ROUTE_ARBITER_LIB="${LEADV2_ROUTE_ARBITER_LIB:-${SCRIPT_DIR}/lib/leadv2-route-arbiter.sh}"
 [[ -f "${ROUTE_ARBITER_LIB}" ]] || ROUTE_ARBITER_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh"
 [[ -f "${ROUTE_ARBITER_LIB}" ]] && source "${ROUTE_ARBITER_LIB}" || true
@@ -7956,8 +7964,8 @@ exit is treated as an incident."
       _dl_note "${sig8}" dead "ledger_record_failed_rc_${orc}" "" "${founder_task_id}"
       exit 1
     fi
-    emit decision "route_resolved by=router router=${router_label} model=opus task=${sig8} rule=${rule} reason=${reason}"
-    printf 'route_resolved by=router router=%s model=opus task=%s rule=%s reason=%s\n' "${router_label}" "${sig8}" "${rule}" "${reason}"
+    emit decision "route_resolved by=router router=${router_label} model=opus task=${sig8} rule=${rule} reason=${reason}${_ROUTE_FAIL_OPEN}"
+    printf 'route_resolved by=router router=%s model=opus task=%s rule=%s reason=%s%s\n' "${router_label}" "${sig8}" "${rule}" "${reason}" "${_ROUTE_FAIL_OPEN}"
     log "route_note model=opus requires_lead_judgment (GLM banned for kind=${kind:-<none>}); not auto-dispatched"
     # FIX (wave2 finding 4): opus dispatch is explicitly NOT auto-dispatched -- nothing
     # ran, nothing was ever going to run, and the lead's own judgment (a separate,
@@ -8141,7 +8149,9 @@ exit is treated as an incident."
       # rc=68 (no_capable_cell, a config-vocabulary gap -- T17 C1) falls
       # through here too: a config drift is never a hard refusal, only a
       # fail-open to the ladder, same as any other arbiter fault.
-      emit decision "arbiter_broken task=${sig8} rc=${_arb_rc} reason=fail_open_to_ladder"
+      _arb_fault_fail_open_to_ladder="$(_arb_fault_detail "${_arb_out}")"
+        emit decision "arbiter_broken task=${sig8} rc=${_arb_rc} reason=fail_open_to_ladder ${_arb_fault_fail_open_to_ladder}"
+        _ROUTE_FAIL_OPEN=" after=fail_open arb_rc=${_arb_rc} ${_arb_fault_fail_open_to_ladder}"
     fi
   else
     emit decision "arbiter_broken task=${sig8} rc=127 reason=missing_fail_open_to_ladder"
@@ -8215,7 +8225,9 @@ exit is treated as an incident."
       _arb_model="$(printf '%s\n' "${_bf_out}" | sed -n 's/.*model=\([^ ]*\).*/\1/p')"
       emit decision "route_headroom_chosen task=${sig8} arm=${arm} after=primary_arm_benched ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") source=arbiter ${_bf_util}"
     else
-      emit decision "arbiter_broken task=${sig8} rc=${_bf_rc} reason=bench_fallback_fail_open_to_ladder"
+      _arb_fault_bench_fallback="$(_arb_fault_detail "${_bf_out}")"
+        emit decision "arbiter_broken task=${sig8} rc=${_bf_rc} reason=bench_fallback_fail_open_to_ladder ${_arb_fault_bench_fallback}"
+        _ROUTE_FAIL_OPEN=" after=fail_open arb_rc=${_bf_rc} ${_arb_fault_bench_fallback}"
     fi
   fi
 
@@ -8477,8 +8489,8 @@ ${mission}"
         fi
         [[ -n "${_exc_reason}" ]] && { _arm_exception_bump "${_exc_reason}" "${sig8}" || true; }
       fi
-      emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}"
-      printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}"
+      emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}${_ROUTE_FAIL_OPEN}"
+      printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}" "${_ROUTE_FAIL_OPEN}"
       # FP-06: dispatch-attempt terminal -- the confirmed live spawn IS this
       # attempt's win. Emitted before the LANDED-AT-SPAWN block so the row
       # lands even if a later line in this branch were to fail.
@@ -8536,7 +8548,9 @@ ${mission}"
             emit decision "route_headroom_chosen task=${sig8} arm=${arm} after=exit76_continuation ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") source=arbiter ${_e76_util}"
             break
           fi
-          emit decision "arbiter_broken task=${sig8} rc=${_e76_rc} reason=exit76_fail_open_to_ladder"
+          _arb_fault_exit76="$(_arb_fault_detail "${_e76_out}")"
+        emit decision "arbiter_broken task=${sig8} rc=${_e76_rc} reason=exit76_fail_open_to_ladder ${_arb_fault_exit76}"
+        _ROUTE_FAIL_OPEN=" after=fail_open arb_rc=${_e76_rc} ${_arb_fault_exit76}"
         fi
       fi
       # V3-GLM-LADDER-01 Lever 1: park BEFORE the re-resolve/fallthrough below, so a
@@ -8650,8 +8664,8 @@ ${mission}"
       ;;
     4)
       if [[ "${spawn}" != "1" ]]; then
-        emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}"
-        printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}"
+        emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}${_ROUTE_FAIL_OPEN}"
+        printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}" "${_ROUTE_FAIL_OPEN}"
         emit decision "dispatch_rolled_back reason=no_spawn_dry_run task=${sig8}"
         # Dry-run: nothing was spawned or reserved (dispatch_abort already ran). No terminal
         # state exists to record -- writing one here would falsely claim a real dispatch
@@ -8874,7 +8888,9 @@ cmd_advance_arm() {
       arm="${candidate_arms[0]}"
       emit decision "route_headroom_chosen task=${sig8} arm=${arm} after=arm_advance ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") source=arbiter arbiter_pick=${_adv_arm} ${_adv_util}"
     else
-      emit decision "arbiter_broken task=${sig8} rc=${_adv_rc} reason=arm_advance_fail_open_to_static_pick fallback=${arm}"
+      _arb_fault_arm_advance="$(_arb_fault_detail "${_adv_out}")"
+        emit decision "arbiter_broken task=${sig8} rc=${_adv_rc} reason=arm_advance_fail_open_to_static_pick fallback=${arm} ${_arb_fault_arm_advance}"
+        _ROUTE_FAIL_OPEN=" after=fail_open arb_rc=${_adv_rc} ${_arb_fault_arm_advance}"
       candidate_arms=()
     fi
   fi
