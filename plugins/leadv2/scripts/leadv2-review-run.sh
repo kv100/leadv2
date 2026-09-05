@@ -1639,17 +1639,43 @@ reviewer_primary=""
 _union_fail_arm=""
 _review_has_fail=0
 _review_has_nonfail=0
+# REVIEW-GATE-IS-MUTE-01 (founder 2026-09-05). Three outcomes, not two: an arm
+# either PASSED, or FAILED, or COULD NOT BE READ -- and the third was silent.
+# The loop below skips an unreadable arm with a bare `continue`, so a single
+# readable PASS carried the whole gate while the gate still printed
+# `degraded=false` and listed the mute arm in `arms:` as though it had
+# contributed. Measured live 2026-09-05: two arms launched, one clean PASS, one
+# body with no parsable verdict at all -> `status: pass`, `degraded=false`,
+# `arms: codex,glm`, and not one word about glm. The lane merged on one opinion
+# believing it had two.
+#
+# Unknowledge is not a verdict. Every skip now records arm=reason here, the
+# fanout line is forced to `degraded=true` when this list is non-empty, and both
+# terminal gates print an `unreadable:` line and carry an `unreadable=` token on
+# their decision. Whether an unreadable arm should BLOCK is a policy question
+# with a much larger blast radius and is deliberately NOT taken here -- this
+# change makes the third state visible and named, which is the precondition for
+# ever deciding it.
+_REVIEW_UNREADABLE=""
+_rv_unreadable() { # <arm> <reason>
+  _REVIEW_UNREADABLE="${_REVIEW_UNREADABLE:+${_REVIEW_UNREADABLE},}$1=$2"
+}
 for _arm in "${ran_arms[@]}"; do
   resolve_review_artifact "${_arm}" || true
   _file="${REVIEW_ARTIFACT:-${HANDOFF}/review-${_arm}.md}"
   _rc="$(cat "${HANDOFF}/review-${_arm}.rc" 2>/dev/null || printf '1')"
   if [[ "${_rc}" -ne 0 && -z "${REVIEW_ARTIFACT}" ]]; then
+    _rv_unreadable "${_arm}" "provider_error_rc${_rc}"
     continue
   fi
   if [[ ! -s "${_file}" ]] || ! review_floor_ok "${_file}"; then
+    _rv_unreadable "${_arm}" "below_floor"
     continue
   fi
   if ! parse_review_verdict "${_file}"; then
+    # The arm answered -- rc 0, a body over the floor -- and the gate cannot
+    # tell what it said. This is the case that used to vanish entirely.
+    _rv_unreadable "${_arm}" "unparsable_verdict"
     continue
   fi
   if [[ -z "${reviewer_primary}" ]]; then
@@ -1703,8 +1729,8 @@ if [[ -z "${verdict}" ]]; then
     printf 'status: blocked\nreason: provider_error\nrc: %s\narm_rc: %s\n' "${_first_rc}" "${_fc_arms_rc}" > "${HANDOFF}/review-gate.md.tmp"
     emit decision "review_gate task=${TASK} status=blocked reason=provider_error rc=${_first_rc} arm_rc=${_fc_arms_rc}"
   else
-    printf 'status: blocked\nreason: empty_response\narm_rc: %s\n' "${_fc_arms_rc}" > "${HANDOFF}/review-gate.md.tmp"
-    emit decision "review_gate task=${TASK} status=blocked reason=empty_response arm_rc=${_fc_arms_rc}"
+    printf 'status: blocked\nreason: empty_response\narm_rc: %s\nunreadable: %s\n' "${_fc_arms_rc}" "${_REVIEW_UNREADABLE:-none}" > "${HANDOFF}/review-gate.md.tmp"
+    emit decision "review_gate task=${TASK} status=blocked reason=empty_response arm_rc=${_fc_arms_rc} unreadable=${_REVIEW_UNREADABLE:-none}"
   fi
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
   exit 6
@@ -1892,6 +1918,27 @@ else
   _FANOUT_DEGRADED_WORD="false"
   _FANOUT_REASON="none"
 fi
+# REVIEW-GATE-IS-MUTE-01: `degraded` counted arms that LAUNCHED, never arms whose
+# verdict could actually be read. An arm that ran and produced an unparsable body
+# is exactly as absent from the verdict as one that never launched, so it must
+# degrade the gate too -- otherwise the gate asserts `degraded=false` about a
+# review it could not read.
+if [[ -n "${_REVIEW_UNREADABLE}" ]]; then
+  _FANOUT_DEGRADED=1
+  _FANOUT_DEGRADED_WORD="true"
+  if [[ "${_FANOUT_REASON}" == "none" ]]; then
+    _FANOUT_REASON="arms_unreadable"
+  else
+    _FANOUT_REASON="${_FANOUT_REASON}+arms_unreadable"
+  fi
+fi
+# One line on EVERY outcome, `none` included: a reader must be able to tell
+# "every arm was read" from "we never said". Silence is not a value.
+UNREADABLE_LINE="$(printf 'unreadable: %s' "${_REVIEW_UNREADABLE:-none}")"
+if [[ -n "${_REVIEW_UNREADABLE}" ]]; then
+  UNREADABLE_LINE="${UNREADABLE_LINE}
+unreadable_detail: these arms ran but their verdict could not be established, so they contributed NOTHING to this gate - it is weaker than its arms: line suggests"
+fi
 FANOUT_LINE="$(printf 'fanout: %s/%s degraded=%s launched=%s pool_ok=%s source=%s reason=%s excluded=%s' \
   "${_FANOUT_RAN}" "${_FANOUT_REQUESTED}" "${_FANOUT_DEGRADED_WORD}" "${_FANOUT_LAUNCHED}" \
   "${_FANOUT_POOL_OK}" "${_FANOUT_SOURCE}" "${_FANOUT_REASON}" "${_FANOUT_EXCLUDED:--}")"
@@ -1930,7 +1977,7 @@ fi
 
 if [[ "${verdict}" == FAIL ]]; then
   {
-    printf 'arms: %s\n%s\n%s\n' "${ARMS_CSV}" "${FANOUT_LINE}" "${VERIFIED_LINE}"
+    printf 'arms: %s\n%s\n%s\n%s\n' "${ARMS_CSV}" "${FANOUT_LINE}" "${UNREADABLE_LINE}" "${VERIFIED_LINE}"
     printf 'status: fail\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
       "${FINDINGS_CRITICAL_TOTAL}" "${FINDINGS_HIGH_TOTAL}" "${FINDINGS_MEDIUM_TOTAL}" "${FINDINGS_LOW_TOTAL}"
     render_gate_findings "${REVIEW_ARTIFACT:-${HANDOFF}/review-${reviewer_primary}.md}" "${FINDINGS_JSON}" \
@@ -1939,12 +1986,12 @@ if [[ "${verdict}" == FAIL ]]; then
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
   _review_state_write
   _rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
-  emit decision "review_gate task=${TASK} status=fail critical=${FINDINGS_CRITICAL_TOTAL} high=${FINDINGS_HIGH_TOTAL}${_rgf_dnm}"
+  emit decision "review_gate task=${TASK} status=fail critical=${FINDINGS_CRITICAL_TOTAL} high=${FINDINGS_HIGH_TOTAL} unreadable=${_REVIEW_UNREADABLE:-none}${_rgf_dnm}"
   exit 7
 fi
 
 {
-  printf 'arms: %s\n%s\n%s\n' "${ARMS_CSV}" "${FANOUT_LINE}" "${VERIFIED_LINE}"
+  printf 'arms: %s\n%s\n%s\n%s\n' "${ARMS_CSV}" "${FANOUT_LINE}" "${UNREADABLE_LINE}" "${VERIFIED_LINE}"
   printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer_primary}" "${diff_hash:0:8}"
   render_gate_findings "${REVIEW_ARTIFACT:-${HANDOFF}/review-${reviewer_primary}.md}" "${FINDINGS_JSON}" \
     "${reviewer_primary}" "docs/handoff/dispatch-${TASK}/review-${reviewer_primary}.md" || true
@@ -1952,5 +1999,5 @@ fi
 mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
 _review_state_write
 _rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
-emit decision "review_gate task=${TASK} status=pass diff=${diff_hash:0:8} arms=${ARMS_CSV}${_rgf_dnm}"
+emit decision "review_gate task=${TASK} status=pass diff=${diff_hash:0:8} arms=${ARMS_CSV} unreadable=${_REVIEW_UNREADABLE:-none}${_rgf_dnm}"
 exit 0
