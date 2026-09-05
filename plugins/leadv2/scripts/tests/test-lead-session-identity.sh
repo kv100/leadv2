@@ -11,6 +11,14 @@
 # _lv2_durable_pid()/_lv2_pid_birth() pair from leadv2-active-registry.sh.
 #
 # bash 3.2. No real spawns beyond `bash -c` subshells for distinct PIDs.
+# run-all-triggers: leadv2-lead-identity leadv2-lane-state
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 
 # ${BASH_SOURCE[0]:-$0}: green under bash AND zsh (founder shell), failing on

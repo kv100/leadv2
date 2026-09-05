@@ -2,6 +2,14 @@
 # tests/test-memguard.sh — smoke tests for leadv2-memory-guard.sh
 # Usage: bash tests/test-memguard.sh
 # Exit 0 = all pass; non-zero = failure count
+# run-all-triggers: leadv2-memory-guard
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -euo pipefail
 
 GUARD="${BASH_SOURCE[0]%/*}/../hooks/leadv2-memory-guard.sh"

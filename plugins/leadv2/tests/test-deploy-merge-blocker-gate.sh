@@ -45,6 +45,14 @@
 #
 # Usage: bash tests/test-deploy-merge-blocker-gate.sh
 # Exit 0 = all pass; nonzero = failure count.
+# run-all-triggers: leadv2-queue-release leadv2-deploy-merge leadv2-merge-queue leadv2-phase8-assert
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -euo pipefail
 

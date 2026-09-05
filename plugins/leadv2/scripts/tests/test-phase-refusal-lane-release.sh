@@ -18,6 +18,14 @@
 #   M4 (req 3) registry proc_kind stamp at register time
 # Acceptance #3: a row with pid_role=worker and a live process survives the
 # release path (T4).
+# run-all-triggers: leadv2-dispatch-code leadv2-active-registry
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 export LEADV2_BURN_GOVERNOR=0

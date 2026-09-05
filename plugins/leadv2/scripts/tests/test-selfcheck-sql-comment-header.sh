@@ -24,6 +24,14 @@
 # sides so deletions and rename sources are not missed) and only tightens what counts
 # as a header: a real one is inside a `diff --git` block, or carries the a/ or b/
 # prefix, or is /dev/null. A SQL comment has none of those.
+# run-all-triggers: leadv2-builder-selfcheck
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

@@ -3,6 +3,14 @@
 # Drive the real dispatcher and real product-close gate. The first arm is a
 # completed-but-empty glm-flash run; the continuation must spawn freepool and
 # must not write the write-once dispatch terminal before that second spawn.
+# run-all-triggers: leadv2-dispatch-code leadv2-dispatch-product-close
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

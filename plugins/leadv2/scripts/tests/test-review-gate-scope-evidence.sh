@@ -18,6 +18,14 @@
 # baseline, pre-fix) and once against this working tree (SCRIPT_DIR -- fix applied).
 # A case must FAIL against PREFIX_SCRIPTS and PASS against SCRIPT_DIR. NEVER git
 # stash/reset/clean -- the fix is deliberately left uncommitted so HEAD stays pre-fix.
+# run-all-triggers: leadv2-dispatch-product-close leadv2-lane-worktree
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

@@ -19,6 +19,14 @@
 # never against the working tree, never via git stash/reset.
 #
 # Run: bash plugins/leadv2/scripts/tests/test-t14-worker-mcp.sh
+# run-all-triggers: glm-coder leadv2-review-run leadv2-worker-mcp claude-subsession
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

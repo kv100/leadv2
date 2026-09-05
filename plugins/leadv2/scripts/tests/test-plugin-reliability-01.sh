@@ -12,6 +12,14 @@
 #   D3 — prepass-park --no-block (fire-and-forget, not blocking)
 #   D4 — empty-status→dead grace guard (meta must exist + be >30s old)
 #   D5 — router_v2 reorder failure journal (source-grep, trivial)
+# run-all-triggers: claude-subsession leadv2-dispatch-code leadv2-dispatch-product-close
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

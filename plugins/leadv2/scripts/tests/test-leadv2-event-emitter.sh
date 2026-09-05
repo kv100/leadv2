@@ -4,6 +4,14 @@
 # seq, rotation, fail-open on malformed input), then proves each of the 4
 # dispatch-code.sh call sites (worker_spawned / arm_refused / worker_terminal
 # / question_asked) actually produces an event line on disk.
+# run-all-triggers: leadv2-event leadv2-dispatch-code
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 
 # BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real

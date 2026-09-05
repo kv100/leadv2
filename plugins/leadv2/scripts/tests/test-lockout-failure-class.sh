@@ -24,6 +24,14 @@
 # Hermeticity follows test-quota-lockout-postspawn.sh: fake launchers, per-scenario
 # LEADV2_QUOTA_LOCKOUT_DIR / LEADV2_DISPATCH_CACHE_DIR under TMP_ROOT — the real
 # ~/.claude/cache/dispatch-ledger/ is NEVER touched.
+# run-all-triggers: leadv2-dispatch-code
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

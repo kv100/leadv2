@@ -44,6 +44,14 @@
 # Case 5 (item 4, medium): a symlinked env root must accept its genuine pin.
 # Case 6 (item 4, medium): a parent spelling of that env root must also accept
 # the pin and canonicalise the dispatcher back to the pin's owning repo.
+# run-all-triggers: leadv2-dispatch-code
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

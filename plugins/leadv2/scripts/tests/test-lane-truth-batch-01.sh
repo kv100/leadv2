@@ -4,6 +4,14 @@
 # Row 2: direct dispatch (no --task-id) was invisible to the registry
 #         (already-fixed by STATUS-SURFACE-SHOWS-STALE-TRUTH-01 C5 — verified here)
 # Row 3: exclude-mode DIRECTION-SAFETY had no quarantine safety net + convergence
+# run-all-triggers: leadv2-state-path leadv2-dispatch-code leadv2-active-registry leadv2-lane-liveness
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -euo pipefail
 
 # BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real

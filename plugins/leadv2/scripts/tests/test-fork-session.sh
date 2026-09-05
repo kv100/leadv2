@@ -12,6 +12,14 @@
 # no-op-safe on re-run.
 # Untouched-by-design invariant: leadv2-ask.sh / leadv2-answer.sh /
 # leadv2-lane-worktree.sh are invoked, never reimplemented.
+# run-all-triggers: leadv2-answer leadv2-fork-session
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FS="${SCRIPT_DIR}/leadv2-fork-session.sh"

@@ -14,6 +14,14 @@
 # that reason: under CI or any Homebrew-shell dev machine, `bash` on PATH is
 # 5.x, and the bug would be invisible to a test that used it.
 # Guard against mktemp -t without XXX in template
+# run-all-triggers: mktemp-guard leadv2-status-surface.5s leadv2-broad-status leadv2-status-surface
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD_SCRIPT="$SCRIPT_DIR/../plugins/leadv2/scripts/lib/mktemp-guard.sh"
 if [ ! -f "$GUARD_SCRIPT" ]; then

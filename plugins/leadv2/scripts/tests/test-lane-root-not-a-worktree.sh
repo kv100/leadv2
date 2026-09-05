@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # REVIEW-GATE-LANEROOT-01 regression: an unregistered lane directory is never
 # allowed to make the close gate grade its parent repository.
+# run-all-triggers: leadv2-dispatch-product-close leadv2-lane-worktree leadv2-red-first-baseline
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

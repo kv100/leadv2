@@ -38,6 +38,14 @@
 # sessions roots (LEADV2_CODEX_SESSIONS_ROOT pinned per-case), no network,
 # no real dispatch.
 # Run: bash scripts/tests/test-worker-reason-terminal.sh
+# run-all-triggers: leadv2-dispatch-ledger leadv2-dispatch-product-close leadv2-worker-reason
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

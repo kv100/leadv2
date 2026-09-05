@@ -21,6 +21,14 @@
 # Isolation: LEADV2_ALARM_STATE_DIR points the lib at a per-case temp dir, so
 # no case shares state with another and nothing touches a real control plane.
 # Run: bash scripts/tests/test-alarm-dedupe-transition.sh
+# run-all-triggers: leadv2-alarm-dedupe
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

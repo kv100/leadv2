@@ -12,6 +12,14 @@
 #
 # Red-first against the pinned pre-fix baseline (the function does not exist
 # there, same harness idiom as test-builder-selfcheck-gate.sh).
+# run-all-triggers: leadv2-dispatch-product-close leadv2-dispatch-code leadv2-lane-worktree
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

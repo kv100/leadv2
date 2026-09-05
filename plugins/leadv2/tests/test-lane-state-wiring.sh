@@ -3,6 +3,14 @@
 # tests/test-lane-state.sh (module-level unit tests) does not exercise --
 # dispatch admission's cap-refusal exit code, session-runner's EXIT-trap
 # deregister, and the sweeper's reconcile call marking a kill-9 lane dead.
+# run-all-triggers: leadv2-session-runner leadv2-dispatch-code leadv2-lane-state
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"

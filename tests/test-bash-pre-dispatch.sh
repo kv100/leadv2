@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Regression/performance coverage for the merged PreToolUse:Bash dispatcher.
 # Compatible with macOS Bash 3.2 and BSD userland.
+# run-all-triggers: leadv2-codex-direct-exec-guard leadv2-deny-floor leadv2-env-audit-pre-gate leadv2-bash-lint-pre-gate
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -u
 

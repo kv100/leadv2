@@ -8,6 +8,14 @@
 # Anti-tautology: this test FAILS at the base commit (1b8692e) because:
 #   - the legacy fallback contains kimi, which is not in DISPATCHABLE_BUILD_ARMS
 #   - the yaml ladder has kimi without dispatch:false
+# run-all-triggers: leadv2-dispatch-code
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 
 # BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real

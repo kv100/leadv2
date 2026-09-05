@@ -15,6 +15,14 @@
 # anti-drift invariant expressed against the surviving owner: leadv2-review-run.sh has
 # exactly one copy under plugins/leadv2/scripts/ and no shadow copy resurfaces under
 # ~/.claude/ (the same "missed-copy" defect class R4 protected against).
+# run-all-triggers: leadv2-review-run
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"

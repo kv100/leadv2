@@ -42,6 +42,14 @@
 # journal file (not just stdout) -- retry-dead sets JOURNAL_TASK itself
 # (leadv2-dispatch-code.sh cmd_retry_dead), so this proves that delivery
 # path, not just the printf mirror.
+# run-all-triggers: leadv2-dispatch-code
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

@@ -12,6 +12,14 @@
 # launcher-exits-0, and the M3-c kill-switch check) and ZERO covering the two defects that
 # mattered (C1: worker cwd vs diff root disagree; C2: untracked new files never diffed).
 # This file replaces that suite; every assertion below is shown red against HEAD.
+# run-all-triggers: leadv2-dispatch-product-close leadv2-dispatch-code leadv2-fanout-lane-launcher claude-subsession
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

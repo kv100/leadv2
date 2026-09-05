@@ -4,6 +4,14 @@
 # Tests: (a) effort pinned on every spawn path, (b) xhigh only with --tier top
 # + --reason, (c) circuit-open on usage-limit, (d) direct-exec hook,
 # (e) resolver-unreachable fail-closed, (e2) quota reader missing fail-open.
+# run-all-triggers: codex-task leadv2-codex-quota-gate leadv2-codex-session-runner leadv2-codex-circuit
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

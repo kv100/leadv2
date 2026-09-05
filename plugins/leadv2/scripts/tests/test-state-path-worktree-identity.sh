@@ -10,6 +10,14 @@
 # Hermetic: LEADV2_STATE_BASE points at a throwaway dir (bypasses both the
 # real ~/.claude/leadv2-state and the STATE-DIR-JUNK-01 ephemeral redirect,
 # since that redirect only fires when LEADV2_STATE_BASE is UNSET).
+# run-all-triggers: leadv2-state-path
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

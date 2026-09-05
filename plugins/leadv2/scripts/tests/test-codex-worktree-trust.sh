@@ -15,6 +15,14 @@
 # against the working tree (post-fix), and the harness prints the machine
 # marker the builder-selfcheck gate greps for. A case that passes against
 # pre-fix code is reported as GREEN-PRE-FIX, never as a pass.
+# run-all-triggers: leadv2-lane-worktree
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

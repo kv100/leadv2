@@ -4,6 +4,14 @@
 # --review-pool mode with a stub --quota-live so no live provider call is made.
 # Must FAIL on pre-fix HEAD (resolver has no --review-pool flag at all) and
 # PASS after. Usage: bash tests/test-review-arm-pool.sh
+# run-all-triggers: leadv2-review-signals leadv2-dispatch-product-close
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

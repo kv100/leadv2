@@ -15,6 +15,14 @@
 # `git ls-files --error-unmatch` line with `return 1` ("always untracked") —
 # must flip acceptance case (a)'s exit code 0 -> 1. RED with the mutation,
 # GREEN after revert; both exit codes are printed verbatim below.
+# run-all-triggers: leadv2-repo-install leadv2-settings-guard
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 NEGATIVE_CONTROL_MUTATION="leadv2_path_is_tracked() body: git ls-files --error-unmatch replaced with 'return 1'"
 
 set -uo pipefail

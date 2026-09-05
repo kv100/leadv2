@@ -14,6 +14,14 @@
 # touches a real ~/.claude or a real active.yaml. Asserts ~/.claude/leadv2-state mtime is
 # unchanged. Exits 0 and prints a passing summary; run it twice.
 # Guard against mktemp -t without XXX in template
+# run-all-triggers: mktemp-guard leadv2-dispatch-ledger leadv2-state-path
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD_SCRIPT="$SCRIPT_DIR/../lib/mktemp-guard.sh"
 if [ ! -f "$GUARD_SCRIPT" ]; then

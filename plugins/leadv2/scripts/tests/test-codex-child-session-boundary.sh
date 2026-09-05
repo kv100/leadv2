@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Regression guard: a Codex lead launched by the session runner must execute
 # phases itself, never recurse into a runner/dispatcher.
+# run-all-triggers: leadv2-codex-session-runner leadv2-fanout leadv2-session-runner
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -euo pipefail
 

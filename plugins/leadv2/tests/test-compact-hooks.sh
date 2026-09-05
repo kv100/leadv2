@@ -3,6 +3,14 @@
 # leadv2-postcompact-goal-reinject.sh (multi-task / journal-aware rewrite, LONG-SESSION-01).
 # Usage: bash tests/test-compact-hooks.sh
 # Exit 0 = all pass; non-zero = failure count
+# run-all-triggers: leadv2-active-cache pre-compact-task-freeze leadv2-postcompact-goal-reinject leadv2-pre-compact-checkpoint
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -euo pipefail
 
 # Absolutise this file's dir ONCE (see test-open-threads-prune.sh for the full

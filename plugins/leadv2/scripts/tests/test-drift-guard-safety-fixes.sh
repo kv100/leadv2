@@ -21,6 +21,14 @@
 # vendored repo is ever read or written.
 # Run: bash scripts/tests/test-drift-guard-safety-fixes.sh
 # Exit 0 = all pass; non-zero = failures found.
+# run-all-triggers: leadv2-plugin-sync leadv2-drift-guard
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

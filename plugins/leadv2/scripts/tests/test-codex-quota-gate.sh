@@ -28,6 +28,14 @@
 #   q8  started job past stall threshold does NOT record a queued_stall cooldown
 #   q9  queued stall then terminal quota death still records the quota cooldown (+ circuit)
 #   q10 blind reader + recent stall (C) -> one WARN line, dispatch proceeds (rc != 2)
+# run-all-triggers: codex-task
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

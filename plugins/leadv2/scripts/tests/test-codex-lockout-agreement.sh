@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # The old test proved two unbounded readers agreed on 2099.  This one proves
 # the public status front-end and the real gate share a bounded policy.
+# run-all-triggers: codex-task leadv2-arm-cooldown leadv2-codex-lockout
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

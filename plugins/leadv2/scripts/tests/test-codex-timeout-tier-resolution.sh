@@ -25,6 +25,14 @@
 # is itself a plain POSIX shell script.
 # Run: bash scripts/tests/test-codex-timeout-tier-resolution.sh
 # Exit 0 = all pass; non-zero = failures found.
+# run-all-triggers: codex-task
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"

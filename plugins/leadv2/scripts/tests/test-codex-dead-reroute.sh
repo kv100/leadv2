@@ -11,6 +11,14 @@
 # (leadv2-review-run.sh, leadv2-dispatch-product-close.sh) by source inspection,
 # since the mission-noted risk is exactly that one of the two independent
 # copies gets the emit and the other doesn't.
+# run-all-triggers: leadv2-dispatch-product-close leadv2-review-reroute-note leadv2-review-run
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

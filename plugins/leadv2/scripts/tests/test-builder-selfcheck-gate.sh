@@ -14,6 +14,14 @@
 # calls out (C1, C2, H1, H3, M1, M3). Every case pins
 # LEADV2_BUILDER_SELFCHECK_TIMEOUT_S=3 and uses trivial fixtures to keep the wall clock
 # under ~25s.
+# run-all-triggers: leadv2-dispatch-product-close leadv2-builder-selfcheck leadv2-e2e-entrypoint leadv2-lane-worktree
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

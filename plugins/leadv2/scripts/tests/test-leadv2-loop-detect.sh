@@ -13,6 +13,14 @@
 #   3. warn budget per tool per session == number of anchors (7 for 30/1400);
 #   4. sig-warn: one warn at the 3rd identical call, none at the 4th, BLOCK
 #      at the 5th (the hook's own anti-loop case still fires).
+# run-all-triggers: leadv2-loop-detect-hook
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -u
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

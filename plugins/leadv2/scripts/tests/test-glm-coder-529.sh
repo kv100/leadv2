@@ -11,6 +11,14 @@
 # below emit canned stream-json lines). Run-state (RUNS_DIR) and secrets
 # (SECRETS_FILE) are also seam-overridden into an isolated tmp dir so tests
 # never touch prod ~/.claude/cache/glm-runs or the real zai.env.
+# run-all-triggers: glm-coder
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

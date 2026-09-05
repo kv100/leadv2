@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# run-all-triggers: claude-subsession
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
 # tests/test-leadv2-model-arg-rebuild.sh — Integration test for the T8
 # latent-bug fix in claude-subsession.sh (formerly

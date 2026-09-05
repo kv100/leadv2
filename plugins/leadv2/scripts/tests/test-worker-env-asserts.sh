@@ -6,6 +6,14 @@
 # must be set to 1 (unless opted out), and exactly two journal lines land per
 # call — the case that matters most is the one where a stray shell profile on
 # the founder's machine exported AGENT_TEAMS=1 before the dispatcher ran.
+# run-all-triggers: leadv2-dispatch-code
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -euo pipefail
 

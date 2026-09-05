@@ -3,6 +3,14 @@
 # 2 Claude models wearing different names. Stubs codex/glm/architect provider
 # bins; no live provider/network calls. FAILS against a stash of the engine
 # (i.e. against main, which has no leadv2-review-run.sh at all).
+# run-all-triggers: leadv2-review-run
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

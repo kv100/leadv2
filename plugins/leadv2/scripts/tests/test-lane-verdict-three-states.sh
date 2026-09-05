@@ -32,6 +32,14 @@
 # docs/handoff/D2-SINGLE-LIVENESS-VERDICT/mutation-control/).
 #
 # Run: bash plugins/leadv2/scripts/tests/test-lane-verdict-three-states.sh
+# run-all-triggers: leadv2-lane-liveness leadv2-state-path
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"

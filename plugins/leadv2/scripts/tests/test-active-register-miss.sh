@@ -36,6 +36,14 @@
 # Portable: no GNU-only date/sed -i/timeout/flock. No associative arrays, no
 # readarray (bash 3.2 / macOS compat).
 # Run: bash scripts/tests/test-active-register-miss.sh
+# run-all-triggers: leadv2-active-registry leadv2-state-path
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -euo pipefail
 # LIVE-LANE-IS-ABSENT-FROM-THE-REGISTRY-01 / lead fix: under zsh BASH_SOURCE does

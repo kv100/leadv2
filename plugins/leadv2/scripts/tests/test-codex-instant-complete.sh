@@ -5,6 +5,14 @@
 # _codex_newest_rollout_since / _codex_rollout_dead_shape /
 # _codex_instant_complete_deadline_check from leadv2-dispatch-code.sh and
 # unit-tests them against fixture rollout files.
+# run-all-triggers: leadv2-dispatch-code
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -euo pipefail
 

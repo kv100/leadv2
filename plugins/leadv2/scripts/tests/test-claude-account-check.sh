@@ -5,6 +5,14 @@
 # keychain: LEADV2_CLAUDE_PROFILE_SECURITY_BIN points at a fixture stub (or
 # is left unset/pointed at a nonexistent binary to exercise the no-keychain
 # path). Registry + config dirs live under mktemp -d.
+# run-all-triggers: leadv2-claude-account-check
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

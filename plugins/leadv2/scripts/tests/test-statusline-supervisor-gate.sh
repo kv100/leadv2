@@ -16,6 +16,14 @@
 # leadv2-state-path.sh (STATE_PATH_SH), which honours LEADV2_STATE_ROOT, so we
 # never mutate a real repo's docs/leadv2 links. Run:
 #   bash scripts/tests/test-statusline-supervisor-gate.sh
+# run-all-triggers: leadv2-lane-status-line
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -uo pipefail
 

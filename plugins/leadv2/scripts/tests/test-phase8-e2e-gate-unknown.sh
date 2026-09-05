@@ -31,6 +31,14 @@
 #
 # Run: bash scripts/tests/test-phase8-e2e-gate-unknown.sh
 # Exit 0 = all pass; non-zero = failures found.
+# run-all-triggers: leadv2-phase8-close leadv2-phase8-e2e-gate
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 # GATE-UNKNOWN-MUST-NOT-KILL-A-ROUND-01 / lead fix: BASH_SOURCE does not exist under
 # zsh, so this resolved to the caller's cwd and the suite ran against script paths

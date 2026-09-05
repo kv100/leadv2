@@ -4,6 +4,14 @@
 # BEFORE any LLM round is spawned when selfcheck already found the diff
 # fails mechanics (verdict: RED). A stub LLM arm (architect.sh) that would
 # fail the test if invoked proves the LLM round was never paid for.
+# run-all-triggers: leadv2-review-run
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

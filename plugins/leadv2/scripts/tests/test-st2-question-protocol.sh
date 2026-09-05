@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # ST-2: every dispatch arm receives the blocking-question protocol, and the
 # direct Codex wrapper supplies it when it is not launched through dispatch.
+# run-all-triggers: leadv2-ask codex-task leadv2-dispatch-code
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -euo pipefail
 
 # BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real

@@ -17,6 +17,14 @@
 # Portable, sandboxed via LEADV2_STATE_ROOT / PROJECT_ROOT / LEADV2_PROJECT_ROOT
 # (same convention as test-questionstore-v2-roundtrip.sh).
 # Run: bash scripts/tests/test-reply-router-01.sh
+# run-all-triggers: leadv2-reply-router leadv2-ask
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"

@@ -9,6 +9,14 @@
 # scrub via unset, sandboxed CLAUDE_PROJECT_ROOT/LEADV2_DISPATCH_CACHE_DIR/
 # LEADV2_DISPATCH_ARCHITECT_GATE=0 so no real repo state is ever touched, no
 # GNU-only date/sed/timeout.
+# run-all-triggers: leadv2-fanout-lane-launcher leadv2-burn-governor leadv2-dispatch-code leadv2-dispatch-ledger
+#
+# SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
+# marker and matched no name convention, so `run-all.sh --scope changed`
+# never selected it — it could only ever run under `--scope all`. The
+# triggers are the production files the suite's own body references most,
+# with shared helpers excluded so a helper edit does not select everything.
+
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
