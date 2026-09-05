@@ -272,3 +272,29 @@ mutations:
       s|UNREADABLE_LINE="\$(printf 'unreadable: %s' "\${_REVIEW_UNREADABLE:-none}")"|UNREADABLE_LINE=""|
     expected: killed
     note: "kills cases 1 and 5 only — degraded is still forced true, so case 2 stays green. Proves the gate FILE is asserted, not just the decision line"
+
+  # MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01 (2026-09-05). Controls on the
+  # control machinery itself. The first removes the PROPERTY (both producer
+  # guards) rather than one implementation of it — measured: a single-site
+  # mutation left the property intact and the mutant survived on the first run.
+  - id: mutation-control-stamps-an-empty-identity
+    product_flow: "a mutation-control artifact whose lane_diff_hash is the sha256 of an EMPTY diff still proves the suite reddens, but stops proving it reddens ON THIS WORK — and every such artifact is indistinguishable from every other"
+    file: plugins/leadv2/scripts/leadv2-mutation-control.sh
+    suite: plugins/leadv2/scripts/tests/test-mutation-control-lane-identity.sh
+    anchor: |
+      if git -C "${ROOT}" diff --quiet "${MC_BASE}" HEAD
+    patch: |
+      s|^if git -C "${ROOT}" diff --quiet "${MC_BASE}" HEAD|if false \&\& git -C "${ROOT}" diff --quiet "${MC_BASE}" HEAD|; /LANE_DIFF_HASH}" == "e3b0c442/s|.*|if false; then|
+    expected: killed
+    note: "kills cases 1, 2, 3, 5; the positive control (case 4) and the consumer case stay green. Measured on 63 live artifacts: 8 carried the empty-diff hash, from 5 lanes, every one with a real and distinct diff_hash"
+
+  - id: dod-gate-accepts-an-empty-identity
+    product_flow: "the gate compared lane_diff_hash only against a value it recomputes the same way, so in the degenerate case BOTH sides were the empty-diff hash and compared EQUAL — the check confirmed itself on zero information"
+    file: plugins/leadv2/scripts/lib/leadv2-dod-gate.sh
+    suite: plugins/leadv2/scripts/tests/test-mutation-control-lane-identity.sh
+    anchor: |
+      [[ "${lane_hash}" != e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ]] || return 1
+    patch: |
+      /lane_hash.*!= e3b0c442/s|.*|  :|
+    expected: killed
+    note: "kills case 6 only — every producer-side case stays green. The mirror of an existing guard: artifact_hash had been protected from this exact hash since it was written; lane_hash beside it had not"

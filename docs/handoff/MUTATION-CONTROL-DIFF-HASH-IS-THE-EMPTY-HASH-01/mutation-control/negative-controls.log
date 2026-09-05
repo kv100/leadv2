@@ -1,0 +1,31 @@
+baseline (unmutated pinned tree): [MUTATION-CONTROL-LANE-IDENTITY] pass=6 fail=0
+
+==== MUTATION-CONTROL-STAMPS-AN-EMPTY-IDENTITY
+file: plugins/leadv2/scripts/leadv2-mutation-control.sh
+sed:  s|^if git -C "${ROOT}" diff --quiet "${MC_BASE}" HEAD|if false \&\& git -C "${ROOT}" diff --quiet "${MC_BASE}" HEAD|; /LANE_DIFF_HASH}" == "e3b0c442/s|.*|if false; then|
+expected to kill: cases 1, 2, 3, 5 — the artifact is written again with the empty-diff hash. Cases 4 and 6 stay green. BOTH producer guards are removed: the property is implemented twice, so a single-site mutation survives — measured, first run
+--- suite against the mutant ---
+FAIL: 1: rc=0 out=MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-prod.sh file=plugins/leadv2/scripts/prod.sh red_line=FAIL: dec
+FAIL: 2: an artifact with lane_diff_hash=e3b0c442… was written anyway
+FAIL: 3: refusal does not say how to resolve it: MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-prod.sh file=plugins/leadv2/scr
+PASS: with a real start commit the control succeeds and its lane identity is real (670aa6f4…)
+FAIL: 5: present in: /private/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.9l07DIzLdC/r1/docs/handoff/LANE 
+PASS: the gate refuses an empty lane identity even when its own expected value is equally empty, and still accepts a real one
+[MUTATION-CONTROL-LANE-IDENTITY] pass=2 fail=4
+RESULT: ok — the suite goes RED under this mutation (rc=1)
+
+==== DOD-GATE-ACCEPTS-AN-EMPTY-IDENTITY
+file: plugins/leadv2/scripts/lib/leadv2-dod-gate.sh
+sed:  /lane_hash.*!= e3b0c442/s|.*|  :|
+expected to kill: case 6 only — every producer-side case stays green
+--- suite against the mutant ---
+PASS: a lane with no diff against its base is refused, not stamped (rc=2, control_not_applied)
+PASS: no artifact carrying the empty-diff hash is left behind
+PASS: the refusal names LEADV2_LANE_START_SHA, so the lane knows what to do next
+PASS: with a real start commit the control succeeds and its lane identity is real (670aa6f4…)
+PASS: the sha256 of an empty diff never appears as a lane identity in any artifact
+FAIL: 6: empty_vs_empty=0 real_vs_real=0
+[MUTATION-CONTROL-LANE-IDENTITY] pass=5 fail=1
+RESULT: ok — the suite goes RED under this mutation (rc=1)
+
+==== controls: stamps-empty-identity=ok gate-accepts-empty=ok

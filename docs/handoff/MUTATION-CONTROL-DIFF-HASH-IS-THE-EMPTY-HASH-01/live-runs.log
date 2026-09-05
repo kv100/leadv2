@@ -1,0 +1,17 @@
+######## BEFORE — pin at HEAD, unpatched ########
+FAIL: 1: rc=0 out=MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-prod.sh file=plugins/leadv2/scripts/prod.sh red_line=FAIL: dec
+FAIL: 2: an artifact with lane_diff_hash=e3b0c442… was written anyway
+FAIL: 3: refusal does not say how to resolve it: MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-prod.sh file=plugins/leadv2/scr
+PASS: with a real start commit the control succeeds and its lane identity is real (670aa6f4…)
+FAIL: 5: present in: /private/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.xRtF8WYuEh/r1/docs/handoff/LANE 
+FAIL: 6: empty_vs_empty=0 real_vs_real=0
+[MUTATION-CONTROL-LANE-IDENTITY] pass=1 fail=5
+
+######## AFTER — producer + consumer fixed ########
+PASS: a lane with no diff against its base is refused, not stamped (rc=2, control_not_applied)
+PASS: no artifact carrying the empty-diff hash is left behind
+PASS: the refusal names LEADV2_LANE_START_SHA, so the lane knows what to do next
+PASS: with a real start commit the control succeeds and its lane identity is real (670aa6f4…)
+PASS: the sha256 of an empty diff never appears as a lane identity in any artifact
+PASS: the gate refuses an empty lane identity even when its own expected value is equally empty, and still accepts a real one
+[MUTATION-CONTROL-LANE-IDENTITY] pass=6 fail=0

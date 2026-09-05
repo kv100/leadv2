@@ -1,0 +1,28 @@
+# Artifacts whose LANE IDENTITY is void — MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01
+#
+# Each file below carries lane_diff_hash = e3b0c442...7852b855, the sha256 of an
+# EMPTY diff. Read this list precisely:
+#
+#   STILL VALID   as proof that the named suite goes red under the named mutation.
+#                 Every one of these carries a real and DISTINCT diff_hash, so the
+#                 mutation was genuinely applied and the suite genuinely reddened.
+#   VOID          as proof that it reddened ON THAT LANE'S WORK. The identity field
+#                 is a constant shared by every artifact produced in this state, so
+#                 these eight are indistinguishable from one another.
+#
+# Nothing here is rewritten retroactively, deliberately: a repaired identity would
+# be a fabricated one, and we would lose the record of which claims were bound to
+# their work and which were not. They are listed, not fixed.
+#
+# Counted 2026-09-05 over all 63 mutation-control artifacts in the tree: 8, from 5
+# lanes. Artifacts produced after commit ad4be1e3 cannot enter this state — the
+# producer refuses and the DoD gate rejects.
+#
+docs/handoff/ARBITER-REMEMBERS-FAILURES-01/mutation-control/20260905T014933Z-74628.txt
+docs/handoff/ARBITER-REMEMBERS-FAILURES-01/mutation-control/20260905T014916Z-72733.txt
+docs/handoff/DARK-SUITES-UNREACHABLE-BY-RUNNER-01/mutation-control/20260903T191053Z-87008.txt
+docs/handoff/PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01/mutation-control/20260905T024325Z-15166.txt
+docs/handoff/PHASE-GATE-DEFAULT-CLASS-ESCAPES-IT-01/mutation-control/20260904T172555Z-44890.txt
+docs/handoff/PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01/mutation-control/20260905T024257Z-88179.txt
+docs/handoff/WRITESET-CAROUSEL-01/mutation-control/20260905T031038Z-40290.txt
+docs/handoff/WRITESET-CAROUSEL-01/mutation-control/20260905T031057Z-46288.txt

@@ -1,0 +1,14 @@
+brain_v: 1
+task_id: MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01
+class: Standard
+class_source: floor_held
+reason: declared_floor
+phases: classify,plan,gate1,build,test,review,live_verify,close
+estimate:
+  complexity: standard
+  risk_class: none
+  work_kind: diagnose
+  subsystems_touched: 1
+  duration_class: medium
+  estimate_source: fallback
+recorded_at: 2026-09-03T17:19:55Z
