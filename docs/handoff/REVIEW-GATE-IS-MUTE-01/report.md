@@ -170,11 +170,18 @@ clean `git archive` of the pin before the patch and are byte-identical after it
 
 ## Where this landed, and what is still waiting
 
-The fix, the suite, the controls and the catalog rows are **prepared but not yet
-committed to the live checkout**: wave B1's merge has been open there for the
-whole lane, and `git commit` refuses while it stands. Everything lives in the
-pinned tree and in `docs/handoff/REVIEW-GATE-IS-MUTE-01/`, and lands the moment
-the merge closes. I do not resolve another lane's conflicts.
+Landed once wave B1's merge closed — it had been open for the whole lane, and
+`git commit` refuses while a merge stands, so the work waited in the pinned tree
+rather than being applied to a checkout somebody else was resolving.
+
+| | |
+|---|---|
+| `9dd83975` | the fix + `test-review-gate-names-the-unreadable.sh` |
+| `363035f4` | this report, the two controls, the live before/after |
+| `7365e038` | the two catalog rows (committed with the other lane's catalog change) |
+
+The patch was re-applied to canonical rather than copied from the pin, so its
+anchors were re-checked against the post-merge file; the suite is 6/0 there.
 
 Two things I looked at and left alone:
 
