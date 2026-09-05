@@ -269,7 +269,17 @@ def util(provider):
         p=num((w or {}).get(pct_key))
         if p is None: continue
         if best_pct is None or p>best_pct: best_name,best_pct,best_window=name,p,w
-    if best_pct is None: return empty
+    # ARBITER-UNKNOWN-BECOMES-A-DEFAULT-IN-FIVE-DECISIONS-01: windows existed but
+    # not one carried a number. That is the instrument failing to answer, exactly
+    # like `status != ok` (:14) and "no ok account" (:260) -- both of which return
+    # pct=100 unknown=True. This branch alone returned `empty`, i.e. pct=0.0 with
+    # unknown=FALSE: "this provider is completely free, and we are sure of it".
+    # Three exits of one function answered the same not-knowing three different
+    # ways. Returning unknown here is safe now precisely because unknown no longer
+    # means capped (:349): the arm stays in the candidate set and is demoted by
+    # UNKNOWN_PROBE_PENALTY, so this cannot resurrect the `all_arms_capped`
+    # deaths -- it only stops a silent provider from outranking a measured one.
+    if best_pct is None: return dict(empty, pct=100.0, unknown=True)
     h,period,basis=window_reset(best_name,best_window)
     return {'pct':best_pct,'unknown':False,'hours_to_reset':h,'period_hours':period,'reset_basis':basis}
 _uraw={p:util(p) for p in ('glm','codex','claude','freepool')}

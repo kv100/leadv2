@@ -122,6 +122,23 @@ out="$(run "$(quota_broken_glm 20 20)" 1 '{"kind":"code","size":"standard"}')"
 # must bench BOTH glm arms — assert neither is picked.
 if [[ "$out" != *'arm=glm '* && "$out" != *'arm=glm-flash '* && "$out" == *'util_glm=unknown_capped'* ]]; then pass 'broken glm probe (status!=ok) is fail-closed, never selected'; else fail "broken-glm-probe output=$out"; fi
 
+# (g2) ARBITER-UNKNOWN-BECOMES-A-DEFAULT-IN-FIVE-DECISIONS-01: the OTHER shape of
+# the same not-knowing. Here the probe says status='ok' -- it answered -- but not
+# one window carries a number. util() walked its windows, found no pct, and took
+# the `empty` early return: pct=0.0 with unknown=FALSE, i.e. "glm is completely
+# free and we are sure". Two sibling exits of that same function (status!=ok, and
+# no ok anthropic account) already returned pct=100 unknown=True; this third one
+# disagreed with them. Same fixture shape as (g) on purpose, so the only variable
+# between the two cases is WHICH kind of silence the probe returned.
+quota_null_windows_glm(){ python3 - "$1" "$2" <<'PY'
+import json,sys
+c,a=map(int,sys.argv[1:])
+print(json.dumps({'glm':{'status':'ok','five_hour':{'pct':None},'weekly':{'pct':None}},'codex':{'status':'ok','binding_window':'primary','windows':[{'kind':'primary','used_percent':c}]},'anthropic':{'status':'ok','accounts':[{'active':True,'status':'ok','five_hour_pct':a,'seven_day_pct':a}]}}))
+PY
+}
+out="$(run "$(quota_null_windows_glm 20 20)" 1 '{"kind":"code","size":"standard"}')"
+if [[ "$out" != *'arm=glm '* && "$out" != *'arm=glm-flash '* && "$out" == *'util_glm=unknown_capped'* ]]; then pass 'answering probe with no numbers reads unknown, not free'; else fail "null-windows-glm output=$out"; fi
+
 # (h) ARBITER-DECISION-LOGIC-CENSUS-01: the `active` flag on an anthropic
 # account names which credential the session resolved to, not that its probe
 # succeeded. A broken (status!='ok', all-null pct) active-flagged account
