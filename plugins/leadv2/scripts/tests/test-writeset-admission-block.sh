@@ -2,6 +2,13 @@
 # LANE-WRITESET-REGISTRY-01: admission must be atomic, distinguish legacy
 # unknown rows, and make the commit-time drift re-check observable.
 
+# run-all-triggers: leadv2-active-registry.sh
+#
+# WRITESET-CAROUSEL-01: this suite carried no trigger line and appeared in no
+# EXTRA_SUITE_MAP row, so nothing ever selected it -- it was green for weeks
+# without CI once running it against the file it tests. Registering it here is
+# the whole fix; proven by dirtying leadv2-active-registry.sh alone and watching
+# it appear in the [SELECT] list.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
 
