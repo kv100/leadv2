@@ -236,5 +236,66 @@ else
   fail "unmeasured arm was not demoted output=$out"
 fi
 
+
+# ---- TERMINALIZER-DOES-NOT-RECORD-A-SILENT-DEATH-01, both halves -------------
+# The row was filed as "the failure memory cannot see a silent death". Measured
+# on the live ledger (1374 rows, 2026-09-05) it is two separate holes, and the
+# memory answers `no_history` -- indistinguishable from a clean record -- in both.
+#
+#  (fm1) A death the VOCABULARY has no name for. arm_failure_causes is a
+#        hand-kept list; 305 real rows carry a terminal it does not name
+#        (dead:e2e_regression 215, dead:all_arms_unavailable 75, review failures
+#        14), while dead:worker_died_with_session -- one of the eight names in
+#        the list -- has exactly ONE row in all 1374. Whether a given cause
+#        SHOULD count is a vocabulary decision and lives in the yaml; that the
+#        skip is silent is this file's problem.
+#  (fm2) A spawn with no terminal row at all -- the defect exactly as filed.
+#        Signature b5abfcfd, 2026-09-04: glm spawned, and all 24 ledger rows for
+#        that signature are refused:* from BEFORE the spawn, which by
+#        construction are not the arm's fault. The token does NOT claim death (a
+#        spawn with no terminal may still be running); it reports the fact.
+#
+# Both cases carry a control on the SAME shape without the condition, because an
+# assertion on a token that a line always prints proves nothing.
+
+# journals_open <sig> <arm>[,<arm>...] -- spawns with NO terminal row at all,
+# plus refusals that predate them, i.e. the b5abfcfd shape.
+journals_open(){ python3 - "$TMP" "$1" "$2" <<'PY'
+import json,os,sys
+tmp,sig,arms=sys.argv[1],sys.argv[2],sys.argv[3]
+ev=[]; led=[]
+for i,arm in enumerate([a for a in arms.split(',') if a], start=1):
+    ev.append({'seq':i,'ts':'2026-09-05T%02d:00:00Z'%(i+5),'repo':'leadv2','task':sig,'arm':arm,
+               'handle':'h%d'%i,'kind':'worker_spawned'})
+    # a refusal recorded BEFORE the spawn: present in the ledger, never the arm's fault
+    led.append({'ts':'2026-09-05T0%d:00:00Z'%i,'task_sig':sig,'terminal':'refused',
+                'cause':'writeset_pending','evidence':'','commit':'none','attempt':'%s-%d'%(sig,i)})
+with open(os.path.join(tmp,'events.jsonl'),'w') as f:
+    for r in ev: f.write(json.dumps(r)+'\n')
+with open(os.path.join(tmp,'ledger.jsonl'),'w') as f:
+    for r in led: f.write(json.dumps(r)+'\n')
+PY
+}
+
+journals SIGUNMAP 'glm:dead:e2e_regression'
+out_unmapped="$(run "$HEALTHY" 1 '{"kind":"code","size":"standard","task":"SIGUNMAP"}')"
+journals SIGMAPPED 'glm:dead:timeout'
+out_mapped="$(run "$HEALTHY" 1 '{"kind":"code","size":"standard","task":"SIGMAPPED"}')"
+if [[ "$out_unmapped" == *'failure_unmapped=dead:e2e_regression:1'* && "$out_mapped" != *'failure_unmapped='* ]]; then
+  pass '(fm1) a death the vocabulary cannot name is counted out loud, a named one is not'
+else
+  fail "(fm1) unmapped=$out_unmapped mapped=$out_mapped"
+fi
+
+journals_open SIGOPEN1 'glm'
+out_open="$(run "$HEALTHY" 1 '{"kind":"code","size":"standard","task":"SIGOPEN1"}')"
+journals SIGCLOSED 'glm:dead:timeout'
+out_closed="$(run "$HEALTHY" 1 '{"kind":"code","size":"standard","task":"SIGCLOSED"}')"
+if [[ "$out_open" == *'spawn_unaccounted=glm:1'* && "$out_closed" != *'spawn_unaccounted='* ]]; then
+  pass '(fm2) a spawn nobody ever accounted for is named; an accounted one is not'
+else
+  fail "(fm2) open=$out_open closed=$out_closed"
+fi
+
 printf 'SUMMARY: pass=%d fail=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

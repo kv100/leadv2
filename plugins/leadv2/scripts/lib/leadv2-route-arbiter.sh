@@ -463,6 +463,7 @@ arm_failure_causes=({str(x).strip() for x in _cfg_causes if str(x).strip()}
                     if isinstance(_cfg_causes, list) and _cfg_causes
                     else set(ARM_FAILURE_CAUSES_DEFAULT))
 task_sig=str(d.get('task') or '').strip()
+_fm_unmapped={}; _fm_open={}; _fm_accounted=[]
 def read_failure_memory(sig):
     # -> (counts_by_arm, status). status is one of:
     #   absent_key  -- this caller passed no task signature; nothing to look up
@@ -494,11 +495,47 @@ def read_failure_memory(sig):
                 try: r=json.loads(_l)
                 except Exception: continue
                 if str(r.get('task_sig') or '')!=sig: continue
-                if ('%s:%s' % (r.get('terminal'), r.get('cause'))) not in arm_failure_causes: continue
-                ts=str(r.get('ts') or ''); arm=None
+                ts=str(r.get('ts') or '')
+                # every terminal row for this signature counts as ACCOUNTED FOR,
+                # whether or not the vocabulary has a name for it -- otherwise an
+                # unmapped death would also read as "nobody recorded anything",
+                # and the two halves of this defect would be indistinguishable.
+                _fm_accounted.append(ts)
+                _tc='%s:%s' % (r.get('terminal'), r.get('cause'))
+                # TERMINALIZER-DOES-NOT-RECORD-A-SILENT-DEATH-01 (2026-09-05), half one:
+                # a terminal row is CONSIDERED only when its terminal:cause appears in
+                # arm_failure_causes -- a hand-kept list in the yaml. Measured on the live
+                # ledger the same day: 1374 rows, 188 visible to this list, and 305 rows
+                # carrying a death it has no name for (dead:e2e_regression 215,
+                # dead:all_arms_unavailable 75, dead:review_dod_fail 9,
+                # dead:review_verdict_fail 5), while dead:worker_died_with_session -- one
+                # of the eight names in the list -- has exactly ONE row in all 1374.
+                # Some of those exclusions are right (all_arms_unavailable is nobody's
+                # fault) and some are argued (a lane killed by its own e2e regression is
+                # the arm's work); deciding which is a change to the vocabulary, and the
+                # vocabulary lives in config/leadv2-routing.yaml. What this file can do is
+                # stop the drift from being invisible: skipping stays, the skip is NAMED.
+                if _tc not in arm_failure_causes:
+                    if str(r.get('terminal') or '') in ('dead','no_work'):
+                        _fm_unmapped[_tc]=_fm_unmapped.get(_tc,0)+1
+                    continue
+                arm=None
                 for _sts,_a in spawns:
                     if _sts<=ts: arm=_a
                 if arm: counts[arm]=counts.get(arm,0)+1
+            # half two, the defect as filed: a worker that spawned and then died
+            # without anyone recording a terminal. Measured on signature b5abfcfd
+            # (2026-09-04): glm spawned and the ledger holds 24 rows for that
+            # signature, every one of them refused:* -- refusals from BEFORE the
+            # spawn, which by construction are not the arm's fault. The memory
+            # therefore answered no_history for an arm that had just failed twice.
+            # This does NOT claim death: a spawn with no terminal may simply still
+            # be running. It reports the fact and lets the reader judge, which is
+            # the whole difference between an unknown and a zero.
+            _fm_seen=sorted(_fm_accounted)
+            for _sts,_a in spawns:
+                if not any(_t>=_sts for _t in _fm_seen):
+                    _fm_open[_a]=_fm_open.get(_a,0)+1
         led_ok=True
     except Exception:
         led_ok=False
@@ -517,6 +554,11 @@ if failure_banned:
         # memory into a deadlock, so the ban yields -- and says that it yielded.
         failure_memory='exhausted'
 _fm_tok=' failure_memory=%s' % failure_memory
+# Both tokens are absent when there is nothing to say -- which is also what makes
+# them falsifiable: a signature whose whole history the vocabulary knows, and whose
+# every spawn was accounted for, must carry neither.
+_fm_tok += (' failure_unmapped=%s' % ','.join('%s:%d' % (c, n) for c, n in sorted(_fm_unmapped.items()))) if _fm_unmapped else ''
+_fm_tok += (' spawn_unaccounted=%s' % ','.join('%s:%d' % (a, n) for a, n in sorted(_fm_open.items()))) if _fm_open else ''
 if failure_dropped:
     _fm_tok += ' failure_banned=%s' % ','.join('%s:%d' % (a, failure_banned[a]) for a in failure_dropped)
 elif failure_memory=='exhausted':
