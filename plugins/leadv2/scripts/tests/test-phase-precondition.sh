@@ -270,6 +270,22 @@ E2E_STATE="${E2E_SANDBOX}/state"
 E2E_STUB_RUNS="${E2E_SANDBOX}/glm-runs"
 
 # Stub GLM binary: on `bg`, touch a sentinel and echo a handle
+#
+# G3-STUB-HANDLE-FORMAT-01: `bg` must echo the bare run_id ONCE, with no
+# leading "$RUNS/" and no doubled "$handle$handle" -- GLM-ARM-THROUGHPUT-01
+# in leadv2-dispatch-code.sh's glm spawn case documents that the real
+# glm-coder.sh contract is exactly this (a halving/"legacy envelope"
+# extraction step used to live there and was deliberately removed because
+# it truncated every handle to a garbage half-string that never matched a
+# real run dir). The doubled/prefixed envelope this stub used to emit made
+# `status <handle>` below always report not_live regardless of the mkdir
+# above: glm "spawns" but is declared dead, dispatch falls back to sonnet,
+# and the real (unstubbed) sonnet launcher then fails with its own
+# unrelated error -- the failure you actually see (G3: dispatch should
+# exit 0, got 4) is several arms removed from the real cause. Keep this
+# stub's envelope in lockstep with whatever leadv2-dispatch-code.sh's glm
+# case currently expects; do not reintroduce the doubled form even if it
+# looks like it mirrors some historical adapter behavior.
 GLM_STUB="${E2E_SANDBOX}/glm-stub.sh"
 cat > "${GLM_STUB}" <<'SH'
 #!/usr/bin/env bash

@@ -1563,6 +1563,25 @@ _pc_lane_commits_ahead() {  # <root> -> stdout "N" | "unknown"; always rc0
          ! git -C "${root}" log -g --format=%gs HEAD 2>/dev/null | grep -q '^commit'; then
         printf '0'; return 0
       fi
+      # T11-F2 birth anchor: leadv2-lane-worktree.sh births EVERY lane branch
+      # with one --allow-empty "lane <id> anchor" commit, so a lane with no
+      # base recorded anywhere (LEADV2_LANE_START_SHA/cache/origin all unset)
+      # never clears the check above -- HEAD is always one commit ahead of
+      # the parent repo, and the reflog always carries a "commit:" line for
+      # that anchor. Neither is production: an empty, anchor-tagged HEAD
+      # whose sole parent is the parent repo's HEAD provably has zero
+      # commits of its own beyond the birth bookkeeping.
+      if [[ -n "${head_wt}" && "${head_wt}" != "${head_parent}" ]]; then
+        local anchor_parent anchor_subject anchor_diffstat
+        anchor_parent="$(git -C "${root}" rev-parse "HEAD^" 2>/dev/null || true)"
+        anchor_subject="$(git -C "${root}" log -1 --format=%s HEAD 2>/dev/null || true)"
+        anchor_diffstat="$(git -C "${root}" diff --stat "HEAD^" HEAD 2>/dev/null || true)"
+        if [[ -n "${anchor_parent}" && "${anchor_parent}" == "${head_parent}" ]] \
+           && [[ "${anchor_subject}" == "lane "*" anchor" ]] \
+           && [[ -z "${anchor_diffstat}" ]]; then
+          printf '0'; return 0
+        fi
+      fi
     fi
   fi
   printf 'unknown'
