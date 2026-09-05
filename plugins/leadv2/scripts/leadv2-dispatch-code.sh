@@ -5278,7 +5278,10 @@ _arm_lane_pulse_watch() {  # <sig8> — fail-open, never blocks dispatch
   # not arm. Only a `lead` classification (or the LEADV2_SESSION_KIND=lead
   # pin) arms a persistent loop.
   # SESSION-KIND-UNKNOWN-REFUSES-CLOSED-01 stage 1 hold (see the lib header).
-  if [[ "${_LV2_KIND}" != "lead" || "${LEADV2_LOOPS_ARM_ON_LEAD:-0}" != "1" ]]; then
+  # STAGE 2: released loop -- see leadv2-lane-pulse-watch.sh for the switch.
+  if [[ "${_LV2_KIND}" != "lead" ]] \
+     || { [[ "${LEADV2_LOOPS_ARM_ON_LEAD:-0}" != "1" ]] \
+          && [[ "${LEADV2_ARM_LANE_PULSE_WATCH:-1}" != "1" ]]; }; then
     leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
       lane-pulse-watch "${_LV2_KIND}" \
       "$([[ "${_LV2_KIND}" == "lead" ]] && echo refused_stage1_hold || echo refused)" 2>/dev/null || true

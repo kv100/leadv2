@@ -76,7 +76,13 @@ if [[ -f "$_LV2_HOOK_KIND_LIB" ]]; then
   # SESSION-KIND-UNKNOWN-REFUSES-CLOSED-01 stage 1: the classifier can now answer
   # `lead`, but arming four background loops on the live path after months of
   # silence is a separate change with its own observation. Hold until then.
-  if [[ "$_lv2_loop_kind" != "lead" || "${LEADV2_LOOPS_ARM_ON_LEAD:-0}" != "1" ]]; then
+  # STAGE 2 (SD-LOOPS-ARM-ON-LEAD-STAGE2-01): this is the ONE loop released.
+  # Its own switch defaults to 1; every other loop stays at 0 so their traces
+  # never interleave. Rollback is a single flag: LEADV2_ARM_LANE_PULSE_WATCH=0,
+  # and the lead signal keeps answering regardless.
+  if [[ "$_lv2_loop_kind" != "lead" ]] \
+     || { [[ "${LEADV2_LOOPS_ARM_ON_LEAD:-0}" != "1" ]] \
+          && [[ "${LEADV2_ARM_LANE_PULSE_WATCH:-1}" != "1" ]]; }; then
     _lv2_lpw_outcome=refused
     [[ "$_lv2_loop_kind" == "lead" ]] && _lv2_lpw_outcome=refused_stage1_hold
     leadv2_loop_arm_journal "$_lv2_lpw_journal" "lane-pulse-watch" "$_lv2_loop_kind" "$_lv2_lpw_outcome" 2>/dev/null || true
