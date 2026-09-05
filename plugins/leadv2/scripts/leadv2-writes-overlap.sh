@@ -27,8 +27,17 @@
 # the fanout dispatch path. Default: 1 (on).
 #
 # Fail-open: any missing dependency (state-path resolver, active.yaml,
-# lane-liveness.sh, PyYAML) silently yields "no conflicts found" — this
-# script must never be why a dispatch fails or hangs.
+# lane-liveness.sh, PyYAML) yields "no conflicts found" and exit 0 — this
+# script must never be why a dispatch fails or hangs. That policy is intact.
+#
+# What is no longer silent is the DIFFERENCE between "looked and found
+# nothing" and "could not look". Measured 2026-09-05: PyYAML on a developer
+# machine is a user-site install under $HOME, so on CI, a fresh VPS or any
+# container the import failed and this checker printed exactly what it prints
+# when the tree is clean. A conflict checker that cannot check must not be
+# indistinguishable from one that found no conflict. An unchecked run now says
+# so on STDERR (never on stdout, which callers parse as conflict rows) and,
+# under --notify, leaves a journal finding. The exit code stays 0.
 
 set -euo pipefail
 
@@ -70,16 +79,31 @@ fi
 
 LIVENESS_BIN="${LEADV2_WRITES_OVERLAP_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lane-liveness.sh}"
 LIVENESS_JSON='{"lanes":[]}'
+UNCHECKED_REASON=""
 if [[ -x "$LIVENESS_BIN" ]]; then
-  LIVENESS_JSON="$(LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "$LIVENESS_BIN" --project-root "$PROJECT_ROOT" --all --json 2>/dev/null || printf '%s' '{"lanes":[]}')"
+  _liv_rc=0
+  LIVENESS_JSON="$(LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "$LIVENESS_BIN" --project-root "$PROJECT_ROOT" --all --json 2>/dev/null)" || _liv_rc=$?
+  if [[ "$_liv_rc" -ne 0 || -z "$LIVENESS_JSON" ]]; then
+    # An empty lane list is a real answer ("nothing is alive"); a probe that
+    # failed is not, and the two used to arrive here as the same string.
+    LIVENESS_JSON='{"lanes":[]}'
+    UNCHECKED_REASON="liveness_probe_failed_rc${_liv_rc}"
+  fi
+else
+  UNCHECKED_REASON="liveness_bin_absent"
 fi
 
-CONFLICTS="$(python3 - "$TASK_ID" "$WRITES_CSV" "$ACTIVE_YAML" "$LIVENESS_JSON" <<'PY' 2>/dev/null || true
+WO_ERR="$(mktemp 2>/dev/null || printf '%s' "/tmp/leadv2-wo-$$.err")"
+WO_RC=0
+CONFLICTS="$(python3 - "$TASK_ID" "$WRITES_CSV" "$ACTIVE_YAML" "$LIVENESS_JSON" <<'PY' 2>"$WO_ERR"
 import json, os, sys
+# Exit 20 with a reason on stderr means "could not look". Exit 0 keeps its
+# old meaning: looked, and printed whatever it found (possibly nothing).
 try:
     import yaml
 except ImportError:
-    sys.exit(0)
+    print("no_yaml_parser", file=sys.stderr)
+    sys.exit(20)
 
 task_id, writes_csv, active_path, liveness_raw = sys.argv[1:5]
 
@@ -103,7 +127,8 @@ if not cand:
 try:
     liveness = json.loads(liveness_raw)
 except Exception:
-    liveness = {}
+    print("liveness_unparseable", file=sys.stderr)
+    sys.exit(20)
 alive_ids = {
     row.get("lane") for row in (liveness.get("lanes") or [])
     if isinstance(row, dict) and str(row.get("verdict") or "").startswith("alive")
@@ -115,8 +140,11 @@ if not alive_ids:
 try:
     with open(active_path, encoding="utf-8") as fh:
         active = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    sys.exit(0)          # no registry yet is a real "nothing to conflict with"
 except Exception:
-    sys.exit(0)
+    print("active_yaml_unreadable", file=sys.stderr)
+    sys.exit(20)
 
 sessions = {
     str(s.get("task_id")): s for s in (active.get("sessions") or [])
@@ -139,7 +167,26 @@ for other_id in sorted(alive_ids):
     if hit:
         print(f"task={task_id} other={other_id} paths={','.join(hit)}")
 PY
-)"
+)" || WO_RC=$?
+if [[ "$WO_RC" -eq 20 ]]; then
+  UNCHECKED_REASON="$(head -n1 "$WO_ERR" 2>/dev/null | tr -d '\r\n')"
+fi
+rm -f "$WO_ERR" 2>/dev/null || true
+
+if [[ -n "$UNCHECKED_REASON" ]]; then
+  # STDERR, never stdout: callers parse stdout as conflict rows, so an
+  # "I could not look" line there would be read as a conflict -- the opposite
+  # error, and just as wrong.
+  printf 'writes_overlap: UNCHECKED task=%s reason=%s -- fail-open (exit 0), and this is NOT "no conflicts found"\n' \
+    "$TASK_ID" "$UNCHECKED_REASON" >&2
+  if [[ "$NOTIFY" -eq 1 ]]; then
+    _JOURNAL_SH="${SCRIPT_DIR}/leadv2-journal.sh"
+    if [[ -f "$_JOURNAL_SH" ]]; then
+      CLAUDE_PROJECT_DIR="$PROJECT_ROOT" bash "$_JOURNAL_SH" append "$TASK_ID" finding \
+        "writes_conflict_unchecked reason=${UNCHECKED_REASON}" >/dev/null 2>&1 || true
+    fi
+  fi
+fi
 
 [[ -n "$CONFLICTS" ]] && printf -- '%s\n' "$CONFLICTS"
 

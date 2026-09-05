@@ -129,6 +129,63 @@ else
   fail "no-overlap case was not silent (stdout=${out2:-<empty>} journal_exists=$([[ -f "$jfile2" ]] && echo yes || echo no) pulse ${pulse_before}->${pulse_after})"
 fi
 
+# ── 4b/4c. "could not look" is not "looked and found nothing" ───────────
+#
+# Case 4 above pins silence for a genuinely clean tree, and that assertion is
+# right. The bug was that the SAME silence was produced when the checker could
+# not run at all: `except ImportError: sys.exit(0)` for a missing PyYAML, and
+# an unreadable registry. Measured 2026-09-05: PyYAML on a developer machine
+# is a user-site install under $HOME, so on CI, a fresh VPS or any container
+# this checker printed exactly what it prints when nothing conflicts -- while
+# the same lanes were being refused on a laptop. Fail-open is the policy and
+# is kept; being indistinguishable from a clean check is not part of it.
+#
+# The parser is removed hermetically rather than by touching $HOME: a stub
+# package earlier on PYTHONPATH raises ImportError no matter what is installed
+# on the host, so this case reads the same everywhere.
+NOYAML="${TMPROOT:-$(dirname "$repo")}/no-yaml"
+mkdir -p "$NOYAML"
+printf 'raise ImportError("simulated: PyYAML absent")\n' > "$NOYAML/yaml.py"
+
+pulse_before_u="$(wc -l < "$pulse_log" 2>/dev/null || printf '0')"
+u_err="$(PYTHONPATH="$NOYAML" bash "$OVERLAP_SH" --task-id NOYAML1 --writes "web/completely/different.ts" --project-root "$repo" --notify 2>&1 >/dev/null)"
+u_out="$(PYTHONPATH="$NOYAML" bash "$OVERLAP_SH" --task-id NOYAML1 --writes "web/completely/different.ts" --project-root "$repo" 2>/dev/null)"
+u_rc=$?
+jfile_u="$(journal_new NOYAML1)"
+pulse_after_u="$(wc -l < "$pulse_log" 2>/dev/null || printf '0')"
+
+if [[ "$u_err" == *"UNCHECKED"* && "$u_err" == *"reason=no_yaml_parser"* ]]; then
+  pass "no parser: the run says UNCHECKED and names the reason"
+else
+  fail "no parser: expected an UNCHECKED line naming no_yaml_parser, got stderr=[${u_err:-<empty>}]"
+fi
+if [[ -z "$u_out" && "$u_rc" -eq 0 ]]; then
+  # stdout is the conflict channel; an "I could not look" row there would be
+  # read as a conflict -- the opposite error, and just as wrong.
+  pass "no parser: stdout stays empty and the exit code stays 0 (fail-open intact)"
+else
+  fail "no parser: fail-open broken or stdout polluted (stdout=[${u_out:-<empty>}] rc=${u_rc})"
+fi
+if [[ -f "$jfile_u" ]] && grep -q 'writes_conflict_unchecked reason=no_yaml_parser' "$jfile_u"; then
+  pass "no parser: --notify leaves a durable journal finding, not just a stderr line"
+else
+  fail "no parser: no journal finding (file=${jfile_u})"
+fi
+if [[ "$pulse_before_u" == "$pulse_after_u" ]]; then
+  pass "no parser: nothing is written to the SUPERVISE-URGENT sink (it is not a conflict)"
+else
+  fail "no parser: an unchecked run wrote to the urgent pulse sink (${pulse_before_u}->${pulse_after_u})"
+fi
+
+# The other way of not being able to look: the liveness probe is unavailable,
+# so the lane list is empty for a reason that is not "nothing is alive".
+l_err="$(LEADV2_WRITES_OVERLAP_LIVENESS_BIN=/dev/null bash "$OVERLAP_SH" --task-id NOLIVE1 --writes "platform/foo.py" --project-root "$repo" 2>&1 >/dev/null)"
+if [[ "$l_err" == *"UNCHECKED"* && "$l_err" == *"reason=liveness_bin_absent"* ]]; then
+  pass "no liveness probe: an empty lane list from a missing probe is reported as UNCHECKED"
+else
+  fail "no liveness probe: expected UNCHECKED/liveness_bin_absent, got stderr=[${l_err:-<empty>}]"
+fi
+
 # ── 5. LEADV2_WRITES_CONFLICT_NOTIFY=0 -> whole block is a no-op ────────
 pulse_before3="$(wc -l < "$pulse_log" 2>/dev/null || printf '0')"
 out3="$(LEADV2_WRITES_CONFLICT_NOTIFY=0 bash "$OVERLAP_SH" --task-id NEW3 --writes "platform/foo.py" --project-root "$repo" --notify)"

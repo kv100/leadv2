@@ -343,3 +343,32 @@ mutations:
       `[[ -n "${_hits}" ]] || continue` with a bare `continue`
     expected: killed
     note: "both suites go red naming the EMPTY map specifically, not a missing row -- the distinction is the property. Census by BEHAVIOUR (a fail() whose text names EXTRA_SUITE_MAP, not a mention of the string) found exactly two such assertions in the tree; the other 99 references are the line-2 migration comment and 6 more are fixture data in suites that test the parser itself"
+
+  # FIVE-RED-SUITES-THE-GATE-SELECTS-01 (2026-09-05). The write-set conflict
+  # checker. Fail-open is deliberate and is kept -- it must never be why a
+  # dispatch fails. What was not deliberate is that "could not look" and
+  # "looked, found nothing" left the same trace: silence and exit 0. Same
+  # PyYAML-under-$HOME root as the lane-watch rows above; note that
+  # leadv2-fanout.sh already fails CLOSED on the same unparseable registry,
+  # so one input produced opposite behaviours in two neighbours.
+  - id: overlap-checker-cannot-say-it-did-not-look
+    product_flow: "with no YAML parser (CI, a fresh VPS, any container) the write-set overlap checker printed exactly what it prints for a clean tree, so every lane passed a check that never ran -- while the same lanes were being refused on a laptop"
+    file: plugins/leadv2/scripts/leadv2-writes-overlap.sh
+    suite: plugins/leadv2/scripts/tests/test-writes-overlap.sh
+    anchor: |
+      sys.exit(20)
+    patch: |
+      s = s.replace('sys.exit(20)', 'sys.exit(0)')
+    expected: killed
+    note: "removes the property at every producer site at once. Kills the two no-parser cases; it does NOT kill the liveness case, because that reason is raised in the shell rather than by the python exit -- two causes, two sites, and the control reports exactly that rather than pretending to cover both"
+
+  - id: overlap-checker-knows-and-does-not-say
+    product_flow: "the checker computes that it could not look and then announces nothing, so the operator sees a clean run"
+    file: plugins/leadv2/scripts/leadv2-writes-overlap.sh
+    suite: plugins/leadv2/scripts/tests/test-writes-overlap.sh
+    anchor: |
+      if [[ -n "$UNCHECKED_REASON" ]]; then
+    patch: |
+      replace that single line with `if false; then`
+    expected: killed
+    note: "kills all three: both no-parser cases and the liveness case. The arbiter / review-gate shape one floor up -- knowing and not saying. The stub package that removes PyYAML is a yaml.py on PYTHONPATH that raises ImportError, so the case reads the same on a host where PyYAML IS installed system-wide"

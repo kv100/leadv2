@@ -1,0 +1,16 @@
+BASELINE (unmutated pin3)
+    suite: 17 passed, 0 failed
+
+--- producer-cannot-say-it-did-not-look ---
+    changed: 6 line(s)
+    expected to kill: the three no-parser cases and the liveness case
+    suite: rc=1  15 passed, 2 failed
+      [TEST] FAIL: no parser: expected an UNCHECKED line naming no_yaml_parser, got stderr=[<empty>]
+      [TEST] FAIL: no parser: no journal finding (file=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//writes-overlap-test.a0pckx/repo/docs/leadv2/tasks/NOYAML1/journal.md)
+--- checker-knows-and-does-not-say ---
+    changed: 2 line(s)
+    expected to kill: the three no-parser cases and the liveness case (state computed, never announced)
+    suite: rc=1  14 passed, 3 failed
+      [TEST] FAIL: no parser: expected an UNCHECKED line naming no_yaml_parser, got stderr=[<empty>]
+      [TEST] FAIL: no parser: no journal finding (file=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//writes-overlap-test.dPjqbx/repo/docs/leadv2/tasks/NOYAML1/journal.md)
+      [TEST] FAIL: no liveness probe: expected UNCHECKED/liveness_bin_absent, got stderr=[<empty>]
