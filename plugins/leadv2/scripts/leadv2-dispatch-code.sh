@@ -1946,6 +1946,30 @@ except Exception:
 # recorded is a no-op (does not bump count, does not rewrite last_reason).
 # _LEADV2_EXC_DAY is computed once per cmd_resolve invocation (R6) so one dispatch
 # never straddles two daily files even across a UTC-midnight boundary.
+# ARBITER-PICK-OVERRIDDEN-BY-ROUTER-01 (2026-09-05). Census over 345 dispatch logs
+# carrying both lines: 50 AGREE, 33 differ-and-NAMED, 0 differ-and-silent (the one
+# apparent silent case was my own regex reading across a glued JSONL line, re-anchored
+# and dismissed). So the router does NOT silently override the arbiter -- every arm
+# change is preceded by a named arm_refused / spawn_failed / arm_excluded line.
+#
+# What IS true is narrower and still costs us: the TERMINAL line does not say so.
+# All 33 print `rule=none`, 6 of 33 keep `reason=cheapest_capable` -- the arbiter's
+# reason for an arm that then lost -- and nothing on the line says a ladder ran or how
+# deep. Read alone, that line is indistinguishable from a route nobody overrode, which
+# is exactly how it was read when this defect was filed.
+#
+# So: name the fallback ON the terminal line. `after=` carries the last recorded
+# attempt outcome; when the arm moved and NOTHING explains it, it prints
+# after=unexplained rather than nothing -- the silent case the census says does not
+# exist would then say so itself instead of hiding as a missing token.
+# Observability only: no candidate, cost or order is touched by this function.
+_route_arm_source_suffix() { # <landed> <arbiter_pick> <depth> <last_attempt>
+  local landed="$1" pick="$2" depth="$3" last="$4"
+  [[ -z "${pick}" || "${landed}" == "${pick}" ]] && return 0
+  printf ' arbiter_pick=%s arm_source=ladder_fallback depth=%s after=%s' \
+    "${pick}" "${depth:-0}" "${last:-unexplained}"
+}
+
 _arm_exception_bump() {
   local reason="$1" sig8="$2"
   local day="${_LEADV2_EXC_DAY:-$(date -u +%Y%m%d)}"
@@ -8489,8 +8513,9 @@ ${mission}"
         fi
         [[ -n "${_exc_reason}" ]] && { _arm_exception_bump "${_exc_reason}" "${sig8}" || true; }
       fi
-      emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}${_ROUTE_FAIL_OPEN}"
-      printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}" "${_ROUTE_FAIL_OPEN}"
+      _ROUTE_ARM_SRC="$(_route_arm_source_suffix "${candidate}" "${_arb_arm:-}" "${#attempted[@]}" "${attempted[*]: -1}")"
+      emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}${_ROUTE_ARM_SRC}${_ROUTE_FAIL_OPEN}"
+      printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s%s%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}" "${_ROUTE_ARM_SRC}" "${_ROUTE_FAIL_OPEN}"
       # FP-06: dispatch-attempt terminal -- the confirmed live spawn IS this
       # attempt's win. Emitted before the LANDED-AT-SPAWN block so the row
       # lands even if a later line in this branch were to fail.
@@ -8664,8 +8689,9 @@ ${mission}"
       ;;
     4)
       if [[ "${spawn}" != "1" ]]; then
-        emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}${_ROUTE_FAIL_OPEN}"
-        printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}" "${_ROUTE_FAIL_OPEN}"
+        _ROUTE_ARM_SRC="$(_route_arm_source_suffix "${candidate}" "${_arb_arm:-}" "${#attempted[@]}" "${attempted[*]: -1}")"
+        emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}${_ROUTE_ARM_SRC}${_ROUTE_FAIL_OPEN}"
+        printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s%s%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}" "${_ROUTE_ARM_SRC}" "${_ROUTE_FAIL_OPEN}"
         emit decision "dispatch_rolled_back reason=no_spawn_dry_run task=${sig8}"
         # Dry-run: nothing was spawned or reserved (dispatch_abort already ran). No terminal
         # state exists to record -- writing one here would falsely claim a real dispatch

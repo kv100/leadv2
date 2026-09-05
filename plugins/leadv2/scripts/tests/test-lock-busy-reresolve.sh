@@ -107,8 +107,66 @@ SH
   rm -rf "${d}"
 }
 
+
+# ---- Case 5: ARBITER-PICK-OVERRIDDEN-BY-ROUTER-01 ---------------------------
+# The filed claim was "the router silently overrides the arbiter". A census over
+# 345 dispatch logs carrying both lines refuted the "silently": 33 differing pairs,
+# every one preceded by a named arm_refused/spawn_failed line, 0 silent. What
+# survived is narrower: the TERMINAL line said nothing -- all 33 printed rule=none
+# and 6 kept the arbiter's own reason=cheapest_capable for an arm that then LOST,
+# so read alone that line is indistinguishable from a route nobody overrode. That
+# is how the defect came to be filed in the first place.
+# This case asserts the terminal line is self-sufficient: it names the pick that
+# was displaced, that a ladder ran, how deep, and after what.
+# The control is the point: a dispatch whose arm never moved must carry NO
+# arm_source= token, or the assertion would pass on a line that always prints it.
+case_terminal_line_names_the_fallback() {
+  local d root glm_bin sub ok_bin out_fb out_ctl
+  d="$(mktemp -d)"; root="${d}/repo"; mkdir -p "${root}"
+  write_routing "${root}/.claude/ref/leadv2-routing.yaml"
+  glm_bin="${d}/glm-fake.sh"
+  cat > "${glm_bin}" <<'SH'
+#!/usr/bin/env bash
+echo "another GLM run is active for this repo (lock: .lock-x, pid: 1)" >&2
+echo "LEADV2_DISPATCH_REFUSED: lock_busy" >&2
+exit 75
+SH
+  # the control's glm launcher SUCCEEDS, so the arbiter's pick is what lands and
+  # no rung of the ladder is burned.
+  ok_bin="${d}/glm-ok.sh"
+  cat > "${ok_bin}" <<'SH'
+#!/usr/bin/env bash
+nohup sleep 30 >/dev/null 2>&1 &
+printf 'PID=%s LABEL=test SESSION_ID=test\n' "$!"
+SH
+  sub="${d}/subsession.sh"; cp "${ok_bin}" "${sub}"
+  chmod +x "${glm_bin}" "${ok_bin}" "${sub}"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "${d}/journal.log" > "${d}/journal.sh"
+  chmod +x "${d}/journal.sh"
+  _dc_run() { # <glm-bin>
+    CLAUDE_PROJECT_ROOT="${root}" LEADV2_PROJECT_ROOT="${root}" \
+      LEADV2_DISPATCH_CACHE_DIR="${d}/cache-$(basename "$1")" \
+      LEADV2_DISPATCH_GLM_BIN="$1" LEADV2_DISPATCH_SUBSESSION_BIN="${sub}" \
+      LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
+      LEADV2_REQUIRE_LANE_WRITES=0 LEADV2_ROUTER_V2=0 LEADV2_LANE_SHAPE=off \
+      LEADV2_JOURNAL_BIN="${d}/journal.sh" \
+      bash "${DC}" "lockbusy mission" --kind product 2>&1
+  }
+  out_fb="$(_dc_run "${glm_bin}")"
+  out_ctl="$(_dc_run "${ok_bin}")"
+  if printf '%s' "${out_fb}" | grep -qE 'route_resolved by=router.*arbiter_pick=glm arm_source=ladder_fallback depth=[0-9]+ after=glm_refused_lock_busy'; then
+    ok "terminal route line names the displaced pick, the ladder and what it followed"
+  else bad "expected arm_source=ladder_fallback on the terminal line (got: $(printf '%s' "${out_fb}" | grep -E 'route_resolved by=router' | tail -1))"; fi
+  if printf '%s' "${out_ctl}" | grep -q 'route_resolved by=router' \
+     && ! printf '%s' "${out_ctl}" | grep -q 'arm_source='; then
+    ok "a route nobody overrode carries no arm_source token (control)"
+  else bad "control: unmoved route must NOT carry arm_source= (got: $(printf '%s' "${out_ctl}" | grep -E 'route_resolved by=router' | tail -1))"; fi
+  rm -rf "${d}"
+}
+
 case_resolver_fires
 case_dispatch_reresolve
+case_terminal_line_names_the_fallback
 
 printf '\n=== %d passed, %d failed ===\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" == 0 ]]
