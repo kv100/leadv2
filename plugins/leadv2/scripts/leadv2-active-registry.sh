@@ -363,6 +363,45 @@ def _lv2_ws_dead(other):
     pid = other.get("pid")
     return pid is not None and not _pid_alive(pid)
 
+def _lv2_ws_live_worker(other):
+    # WRITESET-CAROUSEL-01 (founder 2026-09-05). The pending refusal below asks
+    # "does this incumbent have an undeclared write set?" and then blocks as
+    # hard as a PROVEN path overlap. But an undeclared write set is UNKNOWN
+    # overlap, not conflict -- and the only thing that makes unknown dangerous
+    # is a worker that might be writing right now. So ask that instead.
+    #
+    # Measured on the live registry, 2026-09-05T02:52Z: FIVE rows were refusing
+    # every dispatch in the repo (CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01,
+    # LANE-LIVENESS-PROVE-03, RESUME-LAND, WAVE-B1-SALVAGE-THE-SEVENTEEN-01,
+    # GATE-PROVES-ITS-OWN-CONTROL-01), aged 211-531s, and every single one of
+    # them had **pid: None** -- no process at all. Thirteen more rows of the
+    # same shape sat at 19,000-23,000s, outside the window, warning instead of
+    # blocking. The guard was refusing on behalf of lanes that do not exist.
+    # Because new placeholder rows appear faster than the 900s window closes,
+    # the refusal never lifted and simply moved to the next-youngest row: a lead
+    # clearing one blocker was immediately refused by another, 47 seconds old.
+    #
+    # `interactive` is the second half, and its machinery already existed:
+    # PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01 built _proc_kind() precisely
+    # because "a recorded PID can belong to the interactive lead session rather
+    # than a worker", and rows have carried proc_kind since -- but this guard
+    # consulted neither. A recovery that attaches a bystander pid (a lead's own)
+    # to a lane makes the row immortal: the liveness check honestly answers
+    # "alive", because it IS alive; it is just not a worker. Read the kind from
+    # the LIVE process, never from the stored field, so a recycled pid cannot
+    # inherit a stale classification.
+    #
+    # Fail-closed on genuine ambiguity: a pid that is alive but whose kind
+    # cannot be read ("other"/"unknown") still counts as a worker and still
+    # blocks. The only answers that release the block are the ones we can prove:
+    # no pid at all, a dead pid, or a live pid that is an interactive lead.
+    pid = other.get("pid")
+    if pid in (None, "", "null", "None"):
+        return False
+    if not _pid_alive(pid):
+        return False
+    return _proc_kind(pid) != "interactive"
+
 def _lv2_ws_pending(other):
     # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: the window is measured
     # from the row's FIRST registration (first_seen_at, carried across
@@ -455,7 +494,7 @@ try:
                     # otherwise. Checked BEFORE the D7 unknown/enforce split
                     # below, which remains the policy for genuinely legacy
                     # rows outside the pending window.
-                    if _lv2_ws_pending(other):
+                    if _lv2_ws_pending(other) and _lv2_ws_live_worker(other):
                         # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: name
                         # WHY the incumbent has no write set (its recorded
                         # writes_reason), so a blocked lead can tell a
@@ -463,6 +502,18 @@ try:
                         # declare. Rows without the key say undeclared.
                         print(f"[registry] writeset conflict: other={other.get('task_id')} reason=pending_resolution writes_reason={other.get('writes_reason') or 'undeclared'}", file=sys.stderr)
                         sys.exit(5)
+                    if _lv2_ws_pending(other):
+                        # WRITESET-CAROUSEL-01: in-window, undeclared, and NO
+                        # live worker. This is the third state -- unknown
+                        # overlap -- and it must not be routed to the conflict
+                        # policy. It falls through to the unknown policy right
+                        # below, where LEADV2_WRITESET_ENFORCE still decides:
+                        # `block` refuses exactly as before, `warn` proceeds and
+                        # journals. Said out loud rather than silently skipped,
+                        # so a lead reading the journal can tell "nobody was
+                        # running under that row" from "we never looked".
+                        _pk = _proc_kind(other.get("pid")) if other.get("pid") not in (None, "", "null", "None") else "no_pid"
+                        print(f"[registry] writeset pending downgraded: other={other.get('task_id')} reason=no_live_worker pid={other.get('pid')} proc_kind={_pk}", file=sys.stderr)
                     # D7: an incumbent with neither key is the third state,
                     # `unknown` -- never silently "conflicts with everything"
                     # nor "conflicts with nothing".
