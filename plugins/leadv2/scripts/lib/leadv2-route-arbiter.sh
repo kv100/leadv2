@@ -233,7 +233,7 @@ def util(provider):
     # nothing against codex (cost 3..7) or sonnet (cost 5) -- falsified by the
     # round-1 live probe (freepool still selected with util_freepool=50).
     # The demotion now happens on the effective cost, right before the sort.
-    empty={'pct':0.0,'unknown':False,'hours_to_reset':None,'period_hours':None,'reset_basis':'n/a'}
+    empty={'pct':0.0,'unknown':False,'hours_to_reset':None,'period_hours':None,'reset_basis':'n/a','usable_now':None}
     if provider=='freepool':
         return dict(empty, pct=(0.0 if free_ok else 100.0),
                     status=('ok' if free_ok else ('down' if free_reason=='arm_down' else (free_reason or 'unknown'))))
@@ -304,9 +304,15 @@ def util(provider):
     # deaths -- it only stops a silent provider from outranking a measured one.
     if best_pct is None: return dict(empty, pct=100.0, unknown=True)
     h,period,basis=window_reset(best_name,best_window)
-    return {'pct':best_pct,'unknown':False,'hours_to_reset':h,'period_hours':period,'reset_basis':basis}
+    # ARBITER-QUOTA-IS-A-CLIFF-NOT-A-GRADIENT-01: carry the BINDING window's
+    # usable_now (remaining percentage-points per hour, produced upstream by
+    # leadv2-quota-read.py:135 as remaining/max(hours,1)). Same window that
+    # decides pct, so the rate and the level can never come from two clocks.
+    return {'pct':best_pct,'unknown':False,'hours_to_reset':h,'period_hours':period,'reset_basis':basis,
+            'usable_now':(best_window or {}).get('usable_now')}
 _uraw={p:util(p) for p in ('glm','codex','claude','freepool')}
 u={p:_uraw[p]['pct'] for p in _uraw}; unk={p:_uraw[p]['unknown'] for p in _uraw}
+usable={p:_uraw[p].get('usable_now') for p in _uraw}
 def near_reset_wait(provider):
     info=_uraw[provider]; h=info.get('hours_to_reset'); period=info.get('period_hours')
     if h is None or period is None: return False
@@ -599,8 +605,64 @@ def complexity_penalty(c):
 # capability floor (+100), so an unmeasured arm loses to nothing except a
 # deliberately floored one.
 UNKNOWN_PROBE_PENALTY=50.0
+# ARBITER-QUOTA-IS-A-CLIFF-NOT-A-GRADIENT-01 (founder request, 2026-09-05).
+# Quota was a CLIFF: under the ceiling every arm competed on cost alone, over it
+# the arm vanished, and how much runway was left before reset never entered the
+# price at all -- utilisation sat in the sort key only as a TIE-BREAK, i.e. it
+# spoke only when two arms cost exactly the same. config/leadv2-routing.yaml has
+# carried router_v2.headroom_weights the whole time and this file never read it
+# (measured 2026-09-05: grep -c headroom_weights = 0 here, 1 in the yaml the
+# arbiter itself loads, with quota_ceilings=2/1 as the non-zero control).
+#
+# The semantics are NOT invented here. `usable_now` is remaining percentage-points
+# per HOUR (leadv2-quota-read.py:135), and the rows are read exactly as
+# leadv2-router-v2.py:110-128 reads them: highest satisfied min_usable_now wins.
+# There the weight MULTIPLIES a quality score under argmax; here cost is
+# MINIMISED, so the same weight DIVIDES the base cost. Less runway per hour =>
+# effectively dearer. At EQUAL headroom every weight is equal, so the previous
+# ordering is preserved by construction -- this only separates arms that the
+# cliff could not tell apart.
+#
+# Deliberately narrow, and the narrowness is the safety argument:
+#   * only the arm's own `cost` is scaled. The freepool capability floor, the
+#     unknown-probe penalty and the complexity penalty are ADDED afterwards, so a
+#     gradient can never dilute a refusal another line already decided.
+#   * a provider whose probe failed keeps weight 1.0. It already carries
+#     UNKNOWN_PROBE_PENALTY; pricing it twice for one fact is the error this
+#     session has been naming all day.
+#   * a readable provider with no usable_now field also keeps 1.0 -- a metadata
+#     gap is not evidence of scarcity -- but it is NAMED (headroom_unknown=), per
+#     the standing rule that unknown is a third value and must be loud.
+# Rollback is one flag: LEADV2_ARBITER_HEADROOM_GRADIENT=0 restores the cliff.
+_HEADROOM_ROWS=sorted([r for r in ((data.get('router_v2') or {}).get('headroom_weights') or [])
+                       if isinstance(r,dict) and r.get('weight') is not None and r.get('min_usable_now') is not None],
+                      key=lambda r: float(r['min_usable_now']), reverse=True)
+_HEADROOM_ON=(os.environ.get('LEADV2_ARBITER_HEADROOM_GRADIENT','1')!='0') and bool(_HEADROOM_ROWS)
+_headroom_unknown={}; _headroom_priced={}
+def _hw_row(un):
+    for row in _HEADROOM_ROWS:
+        try:
+            if un >= float(row['min_usable_now']): return float(row['weight'])
+        except (TypeError, ValueError): continue
+    try: return float(_HEADROOM_ROWS[-1]['weight'])
+    except (TypeError, ValueError, KeyError, IndexError): return 1.0
+def headroom_weight(provider):
+    if not _HEADROOM_ON: return 1.0
+    if unk.get(provider):
+        _headroom_unknown[provider]='probe'; return 1.0
+    un=usable.get(provider)
+    if un is None:
+        _headroom_unknown[provider]='no_usable_now'; return 1.0
+    try: un=float(un)
+    except (TypeError, ValueError):
+        _headroom_unknown[provider]='unreadable'; return 1.0
+    _w=_hw_row(un)
+    if _w != 1.0: _headroom_priced[provider]=_w
+    return _w
 def ecost(c):
-    return float(c.get('cost',999)) + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + (UNKNOWN_PROBE_PENALTY if unk.get(c.get('provider')) else 0.0) + complexity_penalty(c)
+    _w=headroom_weight(c.get('provider'))
+    _base=float(c.get('cost',999))/(_w if _w > 0 else 1.0)
+    return _base + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + (UNKNOWN_PROBE_PENALTY if unk.get(c.get('provider')) else 0.0) + complexity_penalty(c)
 complexity_penalty_active = any(complexity_penalty(c) > 0 for c in ok)
 ok.sort(key=lambda c:(ecost(c),u[c['provider']],c['arm'],c.get('tier','')))
 seen=set(); chain=[]
@@ -699,6 +761,21 @@ _extra += (' partial_windows=%s' % ','.join('%s:%s' % (p, '|'.join(w)) for p, w 
 # configured would bench it on no evidence) -- but the winner riding an
 # unconfigured ceiling is named, so `not capped` stops meaning two things.
 _extra += (' ceiling_default=%s' % w['provider']) if (w.get('provider') and not (ceil.get(w['provider']) or ceil.get(w['arm']))) else ''
+# ARBITER-QUOTA-IS-A-CLIFF-NOT-A-GRADIENT-01: the gradient is the only thing in
+# this file that changes WHICH arm wins, so the winner's price must be readable
+# back off the line -- weight, the number it came from, and, when it could not be
+# priced, why. headroom_unknown= is the loud third value; it means "charged at
+# 1.0 because we do not know", never "plenty".
+_hw_w = headroom_weight(w.get('provider')) if (_HEADROOM_ON and w.get('provider')) else None
+_extra += (' headroom_w=%s' % ('%g' % _hw_w)) if _hw_w is not None else ''
+_extra += (' usable_now=%s' % ('%g' % float(usable.get(w['provider'])))) if (_hw_w is not None and usable.get(w['provider']) is not None and not unk.get(w['provider'])) else ''
+_extra += (' headroom_unknown=%s' % _headroom_unknown[w['provider']]) if (_hw_w is not None and w['provider'] in _headroom_unknown) else ''
+# headroom_w= alone answers "what did the WINNER cost"; it cannot answer "why is
+# the winner not the cheapest arm", because the arm that lost is the one that got
+# priced. headroom_priced= names every candidate provider whose cost was scaled at
+# all, so a moved choice can be read straight off the line. Absent when nothing
+# was priced -- which is also the control that keeps the assertion honest.
+_extra += (' headroom_priced=%s' % ','.join('%s:%g' % (p_, w_) for p_, w_ in sorted(_headroom_priced.items()))) if _headroom_priced else ''
 # FP-08 fix-round (H1/H3): the floor journal rides on the arbiter's OWN output
 # line for THIS invocation (never a cross-run state file a stale read could
 # misattribute), as explicit tokens -- not a Python bool printed raw, which

@@ -326,5 +326,51 @@ else
   fi
 fi
 
+
+# (g6) ARBITER-QUOTA-IS-A-CLIFF-NOT-A-GRADIENT-01: every other case in this suite
+# asserts what the arbiter SAYS; this one asserts what it CHOOSES, because the
+# headroom gradient is the only thing in this file that moves the winner. Quota
+# used to be a cliff -- under the ceiling arms competed on cost alone, over it the
+# arm vanished -- so two providers at the SAME utilisation were indistinguishable
+# however differently fast they were burning down. Here glm is capped at 99
+# (excluded by its ceiling, no probe-unknown involved), freepool is down, and
+# codex and claude sit at the SAME 20% used: the cliff has nothing to separate
+# them and cost alone always picks codex (3) over sonnet (5). The ONLY variable
+# between the two runs is codex's remaining percentage-points per HOUR -- 20/h
+# (weight 1.0, cost stays 3) vs 0.5/h (weight 0.4 from router_v2.headroom_weights,
+# cost 3/0.4 = 7.5 > 5).
+# The control is the point of the case, not decoration: at equal headroom the
+# choice must be the OLD one and the line must carry NO headroom_priced= token,
+# or what we built is a bias against codex rather than a gradient.
+quota_headroom(){ python3 - "$1" "$2" <<'PY'
+import json,sys
+cx_un,cl_un=map(float,sys.argv[1:])
+print(json.dumps({'glm':{'status':'ok','five_hour':{'pct':99},'weekly':{'pct':99}},
+                  'codex':{'status':'ok','binding_window':'primary',
+                           'windows':[{'kind':'primary','used_percent':20,'usable_now':cx_un}]},
+                  'anthropic':{'status':'ok','accounts':[{'active':True,'status':'ok',
+                           'five_hour':{'pct':20,'usable_now':cl_un},
+                           'seven_day':{'pct':20,'usable_now':cl_un}}]}}))
+PY
+}
+starve="$(run "$(quota_headroom 0.5 20)" 1 '{"work_kind":"code","size":"standard","task":"t"}')"
+plenty="$(run "$(quota_headroom 20 20)" 1 '{"work_kind":"code","size":"standard","task":"t"}')"
+if [[ "$starve" == *'arm=sonnet '* && "$starve" == *'headroom_priced=codex:0.4'* \
+      && "$plenty" == *'arm=codex '* && "$plenty" != *'headroom_priced='* ]]; then
+  pass 'equal ceilings, different runway: the arm with hours left wins, and the price is named'
+else
+  fail "headroom-gradient starve=$starve plenty=$plenty"
+fi
+
+# (g6-off) the rollback is one flag and it is proven, not asserted: with the
+# gradient off the starving fixture must go back to picking codex on raw cost.
+# Without this, "rollback is one step" would be a claim about a flag nobody ran.
+starve_off="$(LEADV2_ARBITER_HEADROOM_GRADIENT=0 run "$(quota_headroom 0.5 20)" 1 '{"work_kind":"code","size":"standard","task":"t"}')"
+if [[ "$starve_off" == *'arm=codex '* && "$starve_off" != *'headroom_'* ]]; then
+  pass 'LEADV2_ARBITER_HEADROOM_GRADIENT=0 restores the cliff in one flag'
+else
+  fail "headroom-killswitch starve_off=$starve_off"
+fi
+
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
