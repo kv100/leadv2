@@ -585,14 +585,43 @@ arm_loop() { # arm_loop SESSION [extra env via env]
   kill -9 "$nosweep_pid" 2>/dev/null || true
 }
 
-# ── EXTRA_SUITE_MAP selection proof: --scope changed must select this suite ──
+# ── selection proof: --scope changed must select this suite ─────────────────
+#
+# This block used to grep tests/run-all.sh for the literal string
+# `leadv2-lane-watch-v2`, on the assumption that selection was spelled out in
+# an EXTRA_SUITE_MAP table inside that file. That table was emptied by
+# 65734576 ("wip(SUITE-MAP): CHECKPOINT -- self-registration markers across
+# 102 suites, ACCEPTANCE NOT PROVEN") when selection moved to the
+# `# run-all-triggers:` marker this suite carries on line 3. The assertion was
+# therefore checking a mechanism that no longer exists: it could only ever
+# fail, and its red said nothing about lane-watch.
+#
+# The INTENT was right and is kept -- `--scope changed` must select this
+# suite. Only the mechanism is re-pointed, at the live one, and the new form
+# is strictly stronger: it asks run-all.sh what it actually maps instead of
+# matching a string that any passing comment would have satisfied.
+# LEADV2_RUN_ALL_LIST_TRIGGERS=1 prints the discovered stem->suite rows and
+# exits at run-all.sh:213 -- before the harness mutates anything at all -- so
+# asking costs no side effects.
 {
   ROOT="$(cd "${PLUGIN_DIR}/../.." && pwd)"
-  if grep -q 'leadv2-lane-watch-v2' "${ROOT}/tests/run-all.sh" 2>/dev/null; then
-    pass "run-all.sh: EXTRA_SUITE_MAP carries a row for leadv2-lane-watch-v2"
+  _map="$(LEADV2_RUN_ALL_LIST_TRIGGERS=1 bash "${ROOT}/tests/run-all.sh" 2>/dev/null)"; _map_rc=$?
+  _rows="$(printf '%s' "${_map}" | grep -c . || true)"
+
+  if [[ ${_map_rc} -ne 0 ]]; then
+    fail "run-all.sh: the trigger-listing seam exited ${_map_rc} -- selection is unknowable, not disproven"
+  elif [[ -z "${_map}" ]]; then
+    # An empty map is exactly how the old assertion went stale in silence: the
+    # mechanism returned nothing, and "no row for me" was indistinguishable
+    # from "no rows for anyone". Those are different facts and get different
+    # lines.
+    fail "run-all.sh: the discovered trigger map is EMPTY -- no suite is selectable at all"
+  elif printf '%s\n' "${_map}" | grep -q "^leadv2-lane-watch-v2:.*tests/test-lane-watch-v2\.sh$"; then
+    pass "run-all.sh: --scope changed maps leadv2-lane-watch-v2 -> this suite"
   else
-    fail "run-all.sh: no EXTRA_SUITE_MAP row found for leadv2-lane-watch-v2"
+    fail "run-all.sh: trigger map has ${_rows} row(s), none mapping leadv2-lane-watch-v2 to this suite"
   fi
+  unset _map _map_rc _rows
 }
 
 # ── round-2 acceptance 1: run dir BORN 40m ago, TOUCHED 1s ago, worktree
