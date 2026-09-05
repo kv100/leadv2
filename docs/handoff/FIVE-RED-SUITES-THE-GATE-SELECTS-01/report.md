@@ -543,3 +543,61 @@ question above is about. They are worth taking together rather than one at a
 time: if the root is shared it is one finding, not three.
 
 Still nothing added to `tests/known-red-suites.txt` or `known-failures.txt`.
+
+---
+
+## `status-repo-scoped` — four hypotheses, all falsified, nothing shipped
+
+Taken together with `broad-status-foreign-lanes` because both fail on a
+`founder-status.md` that renders a board without the content they assert, and
+if the root were shared it would be one finding rather than three. It is not
+shared, and I did not find it. Recording the dead ends is the useful part:
+each one costs the next person a probe.
+
+The suite is honest about the important thing already — every beat's table
+carries an own-repo row precisely so that a failed render cannot satisfy an
+absence assertion by accident. That control holds: the board renders, the own
+row is there, and the render is not degraded.
+
+```
+2026-08-31T09:00:00Z [BROAD_STATUS] dispatched=1
+09:00
+
+| Линия | Что делает | Состояние |
+|---|---|---|
+| dispatch-own00001 (dispatch id unknown) | — | writing |
+```
+
+The `09:00` line IS the product line, rendered with only its timestamp: the
+renderer emits the метрики bits only when `repo_facts` carries one of six
+keys, and it carries none. C4's dispatched foreign row is likewise absent.
+
+Falsified, in order:
+
+1. **A cached snapshot across cases.** Clearing the status snapshot inside
+   `run_beat` changes nothing — 4/3 before and after. (The same cache WAS a
+   real problem in `test-collector-sees-registered-lane`, which is why it was
+   the first guess.)
+2. **The PULSE-REPO-SCOPED-03 ownership mark**, the root of the collector
+   suite's board failure. This suite already seeds it (`seed_dispatch_record`)
+   and C4 calls it before the beat.
+3. **State escaping the sandbox.** The fixture pins `LEADV2_STATE_ROOT` but not
+   `LEADV2_STATE_BASE`, and its sibling pins both. Pinning it changes nothing;
+   the resolved path was already inside the sandbox. **The change was reverted
+   rather than shipped** — a fixture edit that fixes nothing and is justified by
+   nothing does not belong in the tree, however tidy it looks.
+4. **The suite reading a different file than the renderer writes.**
+   `$REPO/docs/leadv2/founder-status.md` is a symlink to
+   `$TMP/state/founder-status.md`; same inode, same bytes.
+
+What is left: the stub honours the real calling convention
+(`--out <path>`, verified against `leadv2-broad-status.sh:299`), the snapshot
+shape matches what the renderer reads (`sections.repo_facts.data`,
+`leadv2-broad-status.sh:520`), and the lanes table from that same snapshot
+renders — so the snapshot is being read. Why `repo_facts` from it does not
+reach the product line is the open question, and it is where the next probe
+should start.
+
+**Nothing was committed for this suite.** Three red assertions with four named
+dead ends is a more useful handover than a fixture edit that moves a number
+without explaining it.
