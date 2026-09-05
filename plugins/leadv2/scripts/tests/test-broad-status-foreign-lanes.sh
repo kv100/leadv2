@@ -202,7 +202,13 @@ fi
 exec bash "${SCRIPT_DIR}/leadv2-lane-liveness.sh" "\$@"
 EOF
 chmod +x "$STUBS/liveness-partial-fail.sh"
-S3_JSON="$(env LEADV2_LANE_LIVENESS_BIN="$STUBS/liveness-partial-fail.sh" snap)"
+# `env VAR=x snap` could never work: snap is a shell FUNCTION and env execs a
+# binary, so this line failed with `env: snap: No such file or directory`
+# (rc=127, empty output) on every run since it was written -- the liveness stub
+# was never installed and S3 never tested anything at all. A bare assignment
+# prefix runs the function with the variable exported for its duration, which
+# is what was meant; the command substitution is a subshell, so nothing leaks.
+S3_JSON="$(LEADV2_LANE_LIVENESS_BIN="$STUBS/liveness-partial-fail.sh" snap)"
 S3_VERDICT="$(printf '%s' "$S3_JSON" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
@@ -211,7 +217,12 @@ bad = [r for r in t if r.get("task_id") == "dispatch-bad00002" and r.get("repo")
 ok_lanes = [r for r in t if r.get("task_id") == "dispatch-fee00001" and r.get("repo") == "foreignrepo"]
 bad_unknown = bad and bad[0].get("status") == "unknown" and "unknown:error" in (bad[0].get("status_reason") or "")
 print("ok" if bad_unknown and ok_lanes else "bad bad=%r healthy=%d" % (bad, len(ok_lanes)))
-' 2>/dev/null || true)"
+')"
+# Two swallows hid the bug above for its whole life: snap() discards stderr
+# and this verdict used `2>/dev/null || true`, so a broken instrument yielded
+# the empty string and the failure line read `S3: ` -- a red that names
+# nothing. An instrument that did not run is its own outcome, not a verdict.
+[[ -n "$S3_VERDICT" ]] || S3_VERDICT="INSTRUMENT FAILED: no verdict at all (snapshot len=${#S3_JSON}) -- the check did not run, which is not the same fact as a wrong answer"
 if [[ "$S3_VERDICT" == "ok" ]]; then
   ok "S3: broken foreign repo's lane degrades to status=unknown (named, not hidden); healthy repo's lane still in table"
 else
@@ -219,7 +230,16 @@ else
 fi
 
 # ── Renderer (stubbed collector feeding the real broad-status.sh) ───────────
-FOUNDER_STATUS="$REPO/docs/leadv2/founder-status.md"
+# Read (and write) the board OUTSIDE the control plane -- see the long note in
+# test-status-repo-scoped.sh: docs/leadv2/founder-status.md is a RENDER-class
+# control-plane symlink, leadv2-state-path.sh repairs it on every call, and the
+# renderer's temp+rename write is discarded by that repair. Measured
+# 2026-09-05: the state-side copy stops changing after the FIRST beat, so R2
+# and R3 were asserting against R1's board whatever their own snapshot said.
+# Both path overrides are pinned together, per the defect this script's own
+# header records from overriding only one.
+BOARD_DIR="$TMP/board"; mkdir -p "$BOARD_DIR"
+FOUNDER_STATUS="$BOARD_DIR/founder-status.md"
 # PULSE-REPO-SCOPED-03: the renderer shows a foreign-repo lane only when THIS
 # repo dispatched it (dispatch record <root>/docs/leadv2/tasks/<tid>/). R1's
 # foreign lane is exactly that case (it is the row that must keep rendering
@@ -267,6 +287,8 @@ run_beat() {
     LEADV2_BROAD_STATUS_CLAUDE_BIN="$STUBS/claude.sh" \
     LEADV2_BROAD_STATUS_BEAT_AT="2026-08-25T11:00:00Z" \
     LEADV2_BROAD_STATUS_DISPATCHED="1" \
+    LEADV2_FOUNDER_STATUS_PATH="$FOUNDER_STATUS" \
+    LEADV2_FOUNDER_STATUS_FULL_PATH="$BOARD_DIR/founder-status-full.md" \
     bash "$BROAD_STATUS_SH" >/dev/null 2>&1 || true
 }
 
