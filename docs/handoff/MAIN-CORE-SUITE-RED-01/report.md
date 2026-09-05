@@ -325,8 +325,20 @@ lane's diff, not from drift on main.
   (only shell file changed this round).
 - Python files changed: none (inline python only; `py_compile` N/A;
   `tests/mutations/catalog.yaml` is YAML data).
-- `tests/run-all.sh --scope changed` → result appended in §6 when it
-  completes.
+- `tests/run-all.sh --scope changed` → rc=1, `run-all: 9 passed, 3 failed,
+  scope=changed`. The three failures are exactly the already-root-caused
+  in-lane artifacts, none new and none from this round's diff:
+  `test-idle-lead-guard.sh` (case 10 — stale in-lane hooks.json, §2a),
+  `test-phase-precondition.sh` (`[PHASE-PRECONDITION] pass=80 fail=2`, F1 —
+  stale in-lane leadv2-phase-record.sh, §2b), and the nested
+  `run-core-offline.sh` (its log shows `T13 slice2` red — a pre-existing
+  baseline red re-measured 2026-09-01 — plus glm-chain case2/3/4 reds while
+  foreign run-all processes were live, the known concurrent-core-offline
+  artifact; one shard child even executed
+  `.../worktrees/falsification-path-baseline-classifier/.../run-core-offline.sh`,
+  foreign bytes). The 9 passed include every other suite covering this
+  lane's changed files. Authoritative verdicts for the two suites under
+  repair remain the clone measurements (§1 runs C/D).
 
 ## 6. Round-3 commits
 
