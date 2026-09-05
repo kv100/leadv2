@@ -26,7 +26,6 @@ core:phase precondition guard matrix  # plugins/leadv2/scripts/tests/test-phase-
 core:claim-evidence gate (CLAIM-EVIDENCE-GATE-01 preamble + round-1 lens)  # plugins/leadv2/scripts/tests/test-claim-evidence-gate.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
 core:product-close scopes a single-repo lane worktree  # plugins/leadv2/scripts/tests/test-lane-diff-single-repo.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
 core:codex-dead review reroute (QUOTA-GATE-PARITY-01)  # plugins/leadv2/scripts/tests/test-codex-dead-reroute.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
-core:idle-lead guard hook  # plugins/leadv2/scripts/tests/test-idle-lead-guard.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
 core:review round exhaustive/verify-only (REVIEW-ROUND1-EXHAUSTIVE-01)  # plugins/leadv2/scripts/tests/test-review-round-exhaustive.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
 core:deferred-GLM ladder (V3-GLM-LADDER-01)  # plugins/leadv2/scripts/tests/test-glm-deferred-ladder.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
 core:review round cap (REVIEW-ROUNDCAP-01)  # plugins/leadv2/scripts/tests/test-review-roundcap.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01

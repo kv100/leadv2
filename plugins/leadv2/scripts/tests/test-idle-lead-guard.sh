@@ -413,7 +413,34 @@ assert d["decision"] == "block"
 }
 
 # ════════════════════════════════════════════════════════════════════════════
-# Case 10: hooks.json registration assertion
+# Case 10: hooks.json registration — CONTRACT RETIRED (IDLE-LEAD-GUARD-IS-NOT-REGISTERED-01)
+#
+# What this case checked until 2026-09-06: that hooks.json registered
+# leadv2-idle-lead-guard.sh as a Stop hook, after promise-guard, last.
+#
+# Why that contract no longer exists: commit 9f00e7ed (ONE-LANE-WATCH-01,
+# 2026-09-01, merged as c49cc9fb) deliberately removed the hooks.json wiring.
+# The hook's block predicate depended on `leadv2-lane-liveness.sh --all`
+# reporting count_live — measured returning 0 while a lane was actively
+# writing, so the predicate could never see "lanes are busy" and the guard
+# could only ever push toward MORE blocking. Its one honest job (queued work
+# + no live lane) was inherited by scripts/leadv2-lane-watch-v2.sh as the
+# LANE-IDLE report; rebuilding the Stop hook on the new signal was considered
+# and rejected (see docs/handoff/ONE-LANE-WATCH-01/report.md). Nothing
+# invokes the hook file today (verified 2026-09-06: 0 mentions in canonical
+# hooks.json and in the installed ~/.claude/plugins/local copy, no script
+# caller — remaining references are comments/fixtures/docs calling it
+# retired); the file itself was left in place as out of that lane's write
+# scope.
+#
+# What this case checks NOW: that the retirement HOLDS — the hook must stay
+# UNREGISTERED. Re-registering it would change Stop behaviour for every
+# session; if that is ever ordered deliberately, update this case in the
+# same commit.
+#
+# The assert runs WITHOUT 2>/dev/null: the old version silenced the
+# AssertionError that named the missing hook (the suite knew the answer and
+# stayed silent while red). A failure here must print what it saw.
 # ════════════════════════════════════════════════════════════════════════════
 {
   HOOKS_JSON="$PLUGIN_DIR/hooks/hooks.json"
@@ -423,18 +450,17 @@ with open(sys.argv[1]) as f:
     d = json.load(f)
 stop_hooks = d["hooks"]["Stop"][0]["hooks"]
 ids = [h["command"] for h in stop_hooks]
-# Must contain idle-lead-guard
-assert any("leadv2-idle-lead-guard.sh" in c for c in ids), f"idle-lead-guard not found in {ids}"
-# Must be after promise-guard
-pg_idx = next(i for i, c in enumerate(ids) if "leadv2-promise-guard.sh" in c)
-ig_idx = next(i for i, c in enumerate(ids) if "leadv2-idle-lead-guard.sh" in c)
-assert ig_idx > pg_idx, f"idle-guard (idx {ig_idx}) must be after promise-guard (idx {pg_idx})"
-# Must be the last entry
-assert ig_idx == len(ids) - 1, f"idle-guard is not last (idx {ig_idx}, last {len(ids)-1})"
-' "$HOOKS_JSON" 2>/dev/null; then
-    pass "case 10: hooks.json has idle-lead-guard last after promise-guard"
+hits = [c for c in ids if "leadv2-idle-lead-guard.sh" in c]
+assert not hits, (
+    "leadv2-idle-lead-guard.sh is REGISTERED in hooks.json Stop[0] but was "
+    "retired by ONE-LANE-WATCH-01 (9f00e7ed): " + repr(hits)
+    + ". If re-registration is deliberate, update case 10 in the same commit."
+)
+print(f"ok: {len(ids)} Stop hooks registered, none is idle-lead-guard")
+' "$HOOKS_JSON"; then
+    pass "case 10: idle-lead-guard stays UNREGISTERED (retired by ONE-LANE-WATCH-01)"
   else
-    fail "case 10: registration assertion failed"
+    fail "case 10: retired idle-lead-guard found registered in hooks.json"
   fi
 }
 
