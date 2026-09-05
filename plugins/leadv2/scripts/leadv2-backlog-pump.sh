@@ -662,11 +662,26 @@ _pump_reserve_lane() {  # $1=task_id -> rc 0 reserved, nonzero=failed (fail clos
   branch="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || printf -- 'unknown')"
   session_id="p-$(date -u +%Y%m%dT%H%M%SZ)-null-$$"
   pulse_log="docs/handoff/backlog-pump-${tid}/pulse.md"
+  # 16 positional fields, then the optional 17th.
+  #
+  # This call site passed 15 and had been failing with
+  # `ValueError: not enough values to unpack (expected 16, got 15)` since the
+  # registry gained its `writes` field: EVERY candidate was skipped with
+  # `pump_skip reason=lane_reserve_failed`, which the loop treats as a
+  # capacity refusal, so a pump that could not register a single lane looked
+  # exactly like a pump correctly declining to overfill. Every other caller
+  # goes through the leadv2_active_register wrapper and was carried along;
+  # only this one had pinned the positional contract by hand.
+  #
+  # `writes` is genuinely unknown here -- the lane is reserved BEFORE the
+  # dispatch that decides what it will touch -- so it is null and the 17th
+  # field says why, which is exactly what that field exists for.
   _leadv2_yaml_py_lock \
     "$lockfile" "$yaml_file" register \
     "$session_id" "$tid" "$PROJECT_ROOT" "$branch" "$ts" \
     "spawning" "backlog-pump" "null" "null" "null" \
-    "true" "$ts" "$pulse_log" "" ""
+    "true" "$ts" "$pulse_log" "" "" \
+    "null" "backlog-pump reserves the lane before dispatch decides its write set"
 }
 
 _pump_update_lane_pid() {  # $1=task_id $2=pid_or_null -- best-effort, never fails the caller
@@ -1017,8 +1032,12 @@ cmd_check() {
     # a failed reservation is treated as a capacity refusal (fail closed),
     # never as "proceed without a registry row" (that fail-open shape is the
     # exact defect NB1 flags in leadv2-fanout.sh; not repeated here).
-    if ! _pump_reserve_lane "$iid" >/dev/null 2>&1; then
-      jemit decision "pump_skip task=${iid} reason=lane_reserve_failed"
+    # Keep the reason. Discarding it is how a hard failure (an arity drift in
+    # the registry contract) spent its whole life looking like a soft capacity
+    # refusal.
+    _rl_err="$(_pump_reserve_lane "$iid" 2>&1 >/dev/null)"; _rl_rc=$?
+    if [[ "$_rl_rc" -ne 0 ]]; then
+      jemit decision "pump_skip task=${iid} reason=lane_reserve_failed rc=${_rl_rc} detail=$(printf '%s' "${_rl_err:-none}" | tr '\n' ' ' | cut -c1-200)"
       leadv2_tasks_unclaim "$iid" >/dev/null 2>&1 || true
       continue
     fi

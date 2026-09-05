@@ -1,0 +1,17 @@
+BASELINE (unmutated pin3)
+    suite: 23 passed, 0 failed
+
+--- reserve-passes-the-old-arity ---
+    changed: 3 line(s)
+    expected to kill: every dispatch case: the pump can reserve no lane at all
+    suite: rc=1  18 passed, 5 failed
+      [TEST] FAIL: auto_dispatch: expected dispatch call, log=
+      [TEST] FAIL: control: mutation NOT caught — mutated pump still refused at_ceiling (dispatched= log=decision|pump_skip task=T7 reason=lane_reserve_failed rc=1 detail=Traceback (most recent call last):   File "<stdin>", line 186, in <module> ValueError: not enough values to unpack (expected 16, got 15))
+      [TEST] FAIL: duplicate_signature_refused: duplicate was not safely returned to queue
+      [TEST] FAIL: floor_dispatches_then_refuses: d5=0 r1=1 log1= j=decision|pump_refused reason=quota_floor glm=1% codex=1% anthropic=1% floor=2pct live=1 bar=below_floor repeats=1 since=2026-09-05T06:10Z
+      [TEST] FAIL: judgment_class_excluded: opus-arm candidate not properly unclaimed/surfaced
+--- reserve-failure-loses-its-reason ---
+    changed: 2 line(s)
+    expected to kill: nothing by itself -- recorded to show the detail is not load-bearing for any assertion
+    suite: rc=1  22 passed, 1 failed
+      [TEST] FAIL: reserve_failure_names_its_cause: refused without naming the cause -- a hard failure is indistinguishable from a capacity refusal (log=decision|pump_skip task=TR1 reason=lane_reserve_failed skip=Traceback (most recent call last):   File "<stdin>", line 171, in <module> IsADirectoryError: [Errno 21] Is a directory: '/var/folders/gr/5b)

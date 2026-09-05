@@ -391,3 +391,31 @@ mutations:
       it won the race
     expected: killed
     note: "the suite carries this control itself; measured after the fixture repair: 5 recomputes vs 1. Selection proven from the production file -- clean tree 3 suites, one appended comment in lib/leadv2-status-cache.sh -> 4, incl. test-status-churn.sh"
+
+  # FIVE-RED-SUITES-THE-GATE-SELECTS-01 (2026-09-05). The backlog pump could
+  # not reserve a single lane. Every other caller of the registry goes through
+  # the leadv2_active_register wrapper and was carried along when the registry
+  # gained its 16th positional field; this one call site had pinned the
+  # positional contract by hand and passed 15 forever after.
+  - id: pump-reserve-passes-the-old-arity
+    product_flow: "the backlog pump reserves an active.yaml lane before dispatch; with the wrong arity the registry raises ValueError, every candidate is skipped as lane_reserve_failed, and a pump that can register nothing looks exactly like a pump correctly declining to overfill -- auto-dispatch is dead and reads as healthy restraint"
+    file: plugins/leadv2/scripts/leadv2-backlog-pump.sh
+    suite: plugins/leadv2/scripts/tests/test-backlog-pump.sh
+    anchor: |
+      "null" "backlog-pump reserves the lane before dispatch decides its write set"
+    patch: |
+      drop the 16th/17th positional fields from the register call inside
+      _pump_reserve_lane, restoring the shipped 15-field call
+    expected: killed
+    note: "restores the shipped state exactly: 23/0 -> 18/5, and the five failures are the five this suite carried before the fix. LEADV2_BACKLOG_PUMP defaults to 1, so this path was enabled"
+
+  - id: pump-reserve-failure-loses-its-reason
+    product_flow: "the pump journals lane_reserve_failed without the registry's own error, so a hard contract failure is indistinguishable from a soft capacity refusal"
+    file: plugins/leadv2/scripts/leadv2-backlog-pump.sh
+    suite: plugins/leadv2/scripts/tests/test-backlog-pump.sh
+    anchor: |
+      reason=lane_reserve_failed rc=${_rl_rc} detail=
+    patch: |
+      replace `rc=${_rl_rc} detail=` with `skip=` so the reason is dropped
+    expected: killed
+    note: "on its first run this control killed NOTHING -- the detail was present but untested, and an untested diagnostic is the first thing to rot. That is what had let the arity failure live as a capacity refusal for its whole life. A case was added (reserve_failure_names_its_cause, hermetic: the registry is pointed at a directory where a file belongs) and the control now kills it"

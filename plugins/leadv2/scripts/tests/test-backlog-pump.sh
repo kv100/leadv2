@@ -407,6 +407,58 @@ PYEOF
   fi
 }
 
+# ── a reserve failure must NAME its cause ──────────────────────────────────
+#
+# Written because a negative control found nothing. Dropping the `detail=`
+# field from the pump's pump_skip line killed no assertion, which means the
+# reason was present but untested -- and an untested diagnostic is the first
+# thing to rot. It matters here specifically: this suite spent its whole life
+# red because `reason=lane_reserve_failed` with no detail made a hard contract
+# failure (the registry gained a 16th positional field; this call site still
+# passed 15) look identical to a soft capacity refusal.
+#
+# Hermetic: the registry is pointed at a path that cannot be written, so the
+# reservation fails for a reason that has nothing to do with the host.
+test_reserve_failure_names_its_cause() {
+  local repo state
+  read -r repo state < <(_new_fixture)
+  _write_tasks "$repo" '- id: TR1
+  lane: action
+  status: pending
+  priority: high
+  title: reserve-failure candidate
+  created_at: "2026-01-01T00:00:00Z"
+'
+  local lj bin stub rcfile logfile jlog jbin qbin
+  lj="$(_mktmp)/lanes.json"; _gen_lanes_json 0 "$lj"; bin="$(_make_liveness_bin "$lj")"
+  read -r stub rcfile logfile < <(_make_dispatch_stub "$state")
+  jlog="$(_mktmp)/journal.log"; jbin="$(_make_journal_stub "$jlog")"
+  qbin="$(_make_quota_bin "$REAL_QUOTA_FIXTURE")"
+
+  # A directory where the registry expects a file: every write fails, and the
+  # failure is the registry's own, not the harness's.
+  local badstate; badstate="$(_mktmp)/badstate"
+  mkdir -p "${badstate}/docs/leadv2/active.yaml"
+
+  LEADV2_PROJECT_ROOT="$repo" PROJECT_ROOT="$repo" LEADV2_STATE_ROOT="${badstate}/docs/leadv2" \
+  CLAUDE_PROJECT_DIR="$repo" \
+  LEADV2_BACKLOG_PUMP=1 LEADV2_BACKLOG_PUMP_MAX=6 LEADV2_BACKLOG_PUMP_LIVENESS_CACHE_S=0 \
+  LEADV2_BACKLOG_PUMP_DISPATCH_BIN="$stub" LEADV2_BACKLOG_PUMP_QUOTA_BIN="$qbin" \
+  LEADV2_BACKLOG_PUMP_LIVENESS_BIN="$bin" LEADV2_JOURNAL_BIN="$jbin" LEADV2_JUDGE_DISABLE=1 \
+    bash "$PUMP_SH" check >/dev/null 2>&1
+
+  if ! grep -q 'lane_reserve_failed' "$jlog" 2>/dev/null; then
+    # No refusal at all is a different fact from a refusal without a reason,
+    # and it means this case is not exercising what it claims.
+    fail "reserve_failure_names_its_cause: no lane_reserve_failed was journalled at all (log=$(tr '\n' ' ' < "$jlog" | cut -c1-200))"
+  elif grep -qE 'lane_reserve_failed rc=[0-9]+ detail=[^ ]' "$jlog" 2>/dev/null \
+       && ! grep -q 'detail=none' "$jlog" 2>/dev/null; then
+    pass "reserve_failure_names_its_cause: the refusal carries rc and a non-empty detail"
+  else
+    fail "reserve_failure_names_its_cause: refused without naming the cause -- a hard failure is indistinguishable from a capacity refusal (log=$(grep lane_reserve_failed "$jlog" | head -1 | cut -c1-200))"
+  fi
+}
+
 # ── C-1 cases 10–13: floor / ceiling / dedupe / starved ─────────────────────
 
 test_ceiling_refuses_7th() {  # case 10
@@ -770,6 +822,7 @@ test_judgment_class_excluded
 test_empty_outcome_bounded
 test_auto_dispatch
 
+test_reserve_failure_names_its_cause
 log ""
 log "=== Results: ${PASS} passed, ${FAIL} failed ==="
 if [[ "$FAIL" -gt 0 ]]; then
