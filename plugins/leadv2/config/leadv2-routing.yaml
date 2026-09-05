@@ -30,15 +30,62 @@ router_v2:
   #   codex  work 90  · review 95
   #   claude work 95  · review 95   (weekly)
   #
-  # These are ceilings on the WEEKLY window. Today only glm has an enforcing
-  # reader (leadv2-glm-quota-gate.sh, default 80) and it does not distinguish
-  # review from ordinary work; codex and claude have no ceiling reader at all.
-  # Until that lands, these numbers are declared policy, NOT enforced behaviour —
-  # do not cite them as if the machine obeyed them.
+  # These are ceilings on the BINDING (worst-case) window of each provider.
+  #
+  # ARBITER-REMEMBERS-FAILURES-01 (2026-09-05): the paragraph that stood here said
+  # codex and claude had "no ceiling reader at all" and that these numbers were
+  # "declared policy, NOT enforced behaviour". That stopped being true when the
+  # route arbiter landed and it has been misleading readers since. All three rows
+  # ARE enforced, per role, by leadv2-route-arbiter.sh's over_ceiling(): it selects
+  # review_pct when role=reviewer and work_pct otherwise, for glm, codex AND claude
+  # alike, and an over-ceiling provider is dropped from the candidate set. Live
+  # proof: a claude probe at 96% (>= claude work_pct 95) produced an
+  # `arm=refuse reason=all_arms_capped` line. leadv2-glm-quota-gate.sh remains a
+  # SECOND, glm-only enforcement point that does not distinguish review from
+  # ordinary work; it is additional to the arbiter's, not a substitute for it.
+  #
+  # Two exemptions apply on top, both named on the decision line: a provider whose
+  # binding window resets within 10% of that window's own period is waited on
+  # rather than switched away from (wait_applied=), and a provider whose probe did
+  # not answer at all is NOT treated as capped -- it is demoted on cost and named
+  # by probe_outage=. `unknown` is not `100%`.
   quota_ceilings:
     glm:    { work_pct: 80, review_pct: 90 }
     codex:  { work_pct: 90, review_pct: 95 }
     claude: { work_pct: 95, review_pct: 95 }
+
+  # ARBITER-REMEMBERS-FAILURES-01 (founder 2026-09-05): an arm that already came
+  # up and died without producing work on THIS task drops out of the candidate set
+  # for THIS task. Not a global ban -- the key is the mission-content signature
+  # (sig8), the same key the duplicate_task_signature guard uses, so the memory
+  # follows the task and nothing else.
+  #
+  # `threshold` is how many attributed failures retire an arm for that signature.
+  # 2 is the founder's rule ("failed twice -> next in the chain"); 1 would retire
+  # an arm on a single flake, and the arbiter cannot tell a flake from a pattern.
+  #
+  # `arm_failure_causes` is an ALLOW-list of `<terminal>:<cause>` pairs from
+  # dispatch-ledger.jsonl, and the allow-list direction is the load-bearing part:
+  # an unrecognized cause is never counted, so a new terminal shape can never
+  # silently start banning healthy arms. Absent or empty, the script's own default
+  # list applies -- a config drift must not be able to disable the memory quietly.
+  # Deliberately NOT here: every refused:* cause (writeset_pending / _overlap /
+  # _conflict, duplicate_task_signature, all_arms_capped, plan_source_absent,
+  # undiffable_write_set, unscoped_lane_work) -- those are refusals BEFORE the
+  # spawn, the lane's or the gate's shape, never the arm's fault; and the quality
+  # rejections (e2e_regression, review_verdict_fail, review_dod_fail) -- there the
+  # arm DID produce work and it was judged bad, which is a different question.
+  failure_memory:
+    threshold: 2
+    arm_failure_causes:
+      - no_work:arm_produced_nothing
+      - no_work:empty_diff
+      - dead:crashed_unfinished
+      - dead:timeout
+      - dead:empty_response
+      - dead:worker_died_with_session
+      - dead:no_verdict_marker
+      - dead:review_body_lost
 
   # T17 route arbiter capability matrix. This is data, not a second ladder.
   # `cost` is a relative unit used only among capable, uncapped arms.

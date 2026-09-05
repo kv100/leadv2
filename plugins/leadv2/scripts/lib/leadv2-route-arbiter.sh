@@ -60,6 +60,8 @@ route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   ROUTE_ARBITER_QUOTA="$quota_json" ROUTE_ARBITER_FREEPOOL_RC="$free_rc" \
   ROUTE_ARBITER_FREEPOOL_REASON="${free_reason}" \
   ROUTE_ARBITER_STATE_FILE="${LEADV2_ROUTE_ARBITER_STATE_FILE:-${TMPDIR:-/tmp}/leadv2-route-arbiter-last-arm}" \
+  ROUTE_ARBITER_FAILURE_LEDGER="${LEADV2_ROUTE_ARBITER_FAILURE_LEDGER:-${HOME}/.claude/leadv2-state/leadv2/dispatch-ledger.jsonl}" \
+  ROUTE_ARBITER_EVENTS_JOURNAL="${LEADV2_ROUTE_ARBITER_EVENTS_JOURNAL:-${HOME}/.claude/cache/leadv2-events/leadv2.jsonl}" \
   python3 - "$routing" <<'PY'
 import json, os, sys, tempfile
 try:
@@ -299,6 +301,22 @@ def over_ceiling(provider):
 # still switches, exactly today's behaviour.
 _waited=[p for p in ('glm','codex','claude') if over_ceiling(p) and near_reset_wait(p)]
 def capped(provider):
+    # ARBITER-REMEMBERS-FAILURES-01 edit B (founder 2026-09-05): `unknown` is a
+    # THIRD state, never a synonym for "busy". util() already returns pct=100.0
+    # WITH unknown=True when a provider's probe did not answer (the status!='ok'
+    # line and the claude branch's no-ok-account fall-through), and `unk` has
+    # carried that flag ever since -- but it entered the SELECTION nowhere, so a
+    # broken measurer rendered identically to an exhausted quota. Measured
+    # 2026-09-04/05: util_codex=unknown_capped in 122 of 143 decisions, codex out
+    # for a day, and six lanes killed by `reason=all_arms_capped` when what
+    # actually failed was the instrument. An unknown arm is therefore NOT capped
+    # -- it stays in the candidate set and is instead DEMOTED on effective cost
+    # (UNKNOWN_PROBE_PENALTY below), so it ranks strictly after every arm whose
+    # headroom we actually measured and is picked only when the alternative is
+    # refusing the work outright. Rejected alternatives: "skip it" is today's bug
+    # verbatim; "take it as free" would spend a genuinely burnt provider on the
+    # strength of a failed reading.
+    if unk.get(provider): return False
     if over_ceiling(provider) and near_reset_wait(provider):
         return False
     return over_ceiling(provider)
@@ -316,6 +334,128 @@ cells=((data.get('router_v2') or {}).get('capability_matrix') or [])
 complexity=str(d.get('complexity','unknown')).lower()
 duration_class=str(d.get('duration_class','unknown')).lower()
 capable=[c for c in cells if mkind in c.get('kinds',[]) and size in c.get('sizes',[]) and (not require_trusted or c.get('protected',False)) and (allowed is None or c.get('arm') in allowed)]
+# ARBITER-REMEMBERS-FAILURES-01 edit A (founder 2026-09-05) -- the arbiter must
+# remember which arms already failed THIS task.
+#
+# What was wrong: selection was `reason=cheapest_capable` and nothing else. The
+# arbiter kept no record of outcomes, so an arm that had already come up and died
+# without writing a line was named again on the next request, at the same cost, by
+# construction. Live 2026-09-04/05: GUARDS-SELF-DISABLE-ON-THE-EMPTY-WRITE-SET-01
+# went to glm twice with nothing to show and the third resolve said glm again. The
+# "glm failed twice -> sonnet" rule existed in prose and in no code path.
+#
+# What counts as a failure -- the distinction the whole edit turns on. A failure
+# is: THE SPAWN HAPPENED AND NO WORK CAME BACK. A refusal BEFORE the spawn is not
+# the arm's fault and must never ban it -- writeset_pending/overlap/conflict (the
+# registry window), duplicate_task_signature, all_arms_capped, plan_source_absent,
+# undiffable_write_set, unscoped_lane_work: each of those is the lane's or the
+# gate's shape, and banning a healthy arm for them is how an arm is lost to
+# someone else's breakage. Quality rejections (e2e_regression, review_verdict_fail,
+# review_dod_fail) are excluded for the opposite reason: work DID come back and was
+# judged bad -- a different question from "this arm cannot produce here". The list
+# is therefore an ALLOW-list: an unrecognized cause is never counted as a failure.
+#
+# Where the counter lives: no sixth store. Two journals that already exist carry
+# between them exactly what is needed, and neither carries it alone --
+#   ~/.claude/leadv2-state/leadv2/dispatch-ledger.jsonl : task_sig + terminal +
+#     cause + ts, but NO arm;
+#   ~/.claude/cache/leadv2-events/leadv2.jsonl : worker_spawned rows with arm +
+#     task + ts (and arm_refused rows, which name the arm directly).
+# So a ledger failure at time T for signature S is attributed to the arm of the
+# LAST worker_spawned for S at or before T. Measured over the live journals on
+# 2026-09-05: 113 ledger failures attribute to an arm, and 12 task signatures show
+# one arm failing twice or more (a605eb2a gave codex FOUR turns). 71 older failures
+# have no surviving spawn row -- the events file is a rotating cache -- and those
+# simply do not count, which is the conservative direction.
+#
+# Key: `d['task']`, which leadv2-dispatch-code.sh already fills with sig8 (the
+# mission-content signature, dispatch-code line ~8038) -- the SAME key the
+# duplicate_task_signature guard uses. No new field, no caller change. The three
+# fallback descriptors (bench-fallback, exit76, advisory) and the reviewer
+# descriptor do not carry it; those journal failure_memory=absent_key and route
+# exactly as before rather than pretending the memory answered zero.
+#
+# An unreadable journal is NOT zero failures. If either journal cannot be read the
+# status is `unavailable`: nothing is banned (banning on no evidence is its own
+# failure mode) but the decision line SAYS SO, so a lead reading the journal can
+# tell "this arm has a clean record here" from "we could not look".
+FAILURE_BAN_THRESHOLD_DEFAULT=2
+ARM_FAILURE_CAUSES_DEFAULT={
+    'no_work:arm_produced_nothing','no_work:empty_diff','dead:crashed_unfinished',
+    'dead:timeout','dead:empty_response','dead:worker_died_with_session',
+    'dead:no_verdict_marker','dead:review_body_lost'}
+_fm_cfg=((data.get('router_v2') or {}).get('failure_memory') or {})
+if not isinstance(_fm_cfg, dict): _fm_cfg={}
+try: fm_threshold=int(_fm_cfg.get('threshold', FAILURE_BAN_THRESHOLD_DEFAULT))
+except (TypeError, ValueError): fm_threshold=FAILURE_BAN_THRESHOLD_DEFAULT
+if fm_threshold < 1: fm_threshold=FAILURE_BAN_THRESHOLD_DEFAULT
+_cfg_causes=_fm_cfg.get('arm_failure_causes')
+arm_failure_causes=({str(x).strip() for x in _cfg_causes if str(x).strip()}
+                    if isinstance(_cfg_causes, list) and _cfg_causes
+                    else set(ARM_FAILURE_CAUSES_DEFAULT))
+task_sig=str(d.get('task') or '').strip()
+def read_failure_memory(sig):
+    # -> (counts_by_arm, status). status is one of:
+    #   absent_key  -- this caller passed no task signature; nothing to look up
+    #   unavailable -- a journal could not be read; UNKNOWN, never "zero"
+    #   no_history  -- journals read fine, this signature has no failures
+    #   ok          -- journals read fine and this signature has failures
+    if not sig: return {}, 'absent_key'
+    evt=os.environ.get('ROUTE_ARBITER_EVENTS_JOURNAL') or ''
+    led=os.environ.get('ROUTE_ARBITER_FAILURE_LEDGER') or ''
+    spawns=[]; counts={}; evt_ok=False; led_ok=False
+    try:
+        with open(evt) as _f:
+            for _l in _f:
+                try: r=json.loads(_l)
+                except Exception: continue
+                if str(r.get('task') or '')!=sig: continue
+                a=str(r.get('arm') or '')
+                if not a: continue
+                k=r.get('kind')
+                if k=='worker_spawned': spawns.append((str(r.get('ts') or ''), a))
+                elif k=='arm_refused': counts[a]=counts.get(a,0)+1
+        evt_ok=True
+    except Exception:
+        evt_ok=False
+    spawns.sort()
+    try:
+        with open(led) as _f:
+            for _l in _f:
+                try: r=json.loads(_l)
+                except Exception: continue
+                if str(r.get('task_sig') or '')!=sig: continue
+                if ('%s:%s' % (r.get('terminal'), r.get('cause'))) not in arm_failure_causes: continue
+                ts=str(r.get('ts') or ''); arm=None
+                for _sts,_a in spawns:
+                    if _sts<=ts: arm=_a
+                if arm: counts[arm]=counts.get(arm,0)+1
+        led_ok=True
+    except Exception:
+        led_ok=False
+    if not (evt_ok and led_ok): return {}, 'unavailable'
+    return counts, ('ok' if counts else 'no_history')
+failure_counts, failure_memory = read_failure_memory(task_sig)
+failure_banned={a:n for a,n in failure_counts.items() if n>=fm_threshold}
+failure_dropped=[]
+if failure_banned:
+    _kept=[c for c in capable if c.get('arm') not in failure_banned]
+    if _kept:
+        failure_dropped=sorted({c.get('arm') for c in capable if c.get('arm') in failure_banned})
+        capable=_kept
+    else:
+        # Every capable cell is a repeat offender. Refusing here would turn a
+        # memory into a deadlock, so the ban yields -- and says that it yielded.
+        failure_memory='exhausted'
+_fm_tok=' failure_memory=%s' % failure_memory
+if failure_dropped:
+    _fm_tok += ' failure_banned=%s' % ','.join('%s:%d' % (a, failure_banned[a]) for a in failure_dropped)
+elif failure_memory=='exhausted':
+    _fm_tok += ' failure_banned=none_left:%s' % ','.join('%s:%d' % (a,n) for a,n in sorted(failure_banned.items()))
+# Edit B's outage token: a broken INSTRUMENT is named separately from a burnt
+# quota, so `all_arms_capped` can never again absorb a probe failure silently.
+_probe_outage=[p for p in ('glm','codex','claude','freepool') if unk.get(p)]
+_outage=(' probe_outage=%s' % ','.join(_probe_outage)) if _probe_outage else ''
 # ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01: the decision journal is the
 # enforcement-side record. The spawn gate (PreToolUse Agent) distinguishes
 # "consulted, decision=X" from "no decision" by the PRESENCE of a fresh,
@@ -335,18 +475,21 @@ def _record(arm, model, tier, reason):
         _rec={'ts':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'ts_epoch':int(time.time()),
               'role':role,'work_kind':kind,'subtype':str(d.get('subtype','')),
               'model_requested':str(d.get('model_requested','')),'arm':arm,'model':model,
-              'tier':tier,'reason':reason,'task':str(d.get('task',''))[:200]}
+              'tier':tier,'reason':reason,'task':str(d.get('task',''))[:200],
+              'failure_memory':failure_memory,
+              'failure_banned':{a:failure_banned[a] for a in failure_dropped},
+              'probe_outage':list(_probe_outage)}
         with open(_jf_path,'a') as _jf: _jf.write(json.dumps(_rec)+'\n')
     except Exception:
         pass
 if not capable:
     _record('refuse','none','none','no_capable_cell')
-    print('arm=refuse model=none tier=none reason=no_capable_cell kind=%s chain= %s' % (kind,ufmt()))
+    print('arm=refuse model=none tier=none reason=no_capable_cell kind=%s chain= %s%s%s' % (kind,ufmt(),_outage,_fm_tok))
     raise SystemExit(68)
 ok=[c for c in capable if not capped(c.get('provider'))]
 if not ok:
     _record('refuse','none','none','all_arms_capped')
-    print('arm=refuse model=none tier=none reason=all_arms_capped kind=%s chain= %s' % (kind,ufmt()))
+    print('arm=refuse model=none tier=none reason=all_arms_capped kind=%s chain= %s%s%s' % (kind,ufmt(),_outage,_fm_tok))
     raise SystemExit(3)
 # FP-08 fix-round (H1): demote freepool in the dimension the selector ACTUALLY
 # ranks by -- effective cost, the sort's dominant key. +100 clears the whole
@@ -385,8 +528,16 @@ def complexity_penalty(c):
         except (TypeError, ValueError):
             continue
     return total
+# ARBITER-REMEMBERS-FAILURES-01 edit B: the demotion for an unmeasured arm rides
+# on effective cost -- the sort's dominant key -- exactly like the freepool floor
+# above, because that is the only dimension the selector actually ranks by. 50
+# clears the whole real cost range (max real cost: opus 9), so ANY arm with a live
+# reading outranks ANY arm whose probe failed; and it stays below the freepool
+# capability floor (+100), so an unmeasured arm loses to nothing except a
+# deliberately floored one.
+UNKNOWN_PROBE_PENALTY=50.0
 def ecost(c):
-    return float(c.get('cost',999)) + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + complexity_penalty(c)
+    return float(c.get('cost',999)) + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + (UNKNOWN_PROBE_PENALTY if unk.get(c.get('provider')) else 0.0) + complexity_penalty(c)
 complexity_penalty_active = any(complexity_penalty(c) > 0 for c in ok)
 ok.sort(key=lambda c:(ecost(c),u[c['provider']],c['arm'],c.get('tier','')))
 seen=set(); chain=[]
@@ -513,7 +664,7 @@ _record(w['arm'],w['model'],w.get('tier','standard'),reason)
 # UNION 2026-09-04 (RECOVER-TWELVE-CONFLICTED-BRANCHES-01), third union of this
 # print line: HEAD contributed kind=/_quota/_wait/_gate/_record, the branch
 # contributed the variable reason (complexity_penalty) and complexity_policy=.
-print('arm=%s kind=%s model=%s tier=%s effort=%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate))
+print('arm=%s kind=%s model=%s tier=%s effort=%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok))
 PY
 }
 

@@ -26,7 +26,7 @@ chmod +x "$TMP/live.sh" "$TMP/free.sh"
 quota(){ python3 - "$1" "$2" "$3" <<'PY'
 import json,sys
 g,c,a=map(int,sys.argv[1:])
-print(json.dumps({'glm':{'status':'ok','five_hour':{'pct':g},'weekly':{'pct':g}},'codex':{'status':'ok','binding_window':'primary','windows':[{'kind':'primary','used_percent':c}]},'anthropic':{'status':'ok','accounts':[{'active':True,'five_hour_pct':a,'seven_day_pct':a}]}}))
+print(json.dumps({'glm':{'status':'ok','five_hour':{'pct':g},'weekly':{'pct':g}},'codex':{'status':'ok','binding_window':'primary','windows':[{'kind':'primary','used_percent':c}]},'anthropic':{'status':'ok','accounts':[{'active':True,'status':'ok','five_hour_pct':a,'seven_day_pct':a}]}}))
 PY
 }
 run(){ LEADV2_ROUTE_ARBITER_ROUTING_YAML="$ROUTING" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state" ROUTE_TEST_QUOTA="$1" ROUTE_TEST_FREE_RC="${2:-0}" bash -c 'source "$0"; route_arbiter worker "$1"' "$ARBITER" "$3"; }
@@ -38,8 +38,13 @@ out="$(run "$(quota 10 99 20)" 1 '{"kind":"code","size":"standard"}')"
 if [[ "$out" == *'arm=glm '* || "$out" == *'arm=glm-flash '* || "$out" == *'arm=sonnet '* ]]; then pass 'codex 99% routes to a capable non-codex arm'; else fail "codex 99% output=$out"; fi
 
 # (b) all windows capped (and freepool health down) gives the honest refusal.
+# ARBITER-REMEMBERS-FAILURES-01 edit B: this case is only meaningful when all
+# three arms are genuinely MEASURED and over ceiling. It used to pass with an
+# unmeasured claude (see the quota() note above), which made it indistinguishable
+# from the probe-outage case now covered by test-route-arbiter-failure-memory.sh
+# case (b2) -- there the same refusal is the bug, not the invariant.
 out="$(run "$(quota 99 99 99)" 1 '{"kind":"code","size":"standard"}' || true)"
-if [[ "$out" == *'arm=refuse '* && "$out" == *'reason=all_arms_capped'* ]]; then pass 'all capped refuses all_arms_capped'; else fail "all capped output=$out"; fi
+if [[ "$out" == *'arm=refuse '* && "$out" == *'reason=all_arms_capped'* && "$out" != *'probe_outage='* ]]; then pass 'all capped (all three MEASURED) refuses all_arms_capped'; else fail "all capped output=$out"; fi
 
 # (c) protected tasks cannot enter an UNTRUSTED arm. Which arms are untrusted is
 #     policy, and the policy changed: GLM-DOES-ANY-WORK-01 (founder, 2026-09-04)
