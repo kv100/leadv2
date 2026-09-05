@@ -261,6 +261,60 @@ case_owned_compare_delete() {
   else bad 'owned compare-delete fixture'; fi
 }
 
+# ── R5 T1: _architect_failure_class matrix (PREPASS-PROVIDER-FALLBACK-01-R5 H4) ─
+# Union with the recovered R5 branch suite: the R9 subprocess cases above ASSUME
+# a failure class and exercise the fallback around it; this block pins the
+# CLASSIFIER itself -- auth/rate/quota/opaque matrix, auth-over-quota
+# precedence, and the architect.stream.jsonl evidence path (the live 17309830
+# shape: stdout said failed_rc_1 while authentication_failed sat on disk).
+# Technique is R5's (source the REAL truncated dispatcher, never a
+# hand-reimplemented copy), but from make_fixture's copy -- the R5 suite wrote
+# its truncation into the live scripts/ tree, which is where four stranded
+# .test-dispatch-ppf-r5-funcs.*.sh dumps came from.
+case_failure_class_matrix() {
+  local d="${ROOT}/failcls" repo _c1 _c2 _c3 _c4 _c5 _c6 _c7
+  repo="$(make_fixture "${d}")"
+  cd "${d}"   # non-git scratch: the env-root guard must not see a foreign git cwd
+  export LEADV2_BURN_GOVERNOR=0   # BURN-GOVERNOR-01: never read the host burn db
+  set +e   # SILENT-DEATH-01: the sourced dispatcher re-enables -e
+  CLAUDE_PROJECT_ROOT="${repo}" LEADV2_PROJECT_ROOT="${repo}" \
+  LEADV2_DISPATCH_CACHE_DIR="${d}/cache" \
+    source "${d}/scripts/dispatch-lib.sh"
+  # the sourced file armed its own EXIT trap -- chain our cleanup after it
+  trap 'cleanup_pending_dispatch; cleanup' EXIT
+  mkdir -p "${d}/t1/adir"
+  cls() { _architect_failure_class "$1" "$2" "$3"; }
+  _c1="$(cls "${d}/t1/adir" 'x' 1)"
+  [[ "${_c1}" == "failed_rc_1" ]] \
+    && ok "H4: empty evidence -> opaque failed_rc_1" \
+    || bad "H4: empty evidence -> '${_c1}'"
+  printf '%s\n' '{"error":"authentication_failed","is_api_error_message":true}' > "${d}/t1/adir/architect.stream.jsonl"
+  _c2="$(cls "${d}/t1/adir" '' 1)"
+  [[ "${_c2}" == "authentication_failed"$'\t'* ]] \
+    && ok "H4: stream.jsonl error=authentication_failed -> authentication_failed (live 17309830 shape)" \
+    || bad "H4: auth stream class -> '${_c2}'"
+  _c3="$(cls "${d}/t1/empty2" 'Failed to authenticate: OAuth session expired and could not be refreshed' 1)"
+  [[ "${_c3}" == "authentication_failed"$'\t'* ]] \
+    && ok "H4: captured stdout OAuth-expired text -> authentication_failed" \
+    || bad "H4: auth stdout class -> '${_c3}'"
+  _c4="$(cls "${d}/t1/empty2" 'HTTP 429: too many requests, rate limit hit' 1)"
+  [[ "${_c4}" == "rate_limited"$'\t'* ]] \
+    && ok "H4: 429/too-many-requests -> rate_limited" \
+    || bad "H4: rate class -> '${_c4}'"
+  _c5="$(cls "${d}/t1/empty2" "You've hit your usage limit for today" 1)"
+  [[ "${_c5}" == "quota_exceeded"$'\t'* ]] \
+    && ok "H4: usage-limit text -> quota_exceeded" \
+    || bad "H4: quota class -> '${_c5}'"
+  _c6="$(cls "${d}/t1/empty2" 'HTTP 401 unauthorized AND usage limit reached' 1)"
+  [[ "${_c6}" == "authentication_failed"$'\t'* ]] \
+    && ok "H4: auth outranks quota when both match" \
+    || bad "H4: precedence -> '${_c6}'"
+  _c7="$(cls "${d}/t1/empty2" 'core dumped' 7)"
+  [[ "${_c7}" == "failed_rc_7" ]] \
+    && ok "H4: unmatched text -> opaque failed_rc_<rc>" \
+    || bad "H4: opaque -> '${_c7}'"
+}
+
 case_success_codex
 case_success_glm
 case_nonzero_cleanup
@@ -272,5 +326,6 @@ case_signal_window_registry_survives glm
 case_foreign_owner_refusal
 case_worker_owner_refusal
 case_owned_compare_delete
+case_failure_class_matrix
 printf '\n[SUITE] %s: %d passed, %d failed\n' "$([[ ${FAIL} -eq 0 ]] && printf PASS || printf FAIL)" "${PASS}" "${FAIL}"
 exit "${FAIL}"
