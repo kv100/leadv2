@@ -5,7 +5,7 @@ The gate does not merely stay quiet about what it could not check — **it asser
 the opposite.**
 
 All work was done in a pinned scratch tree at `27f3bd83`, never in the live
-checkout: wave B1's merge is still open there and `leadv2-review-run.sh` is one
+checkout: wave B1's merge was open there for the whole lane and `leadv2-review-run.sh` is one
 of the files it touches.
 
 ---
