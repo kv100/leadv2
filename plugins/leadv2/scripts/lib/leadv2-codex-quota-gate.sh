@@ -6,6 +6,23 @@
 # On refusal, prints the LEADV2_DISPATCH_REFUSED marker to stderr and returns 2
 # (the existing router contract — callers map rc 2 → next candidate).
 #
+# CODEX-REFUSAL-MARKER-CARRIES-ITS-CAUSE-01: the marker carries its cause so
+# the dispatcher never ledgers a non-quota refusal as a quota lockout:
+#   quota_gate          — a genuine usage-limit refusal (live threshold over
+#                         ceiling, or a cooldown whose recorded reason is
+#                         quota-shaped: the provider itself refused)
+#   transport_cooldown  — a cooldown whose recorded reason is a dead runtime
+#                         (worker_died / queued_stall / transport_gone…): our
+#                         side broke, the provider's quota did not
+#   quota_circuit_open  — the circuit breaker is open (usage-limit origin,
+#                         with its own until; the lockout must inherit it)
+#   circuit_unknown     — circuit marker present but unparseable (control
+#                         plane unreachable ⇒ fail-closed, no expiry known)
+#   gate_broken         — the gate's own dependency is missing/non-executable
+# All tokens match the router's single-word extraction grammar
+# ([A-Za-z0-9._-]+), and `quota_gate` keeps its meaning for every existing
+# reader that greps it.
+#
 # Sourced by:
 #   - leadv2-codex-session-runner.sh (before every `codex exec`)
 #   - codex-task.sh (transitively — the circuit lib is sourced separately and
@@ -32,13 +49,21 @@ codex_spawn_gate() {
 
   # check 1 — bounded cooldown memory. Once reprobe_at passes, the next
   # dispatch launches and provider evidence is authoritative again.
-  local _cooldown _cooldown_until
+  local _cooldown _cooldown_until _cooldown_reason _refusal_cause
   _cooldown="$(arm_cooldown_state codex 2>/dev/null || true)"
   case "$_cooldown" in
     cooling\ *)
       _cooldown_until="${_cooldown#cooling }"; _cooldown_until="${_cooldown_until%% *}"
+      # The cooling verdict's 3rd field is the RECORDED reason (frozen grammar:
+      # `cooling <reprobe_iso> <reason>`). It says who broke: the provider
+      # (quota*) or our runtime (everything else).
+      _cooldown_reason="${_cooldown##* }"
+      case "$_cooldown_reason" in
+        quota*) _refusal_cause="quota_gate" ;;
+        *)      _refusal_cause="transport_cooldown" ;;
+      esac
       printf '[codex-task] CODEX_REFUSED_QUOTA reason=cooldown used=na threshold=na until=%s\n' "$_cooldown_until" >&2
-      printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
+      printf 'LEADV2_DISPATCH_REFUSED: %s\n' "$_refusal_cause" >&2
       return 2
       ;;
   esac
@@ -54,12 +79,16 @@ codex_spawn_gate() {
     open\ *)
       local _c_until="${_circuit#open }"; _c_until="${_c_until%% *}"
       printf '[codex-task] CODEX_REFUSED_QUOTA reason=circuit used=na threshold=na until=%s\n' "$_c_until" >&2
-      printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
+      # Quota-origin (opened by a usage-limit refusal) but the circuit breaker
+      # owns the expiry — the lockout side must inherit `until`, never re-default.
+      printf 'LEADV2_DISPATCH_REFUSED: quota_circuit_open\n' >&2
       return 2
       ;;
     unknown)
       printf '[codex-task] CODEX_REFUSED_QUOTA reason=circuit-unknown (control-plane unreachable) used=na threshold=na until=na\n' >&2
-      printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
+      # No expiry is knowable here — inventing one (a default-duration quota
+      # lockout) is exactly the defect this marker vocabulary exists to stop.
+      printf 'LEADV2_DISPATCH_REFUSED: circuit_unknown\n' >&2
       return 2
       ;;
   esac
@@ -78,19 +107,20 @@ codex_spawn_gate() {
   local _provider_gate="$(cd "${_CODEX_QG_DIR}/.." && pwd)/leadv2-provider-quota-gate.sh"
   if [[ ! -x "$_provider_gate" ]]; then
     printf '[codex-task] CODEX_REFUSED_QUOTA reason=gate_broken dependency=%s\n' "$_provider_gate" >&2
-    printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
+    printf 'LEADV2_DISPATCH_REFUSED: gate_broken\n' >&2
     return 2
   fi
   "$_provider_gate" codex "$_purpose"
   _gate_rc=$?
   if [[ "$_gate_rc" -eq 1 ]]; then
     printf '[codex-task] CODEX_REFUSED_QUOTA reason=threshold used=live threshold=ceiling until=na\n' >&2
+    # The ONE unambiguous quota refusal: the live ceiling check said no.
     printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
     return 2
   fi
   if [[ "$_gate_rc" -ne 0 && "$_gate_rc" -ne 1 ]]; then
     printf '[codex-task] CODEX_REFUSED_QUOTA reason=gate_broken dependency=%s rc=%s\n' "$_provider_gate" "$_gate_rc" >&2
-    printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
+    printf 'LEADV2_DISPATCH_REFUSED: gate_broken\n' >&2
     return 2
   fi
 
