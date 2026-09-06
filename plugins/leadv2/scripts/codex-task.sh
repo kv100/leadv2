@@ -54,6 +54,47 @@ if [[ -z "$COMPANION" ]]; then
   exit 1
 fi
 
+# ── CODEX-TRANSPORT-DIES-ROOT-CAUSE-01 — the broker's socket must outlive our session ──
+# The codex broker creates its session directory, and the unix socket inside it, in
+# os.tmpdir() (openai-codex broker-lifecycle.mjs createBrokerSessionDir). Whatever TMPDIR
+# this wrapper inherits is what the broker gets. Measured 2026-09-06 over the 360 retained
+# broker records: 14 point into /tmp/claude-503/cxc-*, which is a Claude Code SESSION
+# scratch directory -- it is destroyed with its session, taking a live broker's socket
+# with it while the broker record survives. A record cannot survive an ordinary teardown
+# (clearBrokerSession runs immediately after teardownBrokerSession), so a surviving record
+# beside a missing directory is the fingerprint of exactly that external removal, and it is
+# what `transport_gone_app_server_absent` looks like from the job's side.
+#
+# So: pin the broker's temp root to a directory that belongs to the codex plugin's own
+# data, not to whichever session happened to spawn the job.
+#
+# BEFORE-BASELINE for judging this change (same report, §1): among failed codex jobs the
+# share with a sibling completing inside their window was transport_gone 5/73 = 6.8%,
+# other named failures 12/212 = 5.7%, unnamed 2/75 = 2.7%. transport_gone was 73 of 360
+# failures. Re-measure the same counters in a day: if the transport share does not fall,
+# this hypothesis is refuted and this pin should be reverted.
+#
+# ROLLBACK, one line: delete the `export TMPDIR=...` below (or set
+# LEADV2_CODEX_DURABLE_TMPDIR=0), and codex goes back to inheriting the session's TMPDIR.
+#
+# FAIL-OPEN BY CONSTRUCTION: if the durable directory cannot be made or is not writable,
+# TMPDIR is left exactly as inherited. A TMPDIR pointing at something unusable would break
+# mkdtemp and take down every codex job -- a fix that bricks the thing it protects is worse
+# than the fault.
+_codex_durable_tmpdir() { # -> always 0
+  [[ "${LEADV2_CODEX_DURABLE_TMPDIR:-1}" == "0" ]] && return 0
+  local d="${LEADV2_CODEX_TMPDIR:-${HOME}/.claude/plugins/data/codex-openai-codex/tmp}"
+  mkdir -p "${d}" 2>/dev/null || return 0
+  [[ -d "${d}" && -w "${d}" ]] || return 0
+  # Nothing reaps a durable temp root, so bound it -- but only our own broker dirs, and
+  # only ones far older than any live broker. A 7-day-old cxc-* is not a running job; a
+  # tighter window here would re-create the very bug being fixed.
+  find "${d}" -maxdepth 1 -type d -name 'cxc-*' -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+  export TMPDIR="${d}"
+  return 0
+}
+_codex_durable_tmpdir
+
 # ── T-f (CODEX-REAP-01) -- hung jobs die without a babysitter ──────────────
 # Known hole (tf-diagnosis.md): the zombie reaper (codex-guard.sh TF-02) only
 # runs inside an active guard poll. A job stuck `queued` with a dead pid, or
