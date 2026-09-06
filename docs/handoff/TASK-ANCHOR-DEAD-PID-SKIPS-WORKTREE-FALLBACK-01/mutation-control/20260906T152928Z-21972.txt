@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-task-anchor-dead-pid-worktree-fallback.sh
+file=plugins/leadv2/hooks/leadv2-task-anchor.sh
+anchor=790s/pass/continue/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: C1: expected ACTIVE TASK: ANCHOR-C1-DEAD-PID in output, got: 
+diff_hash=80590979ffba37d29d6ba101f45e01a0669b126d7f8224eb86c4bfa48a71399b
+lane_diff_hash=d27c2ece602041c11a01077c979f5dfcf565776a6124de036127c3c3192ad0f0
