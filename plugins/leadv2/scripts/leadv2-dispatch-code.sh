@@ -2982,23 +2982,27 @@ _maybe_record_quota_lockout() {  # <arm> <refusal_reason> [<raw_text>]
   local _prov _iso_src _iso _source _strikes _until_iso _clamped
   _prov="$(_arm_provider "${1}")"
   _strikes=$(( $(_lockout_prior_strikes "${_prov}") + 1 ))
-  _iso_src="$(_quota_return_time "${3:-}")"
-  _iso="${_iso_src%%|*}"
-  _source="${_iso_src##*|}"
-  if [[ -z "${_iso}" ]]; then
-    # Inherit the cause's stated `until=<ISO>` (cooldown reprobe_at, circuit
-    # until) -- same ISO grammar the gate prints, clamped by the existing
-    # launcher_refusal policy cap; unparseable input yields nothing and the
-    # flat default below keeps the pre-existing behavior.
-    _until_iso="$(printf '%s' "${3:-}" | sed -nE 's/.* until=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z).*/\1/p' | head -1)"
-    if [[ -n "${_until_iso}" ]]; then
-      _clamped="$(_lockout_iso_clamped "${_until_iso}" "$(_lockout_class_cap provider_refusal launcher_refusal)")"
-      if [[ -n "${_clamped}" ]]; then
-        _iso="${_clamped}"
-        _source="cause_stated_until"
-        [[ "${_clamped}" != "${_until_iso}" ]] && _source="cause_stated_until_clamped"
-      fi
+  # CODEX-REFUSAL-MARKER-CARRIES-ITS-CAUSE-01: the CAUSE's own stated expiry
+  # wins FIRST — the gate prints `CODEX_REFUSED_QUOTA ... until=<ISO>` for
+  # cooldown/circuit refusals, and a lockout must end exactly there, never at
+  # a parser guess or the flat default. Only when the raw text states no cause
+  # expiry do we fall back to the provider-stated reset time (_quota_return_time,
+  # real provider refusal texts carry "try again at ...", never ` until=`),
+  # then to the flat default — so non-codex arms are byte-identical to before.
+  _until_iso="$(printf '%s' "${3:-}" | sed -nE 's/.* until=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z).*/\1/p' | head -1)"
+  _iso=""; _source=""
+  if [[ -n "${_until_iso}" ]]; then
+    _clamped="$(_lockout_iso_clamped "${_until_iso}" "$(_lockout_class_cap provider_refusal launcher_refusal)")"
+    if [[ -n "${_clamped}" ]]; then
+      _iso="${_clamped}"
+      _source="cause_stated_until"
+      [[ "${_clamped}" != "${_until_iso}" ]] && _source="cause_stated_until_clamped"
     fi
+  fi
+  if [[ -z "${_iso}" ]]; then
+    _iso_src="$(_quota_return_time "${3:-}")"
+    _iso="${_iso_src%%|*}"
+    _source="${_iso_src##*|}"
   fi
   if [[ -z "${_iso}" ]]; then
     _iso="$(_default_quota_lockout_iso)"
