@@ -103,15 +103,28 @@ def ancestry():
     while pid > 1 and pid not in result:
         result.add(pid); pid=ppid(pid)
     return result
-def alive(row):
-    try: pid=int(row.get('pid'))
-    except (TypeError, ValueError): return False
-    if pid <= 1: return False
+def proc_verdict(pid, recorded_birth):
+    # LANE-ALIVE-PREDICATE-CALLS-A-LIVE-LANE-DEAD-01: three-valued liveness.
+    # kill(pid,0) has THREE answers (rc=0 alive; ESRCH dead; EPERM = process
+    # EXISTS under another owner = alive), and a birth value that is empty or
+    # unobservable on EITHER side is incomparability, not death. 'unknown'
+    # never kills and never restarts: every consumer below treats it as live
+    # for kill/restart decisions -- the contract leadv2-orphan-reaper.sh's
+    # _owner_death_state already carries (16efd6fa).
+    if pid <= 1: return 'dead'
     try: os.kill(pid, 0)
-    except OSError: return False
-    recorded=' '.join(str(row.get('pid_start_time') or row.get('pid_birth') or '').split())
+    except ProcessLookupError: return 'dead'   # ESRCH -- the only proof of death
+    except PermissionError: pass               # EPERM -- process exists, other owner
+    except OSError: return 'unknown'           # unclassifiable -- do not kill on it
+    recorded=' '.join(str(recorded_birth or '').split())
     observed=birth(pid)
-    return bool(recorded and observed and recorded == observed)
+    if not recorded or not observed: return 'unknown'  # incomparable, never a kill
+    return 'live' if recorded == observed else 'dead'  # mismatch = pid reuse
+def verdict(row):
+    try: pid=int(row.get('pid'))
+    except (TypeError, ValueError): return 'dead'
+    return proc_verdict(pid, row.get('pid_start_time') or row.get('pid_birth'))
+def alive(row): return verdict(row) != 'dead'
 def event(row, kind, detail=''):
     row.setdefault('lane_events', []).append({'at':now(),'event':kind, **({'detail':detail} if detail else {})})
 os.makedirs(os.path.dirname(lock), exist_ok=True)
@@ -343,17 +356,15 @@ with open(lock, 'a+') as lf:
     # keyed on the lead process (lead_pid/lead_pid_birth) rather than the
     # lane's own worker pid -- "is the session that owns these lanes still
     # running", not "is this particular lane's worker still running".
+    # LANE-ALIVE-PREDICATE-CALLS-A-LIVE-LANE-DEAD-01: routes through
+    # proc_verdict, so EPERM counts as live and an unobservable birth on
+    # either side degrades to unknown (exit 0) instead of dead.
     lead=args[0]
     row=next((r for r in rows if r.get('lead_session_id') == lead and r.get('lead_pid')), None)
     if row is None: sys.exit(1)
     try: lp=int(row.get('lead_pid'))
     except (TypeError, ValueError): sys.exit(1)
-    if lp <= 1: sys.exit(1)
-    try: os.kill(lp, 0)
-    except OSError: sys.exit(1)
-    recorded=' '.join(str(row.get('lead_pid_birth') or '').split())
-    observed=birth(lp)
-    sys.exit(0 if (recorded and observed and recorded == observed) else 1)
+    sys.exit(0 if proc_verdict(lp, row.get('lead_pid_birth')) != 'dead' else 1)
   fd,tmp=tempfile.mkstemp(prefix='.active.yaml.', dir=os.path.dirname(path))
   with os.fdopen(fd,'w',encoding='utf-8') as f: yaml.safe_dump(data,f,default_flow_style=False,sort_keys=False)
   os.replace(tmp,path)
