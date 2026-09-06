@@ -6,7 +6,7 @@
 #   leadv2_active_register <task_id> <class> <worktree> <branch> <daemon_mode>
 #                           [<group_key>] [<risk_tags>] [<writes>]  (LANE-WRITESET-REGISTRY-01)
 #                           [<writes_reason>]  (WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01)
-#   leadv2_active_unregister <task_id>
+#   leadv2_active_unregister <task_id> [<selector>...]   (STALE-ROW-STARTING-GRACE-01)
 #   leadv2_active_update_phase <task_id> <phase> [<resolved_model>]
 #   leadv2_active_update_pulse <task_id>
 #   leadv2_active_heartbeat <task_id> <checkpoint>              (PULSE-01)
@@ -699,8 +699,52 @@ try:
         sys.exit(0)
 
     elif op == "unregister":
+        # STALE-ROW-STARTING-GRACE-01: a bare task_id removes EVERY row with
+        # that id -- but a rejected dispatch leaves `spawning` rows behind, so
+        # one task_id can legitimately own several rows at once, and removing
+        # all of them can delete a LIVE lane's row alongside the tombstones.
+        # Optional selectors scope the removal, all backward-compatible
+        # (omitted selector == legacy remove-all-with-this-task_id):
+        #   unregister <task_id> --dead             only rows with a recorded,
+        #                                            provably-dead pid (a row
+        #                                            with no pid is NEVER
+        #                                            removed by --dead --
+        #                                            fail-closed)
+        #   unregister <task_id> --session-id <sid> only rows with that session_id
+        #   unregister <task_id> --pid <pid>        only rows with that exact pid
         task_id = args[0]
-        data["sessions"] = [s for s in sessions if s.get("task_id") != task_id]
+        sel_kind, sel_val = None, None
+        _rest = args[1:]
+        _i = 0
+        while _i < len(_rest):
+            if _rest[_i] == "--dead":
+                sel_kind = "dead"
+                _i += 1
+            elif _rest[_i] in ("--session-id", "--pid") and _i + 1 < len(_rest):
+                sel_kind = _rest[_i][2:]
+                sel_val = _rest[_i + 1]
+                _i += 2
+            else:
+                _i += 1  # unknown token: ignore, forward-compatible
+        def _unreg_matches(s):
+            if s.get("task_id") != task_id:
+                return False
+            if sel_kind is None:
+                return True
+            if sel_kind == "dead":
+                _pid = s.get("pid")
+                return _pid not in (None, "", "null", "None") and not _pid_alive(_pid)
+            if sel_kind == "session-id":
+                return s.get("session_id") == sel_val
+            if sel_kind == "pid":
+                try:
+                    return int(s.get("pid")) == int(sel_val)
+                except (TypeError, ValueError):
+                    return False
+            return False
+        _before = len(sessions)
+        data["sessions"] = [s for s in sessions if not _unreg_matches(s)]
+        print(f"unregistered {_before - len(data['sessions'])} row(s) task={task_id} selector={sel_kind or 'all'}", file=sys.stderr)
 
     elif op == "set_worktree":
         task_id, worktree = args
@@ -1160,14 +1204,22 @@ leadv2_active_set_log_path() {
   _leadv2_yaml_py_lock "$(_leadv2_yaml_lockfile)" "$(_leadv2_yaml_file)" set_log_path "$task_id" "$log_path"
 }
 
-# leadv2_active_unregister <task_id>
+# leadv2_active_unregister <task_id> [<selector>...]
+# STALE-ROW-STARTING-GRACE-01: optional selectors scope the removal so a
+# task_id owning BOTH live rows and rejected-dispatch tombstones can shed
+# only the tombstones. No selector = legacy behavior (remove every row with
+# this task_id) -- every pre-existing caller is unchanged.
+#   leadv2_active_unregister <id> --dead            only provably-dead-pid rows
+#   leadv2_active_unregister <id> --session-id <sid>
+#   leadv2_active_unregister <id> --pid <pid>
 leadv2_active_unregister() {
   local task_id="${1:?task_id required}"
+  shift
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
   [[ -f "$yaml_file" ]] || return 0
-  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" unregister "$task_id"
+  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" unregister "$task_id" "$@"
 
   # Auto-refresh LEAD_V2_STATE.md on every unregister — non-fatal to unregister itself
   _render_log="/tmp/lv2-render-$(date +%s).log"
@@ -1418,7 +1470,7 @@ leadv2_active_list() {
   fi
 
   python3 - "$yaml_file" "$peers_json" <<'PYEOF'
-import sys
+import sys, os
 try:
     import yaml
 except ImportError:
@@ -1449,7 +1501,25 @@ if peers_path:
     except Exception:
         peers_available = False
 
-print(f"Active sessions ({len(sessions)} / {meta.get('hard_limit', 2)} max):")
+# STALE-ROW-STARTING-GRACE-01: the header's N is the same admission-facing
+# count check_limits uses -- dead-pid tombstones (rejected dispatches that
+# never spawned) must not inflate it. Rows with NO pid stay counted
+# (fail-closed). The table below still prints every row; a provably-dead
+# row is marked DEAD in the last column instead of silently vanishing.
+def _pid_alive(pid_val) -> bool:
+    try:
+        pid = int(pid_val)
+        os.kill(pid, 0)
+        return True
+    except (TypeError, ValueError, ProcessLookupError, PermissionError):
+        return False
+
+def _row_dead(row) -> bool:
+    pid = row.get("pid")
+    return pid not in (None, "", "null", "None") and not _pid_alive(pid)
+
+_live_n = sum(1 for s in sessions if not _row_dead(s))
+print(f"Active sessions ({_live_n} / {meta.get('hard_limit', 2)} max):")
 print(f"{'session_id':<30} {'task_id':<20} {'phase':<12} {'class':<10} {'pid':<8} {'daemon':<7} {'writes':<20} {'peer':<12} {'stale'}")
 print("-" * 130)
 for s in sessions:
@@ -1460,7 +1530,7 @@ for s in sessions:
     cls    = (s.get("class") or "?")[:8]
     pid    = str(s.get("pid") or "null")[:6]
     daemon = "yes" if s.get("daemon_mode") else "no"
-    stale  = "STALE" if s.get("stale") else "-"
+    stale  = "STALE" if s.get("stale") else ("DEAD" if _row_dead(s) else "-")
     # LANE-WRITESET-REGISTRY-01: "?" (never silently absent) when the row
     # carries neither `writes` nor the `write_set` alias -- the D7 unknown
     # state must be visible in the table, not blank.
@@ -1515,7 +1585,29 @@ with open(yaml_file, encoding="utf-8") as fh:
     data = yaml.safe_load(fh) or {}
 
 meta = data.get("meta") or {}
-sessions = [s for s in (data.get("sessions") or []) if not s.get("stale")]
+
+# STALE-ROW-STARTING-GRACE-01: a rejected dispatch leaves rows behind
+# (phase=spawning/build, pid dead or recycled-to-1). Measured live
+# 2026-09-06: 10 non-stale rows of which 7 were dead-pid tombstones pushed
+# this check to a standing "hard limit reached: 10/5" refusal on every
+# class -- the limit counted gravestones. Filter exactly like the register
+# op's writeset admission does (_lv2_ws_dead): a row with a RECORDED,
+# PROVABLY-DEAD pid is not an active session. A row with no pid at all is
+# NOT assumed dead (fail-closed -- recovered_unowned rows still count).
+def _pid_alive(pid_val) -> bool:
+    try:
+        pid = int(pid_val)
+        os.kill(pid, 0)
+        return True
+    except (TypeError, ValueError, ProcessLookupError, PermissionError):
+        return False
+
+def _row_dead(row) -> bool:
+    pid = row.get("pid")
+    return pid not in (None, "", "null", "None") and not _pid_alive(pid)
+
+sessions = [s for s in (data.get("sessions") or [])
+            if not s.get("stale") and not _row_dead(s)]
 
 # Repo-local override (per leadv2-overrides/active-limits.yaml) wins over active.yaml meta
 overrides = {}
