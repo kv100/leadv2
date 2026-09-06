@@ -1087,101 +1087,6 @@ _pc_reap_worker() { # <run_dir> [meta_pid]
   emit decision "product_close task=${TASK:-} worker_reaped pids=$(IFS=,; printf '%s' "${_all_pids}")"
 }
 
-# PLUGIN-RELIABILITY-01 D1 (round 2): pid-file-only process liveness.
-# The pid in meta.yaml may be stale (the glm-coder.sh start process that wrote
-# status=complete, while its __supervise parent still holds the GLM lock).
-# This helper checks exact pids from the spawn record files:
-#   1. meta.yaml pid (the start process)
-#   2. run_dir/pgid   (the __run_child process)
-#   3. lock_dir/pid    (the __supervise process)
-#   4. lock_dir/pgid   (also __run_child, from the lock perspective)
-# NEVER uses pgrep -f "$handle" — the close gate's own argv contains the handle
-# string, so a substring pgrep self-matches and always reports alive (round 1
-# Critical bug). The lock_dir is derived from the run_dir's .lockref (repo_hash):
-#   lock_dir = <runs_dir>/.lock-<repo_hash>
-# Self ($$) and parent ($PPID) are always excluded.
-_pc_process_alive() { # <run_dir> [meta_pid] -> 0 if any live process found
-  local run_dir="$1" meta_pid="${2:-}" _pid _runs_dir _repo_hash _lock_dir
-  local -A _skip=( ["$$"]=1 ["$PPID"]=1 )
-  # 1. meta pid
-  if [[ "${meta_pid}" =~ ^[0-9]+$ && -z "${_skip[${meta_pid}]:-}" ]]; then
-    kill -0 "${meta_pid}" 2>/dev/null && return 0
-  fi
-  # 2. child pid from run_dir/pgid
-  if [[ -f "${run_dir}/pgid" ]]; then
-    _pid="$(cat "${run_dir}/pgid" 2>/dev/null || true)"
-    if [[ "${_pid}" =~ ^[0-9]+$ && -z "${_skip[${_pid}]:-}" ]]; then
-      kill -0 "${_pid}" 2>/dev/null && return 0
-    fi
-  fi
-  # 3. supervisor + child pids from lock dir
-  _runs_dir="$(dirname "${run_dir}")"
-  _repo_hash="$(cat "${run_dir}/.lockref" 2>/dev/null || true)"
-  if [[ -n "${_repo_hash}" ]]; then
-    _lock_dir="${_runs_dir}/.lock-${_repo_hash}"
-    local _lf
-    for _lf in pid pgid; do
-      [[ -f "${_lock_dir}/${_lf}" ]] || continue
-      _pid="$(cat "${_lock_dir}/${_lf}" 2>/dev/null || true)"
-      if [[ "${_pid}" =~ ^[0-9]+$ && -z "${_skip[${_pid}]:-}" ]]; then
-        kill -0 "${_pid}" 2>/dev/null && return 0
-      fi
-    done
-  fi
-  return 1
-}
-
-# PLUGIN-RELIABILITY-01 D1 (round 2): reap a worker's processes before
-# terminal=dead. Only kills exact pids from the spawn record files — same
-# sources as _pc_process_alive. NEVER uses pgrep -f "$handle" (round 1 Critical:
-# that self-matched the close gate's own pid and SIGKILLed it before it could
-# write review-gate.md or the terminal ledger row, and could kill unrelated
-# processes like a tail -f on the handle's log). Self/parent always excluded.
-_pc_reap_worker() { # <run_dir> [meta_pid]
-  local run_dir="$1" meta_pid="${2:-}" _pid _killed=""
-  local -A _skip=( ["$$"]=1 ["$PPID"]=1 )
-  local -a _pids=()
-  local -A _seen=()
-  # Collect + dedup live pids from spawn-record files
-  if [[ "${meta_pid}" =~ ^[0-9]+$ && -z "${_skip[${meta_pid}]:-}" && -z "${_seen[${meta_pid}]:-}" ]]; then
-    kill -0 "${meta_pid}" 2>/dev/null && { _pids+=("${meta_pid}"); _seen[${meta_pid}]=1; }
-  fi
-  if [[ -f "${run_dir}/pgid" ]]; then
-    _pid="$(cat "${run_dir}/pgid" 2>/dev/null || true)"
-    if [[ "${_pid}" =~ ^[0-9]+$ && -z "${_skip[${_pid}]:-}" && -z "${_seen[${_pid}]:-}" ]]; then
-      kill -0 "${_pid}" 2>/dev/null && { _pids+=("${_pid}"); _seen[${_pid}]=1; }
-    fi
-  fi
-  local _runs_dir _repo_hash _lock_dir _lf
-  _runs_dir="$(dirname "${run_dir}")"
-  _repo_hash="$(cat "${run_dir}/.lockref" 2>/dev/null || true)"
-  if [[ -n "${_repo_hash}" ]]; then
-    _lock_dir="${_runs_dir}/.lock-${_repo_hash}"
-    for _lf in pid pgid; do
-      [[ -f "${_lock_dir}/${_lf}" ]] || continue
-      _pid="$(cat "${_lock_dir}/${_lf}" 2>/dev/null || true)"
-      if [[ "${_pid}" =~ ^[0-9]+$ && -z "${_skip[${_pid}]:-}" && -z "${_seen[${_pid}]:-}" ]]; then
-        kill -0 "${_pid}" 2>/dev/null && { _pids+=("${_pid}"); _seen[${_pid}]=1; }
-      fi
-    done
-  fi
-  [[ ${#_pids[@]} -eq 0 ]] && return 0
-  # SIGTERM
-  for _pid in "${_pids[@]}"; do kill -TERM "${_pid}" 2>/dev/null || true; done
-  # Wait up to 5s for them to die
-  local _w=0
-  while (( _w < 10 )); do
-    _killed=""
-    for _pid in "${_pids[@]}"; do kill -0 "${_pid}" 2>/dev/null && _killed=1; done
-    [[ -z "${_killed}" ]] && return 0
-    sleep 0.5
-    _w=$(( _w + 1 ))
-  done
-  # SIGKILL stragglers
-  for _pid in "${_pids[@]}"; do kill -KILL "${_pid}" 2>/dev/null || true; done
-  emit decision "product_close task=${TASK} worker_reaped pids=$(IFS=,; printf '%s' "${_pids[*]}")"
-}
-
 pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
   local provider_state registry_alive run_dir meta status pid
   if [[ -z "${HANDLE}" ]]; then
@@ -1923,7 +1828,18 @@ _pc_norm_write() {  # <raw> -> normalised path on stdout
 pc_precheck_writes() {
   _PC_UNDIFFABLE_CSV=""
   _PC_SCOPE_WRITES_CSV=""
-  [[ -n "${WRITES_CSV:-}" ]] || return 0
+  # LANE-WRITES-IS-EMPTY-98-PERCENT-01 item 2: an empty WRITES_CSV used to
+  # return here with no trace, so a downstream reader saw pc_stop_gate_
+  # autocommit silently skip too and had no way to tell "checkpoint had
+  # nothing to do" from "checkpoint never ran". This gate's own containment
+  # design (see pc_stop_gate_autocommit below) makes "unbounded check"
+  # actively unsafe here -- staging undeclared paths is exactly the scope
+  # violation this gate exists to prevent -- so the correct branch is the
+  # brief's other one: a LOUD, named refusal, never a silent return.
+  if [[ -z "${WRITES_CSV:-}" ]]; then
+    emit decision "stop_gate_autocommit_skipped task=${TASK} reason=writes_csv_empty"
+    return 0
+  fi
   local raw_writes_pf w bad_paths=() good_paths=() bad_n=0 good_n=0
   IFS=',' read -r -a raw_writes_pf <<< "${WRITES_CSV}"
   for w in "${raw_writes_pf[@]}"; do
@@ -2031,7 +1947,17 @@ _pc_stop_gate_resolve_reason() {
 
 pc_stop_gate_autocommit() {
   [[ "${LEADV2_STOP_GATE:-1}" != 0 ]] || return 0
-  [[ -n "${_PC_SCOPE_WRITES_CSV:-}" ]] || return 0
+  # LANE-WRITES-IS-EMPTY-98-PERCENT-01 item 3: this used to be a bare
+  # `|| return 0` -- the SAME cascade the brief named (an empty WRITES_CSV
+  # upstream leaves _PC_SCOPE_WRITES_CSV empty, and autocommit vanished with
+  # no trace at all, unlike every other early-return below it, which all
+  # journal a stop_gate_autocommit_failed reason). Named and journaled, same
+  # as pc_precheck_writes above -- a reader can now tell "nothing declared"
+  # from "checkpoint never even ran".
+  if [[ -z "${_PC_SCOPE_WRITES_CSV:-}" ]]; then
+    emit decision "stop_gate_autocommit_skipped task=${TASK} reason=empty_scope_writes_csv"
+    return 0
+  fi
 
   # Cross-repository writes are diffed by pc_scope_diff but are not safe to
   # commit from this lane's repository. Do not silently claim protection.
@@ -2141,87 +2067,6 @@ pc_stop_gate_autocommit() {
     emit decision "stop_gate_autocommit_failed task=${TASK} reason=commit_failed"
   fi
   rm -f "${_sg_index}"
-}
-
-# REVIEW-GATE-INFRA-01 D-A(i): a declared write under docs/leadv2/ or docs/handoff/
-# makes an empty scoped diff MECHANICALLY INEVITABLE, independent of anything the
-# worker actually did -- both are hard-excluded by _pc_git_diff / _pc_lane_dirty's
-# exclusion pattern, so the diff is empty BY CONSTRUCTION. Detectable from the
-# write-set alone, before the worker's build is even awaited -- bounce here with an
-# actionable, path-naming reason instead of waiting for the empty-diff classifier
-# below to blame the lane. Capped at 5 named paths + a "+N more" suffix, matching
-# the review-gate.md path list cap (R1 unbounded-list-is-its-own-leak).
-#
-# Deliberately NOT bounced here: a declared path that fails to resolve to a git work
-# tree. Design draft R2 originally treated that as mechanically inevitable too, but
-# it is not -- it is also the exact shape of a LEGITIMATE cross-repo declaration (the
-# work landed in a repo this gate's diff_root-relative resolution cannot see). Bouncing
-# early on it would preempt the downstream cross_repo_elsewhere classification (D-A-ii)
-# with a strictly worse verdict (undiffable_write_set) for the innocent case. Left to
-# pc_scope_diff's classifier, which can tell the two apart using lane-dirty evidence.
-_pc_join_capped() {  # <n...> -> first 5 comma-joined + "+N more" on stdout
-  local items=("$@")
-  local n=${#items[@]} out="" i cap=5
-  for ((i = 0; i < n && i < cap; i++)); do
-    [[ -n "${out}" ]] && out="${out},${items[$i]}"
-    [[ -z "${out}" ]] && out="${items[$i]}"
-  done
-  (( n > cap )) && out="${out},+$((n - cap)) more"
-  printf '%s' "${out}"
-}
-# REVIEW-GATE-INFRA-01 round 2 F3: single normalisation point for a declared write-set
-# entry. Strips whitespace and ONE trailing /** or /* glob suffix, then a trailing /,
-# so a dir/glob declared shape ("tests/", "tests/unit/**") collapses to the same literal
-# prefix a bare path would ("tests", "tests/unit"). Never strips a bare trailing "*"
-# (R4 — vanishingly rare as a real path, and stripping it would silently rewrite a
-# legitimate literal filename ending in *).
-_pc_norm_write() {  # <raw> -> normalised path on stdout
-  local w="$1"
-  w="${w#"${w%%[![:space:]]*}"}"; w="${w%"${w##*[![:space:]]}"}"
-  case "${w}" in
-    */\*\*) w="${w%/\*\*}" ;;
-    */\*) w="${w%/\*}" ;;
-  esac
-  w="${w%/}"
-  printf '%s' "${w}"
-}
-# REVIEW-GATE-INFRA-01 round 2 F1: bounce ONLY when every declared path is mechanically
-# undiffable (docs/leadv2/*, docs/handoff/*) — a mixed write-set proceeds with the voided
-# paths recorded in _PC_UNDIFFABLE_CSV (surfaced later as an additive `undiffable:` key)
-# and only the surviving paths in _PC_SCOPE_WRITES_CSV feed the scope diff.
-pc_precheck_writes() {
-  _PC_UNDIFFABLE_CSV=""
-  _PC_SCOPE_WRITES_CSV=""
-  [[ -n "${WRITES_CSV:-}" ]] || return 0
-  local raw_writes_pf w bad_paths=() good_paths=() bad_n=0 good_n=0
-  IFS=',' read -r -a raw_writes_pf <<< "${WRITES_CSV}"
-  for w in "${raw_writes_pf[@]}"; do
-    w="$(_pc_norm_write "${w}")"
-    [[ -z "${w}" ]] && continue
-    case "${w}" in
-      docs/leadv2|docs/leadv2/*|docs/handoff|docs/handoff/*)
-        bad_paths+=("${w}"); bad_n=$((bad_n + 1))
-        ;;
-      *)
-        good_paths+=("${w}"); good_n=$((good_n + 1))
-        ;;
-    esac
-  done
-  if [[ ${good_n} -eq 0 && ${bad_n} -gt 0 ]]; then
-    local joined
-    joined="$(_pc_join_capped "${bad_paths[@]}")"
-    printf 'status: blocked\nreason: undiffable_write_set\npaths: %s\n' "${joined}" > "${HANDOFF}/review-gate.md"
-    emit decision "review_gate task=${TASK} status=blocked reason=undiffable_write_set terminal=refused cause=undiffable_write_set paths=${joined}"
-    _dl_note refused undiffable_write_set "paths=${joined}"
-    _stamp_review_terminal blocked
-    # reap any live worker before bouncing — mirrors the worker_timeout path (:1699-1700)
-    # so a fully-voided write-set never orphans a worker process.
-    _pc_reap_worker "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")" "$(_pc_meta_value "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")/meta.yaml" pid 2>/dev/null)" 2>/dev/null || true
-    exit 5
-  fi
-  [[ ${bad_n} -gt 0 ]] && _PC_UNDIFFABLE_CSV="$(IFS=,; printf '%s' "${bad_paths[*]}")"
-  _PC_SCOPE_WRITES_CSV="$(IFS=,; printf '%s' "${good_paths[*]}")"
-  return 0
 }
 
 # WARNING: pc_scope_diff() below defines helper functions in its body that are
