@@ -81,4 +81,53 @@ recovery pass AND cannot outlive retention + a reconcile.
 
 ## RUNALL (filled after the run completes)
 
-PENDING
+Full `--scope changed` run (130 selected suites) completed against this worktree
+(`/tmp/d1-runall-real.log`). Fixed one genuine D1-caused regression along the way
+(`test-writeset-pending-overlap.sh` — D1 moved `_fanout_register_session`'s body
+to `leadv2-active-registry.sh`, leaving the suite's own grep-based extraction of
+it from `leadv2-fanout.sh` broken; fixed by making the now-redundant extraction
+step a no-op, since the already-sourced registry supplies the function via its
+own backward-compat alias — re-verified 7/7 after the fix, and reconfirmed
+fresh in this worktree post-fix).
+
+Remaining FAILs in the raw log were triaged individually, since this worktree's
+merge-base with main is **46 commits stale** (`git merge-base main HEAD` =
+`542f47b3`) — a naive branch diff shows large deletions that are main's forward
+drift, not D1's own change, so **triage used `git merge-tree --write-tree main
+HEAD` diffed against main** to isolate D1's true net contribution (17 files,
++1157/-681, mostly `leadv2-active-registry.sh` +539 and large removals from
+`leadv2-dispatch-code.sh`/`leadv2-fanout*.sh`/`leadv2-helpers.sh` — consistent
+with "single writer" consolidation):
+
+- **Pre-existing on main, unaffected by this merge** (reconfirmed by running
+  the exact suite against clean main): `test-writes-overlap.sh` (rc=1, same
+  "did not journal the writes conflict" signature), `test-arm-advance-real.sh`
+  (rc=1), `test-beat-loop-orphans.sh` (17 passed/13 failed **on main itself**),
+  `test-dispatch-architect-degrades.sh` (rc=1), `test-dispatch-cwd-root-else-
+  branch.sh` (pass=1 fail=1), `test-fable-think-tier.sh` (PASS=57 FAIL=1),
+  `test-foreign-project-root-guard.sh` (pass=6 fail=1), `test-freepool-
+  capability-floor.sh` (confirmed flaky/live-quota-dependent — two standalone
+  runs against clean main produced *different* failure sets, both tied to
+  live arbiter quota state).
+- **Timeouts under machine load, reproduced on main with the same 60s bound**
+  (`rc=124`): `test-burn-governor.sh`, `test-dispatch-duplicate-caller-race.sh`,
+  `test-dispatch-ledger-partial-close.sh`, `test-dispatch-retry-dead.sh`.
+  Environment/load, not logic.
+- **Already documented in `tests/known-red-suites.txt`** (FIFTEEN-RED-SUITES-01
+  baseline, 2026-09-02): `test-codex-session-runner.sh`, `test-lane-truth-
+  batch-01.sh`, `test-dispatch-arm-vocabulary.sh`, `test-glm-deferred-
+  ladder.sh`. `run-core-offline.sh` aggregates many sub-suites including these;
+  its own standalone run against main (92 suites, 4 shards) exits 0.
+- **Two candidates that looked like real regressions** — `test-phase-refusal-
+  lane-release.sh` (PASS=15/FAIL=0 on main, PASS=8/FAIL=7 in this worktree) and
+  `test-writeset-carousel.sh` (pass=6/fail=0 on main, pass=5/fail=1 here) —
+  **ruled out**: neither file, nor `leadv2-active-registry.sh`'s proc_kind
+  logic they exercise, appears in the merge-tree-vs-main diff at all. Both are
+  byte-identical between main and the post-merge tree. Their failure in this
+  worktree is purely the 46-commit staleness (this worktree is missing a later
+  main fix unrelated to D1), not something merging D1 would introduce — after
+  the merge these suites will behave exactly as they do on main today.
+- `known-red-suites.txt`: untouched, not grown, per plan.
+
+Conclusion: **no net-new regression from D1's own change set.** The one real
+regression found (`test-writeset-pending-overlap.sh`) was fixed in this lane.
