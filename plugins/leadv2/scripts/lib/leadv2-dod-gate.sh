@@ -523,6 +523,21 @@ _dod_check_c() {
     case "${sp}" in
       tests/test-*.sh|plugins/leadv2/scripts/tests/test-*.sh|.claude/scripts/tests/test-*.sh|plugins/leadv2/tests/test-*.sh)
         self_select=1 ;;
+      # DOD-GATE-KILLS-A-REGISTERED-SUITE-01 round 2, measured 2026-09-06 in an
+      # isolated persona-engine worktree: tests/unit/ is that repo's naming-convention
+      # directory -- a changed tests/unit/test-<stem>.sh is selected by run-all as
+      # itself, and is ALSO selected whenever <stem>.sh changes (probed with
+      # scripts/{waves-refresh,db-invariants,truth-run,anti-silence-pulse}.sh: all four
+      # suites selected). `# run-all-triggers:` there is an OVERRIDE for suites whose
+      # coverage does not follow the convention -- only 3 of 725 declare one -- not the
+      # register itself. The primary instrument misses a BRAND-NEW suite for a reason
+      # that has nothing to do with registration: run-all's changed set is
+      # `git diff --name-only origin/main...HEAD`, i.e. COMMITTED work only, so a suite
+      # the lane has written but not yet committed is invisible to it and read as
+      # unregistered. Measured: the same file scores 0 selections staged and 1 once
+      # committed. Without this row the gate ends a lane for not having committed yet.
+      tests/unit/test-*.sh)
+        self_select=1 ;;
     esac
     if [[ ${self_select} -eq 1 ]]; then
       continue

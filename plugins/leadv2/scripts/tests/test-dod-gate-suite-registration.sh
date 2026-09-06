@@ -129,7 +129,15 @@ else
 fi
 
 # ── (b) NEG-CTL: not selected, not mapped -> still an honest failure ────────
-mkdiff "${WORK}/d-sel-bad.diff" "tests/unit/test-invented.sh"
+# NEG-CTL path corrected 2026-09-06, and the correction is the finding: tests/unit/
+# is persona-engine's naming-convention directory, so a suite there is selected by
+# run-all whenever it changes and whenever its <stem>.sh source changes (measured on
+# four real suites in an isolated worktree). An "invented" suite THERE is therefore
+# registered, and asserting it must fail was asserting something untrue. tests/contract/
+# is the honest unregistered shape: run-all had no mapping to that directory at all,
+# which is how tests/contract/publish-end-to-end.sh killed a real mutation for weeks
+# while CI never selected it.
+mkdiff "${WORK}/d-sel-bad.diff" "tests/contract/test-invented.sh"
 run_check "${R_SEL}" "${WORK}/d-sel-bad.diff"
 if [[ "${RC}" == "1" ]] && grep -q 'dod_fail check=suite_unregistered' <<< "${OUT}"; then
   ok "(b) NEG-CTL: an unselected, unmapped suite still fails the gate"
@@ -148,7 +156,7 @@ else
 fi
 
 # ── (d) NEG-CTL for the parser path ────────────────────────────────────────
-mkdiff "${WORK}/d-arr-bad.diff" "tests/unit/test-nowhere.sh"
+mkdiff "${WORK}/d-arr-bad.diff" "tests/contract/test-nowhere.sh"
 run_check "${R_ARR}" "${WORK}/d-arr-bad.diff"
 if [[ "${RC}" == "1" ]] && grep -q 'suite_unregistered' <<< "${OUT}"; then
   ok "(d) NEG-CTL: a suite absent from the array map still fails"
@@ -230,6 +238,30 @@ else
   bad "(j) NEG-CTL: rc=${RC} counter ${before} -> ${after}"
 fi
 unset LEADV2_STATE_ROOT LEADV2_DOD_BLIND_ALERT_N
+# ── (k)(l) the convention directory is the register ────────────────────────────
+# Measured in an isolated persona-engine worktree, not assumed: touching
+# scripts/{waves-refresh,db-invariants,truth-run,anti-silence-pulse}.sh makes run-all
+# select all four tests/unit/test-<stem>.sh suites, and touching a unit suite selects
+# it by itself. Only 3 of 725 unit suites declare `# run-all-triggers:` — that header
+# is an override for coverage the convention cannot express, never the register.
+# (l) is the half that keeps this from being a rubber stamp: the same shape OUTSIDE
+# the convention directory must still fail.
+mkdiff "${WORK}/d-unit-new.diff" "tests/unit/test-brand-new-thing.sh"
+run_check "${R_SEL}" "${WORK}/d-unit-new.diff"
+if [[ "${RC}" == "0" ]] && grep -q 'dod_pass check=suite_registration' <<< "${OUT}"; then
+  ok "(k) a suite in the convention directory is registered by being there"
+else
+  bad "(k) rc=${RC} out=${OUT} — a lane writing a normal unit suite would be ended"
+fi
+
+mkdiff "${WORK}/d-outside-new.diff" "tests/contract/test-brand-new-thing.sh"
+run_check "${R_SEL}" "${WORK}/d-outside-new.diff"
+if [[ "${RC}" != "0" ]] && grep -q 'suite_unregistered' <<< "${OUT}"; then
+  ok "(l) NEG-CTL: the same shape outside the convention still fails"
+else
+  bad "(l) NEG-CTL: rc=${RC} out=${OUT} — the gate stopped refusing anything"
+fi
+
 
 printf -- '[TEST] %d passed, %d failed\n' "${PASS}" "${FAIL}"
 [[ ${FAIL} -eq 0 ]]
