@@ -1,0 +1,12 @@
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=46509
+unregistered 1 row(s) task=SHADOW-CRUD selector=all
+deletion-control: present register/list/unregister checked
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=46509
+unregistered 1 row(s) task=SHADOW-CRUD selector=all
+deletion-control: absent register/list/unregister checked
+Traceback (most recent call last):
+  File "<stdin>", line 6, in <module>
+AssertionError: {'data': '', 'ok': False}
+FAIL: python3 - /private/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/shadow-control-plane.NVQLvz/collector
+writer: real collector -> lanes-snapshot -> state-path checked
+shadow-control-plane: PASS=14 FAIL=1
