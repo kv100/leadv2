@@ -337,6 +337,32 @@ YAML
   fi
 }
 
+test_runner_pid_eperm_refusal() {
+  # D2-M4 (D2-SINGLE-LIVENESS-VERDICT #9/#14): the .session-runner.pid
+  # duplicate-claim guard used to check bare `kill -0`, which returns a
+  # nonzero exit for BOTH ESRCH (dead) and EPERM (pid exists, owned by
+  # another user) -- an EPERM runner pid would fail to refuse, letting a
+  # second runner claim the same task. pid 1 is guaranteed to exist and
+  # guaranteed EPERM for a non-root caller.
+  if [[ "$(id -u)" == "0" ]]; then
+    pass 'SKIP test_runner_pid_eperm_refusal: running as root, kill(1,0) would not raise EPERM'
+    return 0
+  fi
+  local root out rc
+  root="$(seed_project runner-pid-eperm)"
+  mkdir -p "$root/docs/handoff/TASK-EXPLICIT"
+  printf '1' > "$root/docs/handoff/TASK-EXPLICIT/.session-runner.pid"
+  set +e
+  out="$(run_wrapper "$root" TASK-EXPLICIT 2>&1)"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 && "$out" == *'already owns task TASK-EXPLICIT'* && ! -e "$root/runner.args" ]]; then
+    pass 'an EPERM runner pid (1) still refuses the duplicate claim'
+  else
+    fail "EPERM runner pid did not refuse: rc=$rc out=$out"
+  fi
+}
+
 test_terminal_ledger_refuses_landed_and_dead() {
   local terminal root sig sig8 out rc state ok_count=0
   sig="$(task_sig 'Top eligible')"; sig8="${sig:0:8}"
@@ -437,6 +463,7 @@ main() {
   test_next_refuses_all_poisoned_queue
   test_explicit_task_id
   test_duplicate_ledger_and_live_handle_refusal
+  test_runner_pid_eperm_refusal
   test_terminal_ledger_refuses_landed_and_dead
   test_retryable_terminal_warns_and_allows
   test_failure_rolls_back_claim_and_worktree

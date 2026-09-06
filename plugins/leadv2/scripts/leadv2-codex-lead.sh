@@ -367,8 +367,20 @@ fi
 _runner_pid_file="$PROJECT_ROOT/docs/handoff/$TASK_ID/.session-runner.pid"
 if [[ -f "$_runner_pid_file" ]]; then
   _runner_pid="$(tr -d '[:space:]' < "$_runner_pid_file" 2>/dev/null || true)"
-  if [[ "$_runner_pid" =~ ^[0-9]+$ ]] && kill -0 "$_runner_pid" 2>/dev/null; then
-    refuse "live runner pid $_runner_pid already owns task $TASK_ID"
+  if [[ "$_runner_pid" =~ ^[0-9]+$ ]]; then
+    # D2-M4 (D2-SINGLE-LIVENESS-VERDICT #9/#14): plain `kill -0` returns a
+    # nonzero rc for BOTH ESRCH (genuinely gone) and EPERM (pid exists,
+    # owned by another user) -- bash cannot tell them apart by exit code
+    # alone. An EPERM runner pid must still refuse the duplicate claim, or
+    # two runners can end up owning the same task.
+    _runner_err="$(kill -0 "$_runner_pid" 2>&1)" && _runner_rc=0 || _runner_rc=$?
+    if [[ $_runner_rc -eq 0 ]]; then
+      refuse "live runner pid $_runner_pid already owns task $TASK_ID"
+    fi
+    case "$_runner_err" in
+      *"not permitted"*|*"Not permitted"*|*"operation not permitted"*)
+        refuse "live runner pid $_runner_pid already owns task $TASK_ID" ;;
+    esac
   fi
 fi
 
