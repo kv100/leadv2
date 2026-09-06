@@ -96,6 +96,14 @@ REGISTRY="${LEADV2_CLAUDE_PROFILES_FILE:-$HOME/.claude/state/leadv2/claude-profi
 PROBE="${LEADV2_CLAUDE_PROFILE_PROBE:-$SCRIPT_DIR/leadv2-quota-read.py}"
 PICK="$SCRIPT_DIR/lib/leadv2-claude-profile-pick.py"
 CACHE_BASE="${LEADV2_QUOTA_CACHE_DIR:-$HOME/.claude/state/leadv2/quota-cache}"
+# TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: a profile whose live probe comes
+# back with a genuine API error (e.g. an expired credential -> http 401,
+# never a "we never got to it" budget/timeout skip) must not be re-probed
+# on every single dispatch -- that turns a quiet skip into a guaranteed
+# failure on every round. COOLDOWN_S bounds how long such a profile is
+# excluded from probing after a CONFIRMED live failure; it expires on its
+# own, no manual list, no hardcoded profile exclusion.
+COOLDOWN_S="${LEADV2_CLAUDE_PROFILE_COOLDOWN_S:-900}"
 SECURITY_BIN="${LEADV2_CLAUDE_PROFILE_SECURITY_BIN:-security}"
 
 warn() {
@@ -388,15 +396,29 @@ while (( i < n )); do
   else
     id_key="$(printf '%s' "$identity" | tr -c 'A-Za-z0-9_-' '_')"
   fi
+  # TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: skip the live probe entirely (and
+  # save the API call to an account we already confirmed can't answer) while
+  # a prior round's CONFIRMED live failure is still cooling down. This is
+  # what stops a broken credential from eating every single dispatch --
+  # never re-attempted on the very next round, but never a permanent
+  # exclusion either (the marker's own timestamp is the only "list").
+  cooldown_file="${CACHE_BASE}/identity-${id_key}/probe-cooldown-until"
+  cooldown_until=""
+  [[ -f "$cooldown_file" ]] && cooldown_until="$(cat "$cooldown_file" 2>/dev/null || true)"
+  if [[ "$cooldown_until" =~ ^[0-9]+$ ]] && (( $(date +%s) < cooldown_until )); then
+    warn "WARN: profile label=${label} cooling down after a recent live probe failure; skipping this round"
+    printf '%s\t%s\t%s\t-\t%s\t1\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+    continue
+  fi
   remaining=$(( deadline - $(date +%s) ))
   if (( remaining < 1 )); then
     warn "WARN: profile probe budget exhausted; unprobed entries score unknown"
-    printf '%s\t%s\t%s\t-\t%s\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+    printf '%s\t%s\t%s\t-\t%s\t0\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
     continue
   fi
   out="$(mktemp "${TMPDIR:-/tmp}/claude-profile-probe.XXXXXX")"
   if [[ -z "$out" ]]; then
-    printf '%s\t%s\t%s\t-\t%s\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+    printf '%s\t%s\t%s\t-\t%s\t0\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
     continue
   fi
   err="${out}.err"
@@ -425,12 +447,37 @@ while (( i < n )); do
   fi
   json="$(cat "$out" 2>/dev/null)"; rm -f "$out" "$err"
   if [[ "$rc" -ne 0 || -z "$json" ]]; then
-    printf '%s\t%s\t%s\t-\t%s\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+    printf '%s\t%s\t%s\t-\t%s\t0\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
     continue
   fi
   completed=$((completed + 1))
+  # TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: a probe that genuinely REACHED the
+  # API and got a real error back (the active/only account has status!=ok
+  # AND a non-empty error field -- e.g. "http 401" on an expired credential)
+  # is a CONFIRMED live failure, distinct from "we never got a chance to try"
+  # (budget exhausted, mktemp/exec failure, timeout above). Only a confirmed
+  # failure starts a cooldown; scoring never over-punishes a profile just
+  # because this was its first attempt.
+  if printf '%s' "$json" | python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.exit(1)
+accounts = d.get('accounts') or []
+account = next((a for a in accounts if isinstance(a, dict) and a.get('active')), None)
+if account is None and len(accounts) == 1 and isinstance(accounts[0], dict):
+    account = accounts[0]
+sys.exit(0 if (isinstance(account, dict) and account.get('status') != 'ok' and account.get('error')) else 1)
+" 2>/dev/null; then
+    mkdir -p "$(dirname "$cooldown_file")" 2>/dev/null || true
+    printf '%s' "$(( $(date +%s) + COOLDOWN_S ))" > "$cooldown_file" 2>/dev/null || true
+    warn "WARN: profile label=${label} live probe failed; cooling down ${COOLDOWN_S}s"
+  fi
   b64="$(printf '%s' "$json" | base64 | tr -d '\n')"
-  printf '%s\t%s\t%s\t%s\t%s\n' "$label" "$dir" "$cred" "$b64" "$identity" >> "$recs"
+  printf '%s\t%s\t%s\t%s\t%s\t0\n' "$label" "$dir" "$cred" "$b64" "$identity" >> "$recs"
 done
 
 # Every probe hung/crashed => no signal at all => single_profile (T8), not a

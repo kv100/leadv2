@@ -139,7 +139,10 @@ printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG
 printf 'dead2\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 cp "$FIX/dead.json" "$FIX/dead2.json"
 run_select $(base_env)
-check_grep "$OUT" '^profile=dead .*score=101 source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+ identity=unknown/na binding=-:- windows=dead:-=-\|dead2:-=-$' 'T6: first entry, all_unknown, binding/windows logged'
+# TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: score=100 (UNKNOWN_TRIABLE), not
+# the old flat 101 -- these profiles were never successfully probed, they
+# are not in a confirmed-failure cooldown, so they still compete fairly.
+check_grep "$OUT" '^profile=dead .*score=100 source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+ identity=unknown/na binding=-:- windows=dead:-=-\|dead2:-=-$' 'T6: first entry, all_unknown, binding/windows logged'
 
 # ============================================================================
 echo "=== T7: malformed line + email-shaped label -> skipped, one warning each ==="
@@ -319,7 +322,8 @@ echo "=== T13 (NC-c, D3): all candidates stale + probe can't resolve them -> all
 printf 'exp-a\t%s\tfile:%s/cred.json\n' "$tmp/dir-allexp-a" "$tmp/dir-allexp-a" > "$REG"
 printf 'exp-b\t%s\tfile:%s/cred.json\n' "$tmp/dir-allexp-b" "$tmp/dir-allexp-b" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=exp-a .*score=101 source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+ identity=max/na binding=-:- windows=exp-a:-=-\|exp-b:-=-$' 'T13a: named all_unknown outcome (probed, not statically refused), not a silent pick'
+# TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: score=100 (UNKNOWN_TRIABLE) -- see T6.
+check_grep "$OUT" '^profile=exp-a .*score=100 source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+ identity=max/na binding=-:- windows=exp-a:-=-\|exp-b:-=-$' 'T13a: named all_unknown outcome (probed, not statically refused), not a silent pick'
 w_count="$(grep -c 'WARN: registry line .* expiresAt_stale' <<<"$ERR")"
 [[ "$w_count" -eq 2 ]] && pass "T13b: both stale entries warned but still probed" || fail "T13b" "count=$w_count err=$ERR"
 [[ "$RC" -eq 0 ]] && pass "T13: exit 0" || fail "T13 exit" "rc=$RC"
@@ -526,6 +530,55 @@ check_grep "$ERR" 'WARN: registry line 2: expiresAt_stale label=same-stale ident
 check_grep "$ERR" 'WARN: same_account label=same-fresh label=same-stale sub=team account=' 'T23b: both slots reached the comparison and the pair is named -- the coverage hole stays closed'
 check_grep "$OUT" '^profile=- reason=same_account$' 'T23c: the documented incident response -- select nothing, so the caller keeps its inherited profile'
 [[ "$RC" -eq 0 ]] && pass "T23: exit 0" || fail "T23 exit" "rc=$RC"
+
+# ============================================================================
+# T24 (TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01): mandatory pair control, both
+# halves. Half 1 -- an unknown-scored profile (never successfully probed) is
+# now SELECTABLE: it wins a tie against a live profile that is itself fully
+# exhausted (pct=100), instead of automatically losing to every live score
+# the way the old flat UNKNOWN=101 sentinel did. Half 2 (regression sanity)
+# -- unknown still LOSES to a live profile with genuine free quota, so the
+# fix does not over-correct into "unknown always wins".
+echo "=== T24a: unknown ties-and-wins (input order) against a fully exhausted (100%) live profile ==="
+acct_json 100 100 > "$FIX/maxed.json"
+printf 'idle\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
+printf 'maxed\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env)
+check_grep "$OUT" '^profile=idle .*score=100 source=unknown' 'T24a: never-probed idle profile (score=100) beats a 100%-exhausted live profile, not automatically loses'
+[[ "$RC" -eq 0 ]] && pass "T24a: exit 0" || fail "T24a exit" "rc=$RC"
+
+echo "=== T24b (regression): unknown still loses to a live profile with real free quota ==="
+printf 'idle\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
+printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env)
+check_grep "$OUT" '^profile=alpha .*score=20 source=live' 'T24b: a live profile with free quota (20%) still beats an unknown-scored one'
+[[ "$RC" -eq 0 ]] && pass "T24b: exit 0" || fail "T24b exit" "rc=$RC"
+
+# ============================================================================
+# T25 (TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01): a CONFIRMED live failure (the
+# active account's own status!=ok plus a non-empty error, e.g. an expired
+# credential returning http 401) starts a cooldown; the very next round must
+# skip probing that identity and score it strictly worse than a live
+# profile, even one with worse-than-average quota -- so a broken credential
+# never eats every dispatch, but is never retried within the cooldown either.
+echo "=== T25: a confirmed live failure starts a cooldown that survives to the next round ==="
+printf '{"provider":"anthropic","status":"ok","accounts":[{"entry_suffix":"file","service":"file:stub","status":"error","error":"http 401","active":true,"account_label":"stub"}],"active_account":"stub","fetched_at":"2026-08-25T00:00:00Z"}' > "$FIX/flaky.json"
+acct_json 90 80 > "$FIX/steady.json"
+printf 'flaky\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
+printf 'steady\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900 run_select $(base_env) LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900
+check_grep "$ERR" 'WARN: profile label=flaky live probe failed; cooling down' 'T25a: the confirmed 401 starts a cooldown (WARN fires)'
+check_grep "$OUT" '^profile=steady .*score=90 source=live' 'T25b: round 1 sanity -- steady (90%/80% worst-of-both) wins over flaky (scores fairly at 100 on its FIRST failure, not yet cooling)'
+# Round 2, same CACHE dir (identity/config_dir key persists): rewrite
+# flaky's fixture to a WOULD-BE great score (5%). If cooldown is honored,
+# flaky must not even be re-probed this round -- it stays excluded and
+# steady (worse quota, 90%) still must not lose to a phantom "5%" that was
+# never actually re-verified live during the cooldown window.
+acct_json 5 5 > "$FIX/flaky.json"
+run_select $(base_env)
+check_grep "$ERR" 'WARN: profile label=flaky cooling down after a recent live probe failure; skipping this round' 'T25c: round 2 -- flaky is skipped (cooling), not re-probed'
+check_grep "$OUT" '^profile=steady .*score=90 source=live' 'T25d: round 2 -- steady wins despite worse quota, because the cooling profile is excluded, not silently re-trusted'
+[[ "$RC" -eq 0 ]] && pass "T25: exit 0" || fail "T25 exit" "rc=$RC"
 
 printf '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

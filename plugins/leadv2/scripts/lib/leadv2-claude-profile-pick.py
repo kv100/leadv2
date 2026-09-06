@@ -4,12 +4,36 @@
 Reads one record per line on stdin (emitted by leadv2-claude-profile-select.sh
 after it has probed each registry entry independently):
 
-    <label>\t<config_dir>\t<credential_source>\t<base64 probe JSON | ->\t<identity>
+    <label>\t<config_dir>\t<credential_source>\t<base64 probe JSON | ->\t<identity>\t<cooling 0|1>
+
+`cooling` (TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01) is "1" only when the
+selector's OWN cooldown marker says this profile's last live probe returned
+a CONFIRMED API error (e.g. an expired credential -> http 401) and the
+cooldown window has not yet elapsed -- never for "we simply have no data
+yet" (budget exhausted, timeout, malformed JSON). This is what keeps
+`unknown != unusable` from degrading into `unknown == hammer it forever`:
+an ordinary unknown still COMPETES for selection (UNKNOWN_TRIABLE, below),
+but a profile actively cooling after a confirmed failure scores strictly
+worse than everything else (UNKNOWN_COOLING) so it is not picked again on
+the very next round.
 
 `identity` (T12) is `<subscriptionType>/<email-or-na>` derived by the selector
 from the credential itself, never from the label -- it is what actually gets
 reported, since a registry label can drift from the account the credential
 now serves (a relabeled/re-logged-in slot).
+
+TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: the old single UNKNOWN=101 sentinel
+made an unknown-scored profile lose to EVERY live-scored profile regardless
+of how exhausted the live one actually was (a profile at 99% used still
+"won" over one that was simply never successfully probed) -- an idle,
+0%-used account could go unused forever just because its window did not
+parse. Now split in two: UNKNOWN_TRIABLE (100) competes fairly -- it loses
+only to a live profile with genuine free quota (pct < 100), never to one
+that is itself fully exhausted; UNKNOWN_COOLING (101) is strictly worse
+than anything, reserved for a profile whose most recent live probe
+returned a CONFIRMED error and is still within its cooldown window (see
+`cooling` above) -- so a broken credential does not get retried, and does
+not get selected, on the very next round either.
 
 Scores each record independently, preferring the account's own `binding_window`
 (TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01 D2): leadv2-quota-read.py already
@@ -49,12 +73,16 @@ import base64
 import json
 import sys
 
-UNKNOWN = 101
+UNKNOWN_TRIABLE = 100
+UNKNOWN_COOLING = 101
+UNKNOWN = UNKNOWN_COOLING  # back-compat alias -- keep the old name resolvable
 
 
 def score_record(record):
     """Return (score:int, source:"live"|"unknown", window:str|None, pct:float|None)."""
     label, config_dir, cred, payload_b64 = record[:4]
+    cooling = len(record) > 5 and record[5] == "1"
+    unknown_score = UNKNOWN_COOLING if cooling else UNKNOWN_TRIABLE
     payload = None
     try:
         payload = json.loads(base64.b64decode(payload_b64).decode())
@@ -71,7 +99,7 @@ def score_record(record):
             account = accounts[0]
     if not (isinstance(payload, dict) and payload.get("status") == "ok"
             and isinstance(account, dict) and account.get("status") == "ok"):
-        return UNKNOWN, "unknown", None, None
+        return unknown_score, "unknown", None, None
     binding = account.get("binding_window")
     if binding in ("five_hour", "seven_day"):
         try:
@@ -86,7 +114,7 @@ def score_record(record):
         except (TypeError, ValueError):
             pass
     if not values:
-        return UNKNOWN, "unknown", None, None
+        return unknown_score, "unknown", None, None
     worst = max(values)
     return int(round(worst)), "live", "worst_of_both", worst
 
@@ -101,7 +129,9 @@ def main():
         parts = raw.rstrip("\n").split("\t")
         if len(parts) == 4:
             parts = parts + ["unknown/na"]  # pre-T12 caller (no identity column)
-        if len(parts) != 5:
+        if len(parts) == 5:
+            parts = parts + ["0"]  # pre-cooldown caller (no cooling column)
+        if len(parts) != 6:
             continue
         records.append(parts)
     if not records:
@@ -109,8 +139,8 @@ def main():
         return
     scored = [(score_record(r), i, r) for i, r in enumerate(records)]
     (score, source, window, pct), _order, record = min(scored, key=lambda t: (t[0][0], t[1]))
-    # The minimum can only be a 101 when EVERY record is unknown.
-    if score >= UNKNOWN:
+    # The minimum can only reach UNKNOWN_TRIABLE when EVERY record is unknown.
+    if score >= UNKNOWN_TRIABLE:
         reason = "all_unknown"
     elif window in ("five_hour", "seven_day"):
         reason = "binding_window"
