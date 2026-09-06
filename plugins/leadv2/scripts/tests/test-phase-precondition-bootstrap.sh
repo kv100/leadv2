@@ -54,7 +54,18 @@ FAIL=0
 ok() { PASS=$((PASS+1)); }
 fail() { FAIL=$((FAIL+1)); printf '  FAIL: %s\n' "$1" >&2; }
 
+mission_sig8() {
+  printf '%s' "$1" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' \
+    | shasum -a 256 | awk '{print substr($1, 1, 8)}'
+}
+
 phases_d() { printf '%s/docs/handoff/dispatch-%s/phases.d' "$TMP_ROOT" "$1"; }
+# PHASE-RECORD-WRITES-TO-THE-WRONG-REPO-01: cmd_record now refuses unless the
+# task's own dispatch-<sig8>/ dir already exists — real dispatch-code.sh
+# creates it at task setup, strictly before ever calling record classify.
+# Fixture callers below that drive `record` directly (bypassing dispatch-code)
+# must mirror that precondition.
+mk_dispatch_dir() { mkdir -p "$(dirname "$(phases_d "$1")")"; }
 
 # ── Test 1 (acceptance 1): a lane with NO phase record at all ⇒ first
 #    dispatch admitted, even though plan/gate1 (and classify) are unproven ──
@@ -82,6 +93,7 @@ fi
 #    (exactly what dispatch-code.sh does right before calling the guard),
 #    is no longer bootstrap — missing plan/gate1 refuses exactly as today ──
 printf 'test: 2 same lane, later dispatch, missing mandatory phase is refused\n'
+mk_dispatch_dir "$SIG_BOOT"
 bash "$PHASE_RECORD" record "$SIG_BOOT" classify --status done --owner test >/dev/null 2>&1
 OUT2="$(bash "$PHASE_RECORD" assert "$SIG_BOOT" --class Standard --pre-build 2>&1)"; rc2=$?
 if [[ $rc2 -eq 3 ]]; then
@@ -100,8 +112,9 @@ fi
 printf 'test: 3 lead-authored brief admits plan, proof=attested\n'
 SIG_BRIEF="brief001"
 mkdir -p "${TMP_ROOT}/docs/handoff/TASK-BRIEF-01"
-printf '# TASK-BRIEF-01\n\nSome founder-authored brief text.\n' \
+printf '# TASK-BRIEF-01\n\nSome founder-authored brief text describing the task scope,\nacceptance criteria, and the files expected to change in this lane.\n' \
   > "${TMP_ROOT}/docs/handoff/TASK-BRIEF-01/brief.md"
+mk_dispatch_dir "$SIG_BRIEF"
 bash "$PHASE_RECORD" record "$SIG_BRIEF" classify --status done --owner test >/dev/null 2>&1
 bash "$PHASE_RECORD" record "$SIG_BRIEF" plan --status done \
   --artifact "docs/handoff/TASK-BRIEF-01/brief.md" --owner test >/dev/null 2>&1
@@ -126,6 +139,7 @@ printf 'test: 3b non-brief-named artifact does NOT satisfy plan\n'
 SIG_FORGE="forge001"
 mkdir -p "${TMP_ROOT}/docs/handoff/TASK-BRIEF-01"
 printf 'not a recognized plan artifact name\n' > "${TMP_ROOT}/docs/handoff/TASK-BRIEF-01/notes.md"
+mk_dispatch_dir "$SIG_FORGE"
 bash "$PHASE_RECORD" record "$SIG_FORGE" classify --status done --owner test >/dev/null 2>&1
 bash "$PHASE_RECORD" record "$SIG_FORGE" plan --status done \
   --artifact "docs/handoff/TASK-BRIEF-01/notes.md" --owner test >/dev/null 2>&1
@@ -142,12 +156,62 @@ else
   fail "non-brief artifact must still leave plan in missing= (rc=$rc3b, out=$OUT3B)"
 fi
 
+# ── Test 3c (PHASE-PLAN-PROOF-IS-FILENAME-BASED-01): a differently-named
+#    plan note that clears the substance floor (>=120 non-whitespace chars,
+#    >=2 non-blank lines) is admissible — the old two-name allowlist would
+#    have rejected this exact shape (continue-round-N.md) forever ──────────
+printf 'test: 3c substantial non-brief-named plan note satisfies plan, proof=attested\n'
+SIG_CR2="$(mission_sig8 'PPB continue-round substantial note')"
+mkdir -p "${TMP_ROOT}/docs/handoff/TASK-CR-01"
+printf 'Continuing round 2.\n\nSwitched the retry backoff from linear to exponential because the\nprior fix-round regressed under burst load. Verified locally.\n' \
+  > "${TMP_ROOT}/docs/handoff/TASK-CR-01/continue-round-2.md"
+mk_dispatch_dir "$SIG_CR2"
+bash "$PHASE_RECORD" record "$SIG_CR2" classify --status done --owner test >/dev/null 2>&1
+bash "$PHASE_RECORD" record "$SIG_CR2" plan --status done \
+  --artifact "docs/handoff/TASK-CR-01/continue-round-2.md" --owner test >/dev/null 2>&1
+CR2_PLAN_FILE="$(phases_d "$SIG_CR2")/plan.yaml"
+if [[ -f "$CR2_PLAN_FILE" ]] && grep -q '^proof: attested$' "$CR2_PLAN_FILE"; then
+  ok
+else
+  fail "substantial continue-round-2.md should carry proof: attested (file: $(cat "$CR2_PLAN_FILE" 2>/dev/null))"
+fi
+OUT3C="$(bash "$PHASE_RECORD" assert "$SIG_CR2" --class Standard --pre-build 2>&1)"; rc3c=$?
+if [[ $rc3c -eq 3 ]] && printf '%s' "$OUT3C" | grep -q 'missing=gate1$'; then
+  ok
+else
+  fail "substance-satisfied plan should drop out of missing=, only gate1 left (rc=$rc3c, out=$OUT3C)"
+fi
+
+# ── Test 3d (PHASE-PLAN-PROOF-IS-FILENAME-BASED-01): the SAME non-brief name
+#    with placeholder content must still fail — the substance floor is the
+#    new placeholder guard the old bare non-empty (`-s`) check never had ───
+printf 'test: 3d placeholder content under a non-brief name does NOT satisfy plan\n'
+SIG_CR3="$(mission_sig8 'PPB continue-round placeholder note')"
+printf 'TBD\n' > "${TMP_ROOT}/docs/handoff/TASK-CR-01/continue-round-3.md"
+mk_dispatch_dir "$SIG_CR3"
+bash "$PHASE_RECORD" record "$SIG_CR3" classify --status done --owner test >/dev/null 2>&1
+bash "$PHASE_RECORD" record "$SIG_CR3" plan --status done \
+  --artifact "docs/handoff/TASK-CR-01/continue-round-3.md" --owner test >/dev/null 2>&1
+CR3_PLAN_FILE="$(phases_d "$SIG_CR3")/plan.yaml"
+if grep -q '^proof: unverified$' "$CR3_PLAN_FILE" 2>/dev/null; then
+  ok
+else
+  fail "placeholder continue-round-3.md should record proof: unverified (file: $(cat "$CR3_PLAN_FILE" 2>/dev/null))"
+fi
+OUT3D="$(bash "$PHASE_RECORD" assert "$SIG_CR3" --class Standard --pre-build 2>&1)"; rc3d=$?
+if [[ $rc3d -eq 3 ]] && printf '%s' "$OUT3D" | grep -q 'missing=.*plan'; then
+  ok
+else
+  fail "placeholder note must still leave plan in missing= (rc=$rc3d, out=$OUT3D)"
+fi
+
 # ── Test 4 (acceptance 4): running the printed remedy for a refusal clears
 #    it — plan via brief, gate1 via an explicit recorded --reason ─────────
 printf 'test: 4 the printed remedy actually clears the refusal\n'
 SIG_REMEDY="remedy01"
 mkdir -p "${TMP_ROOT}/docs/handoff/TASK-REMEDY-01"
-printf '# TASK-REMEDY-01 brief\n' > "${TMP_ROOT}/docs/handoff/TASK-REMEDY-01/brief.md"
+printf '# TASK-REMEDY-01 brief\n\nFounder-authored remedy brief describing the task scope, acceptance\ncriteria, and the files expected to change once the remedy lands.\n' > "${TMP_ROOT}/docs/handoff/TASK-REMEDY-01/brief.md"
+mk_dispatch_dir "$SIG_REMEDY"
 bash "$PHASE_RECORD" record "$SIG_REMEDY" classify --status done --owner test >/dev/null 2>&1
 OUT4A="$(bash "$PHASE_RECORD" assert "$SIG_REMEDY" --class Standard --pre-build 2>&1)"; rc4a=$?
 if [[ $rc4a -eq 3 ]]; then
@@ -190,6 +254,7 @@ fi
 #    prepass, no gate1 reason anywhere) is still refused ──────────────────
 printf 'test: 5 Standard lane that genuinely skipped planning is still refused\n'
 SIG_SKIP="skip0001"
+mk_dispatch_dir "$SIG_SKIP"
 bash "$PHASE_RECORD" record "$SIG_SKIP" classify --status done --owner test >/dev/null 2>&1
 OUT5="$(bash "$PHASE_RECORD" assert "$SIG_SKIP" --class Standard --pre-build 2>&1)"; rc5=$?
 if [[ $rc5 -eq 3 ]]; then
@@ -214,6 +279,7 @@ if [[ $rc6a -eq 0 ]]; then
 else
   fail "is-bootstrap on a lane with no records should exit 0 (got $rc6a)"
 fi
+mk_dispatch_dir "$SIG_PROBE"
 bash "$PHASE_RECORD" record "$SIG_PROBE" classify --status done --owner test >/dev/null 2>&1
 bash "$PHASE_RECORD" is-bootstrap "$SIG_PROBE" 2>/dev/null; rc6b=$?
 if [[ $rc6b -eq 1 ]]; then
@@ -294,11 +360,6 @@ run_dispatch() { # <mission> <out-file> [writes]
   return $?
 }
 
-mission_sig8() {
-  printf '%s' "$1" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' \
-    | shasum -a 256 | awk '{print substr($1, 1, 8)}'
-}
-
 # Test 7: brand-new Standard lane, no plan/gate1 anywhere ⇒ the REAL dispatcher
 # admits the bootstrap lane before recording classify and reaches the stub arm.
 printf 'test: 7 fresh Standard dispatch through dispatch-code.sh is admitted\n'
@@ -329,7 +390,7 @@ fi
 printf 'test: 7b same lane after plan+gate1 remedies is admitted and spawns\n'
 rm -f "${TMP_ROOT}"/cache7/dispatch-ledger/*.jsonl 2>/dev/null
 mkdir -p "${REPO7}/docs/handoff/PPB-${S7}"
-printf '# PPB-%s\n\nfixture lead-authored plan\n' "$S7" > "${REPO7}/docs/handoff/PPB-${S7}/brief.md"
+printf '# PPB-%s\n\nFixture lead-authored plan describing the task scope, acceptance\ncriteria, and the files expected to change during this lane run.\n' "$S7" > "${REPO7}/docs/handoff/PPB-${S7}/brief.md"
 ( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7" plan \
     --status done --artifact "docs/handoff/PPB-${S7}/brief.md" --owner lead:test ) >/dev/null 2>&1
 ( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7" gate1 \
@@ -356,6 +417,7 @@ M7F='PPB fixture false verified plan claim'
 S7F="$(mission_sig8 "$M7F")"
 mkdir -p "${REPO7}/docs/handoff/PPB-${S7F}"
 printf 'not a recognized plan artifact name\n' > "${REPO7}/docs/handoff/PPB-${S7F}/notes.md"
+mkdir -p "${REPO7}/docs/handoff/dispatch-${S7F}"
 ( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7F" classify \
     --status done --owner test ) >/dev/null 2>&1
 ( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7F" plan \
@@ -388,6 +450,7 @@ fi
 # ignored — the store wins (the flag is parsed for compatibility, decides nothing).
 printf 'test: 7d --at-bootstrap claim is ignored, the store wins\n'
 SIG_CLAIM="$(mission_sig8 'PPB classify-only claim lane')"
+mkdir -p "${REPO7}/docs/handoff/dispatch-${SIG_CLAIM}"
 ( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$SIG_CLAIM" classify \
     --status done --owner test ) >/dev/null 2>&1
 OUT7C="$( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" assert "$SIG_CLAIM" \
@@ -442,7 +505,7 @@ fi
 printf 'test: 8b Heavy lane after diverge/plan/gate1 remedies is admitted and spawns\n'
 rm -f "${TMP_ROOT}"/cache7/dispatch-ledger/*.jsonl 2>/dev/null
 mkdir -p "${REPO7}/docs/handoff/PPB-${S8}"
-printf '# PPB-%s\n\nfixture lead-authored plan\n' "$S8" > "${REPO7}/docs/handoff/PPB-${S8}/brief.md"
+printf '# PPB-%s\n\nFixture lead-authored plan describing the task scope, acceptance\ncriteria, and the files expected to change during this lane run.\n' "$S8" > "${REPO7}/docs/handoff/PPB-${S8}/brief.md"
 ( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S8" diverge \
     --status n/a --reason 'fixture: no diverge round' --owner lead:test ) >/dev/null 2>&1
 ( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S8" plan \
@@ -468,6 +531,7 @@ fi
 # does not). Direct guard drive, like tests 2/5.
 printf 'test: 8c Heavy lane with classify-only records still refuses, naming diverge\n'
 SIG_H8C="heavy08c1"
+mk_dispatch_dir "$SIG_H8C"
 bash "$PHASE_RECORD" record "$SIG_H8C" classify --status done --owner test >/dev/null 2>&1
 OUT8C="$(bash "$PHASE_RECORD" assert "$SIG_H8C" --class Heavy --pre-build 2>&1)"; rc8c=$?
 if [[ $rc8c -eq 3 ]]; then

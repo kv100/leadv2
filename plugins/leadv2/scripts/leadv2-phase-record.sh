@@ -25,9 +25,10 @@
 #   Phase        Proof                                        Level
 #   -----        -----                                        -----
 #   plan         context.yaml or prepass exists + has body    full (verified)
-#                OR a brief/fix-round file the dispatch was    attested
-#                launched with (docs/handoff/<task>/brief.md
-#                or fix-round-N.md), non-empty
+#                OR any single .md file inside the task's own  attested
+#                docs/handoff/<task>/ dir (any name) clearing a
+#                substance floor: >=120 non-whitespace chars
+#                AND >=2 non-blank lines
 #   gate1        .gate1-passed sentinel non-empty             full (verified)
 #                OR the phase record itself carries a          attested
 #                non-empty --reason (an explicit recorded
@@ -511,32 +512,54 @@ _verify_artifact() {
       if [[ -n "$prepass_file" && -s "$prepass_file" ]]; then _VA_STRENGTH="verified"; return 0; fi
       local ctx_file="${PHASES_DIR_BASE}/dispatch-${sig8}/context.yaml"
       if [[ -s "$ctx_file" ]] && grep -q 'decisions' "$ctx_file" 2>/dev/null; then _VA_STRENGTH="verified"; return 0; fi
-      # DISPATCH-PHASE-DEADLOCK-01 + PHASE-BOOTSTRAP-ADMIT-02: a lead-authored
-      # brief or fix-round note is a real plan — it just does not live in
-      # context.yaml, and context.yaml/architect-prepass.md are machine-derived
-      # artifacts that cannot exist before a worker/architect has actually run
-      # (the bootstrap deadlock). Accept it, but ONLY as "attested" (a human
-      # artifact, not a machine-checked one — the distinction must not be
-      # lost), and ONLY a non-empty, integrity-checked doc that (a) lives
-      # inside docs/handoff/<task-dir>/ (task dirs are named by task-id, not the
-      # dispatch sig — pinning to dispatch-<sig8>/ would reject every real
-      # lead brief, see test-phase-precondition-bootstrap.sh test 3) and
-      # (b) is named like a brief (brief.md, brief-*.md, fix-round-N.md)
-      # with a matching sha256, so an arbitrary --artifact string — or a
-      # foreign lane's still-evolving brief — cannot forge plan proof. A
-      # Standard/Heavy lane that genuinely skipped planning still falls
-      # through to `return 1` below — a wider acceptable-evidence set, not a
-      # weaker check.
+      # DISPATCH-PHASE-DEADLOCK-01 / PHASE-BOOTSTRAP-ADMIT-02 /
+      # PHASE-PLAN-PROOF-IS-FILENAME-BASED-01: a lead-authored brief,
+      # fix-round or continue-round note is a real plan — it just does not
+      # live in context.yaml, and context.yaml/architect-prepass.md are
+      # machine-derived artifacts that cannot exist before a worker/architect
+      # has actually run (the bootstrap deadlock). Accept it, but only ever as
+      # "attested": a human artifact, not a machine-checked one, and the
+      # distinction must not be lost.
+      #
+      # THREE independent guards, all required. This rebase resolution keeps
+      # BOTH branches' protections — neither alone is sufficient:
+      #  (a) LOCATION: the artifact lives directly in the task's own
+      #      docs/handoff/<task>/ dir, exactly one path segment. Task dirs are
+      #      named by task-id, not the dispatch sig — pinning to
+      #      dispatch-<sig8>/ would reject every real lead brief, see
+      #      test-phase-precondition-bootstrap.sh test 3.
+      #  (b) INTEGRITY: a matching sha256, so an arbitrary --artifact string —
+      #      or a foreign lane's still-evolving brief — cannot forge proof.
+      #  (c) SUBSTANCE: >=120 non-whitespace chars AND >=2 non-blank lines,
+      #      strictly tighter than the old bare non-empty (-s) check, so
+      #      TBD/WIP/N/A one-liners that passed before now fail.
+      #
+      # The old two-name (brief.md|fix-round-N.md) allowlist is gone: it added
+      # no protection beyond (a) and only over-fit two literal names,
+      # rejecting real plan notes like continue-round-2.md (measured
+      # 2026-09-03: it stalled seven Wave-4 lanes on rc=3 missing=plan until
+      # the files were renamed). A Standard/Heavy lane that genuinely skipped
+      # planning still falls through to `return 1` below — a wider
+      # acceptable-evidence set, not a weaker check.
+      # TODO(PHASE-PLAN-PROOF-IS-FILENAME-BASED-01): the [^/]+ task-id segment
+      # is never checked against the CALLING sig8 — a substantial note in a
+      # different task's handoff dir also passes. Pre-existing gap,
+      # deliberately not fixed in this lane.
       if [[ -n "$artifact" ]]; then
         local _resolved=""
         if [[ -f "${PROJECT_ROOT}/${artifact}" ]]; then _resolved="${PROJECT_ROOT}/${artifact}"
         elif [[ -f "$artifact" ]]; then _resolved="$artifact"
         fi
         if [[ -n "$_resolved" && -s "$_resolved" ]] \
-           && printf '%s' "$artifact" | grep -qE '^(.*/)?docs/handoff/[^/]+/(brief|brief-[^/]+|fix-round-[0-9]+)\.md$' \
+           && printf '%s' "$artifact" | grep -qE '^(.*/)?docs/handoff/[^/]+/[^/]+\.md$' \
            && _artifact_integrity "$artifact" "$sha"; then
-          _VA_STRENGTH="attested"
-          return 0
+          local _nonws _nonblank
+          _nonws="$(tr -d '[:space:]' < "$_resolved" | wc -c | tr -d ' ')"
+          _nonblank="$(grep -cv '^[[:space:]]*$' "$_resolved" 2>/dev/null | tr -d ' ')"
+          if [[ "${_nonws:-0}" -ge 120 && "${_nonblank:-0}" -ge 2 ]]; then
+            _VA_STRENGTH="attested"
+            return 0
+          fi
         fi
       fi
       # The three addresses are deliberate, not an accident: (1) and (2) are
@@ -783,6 +806,42 @@ cmd_record() {
   local phases_d phase_file
   phases_d="$(_phases_d "$sig8")"
   phase_file="${phases_d}/${phase}.yaml"
+
+  # PHASE-RECORD-WRITES-TO-THE-WRONG-REPO-01: `record` trusts the resolved
+  # root blindly, and an inherited LEADV2_PROJECT_ROOT (another repo's
+  # settings.json env block) resolves SILENTLY — the conflict guard at the
+  # top of this script fires only when BOTH root vars are set and disagree.
+  # The one legitimate missing-dispatch-dir shape is a SAME-REPO first
+  # record: on a fresh dispatch, dispatch-code's own `record classify`
+  # (resolve :7125) IS the step that creates docs/handoff/dispatch-<sig8>/
+  # via the mkdir below — refusing a missing dir unconditionally breaks
+  # every fresh dispatch (measured 2026-09-06: the empty store then trips
+  # the bootstrap exemption and the pre-spawn plan/gate1 refusal is
+  # bypassed entirely). The bug shape is CROSS-REPO: cwd inside repo A
+  # while the root resolves into repo B. So refuse a missing dir only when
+  # the cwd's repo identity (git common-dir, realpath fallback) differs
+  # from the resolved root's. Reads (assert/show/is-bootstrap) keep the
+  # warn-and-proceed asymmetry above.
+  local _own_dispatch_dir="${PHASES_DIR_BASE}/dispatch-${sig8}"
+  if [[ ! -d "$_own_dispatch_dir" ]]; then
+    local _cwd_id _root_id
+    _cwd_id="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+    if [[ -n "$_cwd_id" ]]; then
+      _cwd_id="$(cd "$_cwd_id" 2>/dev/null && pwd -P)" || _cwd_id="$(pwd -P)"
+    else
+      _cwd_id="$(pwd -P)"
+    fi
+    _root_id="$(git -C "$PROJECT_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
+    if [[ -n "$_root_id" ]]; then
+      _root_id="$(cd "$PROJECT_ROOT/$_root_id" 2>/dev/null && pwd -P)" || :
+    else
+      _root_id="$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P || printf '%s' "$PROJECT_ROOT")"
+    fi
+    if [[ "${_cwd_id%/}" != "${_root_id%/}" ]]; then
+      _log_err "record: project root not permitted: dispatch-${sig8}/ does not exist under resolved root ${PROJECT_ROOT} (missing: ${_own_dispatch_dir}), and cwd resolves to a different repo (${_cwd_id} vs ${_root_id}) — refusing to write phase ${phase}; an inherited LEADV2_PROJECT_ROOT/PROJECT_ROOT from another repo's session makes record write into a foreign repo, check LEADV2_PROJECT_ROOT / PROJECT_ROOT / cwd"
+      exit 4
+    fi
+  fi
 
   mkdir -p "$phases_d" || { _log_err "record: cannot mkdir $phases_d"; exit 4; }
 

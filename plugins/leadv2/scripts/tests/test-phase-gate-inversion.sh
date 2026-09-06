@@ -20,7 +20,18 @@
 #      guard's OWN store probe (the surviving, self-computed exemption);
 #   5. PROJECT_ROOT vs LEADV2_PROJECT_ROOT conflict ⇒ loud failure, no silent
 #      write into either store; PROJECT_ROOT alone is honoured as the store
-#      root (the name an operator types must not resolve to a different store).
+#      root (the name an operator types must not resolve to a different store);
+#   5c. PHASE-RECORD-WRITES-TO-THE-WRONG-REPO-01: `record` whose cwd repo
+#      differs from the resolved root's repo (a lone inherited
+#      LEADV2_PROJECT_ROOT pointing at another repo) and whose dispatch-<sig8>/
+#      does not exist there ⇒ refuses rc=4, creates NOTHING;
+#   5d. the paired positive: a same-repo FIRST record with no dispatch-<sig8>/
+#      yet (how every fresh dispatch creates its store) stays permitted.
+#      Declared NEGATIVE CONTROL (mutation run via leadv2-mutation-control.sh):
+#      delete the existence-gate `if` block inside cmd_record of
+#      leadv2-phase-record.sh (leave `mkdir -p` unconditional) — case 5c
+#      MUST go red (rc becomes 0 and the foreign dispatch dir appears) while
+#      5d stays green.
 #
 # Fixture repo + stub launcher binaries + fixture quota reader throughout
 # (harness shape: test-effort-routing.sh). Never a live provider, never the
@@ -155,7 +166,14 @@ record_lead_phases() {
   local repo="$1" sig8="$2" with_classify="${3:-}"
   local brief="docs/handoff/PGI-$sig8/brief.md"
   mkdir -p "$repo/docs/handoff/PGI-$sig8"
-  printf '# PGI-%s\n\nfixture lead-authored plan\n' "$sig8" > "$repo/$brief"
+  # PHASE-RECORD-WRITES-TO-THE-WRONG-REPO-01: cmd_record refuses unless the
+  # task's own dispatch-<sig8>/ dir already exists (real dispatch-code.sh
+  # creates it at task setup, strictly before its first record). Fixture
+  # callers driving `record` directly must mirror that precondition. The
+  # brief text clears the >=120-non-ws-char plan substance floor so this
+  # fixture stays admissible under PHASE-PLAN-PROOF-IS-FILENAME-BASED-01.
+  mkdir -p "$repo/docs/handoff/dispatch-$sig8"
+  printf '# PGI-%s\n\nFixture lead-authored plan describing the task scope, the acceptance\ncriteria, and the exact files this lane is expected to change during its run.\n' "$sig8" > "$repo/$brief"
   if [[ -n "$with_classify" ]]; then
     ( cd "$repo" && PROJECT_ROOT="$repo" LEADV2_PROJECT_ROOT="$repo" bash "$PHASE_RECORD" record "$sig8" classify \
         --status done --owner lead:fixture ) >/dev/null 2>&1
@@ -261,6 +279,9 @@ if [[ -f "$TMP/spawn-c3/spawned.txt" ]]; then ok; else fail 'case3: resumed disp
 printf 'test: 4 caller bootstrap claim cannot override the recorded store\n'
 REPO4="$TMP/repo4"; mk_repo "$REPO4"
 S4="$(mission_sig8 'PGI case4 classify-only lane')"
+# PHASE-RECORD-WRITES-TO-THE-WRONG-REPO-01: mirror dispatch-code's setup
+# precondition — the dispatch dir exists before any record call.
+mkdir -p "$REPO4/docs/handoff/dispatch-$S4"
 ( cd "$REPO4" && PROJECT_ROOT="$REPO4" LEADV2_PROJECT_ROOT="$REPO4" bash "$PHASE_RECORD" record "$S4" classify \
     --status done --owner lead:fixture ) >/dev/null 2>&1
 OUT4="$( cd "$REPO4" && PROJECT_ROOT="$REPO4" LEADV2_PROJECT_ROOT="$REPO4" bash "$PHASE_RECORD" assert "$S4" \
@@ -294,12 +315,63 @@ else
   fail 'case5a: record landed in the conflicting store'
 fi
 S5B="$(mission_sig8 'PGI case5 plain PROJECT_ROOT lane')"
+# PHASE-RECORD-WRITES-TO-THE-WRONG-REPO-01: mirror dispatch-code's setup
+# precondition — the dispatch dir exists before any record call.
+mkdir -p "$REPO5/docs/handoff/dispatch-$S5B"
 OUT5B="$( cd "$REPO5" && env -u LEADV2_PROJECT_ROOT PROJECT_ROOT="$REPO5" bash "$PHASE_RECORD" record "$S5B" classify \
     --status done --owner lead:fixture 2>&1 )"; RC5B=$?
 if [[ $RC5B -eq 0 && -f "$REPO5/docs/handoff/dispatch-$S5B/phases.d/classify.yaml" ]]; then
   ok
 else
   fail "case5b: PROJECT_ROOT alone must resolve the store (rc=$RC5B out=$OUT5B)"
+fi
+
+# ── case 5c: PHASE-RECORD-WRITES-TO-THE-WRONG-REPO-01 — a lone inherited
+# LEADV2_PROJECT_ROOT pointing at a FOREIGN REPO (cwd in one git repo, root
+# resolving into another) with no dispatch-<sig8>/ there must be REFUSED:
+# rc≠0, nothing created, stderr names the resolved root, the sig8 and the
+# operator checks. This is the negative control declared in the header: with
+# the existence-gate `if` block deleted inside cmd_record, rc becomes 0 and
+# the foreign dispatch dir appears. ──────────────────────────────────────────
+printf 'test: 5c cross-repo record (cwd repo != LEADV2_PROJECT_ROOT repo, no dispatch dir) is refused, creates nothing\n'
+REPO5C="$TMP/repo5c"; mk_repo "$REPO5C"
+REPO5C_OTHER="$TMP/repo5c-other"; mk_repo "$REPO5C_OTHER"
+S5C="$(mission_sig8 'PGI case5c foreign-root record lane')"
+OUT5C="$( cd "$REPO5C" && env -u PROJECT_ROOT LEADV2_PROJECT_ROOT="$REPO5C_OTHER" bash "$PHASE_RECORD" record "$S5C" classify \
+    --status done --owner lead:fixture 2>&1 )"; RC5C=$?
+if [[ $RC5C -ne 0 ]]; then ok; else fail "case5c: foreign-root record must be refused (rc=$RC5C out=$OUT5C)"; fi
+if [[ ! -e "$REPO5C_OTHER/docs/handoff/dispatch-$S5C" ]]; then
+  ok
+else
+  fail 'case5c: refused record must not create the foreign dispatch dir'
+fi
+if printf '%s' "$OUT5C" | grep -q "dispatch-${S5C}" \
+   && printf '%s' "$OUT5C" | grep -q "resolved root ${REPO5C_OTHER}" \
+   && printf '%s' "$OUT5C" | grep -q 'check LEADV2_PROJECT_ROOT / PROJECT_ROOT / cwd'; then
+  ok
+else
+  fail "case5c: refusal must name resolved root, sig8 and the operator checks (out=$OUT5C)"
+fi
+
+# ── case 5d: the PAIRED positive — a same-repo FIRST record with no
+# dispatch-<sig8>/ yet is exactly how a fresh dispatch creates its phase
+# store (cwd repo == root repo), so it must stay permitted: rc=0 and the
+# record lands. A gate that refused this would bypass the pre-spawn phase
+# guard for every fresh lane (store empty ⇒ bootstrap admission). ────────────
+printf 'test: 5d same-repo first record with no dispatch dir yet is permitted (fresh-dispatch shape)\n'
+REPO5D="$TMP/repo5d"; mk_repo "$REPO5D"
+S5D="$(mission_sig8 'PGI case5d fresh same-repo record lane')"
+OUT5D="$( cd "$REPO5D" && env -u PROJECT_ROOT LEADV2_PROJECT_ROOT="$REPO5D" bash "$PHASE_RECORD" record "$S5D" classify \
+    --status done --owner lead:fixture 2>&1 )"; RC5D=$?
+if [[ $RC5D -eq 0 && -f "$REPO5D/docs/handoff/dispatch-$S5D/phases.d/classify.yaml" ]]; then
+  ok
+else
+  fail "case5d: same-repo first record must succeed and land (rc=$RC5D out=$OUT5D)"
+fi
+if printf '%s' "$OUT5D" | grep -q 'project root not permitted'; then
+  fail "case5d: same-repo first record must not be refused (out=$OUT5D)"
+else
+  ok
 fi
 
 printf '\n[PHASE-GATE-INVERSION] pass=%d fail=%d\n' "$PASS" "$FAIL"
