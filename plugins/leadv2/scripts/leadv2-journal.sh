@@ -3,14 +3,30 @@
 # Usage:
 #   leadv2-journal.sh append <task-id> <type> <text...>
 #   leadv2-journal.sh tail   <task-id> [N]   (N default 10)
+#   leadv2-journal.sh path   <task-id>        (print the resolved journal.md path)
 #
-# Journal path: ${PROJECT_ROOT}/${leadv2_dir}/tasks/<task-id>/journal.md
-# Single-writer, plain-append design — no locking needed.
+# LIVE-LANES-RUN-WITHOUT-A-JOURNAL-01: the journal path used to be
+# ${PROJECT_ROOT}/${leadv2_dir}/tasks/<task-id>/journal.md, where PROJECT_ROOT
+# fell back to `git rev-parse --show-toplevel`. Inside a worktree that
+# returns the WORKTREE, not the checkout -- so a worker running in a worktree
+# and a reader rooted at the checkout (or at a different worktree of the same
+# repo) disagreed about where the journal lives, even though both were
+# "correct" by their own resolution rule. Fixed by routing through
+# leadv2-state-path.sh's canonical control-plane root, which resolves via
+# `git rev-parse --git-common-dir` -- IDENTICAL from every worktree of the
+# same repo. `path` is the resolver both this writer and any external reader
+# (e.g. persona-engine's scripts/anti-silence-pulse.sh, via the symlinked
+# copy of this same script) must call, so there is exactly one address per
+# task, computed by exactly one function, everywhere.
+#
+# Falls back to the pre-fix per-checkout layout only if leadv2-state-path.sh
+# is missing or errors -- a worker must never be left unable to write.
 
 set -euo pipefail
 trap 'exit 0' ERR
 
 SCRIPT_NAME="leadv2-journal"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
 
 log_err() {
@@ -24,7 +40,7 @@ _lv2_leadv2_dir=$(grep -E "^[[:space:]]*leadv2_dir[[:space:]]*:" "$_lv2_sp_yaml"
 
 # ── argument validation ────────────────────────────────────────────────────────
 if [[ $# -lt 2 ]]; then
-  log_err "Usage: $0 append <task-id> <type> <text...> | $0 tail <task-id> [N]"
+  log_err "Usage: $0 append <task-id> <type> <text...> | $0 tail <task-id> [N] | $0 path <task-id>"
   exit 1
 fi
 
@@ -39,7 +55,24 @@ if [[ -z "$TASK_ID" ]]; then
   exit 1
 fi
 
-TASK_DIR="${PROJECT_ROOT}/${_lv2_leadv2_dir}/tasks/${TASK_ID}"
+# ── resolve TASK_DIR via the canonical, worktree-invariant control-plane
+# root (LIVE-LANES-RUN-WITHOUT-A-JOURNAL-01) ────────────────────────────────
+_STATE_PATH_SH="${SCRIPT_DIR}/leadv2-state-path.sh"
+TASK_DIR=""
+if [[ -x "$_STATE_PATH_SH" ]]; then
+  if [[ -n "${CLAUDE_PROJECT_ROOT:-}" ]]; then
+    TASK_DIR="$(PROJECT_ROOT="$CLAUDE_PROJECT_ROOT" "$_STATE_PATH_SH" --no-link "tasks/${TASK_ID}" 2>/dev/null)" || TASK_DIR=""
+  elif [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+    TASK_DIR="$(PROJECT_ROOT="$CLAUDE_PROJECT_DIR" "$_STATE_PATH_SH" --no-link "tasks/${TASK_ID}" 2>/dev/null)" || TASK_DIR=""
+  else
+    TASK_DIR="$("$_STATE_PATH_SH" --no-link "tasks/${TASK_ID}" 2>/dev/null)" || TASK_DIR=""
+  fi
+fi
+if [[ -z "$TASK_DIR" ]]; then
+  # Resolver missing or errored -- degrade to the pre-fix per-checkout
+  # layout rather than leaving a worker unable to write its journal.
+  TASK_DIR="${PROJECT_ROOT}/${_lv2_leadv2_dir}/tasks/${TASK_ID}"
+fi
 JOURNAL_FILE="${TASK_DIR}/journal.md"
 
 case "$MODE" in
@@ -70,8 +103,11 @@ case "$MODE" in
     fi
     tail -n "$N" "$JOURNAL_FILE"
     ;;
+  path)
+    printf -- '%s\n' "$JOURNAL_FILE"
+    ;;
   *)
-    log_err "Unknown mode: $MODE (expected 'append' or 'tail')"
+    log_err "Unknown mode: $MODE (expected 'append', 'tail', or 'path')"
     exit 1
     ;;
 esac
