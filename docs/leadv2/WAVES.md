@@ -150,7 +150,7 @@
 
 ## В7 — Статус, отчётность, реестр решений
 
-всего 17 · слито 8 · в работе 0 · осталось 9
+всего 17 · слито 9 · в работе 0 · осталось 8
 
 - [отчёт-разобрать] MERGE-QUEUE-DEAD-HEAD-01
 - [пусто-передиспатчить] BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01
@@ -158,7 +158,7 @@
 - [пусто-передиспатчить] REVIEW-RUN-LOSES-VERDICTS-01
 - [пусто-передиспатчить] REVIEW-SENTINELS-LANGUAGE-01
 - [не начато] ANTI-SILENCE-ONE-MECHANISM-01
-- [не начато] PROCESS-AUDIT-20260821
+- [слито] PROCESS-AUDIT-20260821
 - [не начато] SCRIPT-SIZE-AUDIT-20260821
 - [не начато] WAVE3-LANE-NOTES
 - [слито] CAPABILITY-TRUTH-AUDIT-01

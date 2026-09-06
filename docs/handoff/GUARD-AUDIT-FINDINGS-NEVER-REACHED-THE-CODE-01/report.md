@@ -259,3 +259,38 @@ run-all: 6 passed, 1 failed, scope=changed
   `worktrees/WRITESET-REFUSAL-NEVER-NAMES-THE-BLOCKER-01`, live at check time) was running
   core-offline in parallel — the measured condition that flips nested core-offline suites
   NOT-KNOWN-RED. Left for the liveness/CI owners; not widened into any known-red list.
+
+## Закрытие ряда PROCESS-AUDIT-20260821 (В7)
+
+Три рекомендации аудита (`docs/handoff/PROCESS-AUDIT-20260821/codex-findings.md`, «Three changes to
+implement next») — **все три сделаны по существу**, проверено живым кодом и живым употреблением,
+не текстом коммита:
+
+1. **Pilot mechanism closure** — `7729515b` (`PREPASS-MECHANISM-CLOSURE-01`, 2026-08-21, в ночь
+   аудита). Все четыре требуемые секции (CALLERS/CALLEES, STATES AND RETURN CODES, CONFIGURATION
+   BOUNDARIES, COUNTEREXAMPLE) дословно в architect-промпте `leadv2-dispatch-code.sh` (~:2865
+   промпт, ~:7858 сборка миссии сборщика, фраза `Implement this mechanism-closed design`).
+   Живое употребление: ≥6 реальных `docs/handoff/dispatch-*/lane-mission.md` цитируют инструкцию
+   дословно; `dispatch-b413968c/developer.full.md` несёт настоящий отчёт разработчика по протоколу
+   фальсификации («Falsification check (PREPASS-MECHANISM-CLOSURE-01): No caller... contradicted
+   the design's census»).
+
+2. **Make review synthesis real, or pay for one arm only** — `b918bd42`
+   (`REVIEW-UNION-VERDICT-01`, 2026-08-21, тот же вечер). `leadv2-review-run.sh` (~:1668-1750):
+   union всех рук авторитетен — любой arm с FAIL проваливает гейт, не только первый распарсенный
+   (`_union_fail_arm`, `review_union_escalate`). Комментарий в коде цитирует аудит дословно
+   («The Codex process audit named this precisely (codex-findings.md, Q1/proposal 2...)»). Механизм
+   не за флагом, работает в основном потоке гейта.
+
+3. **Delete marker block, replace with executed paired falsification** — старый C4-гейт
+   (`leadv2-builder-selfcheck.sh`) выключен по умолчанию (`LEADV2_TEST_FALSIFICATION_GATE:-0`),
+   заменён `leadv2-suite-falsifiable.sh` — уже подтверждено `GUARD-AUDIT-FINDINGS-NEVER-REACHED-THE-CODE-01`
+   (2026-09-04): «marker-block RED-noise class gone from current dispatch selfchecks».
+
+Первая перепись (моя же, ранее в этом ряду) назвала рекомендацию 2 «неверифицируемой» — это была
+ошибка: унаследовано из `GUARD-AUDIT-FINDINGS-NEVER-REACHED-THE-CODE-01` без перепроверки живым
+кодом. Исправлено в этом же закрытии — все три пункта проверены по факту употребления
+(комментарии в коде + реальные lane-mission/developer-отчёты), не по упоминанию в теле коммита.
+
+Ряд закрыт: 3/3, дата аудита 2026-08-21, обе фиксирующие рекомендации-коммита landed в тот же
+вечер, что и сам аудит.
