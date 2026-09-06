@@ -100,7 +100,15 @@ router_v2:
   # by probe_outage=. `unknown` is not `100%`.
   quota_ceilings:
     glm:    { work_pct: 80, review_pct: 90 }
-    codex:  { work_pct: 90, review_pct: 95 }
+    # CODEX-TIER-100-NO-BURST-WINDOW-01 (founder, 2026-09-06): the codex plan moved
+    # to the $100 tier AND the 5h burst window stopped being a limit -- the live
+    # probe now reports a single 168h weekly window for codex (reset_codex=168.00h_live).
+    # 90/95 was set when a 5h burst window could trip a lane mid-flight and refill
+    # within the same working session; that pressure is gone, so codex takes the
+    # long-window posture claude already has (95) for work, and review keeps the
+    # higher ceiling per the standing rule that review outranks work. 98 rather
+    # than 100 so a review can never be the call that hard-locks the account.
+    codex:  { work_pct: 95, review_pct: 98 }
     claude: { work_pct: 95, review_pct: 95 }
 
   # ARBITER-REMEMBERS-FAILURES-01 (founder 2026-09-05): an arm that already came

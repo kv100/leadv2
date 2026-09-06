@@ -63,8 +63,8 @@ DISPATCHABLE_PLAN_ARMS = {"codex", "sonnet", "opus", "fable"}
 # reviewing its own diff. GLM-53-FLASH-ARM-01: glm-flash is glm-family and
 # inherits the same exclusion -- a flash model never reviews any diff.
 DEFAULT_REVIEW_EXCLUSIONS = ["glm", "glm-flash", "freepool"]
-DEFAULT_BUILD_THRESHOLD_PCT = 80.0
-DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
+DEFAULT_BUILD_THRESHOLD_PCT = 95.0
+DEFAULT_REVIEW_THRESHOLD_PCT = 98.0
 
 # dispatch-00629379 (P0, 2026-07-30): the review gate had no available reviewer once
 # Codex hit its weekly cap and GLM tripped the (build-only) 80% gate -- every build

@@ -266,13 +266,16 @@ drift_py_claude_review="$(sed -n 's/^DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT = \(
   [[ "${LEADV2_CEIL_CLAUDE_WORK}" == "${drift_val_yaml_claude_work}" ]] || ok=0
   [[ "${LEADV2_CEIL_CLAUDE_REVIEW}" == "${drift_val_yaml_claude_review}" ]] || ok=0
   [[ "${LEADV2_CEIL_CLAUDE_REVIEW}" == "${drift_py_claude_review%.*}" ]] || ok=0
-  # documented exception: codex build 80 (py) vs 90 (yaml + ceilings.sh)
-  [[ "${drift_py_codex_build%.*}" == "80" ]] || ok=0
-  [[ "${LEADV2_CEIL_CODEX_WORK}" == "90" ]] || ok=0
+  # CODEX-TIER-100-NO-BURST-WINDOW-01 (2026-09-06): the old codex-build
+  # exception (80 py vs 90 yaml) is GONE. It existed because a 5h burst window
+  # could strand a build mid-flight; codex has no burst window any more, so all
+  # three sources now declare the same number and this asserts equality, not an
+  # exception. Widening any one copy alone must fail here.
+  [[ "${LEADV2_CEIL_CODEX_WORK}" == "${drift_py_codex_build%.*}" ]] || ok=0
   exit $(( ok == 1 ? 0 : 1 ))
 )
 if [[ $? -eq 0 ]]; then
-  pass "drift: yaml/py/ceilings.sh agree on 5 of 6 values; codex-build exception (80py/90yaml) confirmed by name"
+  pass "drift: yaml/py/ceilings.sh agree on all 6 values (codex-build exception retired 2026-09-06)"
 else
   fail "drift: unexpected disagreement between quota-ceiling sources" \
     "yaml_glm=${drift_val_yaml_glm_work}/${drift_val_yaml_glm_review} yaml_codex=${drift_val_yaml_codex_work}/${drift_val_yaml_codex_review} yaml_claude=${drift_val_yaml_claude_work}/${drift_val_yaml_claude_review} py_codex_build=${drift_py_codex_build} py_codex_review=${drift_py_codex_review} py_glm_review=${drift_py_glm_review} py_claude_review=${drift_py_claude_review}"

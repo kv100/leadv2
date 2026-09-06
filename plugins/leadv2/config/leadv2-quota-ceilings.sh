@@ -4,7 +4,7 @@
 # leadv2-provider-quota-gate.sh and leadv2-glm-quota-gate.sh.
 #
 # Values copied verbatim from plugins/leadv2/config/leadv2-routing.yaml
-# router_v2.quota_ceilings (glm 80/90, codex 90/95, claude 95/95) — this file does
+# router_v2.quota_ceilings (glm 80/90, codex 95/98, claude 95/95) — this file does
 # NOT replace that yaml as the declared source of truth; it is the shell-readable
 # mirror the two bash gates need (neither guarantees PyYAML).
 #
@@ -22,8 +22,8 @@
 
 LEADV2_CEIL_GLM_WORK="${LEADV2_CEIL_GLM_WORK:-80}"
 LEADV2_CEIL_GLM_REVIEW="${LEADV2_CEIL_GLM_REVIEW:-90}"
-LEADV2_CEIL_CODEX_WORK="${LEADV2_CEIL_CODEX_WORK:-90}"
-LEADV2_CEIL_CODEX_REVIEW="${LEADV2_CEIL_CODEX_REVIEW:-95}"
+LEADV2_CEIL_CODEX_WORK="${LEADV2_CEIL_CODEX_WORK:-95}"
+LEADV2_CEIL_CODEX_REVIEW="${LEADV2_CEIL_CODEX_REVIEW:-98}"
 LEADV2_CEIL_CLAUDE_WORK="${LEADV2_CEIL_CLAUDE_WORK:-95}"
 LEADV2_CEIL_CLAUDE_REVIEW="${LEADV2_CEIL_CLAUDE_REVIEW:-95}"
 

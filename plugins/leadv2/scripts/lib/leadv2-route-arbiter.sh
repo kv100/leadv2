@@ -241,6 +241,13 @@ def num(x):
 #
 # Wait-vs-switch threshold: 10% of the WINDOW'S OWN period. Argued from the
 # two live period shapes (5h burst window, 7d/168h weekly window), not picked
+# -- CODEX-TIER-100-NO-BURST-WINDOW-01 (founder, 2026-09-06): codex no longer HAS
+# a 5h burst window; its live probe reports a single 168h weekly window. Both
+# shapes below still exist (glm and anthropic keep a 5h window), so the threshold
+# argument stands as written -- but for codex only the 7d arm applies, which means
+# an over-ceiling codex is now waited on for up to 16.8h instead of switched away
+# from. That consequence is tracked as its own backlog row; this note does NOT say
+# the wait is capped, because it is not.
 # free-hand -- it reproduces both founder examples exactly:
 #   20 min left on a 5h window  (0.1*5h=30min)  -> 20<=30  -> WAIT
 #   4 days left on a 7d window  (0.1*168h=16.8h) -> 96>16.8 -> SWITCH
