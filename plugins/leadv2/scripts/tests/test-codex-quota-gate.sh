@@ -28,7 +28,7 @@
 #   q8  started job past stall threshold does NOT record a queued_stall cooldown
 #   q9  queued stall then terminal quota death still records the quota cooldown (+ circuit)
 #   q10 blind reader + recent stall (C) -> one WARN line, dispatch proceeds (rc != 2)
-# run-all-triggers: codex-task
+# run-all-triggers: codex-task leadv2-codex-quota-gate
 #
 # SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
 # marker and matched no name convention, so `run-all.sh --scope changed`
@@ -251,9 +251,13 @@ fi
 
 # ── q7 (D2): the very next dispatch while q6's stall cooldown is live is ───
 # turned away on stderr by the quota gate (same HOME_DIR -> q6's cooldown).
+# CODEX-REFUSAL-MARKER-CARRIES-ITS-CAUSE-01: a queued_stall cooldown is a
+# transport cause (our runtime stalled, not the provider's quota) — the marker
+# must say transport_cooldown, never the quota word.
 run_case q7 task "q7-probe" --cwd "$BASE"
-if [[ "$RUN_RC" -eq 2 ]] && grep -q 'LEADV2_DISPATCH_REFUSED: quota_gate' "$RUN_ERR"; then
-  pass "q7 next dispatch during live queued_stall cooldown refused (rc 2 + marker)"
+if [[ "$RUN_RC" -eq 2 ]] && grep -q 'LEADV2_DISPATCH_REFUSED: transport_cooldown' "$RUN_ERR" \
+   && ! grep -q 'LEADV2_DISPATCH_REFUSED: quota_gate' "$RUN_ERR"; then
+  pass "q7 next dispatch during live queued_stall cooldown refused (rc 2 + transport marker)"
 else
   fail "q7 next dispatch during live queued_stall cooldown refused (rc=$RUN_RC)"
 fi
