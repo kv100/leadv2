@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-codex-refusal-cause.sh
+file=plugins/leadv2/scripts/lib/leadv2-codex-quota-gate.sh
+anchor=s/_refusal_cause="transport_cooldown"/_refusal_cause="quota_gate"/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: T1 worker_died cooldown (rc=2 err=[codex-task] CODEX_REFUSED_QUOTA reason=cooldown used=na threshold=na until=2026-09-06T11:24:49Z
+diff_hash=9c13e9d775d52c892d1521ae7ae4166070fb7aaa1dde99d30b574b4c19bdd77b
+lane_diff_hash=444a422b302ae510f44da120be6c5cd97db924a8ac4c52107e6e505c0d8cb0d8
