@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-lane-alive-predicate.sh
+file=plugins/leadv2/scripts/lib/leadv2-lane-state.sh
+anchor=s/if not recorded or not observed: return 'unknown'/if not recorded or not observed: return 'dead'/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: c2: live pid + EMPTY recorded birth -> alive (unknown never kills), no dead_at
+diff_hash=f7c160ba4390a0370c70db4f41ba2ad68cd7499553efcdfb2a2ef87243825eb3
+lane_diff_hash=e47ba2c01de10fc746aa46b06d97e2793a35c6fa57828fb4a72eaf12333e17ed
