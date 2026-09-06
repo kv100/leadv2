@@ -133,17 +133,44 @@ else
 fi
 
 # ── 5. THE EMPTY HASH IS NEVER A VALUE. Whatever the outcome, that one hash
-#      must not appear as a lane identity anywhere the tool writes.
-found=""
-for d in "$R/docs/handoff/LANE" "$R2/docs/handoff/LANE"; do
-  grep -rl "lane_diff_hash=${EMPTY_SHA}" "$d" 2>/dev/null | while read -r x; do :; done
-  if grep -rq "lane_diff_hash=${EMPTY_SHA}" "$d" 2>/dev/null; then found="${found}${d} "; fi
-done
+#      must not appear as a lane identity in what THIS RUN wrote.
+#
+#      MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01 adjudication, 2026-09-06:
+#      this case used to say "in any artifact". It checks two fixture lane
+#      directories this suite created itself, and the live tree carries 8
+#      artifacts with lane_diff_hash=<empty sha> to this day (all 8 in the
+#      lane position, 0 in the mutation position -- the report's central claim,
+#      recounted independently). A sentence broader than its subject is how a
+#      sentinel comes to be trusted for something it never looked at, so the
+#      sentence now names its scope, and 5b proves the check can actually fail.
+_empty_identity_in() { # <dir>... -> prints the dirs that carry the empty lane id
+  local d out=""
+  for d in "$@"; do
+    [[ -d "${d}" ]] || continue
+    if grep -rq "lane_diff_hash=${EMPTY_SHA}" "$d" 2>/dev/null; then out="${out}${d} "; fi
+  done
+  printf '%s' "${out}"
+}
+found="$(_empty_identity_in "$R/docs/handoff/LANE" "$R2/docs/handoff/LANE")"
 if [[ -z "$found" ]]; then
-  ok "the sha256 of an empty diff never appears as a lane identity in any artifact"
+  ok "no artifact THIS RUN wrote (the two fixture lanes) carries the empty sha as a lane identity"
 else
   bad "5: present in: $found"
 fi
+
+# ── 5b. PAIRED NEGATIVE. Case 5 asserts an absence, and an absence check that
+#       cannot detect a presence is worth nothing -- it would read green over a
+#       tree full of empty identities. Seed one and require it to be seen.
+SEED_DIR="${R}/docs/handoff/LANE-SEEDED"
+mkdir -p "${SEED_DIR}"
+printf 'MUTATION-CONTROL ok suite=x file=y lane_diff_hash=%s\n' "${EMPTY_SHA}" \
+  > "${SEED_DIR}/artifact.md"
+if [[ -n "$(_empty_identity_in "${SEED_DIR}")" ]]; then
+  ok "5b NEG-CTL: a seeded empty lane identity IS detected (the absence check can fail)"
+else
+  bad "5b NEG-CTL: the check missed a planted empty lane identity — case 5 proves nothing"
+fi
+rm -rf "${SEED_DIR}"
 
 # ── 6. THE CONSUMER'S MIRROR HOLE. lib/leadv2-dod-gate.sh has guarded the
 #      MUTATION hash against the empty-diff sha since it was written; the LANE
