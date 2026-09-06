@@ -1,0 +1,7 @@
+before: timeout -k 5 120 bash <fresh>/plugins/leadv2/scripts/leadv2-status-collector.sh (cwd=<fresh>/plugins/leadv2/scripts)
+before: nested_docs_lexists=True walk_count=1 snapshot_exists=True lanes_ok=True
+wrote /private/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/shadow-writer-aa8zsthk/before/plugins/leadv2/scripts/docs/leadv2/status-snapshot.json (collected_at=2026-09-06T07:10:32Z)
+after: timeout -k 5 120 bash <fresh>/plugins/leadv2/scripts/leadv2-status-collector.sh (cwd=<fresh>/plugins/leadv2/scripts)
+after: nested_docs_lexists=False walk_count=0 snapshot_exists=True lanes_ok=True
+wrote /private/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/shadow-writer-aa8zsthk/after/docs/leadv2/status-snapshot.json (collected_at=2026-09-06T07:10:35Z)
+before-after: PASS=2 FAIL=0; two independent directory measurements agree
