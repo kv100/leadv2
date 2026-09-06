@@ -290,10 +290,31 @@ case_4_diff_golden() { # <scripts_dir>
   fi
   run_diff_lane_scenario "${prefix_dir}/plugins/leadv2/scripts" "${pre_gate}"
   rm -rf "${prefix_dir}"
-  local ok=0
-  if ! cmp -s "${live_gate}" "${pre_gate}"; then
+  # GOLDEN-SCOPE-01 (measured 2026-09-06): the golden asks ONE question -- did the
+  # report-only gate change the CODE lane verdict -- and it has to keep asking that
+  # as the gate goes on being developed. `diff:` is a hash of the scoped diff
+  # CONTENT, and the scoping rules are themselves a moving target: 78 commits have
+  # touched leadv2-dispatch-product-close.sh since PRE_GATE_REF, several of them
+  # deliberate scope changes (orchestration dirt, bootstrap dirt, the index-blind
+  # fix). Measured: live and pre agree on every decision field and differ ONLY in
+  # that hash (1cce5a84 vs 9473d886), and two live runs reproduce the same hash --
+  # so it is deterministic, just not invariant across intentional scope work.
+  # The cost, stated instead of hidden: this comparison no longer notices a change
+  # in WHAT the diff contains, only in what the gate DECIDES. The hash is still
+  # required to be present and well-formed on BOTH sides, so a gate that stopped
+  # computing one, or emitted an empty one, still goes red right here.
+  local ok=0 live_f pre_f live_h pre_h
+  live_f="$(grep -v '^diff: ' "${live_gate}")"
+  pre_f="$(grep -v '^diff: ' "${pre_gate}")"
+  if [[ "${live_f}" != "${pre_f}" ]]; then
     ok=1
-    log "golden mismatch: live=[$(cat "${live_gate}")] pre=[$(cat "${pre_gate}")]"
+    log "golden mismatch (decision fields): live=[${live_f}] pre=[${pre_f}]"
+  fi
+  live_h="$(sed -n 's/^diff: //p' "${live_gate}" | head -1)"
+  pre_h="$(sed -n 's/^diff: //p' "${pre_gate}" | head -1)"
+  if ! [[ "${live_h}" =~ ^[0-9a-f]{8}$ && "${pre_h}" =~ ^[0-9a-f]{8}$ ]]; then
+    ok=1
+    log "golden mismatch (diff hash shape): live=[${live_h}] pre=[${pre_h}]"
   fi
   rm -f "${live_gate}" "${pre_gate}"
   return "${ok}"
@@ -353,6 +374,7 @@ case_6a_unknown_kind_gate() { # <scripts_dir>
 # declaration (the exemption is the only thing that can satisfy the guard).
 run_dispatch() { # <root> <mission> ; prints dispatch stdout
   CLAUDE_PROJECT_ROOT="$1" LEADV2_PROJECT_ROOT="$1" \
+  LEADV2_STATE_ROOT="$1/state" \
   LEADV2_DISPATCH_CACHE_DIR="$1/cache" \
   LEADV2_DISPATCH_SUBSESSION_BIN="$1/worker" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
@@ -377,7 +399,31 @@ make_dispatch_repo() { # -> repo path with routing.yaml + worker/wt stubs
   chmod +x "${root}/worker" "${root}/wt-stub.sh"
   printf '%s' "${root}"
 }
-journal_of() { find "$1/docs/leadv2/tasks" -name journal.md -print -quit 2>/dev/null; }
+# LANE-STATE-LEAK-01 aftermath, measured 2026-09-06: the journal has not lived in
+# <repo>/docs/leadv2/tasks since the control plane became worktree-invariant --
+# leadv2-journal.sh resolves through leadv2-state-path.sh, so the lane journal
+# landed at ${LEADV2_STATE_ROOT}/tasks/dispatch-<sig8>/journal.md and this locator
+# found nothing. Half the fix had landed: the suite pins LEADV2_STATE_ROOT above
+# (line ~87) so it does not pollute the fleet bus, but the READER at this end was
+# never moved, so C6b/C6c read "the dispatcher stopped journaling" from a journal
+# that was written correctly the whole time (verified: the lane journal.md carries
+# `lane_deliverable task=<sig8> status=ignored reason=unknown_kind`).
+# run_dispatch now pins the state root INSIDE the fixture, so a find over the
+# fixture root is both layouts at once and no case can read a sibling case
+# journal -- with the shared ${TMPDIR}/rog1-state, "any journal.md" would have.
+# The control plane writes THREE journals per dispatch (dispatch-<sig8>/, <sig8>/ and
+# the lane-state D1 one); only dispatch-<sig8>/journal.md carries the lane's decision
+# lines, so a bare `-name journal.md -print -quit` picks whichever the walk reaches
+# first and reads an empty answer off the wrong file. Measured 2026-09-06: the first
+# version of this fix did exactly that and C6b/C6c stayed red for a second, different
+# reason. Prefer the dispatch journal; fall back to any, so a future rename degrades
+# to the old behaviour instead of to nothing.
+journal_of() {
+  local j
+  j="$(find "$1" -path '*/dispatch-*/journal.md' -print -quit 2>/dev/null)"
+  [[ -n "${j}" ]] || j="$(find "$1" -name journal.md -print -quit 2>/dev/null)"
+  printf '%s' "${j}"
+}
 
 case_6b_unknown_kind_journal() {
   local root out jr
