@@ -319,7 +319,10 @@ fi
 
 # ── Outcome-watch: schedule for Heavy/Standard tasks ─────────────────────────
 # Deterministic shell dispatch — not prose the lead skips.
-# Writes docs/leadv2/watches/<TASK_ID>.yaml; swept at every SessionStart by stale-sweeper.
+# Writes docs/leadv2/watches/<TASK_ID>.yaml; swept at every SessionStart by
+# the full leadv2-stale-sweeper.sh pass, which runs detached from the
+# registered SessionStart hook hooks/leadv2-stale-pid-sweep.sh (that hook's
+# synchronous stage is --mark-only).
 OUTCOME_WATCH_SCRIPT="${SCRIPTS_DIR}/leadv2-outcome-watch.sh"
 if [[ -x "$OUTCOME_WATCH_SCRIPT" ]]; then
   # C2.3/D1/D5: Heavy always; Standard only when LEADV2_SOAK_EVERY_DEPLOY=1.

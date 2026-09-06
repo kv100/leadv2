@@ -9,7 +9,11 @@
 #   --sweep     Check all due pending watches, run the override outcome-watch.sh
 #               (if present in .claude/leadv2-overrides/), and flip outcome_watch
 #               in LEAD_V2_STATE.md history to stable|regression|inconclusive.
-#               Called by leadv2-stale-sweeper.sh at every SessionStart.
+#               Called by the full leadv2-stale-sweeper.sh --non-interactive pass,
+#               which runs detached at every SessionStart from the registered hook
+#               hooks/leadv2-stale-pid-sweep.sh (the synchronous part of that hook
+#               is the sweeper's --mark-only stage; the tail with this sweep is
+#               nohup'd, log /tmp/leadv2-stale-sweeper.<repo>.log).
 #
 # Usage:
 #   # Schedule (Phase 8 close, Heavy tasks):
