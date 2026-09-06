@@ -53,6 +53,13 @@ would need all 212 but the sample found none, and the CSV's own generation path 
 file, not one per lwt scratch root, so contamination here is structurally unlikely). This data
 source looks clean; I am not vouching for journal-based data outside this CSV.
 
+**Scope, attached here because it belongs next to the number, not in a footnote:** `role` is 100%
+`worker` and `work_kind` never contains `plan` in any of the 692 rows (confirmed in the follow-up,
+`haiku-opus-zero-rows.md`) — this table describes the **build/worker dispatch path only**. Every
+number below (freepool vs. glm's 34-point gap, sonnet's 41% rescue rate) is a statement about build
+routing, not about routing in general. The plan path (where opus and fable are live candidates) is
+separately unmeasured by this file — see that follow-up.
+
 Per arm, all 692 rows (no haiku, no opus, no per-tier codex breakdown — see gaps below):
 
 | arm | n | terminal | avg spawn→terminal (s) | fallback_depth>0 |
