@@ -178,6 +178,62 @@ if [[ -z "$JOURNAL" ]]; then
   JOURNAL="${ROOT}/${_lv2_dir}/tasks/dispatch-${SIG}/journal.md"
 fi
 TASK_ID="dispatch-${SIG}"
+[[ -n "${_lv2_dir:-}" ]] || _lv2_dir="docs/leadv2"
+TASKS_DIR_FOR_LANE="${ROOT}/${_lv2_dir}/tasks"
+
+# ── LANE-PULSE-WATCH-SIG-KEY-STALE-ON-PHASE-CHANGE-01 ───────────────────────
+# --sig fixes JOURNAL once, at spawn. A multi-phase lane mints a NEW dispatch
+# sig per phase (plan -> build -> review -> ...), so this journal can stop
+# growing forever while the lane is still very much alive under a different
+# dispatch dir -- the watcher then sits until the derived TIMEOUT (up to
+# ~4h) doing nothing useful, while nobody watches the phase actually running.
+# Option B (chosen over re-resolving every poll): re-resolve ONLY when this
+# journal has gone quiet for STALE_MAX seconds, via the canonical resolver
+# (lib/leadv2-journal-address.py, MONITORS-ARE-THE-SECOND-CONSUMER-OF-THE-
+# ADDRESS-RESOLVER-01) keyed on the founder task_id read from THIS sig's own
+# admission-receipt.yaml (EXACT-ATTRIBUTION: a named field, never a glob or a
+# grep of file bodies). Cost was the deciding factor: a python3 child every
+# --interval (default 15s) per watched lane is not free on a machine already
+# running dispatch-code.sh's own stale-sweeper/worktree-cleanup/lane-liveness
+# chain at 16/26/12 concurrent processes (measured 2026-09-06) -- re-checking
+# only once per STALE_MAX keeps the added cost proportional to actual staleness
+# instead of to wall-clock time.
+STALE_MAX="${LEADV2_LANE_PULSE_WATCH_STALE_MAX_S:-900}"
+[[ "$STALE_MAX" =~ ^[0-9]+$ ]] || STALE_MAX=900
+JOURNAL_ADDRESS_LIB="${SCRIPT_DIR}/lib/leadv2-journal-address.py"
+[[ -f "$JOURNAL_ADDRESS_LIB" ]] || JOURNAL_ADDRESS_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-journal-address.py"
+FOUNDER_TASK_ID=""
+_receipt="${ROOT}/docs/handoff/dispatch-${SIG}/admission-receipt.yaml"
+[[ -f "$_receipt" ]] && FOUNDER_TASK_ID="$(sed -n 's/^task_id:[[:space:]]*//p' "$_receipt" | head -1 | tr -d '"' | tr -d '\r')"
+
+# MATCH_TOKEN gates which journal lines belong to THIS lane (grep task=...
+# below) -- initially the dispatch sig, but a re-resolved journal's own
+# lines are tagged with whatever key its directory is named after (a
+# founder task_id dir, not necessarily dispatch-<SIG> any more), so it must
+# move together with JOURNAL or every line in the new file is filtered out
+# as "foreign" and the switch is a no-op in practice.
+MATCH_TOKEN="$SIG"
+
+# Attempts one re-resolve via the founder task_id; on a genuinely NEW journal
+# path (not this one), switches JOURNAL, MATCH_TOKEN and resets SEEN
+# (replay-safe: this watcher has never read that file). No-op (returns 1) if
+# there is no founder_task_id to key on, the lib is missing, or resolution
+# finds nothing new -- the watcher keeps polling the original path either way.
+_try_reresolve_stale_journal() {
+  [[ -n "$FOUNDER_TASK_ID" && -f "$JOURNAL_ADDRESS_LIB" ]] || return 1
+  local _new _new_dirname
+  _new="$(python3 "$JOURNAL_ADDRESS_LIB" resolve --root "$ROOT" --tasks-dir "$TASKS_DIR_FOR_LANE" \
+    --task-id "$FOUNDER_TASK_ID" --now "$(date +%s)" 2>/dev/null || true)"
+  [[ -n "$_new" && "$_new" != "$JOURNAL" ]] || return 1
+  _new_dirname="$(basename "$(dirname "$_new")")"
+  printf '[lane-pulse-watch] %s journal stale >%ss, re-resolved via founder task_id %s: %s -> %s (match token %s -> %s)\n' \
+    "$SIG" "$STALE_MAX" "$FOUNDER_TASK_ID" "$JOURNAL" "$_new" "$MATCH_TOKEN" "${_new_dirname#dispatch-}" >&2
+  JOURNAL="$_new"
+  MATCH_TOKEN="${_new_dirname#dispatch-}"
+  SEEN=0
+  _ledger_save 0
+  return 0
+}
 
 # ── FORK-STORM-KILLS-HOOKS-01: orphan self-termination ──────────────────────
 # Decision (recorded in report.md): the watcher CANNOT be owned by something
@@ -360,6 +416,8 @@ _started="$(date +%s)"
 GRACE_S="${LEADV2_LANE_PULSE_WATCH_GRACE_S:-300}"
 [[ "$GRACE_S" =~ ^[0-9]+$ ]] || GRACE_S=300
 _missing_since=0
+_last_growth="$_started"
+_last_stale_attempt=0
 
 while :; do
   if [[ ! -d "$ROOT" ]]; then
@@ -399,7 +457,7 @@ while :; do
     if (( n > SEEN )); then
       # atomic-replace-safe: line-count offsets, never inode following
       own="$(tail -n +"$((SEEN + 1))" "$JOURNAL" \
-        | grep -E "task=${SIG}([^0-9A-Za-z]|$)" || true)"
+        | grep -E "task=${MATCH_TOKEN}([^0-9A-Za-z]|$)" || true)"
       # beats first (fix-round C1): review_gate transitions pulse but NEVER
       # end the watch — they are mid-flight signal, not lane termination.
       beats="$(printf '%s' "$own" | grep -E "$PULSE_PAT" || true)"
@@ -411,6 +469,7 @@ while :; do
       fi
       SEEN="$n"
       _ledger_save "$SEEN"
+      _last_growth="$(date +%s)"
       # exit ONLY on a true terminal for this sig (fix-round C1/H1): dedup
       # rows and review_gate lines are already excluded by EXIT_PAT.
       term="$(printf '%s' "$own" | grep -E "$EXIT_PAT" || true)"
@@ -432,6 +491,19 @@ while :; do
       printf '[lane-pulse-watch] %s rotated (lines %s < seen %s), re-reading\n' "$SIG" "$n" "$SEEN" >&2
       SEEN=0
       _ledger_save 0
+      _last_growth="$(date +%s)"
+    fi
+    # LANE-PULSE-WATCH-SIG-KEY-STALE-ON-PHASE-CHANGE-01: no growth for
+    # STALE_MAX -- try ONE re-resolve, then wait another STALE_MAX before
+    # trying again (never every poll: that is the cost the pulse's own
+    # per-session resolve would have paid, rejected above for exactly this
+    # watcher's polling cadence).
+    _now="$(date +%s)"
+    if (( _now - _last_growth >= STALE_MAX && _now - _last_stale_attempt >= STALE_MAX )); then
+      _last_stale_attempt="$_now"
+      if _try_reresolve_stale_journal; then
+        _last_growth="$_now"
+      fi
     fi
   else
     _now="$(date +%s)"

@@ -337,5 +337,83 @@ else
   bad "W9 worker death: rc=$rc pulse=$(cat "$PULSE" 2>/dev/null | tr '\n' ';')"
 fi
 
+# ── W10: LANE-PULSE-WATCH-SIG-KEY-STALE-ON-PHASE-CHANGE-01 ──────────────────
+# A multi-phase lane mints a NEW dispatch sig per phase; --sig fixes JOURNAL
+# once at spawn, so a lane that moved phase leaves this watcher polling a
+# journal that will never grow again while the ACTUAL current phase runs
+# under a different dispatch dir. Fixture: dispatch-$SIG10's journal goes
+# quiet forever; the lane's real current phase writes into a dir named after
+# the founder task_id instead (the shape leadv2-journal-address.py's tier 1
+# resolves directly). STALE_MAX=1 so the test does not wait 900s.
+SIG10="fade0010"
+TID10="FOUNDER-STALE-01"
+new_lane "$SIG10"
+mkdir -p "${REPO}/docs/handoff/dispatch-${SIG10}"
+printf 'task_id: %s\n' "$TID10" > "${REPO}/docs/handoff/dispatch-${SIG10}/admission-receipt.yaml"
+append_lines "$J" \
+  "- 2026-09-06T10:00:00Z [decision] worker_spawned by=router model=glm task=${SIG10} handle=h10"
+NEW_DIR="${REPO}/docs/leadv2/tasks/${TID10}"
+mkdir -p "$NEW_DIR"
+: > "${NEW_DIR}/journal.md"
+LEADV2_LANE_PULSE_WATCH_STALE_MAX_S=1 \
+bash "$WATCH" --sig "$SIG10" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 10 >/dev/null 2>&1 &
+WATCH_PID=$!
+sleep 3
+append_lines "${NEW_DIR}/journal.md" \
+  "- 2026-09-06T10:05:00Z [decision] dispatch_terminal task=${TID10} state=landed"
+if wait_for_exit "$WATCH_PID" 10 && grep -q "dispatch_terminal" "$PULSE" 2>/dev/null; then
+  ok "W10: stale journal re-resolved via founder task_id, terminal on the NEW phase's journal still pulsed"
+else
+  bad "W10: watcher never picked up the re-resolved journal — pulse=$(cat "$PULSE" 2>/dev/null | tr '\n' ';')"
+fi
+
+# ── W10 PAIRED NEGATIVE CONTROL (RUN RED) — re-resolve disabled ─────────────
+# Same fixture, but a scratch copy whose _try_reresolve_stale_journal always
+# refuses (return 1 right after its args are declared, INSIDE the function
+# body, never a top-level edit). The watcher must then sit on the abandoned
+# dispatch-$SIG10 journal until TIMEOUT and report watch_timeout, NEVER the
+# new phase's dispatch_terminal — proving W10 locks the actual re-resolve
+# path, not an incidental pass (e.g. the fixture accidentally being visible
+# through some other tier).
+BAD_WATCH_STALE="$TMP/watch-no-reresolve.sh"
+python3 - "$WATCH" "$BAD_WATCH_STALE" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, encoding='utf-8') as fh:
+    text = fh.read()
+needle = "  local _new _new_dirname\n"
+repl = "  local _new _new_dirname; return 1\n"
+if needle not in text:
+    print('NEGATIVE-CONTROL-PATCH-FAILED: needle not found', file=sys.stderr)
+    sys.exit(1)
+with open(dst, 'w', encoding='utf-8') as fh:
+    fh.write(text.replace(needle, repl, 1))
+PY
+patch_rc=$?
+SIG10B="fade0011"
+TID10B="FOUNDER-STALE-01B"
+new_lane "$SIG10B"
+mkdir -p "${REPO}/docs/handoff/dispatch-${SIG10B}"
+printf 'task_id: %s\n' "$TID10B" > "${REPO}/docs/handoff/dispatch-${SIG10B}/admission-receipt.yaml"
+append_lines "$J" \
+  "- 2026-09-06T11:00:00Z [decision] worker_spawned by=router model=glm task=${SIG10B} handle=h10b"
+NEW_DIR_B="${REPO}/docs/leadv2/tasks/${TID10B}"
+mkdir -p "$NEW_DIR_B"
+: > "${NEW_DIR_B}/journal.md"
+LEADV2_LANE_PULSE_WATCH_STALE_MAX_S=1 \
+LEADV2_LANE_PULSE_BIN="${SCRIPT_DIR}/leadv2-pulse.sh" \
+bash "$BAD_WATCH_STALE" --sig "$SIG10B" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 5 >/dev/null 2>&1 &
+WATCH_PID=$!
+sleep 3
+append_lines "${NEW_DIR_B}/journal.md" \
+  "- 2026-09-06T11:05:00Z [decision] dispatch_terminal task=${TID10B} state=landed"
+wait_for_exit "$WATCH_PID" 10
+if [[ $patch_rc -eq 0 ]] && ! grep -q "dispatch_terminal" "$PULSE" 2>/dev/null \
+   && grep -q "watch_timeout" "$PULSE" 2>/dev/null; then
+  ok "W10 PAIRED CONTROL RED: with re-resolve disabled, the stale journal never picks up the new phase (times out instead)"
+else
+  bad "W10 PAIRED CONTROL: patched copy unexpectedly saw the new phase (patch_rc=$patch_rc) — W10 locks nothing: pulse=$(cat "$PULSE" 2>/dev/null | tr '\n' ';')"
+fi
+
 printf 'test-lane-pulse-watch: %d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
