@@ -87,6 +87,10 @@ docs/handoff/*/*
 # refusing to merge a specific branch, not claiming one landed) -- same
 # narrow-name reasoning as the line above, added by the author of that form.
 !docs/handoff/*/not-landing.reason
+# blocked-by.reason is a third declaration: genuinely partial work, time-
+# gated on an open docs/leadv2/scheduled-decisions.md ledger row. Same
+# narrow-name reasoning as the two lines above.
+!docs/handoff/*/blocked-by.reason
 docs/leadv2/review-*
 docs/leadv2/status-snapshot.json
 docs/leadv2/founder-status*.md
