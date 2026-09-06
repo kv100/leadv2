@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-single-writer-lane-state.sh
+file=plugins/leadv2/scripts/leadv2-active-registry.sh
+anchor=s|if target.get("recovered"):|if False and target.get("recovered"):  # D1 M2 mutant: refusal disabled|
+baseline_rc=0
+mutated_rc=1
+red_line=PASS: T2: one real body (registry) + one fail-loud helpers stub; fanout body relocated, aliased only in the registry
+diff_hash=1d2d22eddd0c4ab86d82ecc231c2abbad7229082dafdda69e4010b67136cc044
+lane_diff_hash=e45985f9a3bc1b1ef0bc1a2ea31dd4ecf1f1d9c6f1e50500ab57a7344497437e

@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-single-writer-lane-state.sh
+file=plugins/leadv2/scripts/leadv2-active-registry.sh
+anchor=s|target\["phase"\] = new_phase|pass  # D1 M1 mutant: phase write dropped|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: T1: lifecycle via owner wrong ([{"session_id": "s-20260906T110438Z-40089-45090", "task_id": "D1-T1", "worktree": "/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//d1sw.YfCLHo/repo", "branch": "test-branch", "started_at": "2026-09-06T11:04:38Z", "phase": "intake", "class": "Standard", "pulse_log": "docs/leadv2/tasks/D1-T1/pulse.md", "pid": 40089, "pid_birth": "Sun Sep 6 13:48:46 2026", "proc_kind": "worker", "pid_role": "lead_durable", "parent_session_id": null, "daemon_mode": false, "last_pulse_at": "2026-09-06T11:04:38Z", "stale": false, "note": "", "group_key": null, "risk_tags": null, "writes": null, "writes_reason": null, "first_seen_at": "2026-09-06T11:04:38Z", "protocol_version": 2, "backend": "terminal", "phase_started_at": "2026-09-06T11:04:42Z", "updated_at": "2026-09-06T11:04:43Z", "tmux_window": null, "tmux_pane": null, "log_path": "docs/leadv2/tasks/D1-T1/pulse.md", "provider_receipts": [], "lane_events": [{"at": "2026-09-06T11:04:41Z", "event": "transition:build"}, {"at": "2026-09-06T11:04:41Z", "event": "transition:review"}, {"at": "2026-09-06T11:04:42Z", "event": "transition:finished"}], "terminal_status": "verified", "terminal_evidence": {"proof": "t1"}, "terminal_at": "2026-09-06T11:04:43Z"}])
+diff_hash=d11885334a25aa072cf4d5b3286b3070a5b4b2ce64c50ae26dd9c25f814385ae
+lane_diff_hash=e45985f9a3bc1b1ef0bc1a2ea31dd4ecf1f1d9c6f1e50500ab57a7344497437e
