@@ -864,13 +864,24 @@ cmd_record() {
   # warn-and-proceed asymmetry above.
   local _own_dispatch_dir="${PHASES_DIR_BASE}/dispatch-${sig8}"
   if [[ ! -d "$_own_dispatch_dir" ]]; then
+    # WAIVER-REGRESSION-01 (2026-09-06): a root that is not a git repository at
+    # all (no common dir) is the isolated test-fixture shape every suite uses
+    # (LEADV2_PROJECT_ROOT=$(mktemp -d), cwd = the harness repo) -- the same
+    # non-git-fixture carve-out _phase_check_worktree applies above. It cannot
+    # be "a foreign REPO": there is no repo to write into. cmd_assert's
+    # accepted-waiver path (record --status waived) is exactly a first record
+    # for a sig8 with no dispatch dir yet, and the old realpath-fallback
+    # comparison refused it (80/2). The refusal stays armed only when the
+    # resolved root IS a git repo whose identity differs from cwd's -- the
+    # case-5c cross-repo abuse shape.
     local _cwd_id _root_id
-    _cwd_id="$(_phase_common_dir "$(pwd -P)")" || _cwd_id="$(pwd -P)"
-    _root_id="$(_phase_common_dir "$PROJECT_ROOT")" || \
-      _root_id="$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P || printf '%s' "$PROJECT_ROOT")"
-    if [[ "${_cwd_id%/}" != "${_root_id%/}" ]]; then
-      _log_err "record: project root not permitted: dispatch-${sig8}/ does not exist under resolved root ${PROJECT_ROOT} (missing: ${_own_dispatch_dir}), and cwd resolves to a different repo (${_cwd_id} vs ${_root_id}) — refusing to write phase ${phase}; an inherited LEADV2_PROJECT_ROOT/PROJECT_ROOT from another repo's session makes record write into a foreign repo, check LEADV2_PROJECT_ROOT / PROJECT_ROOT / cwd"
-      exit 4
+    _root_id="$(_phase_common_dir "$PROJECT_ROOT")" || _root_id=""
+    if [[ -n "$_root_id" ]]; then
+      _cwd_id="$(_phase_common_dir "$(pwd -P)")" || _cwd_id="$(pwd -P)"
+      if [[ "${_cwd_id%/}" != "${_root_id%/}" ]]; then
+        _log_err "record: project root not permitted: dispatch-${sig8}/ does not exist under resolved root ${PROJECT_ROOT} (missing: ${_own_dispatch_dir}), and cwd resolves to a different repo (${_cwd_id} vs ${_root_id}) — refusing to write phase ${phase}; an inherited LEADV2_PROJECT_ROOT/PROJECT_ROOT from another repo's session makes record write into a foreign repo, check LEADV2_PROJECT_ROOT / PROJECT_ROOT / cwd"
+        exit 4
+      fi
     fi
   fi
 
