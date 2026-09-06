@@ -94,6 +94,19 @@ PROJECTS_DIR="${LEADV2_REAPER_PROJECTS_DIR:-$HOME/.claude/projects}"
 _killed=0
 _reap_log() { printf '[orphan-reaper] %s\n' "$*" >&2; }
 
+# REAPER-AGE-CRITERION-NEVER-REACHES-THE-POPULATION-01: a single collapsed
+# "reaped: N" line reads identically whether N is 0-because-clean or
+# 0-because-this-subject-was-never-checked -- the exact ambiguity that read
+# 18 ppid=1 sweeper orphans, none over the age threshold, as "nothing to see"
+# on 2026-09-06T13:05Z. Per-subject candidate counters, broken down by which
+# positive-death SIGNAL each candidate did or didn't meet (never a bare
+# count -- "a number must carry its own boundary"), so a report can never
+# again look clean while a whole subject went unexamined.
+_seen_pulses=0; _killed_pulses=0
+_seen_sweeper=0; _seen_sweeper_ppid1=0; _seen_sweeper_stuck=0; _killed_sweeper=0
+_seen_cleanup=0; _seen_cleanup_ppid1=0; _seen_cleanup_stuck=0; _killed_cleanup=0
+_seen_beat=0; _seen_beat_ppid1=0; _seen_beat_owned_dead=0; _killed_beat=0
+
 # ── three-answer liveness ──────────────────────────────────────────────────
 _pid_alive() {  # rc=0 alive; rc=1 dead. EPERM is ALIVE (pid 1 et al).
   local pid="$1" err
@@ -273,7 +286,9 @@ reap_pulses() {
       if ! _argv_verified "$pid" "anti-silence-pulse.sh"; then
         continue                             # live pid, but not a pulse — leave it
       fi
+      _seen_pulses=$((_seen_pulses+1))
       if _pulse_death_verdict "$pid" "$sid"; then
+        _killed_pulses=$((_killed_pulses+1))
         (( DRY_RUN )) || rm -f "$pidfile" "${pidfile}.birth"
       fi
     done
@@ -298,21 +313,44 @@ reap_pulses() {
       ''|*[!0-9a-fA-F-]*) continue ;;
     esac
     _pulse_seen="$_pulse_seen$pid "
-    _pulse_death_verdict "$pid" "$sid" || true
+    _seen_pulses=$((_seen_pulses+1))
+    if _pulse_death_verdict "$pid" "$sid"; then
+      _killed_pulses=$((_killed_pulses+1))
+    fi
   done
 }
 
 # ── subjects 2+3: stuck oneshot sweeps (age = positive death of progress) ──
-reap_stuck_by_age() {  # <pattern> <needle> <max_sec> <label>
-  local pattern="$1" needle="$2" max_sec="$3" label="$4" pid age cmd
+# <kind> selects which global counters this call updates ("sweeper" |
+# "cleanup") -- reported alongside the kill count so a candidate that is
+# orphaned (ppid=1) but younger than max_sec is VISIBLE as seen-but-spared,
+# never silently folded into the same "0" a truly empty population would
+# report.
+reap_stuck_by_age() {  # <pattern> <needle> <max_sec> <label> <kind>
+  local pattern="$1" needle="$2" max_sec="$3" label="$4" kind="$5" pid age cmd ppid
   for pid in $(pgrep -f "$pattern" 2>/dev/null || true); do
     [[ "$pid" != "$$" ]] || continue
     cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
     [[ -n "$cmd" ]] || continue
     [[ "$cmd" == *"$needle"* ]] || continue
     age="$(_pid_etime_sec "$pid")"
+    ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    case "$kind" in
+      sweeper)
+        _seen_sweeper=$((_seen_sweeper+1))
+        [[ "$ppid" == "1" ]] && _seen_sweeper_ppid1=$((_seen_sweeper_ppid1+1))
+        (( age >= max_sec )) && _seen_sweeper_stuck=$((_seen_sweeper_stuck+1)) ;;
+      cleanup)
+        _seen_cleanup=$((_seen_cleanup+1))
+        [[ "$ppid" == "1" ]] && _seen_cleanup_ppid1=$((_seen_cleanup_ppid1+1))
+        (( age >= max_sec )) && _seen_cleanup_stuck=$((_seen_cleanup_stuck+1)) ;;
+    esac
     (( age >= max_sec )) || continue
     _term "$pid" "$label stuck: ${age}s old (>=$max_sec)"
+    case "$kind" in
+      sweeper) _killed_sweeper=$((_killed_sweeper+1)) ;;
+      cleanup) _killed_cleanup=$((_killed_cleanup+1)) ;;
+    esac
   done
 }
 
@@ -323,8 +361,10 @@ reap_beat_loops() {
     [[ "$pid" != "$$" ]] || continue
     cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
     [[ "$cmd" == *"leadv2-single-lead-beat-loop.sh"* ]] || continue
+    _seen_beat=$((_seen_beat+1))
     age="$(_pid_etime_sec "$pid")"
     ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    [[ "$ppid" == "1" ]] && _seen_beat_ppid1=$((_seen_beat_ppid1+1))
     # LEADV2_LOOP_OWNER_SID is exported into the loop's env at spawn
     # (leadv2-dispatch-code.sh); ps eww exposes same-user env.
     env="$(ps eww -o command= -p "$pid" 2>/dev/null || true)"
@@ -339,23 +379,37 @@ reap_beat_loops() {
       if [[ "$death" == absent* ]]; then
         (( age >= REAPER_ABSENT_GRACE_S )) || continue
       fi
+      _seen_beat_owned_dead=$((_seen_beat_owned_dead+1))
       _term "$pid" "beat-loop of dead session $sid ($death)"
+      _killed_beat=$((_killed_beat+1))
       continue
     fi
     # No readable owner: only an old, reparented loop is provably abandoned.
     # New loops carry their own owner-pid + transcript belts and self-exit.
     if [[ "$ppid" == "1" ]] && (( age >= BEAT_MAX_SEC )); then
       _term "$pid" "beat-loop ppid=1, ${age}s old (>=$BEAT_MAX_SEC), no readable owner"
+      _killed_beat=$((_killed_beat+1))
     fi
   done
 }
 
 reap_pulses
 reap_stuck_by_age "leadv2-stale-sweeper.sh" "leadv2-stale-sweeper.sh" \
-  "$SWEEPER_STUCK_SEC" "stale-sweeper full sweep"
+  "$SWEEPER_STUCK_SEC" "stale-sweeper full sweep" "sweeper"
 reap_stuck_by_age "leadv2-worktree-cleanup.sh --sweep-dead" "leadv2-worktree-cleanup.sh --sweep-dead" \
-  "$CLEANUP_STUCK_SEC" "worktree-cleanup --sweep-dead"
+  "$CLEANUP_STUCK_SEC" "worktree-cleanup --sweep-dead" "cleanup"
 reap_beat_loops
+
+# REAPER-AGE-CRITERION-NEVER-REACHES-THE-POPULATION-01: one line per subject,
+# each candidate count carrying the signal it was counted against -- never a
+# bare number. A subject line with candidates=0 says "nothing here"; a
+# subject line with candidates>0 and killed=0 says "seen, spared by the
+# criteria below" -- the two are no longer the same "0" in the summary.
+_verb="$( (( DRY_RUN )) && printf would-kill || printf termed )"
+_reap_log "pulses: candidates=${_seen_pulses} (argv-verified alive: ${_seen_pulses}) ${_verb}=${_killed_pulses}"
+_reap_log "sweeper: candidates=${_seen_sweeper} (ppid=1: ${_seen_sweeper_ppid1}, older_than=${SWEEPER_STUCK_SEC}s: ${_seen_sweeper_stuck}) ${_verb}=${_killed_sweeper}"
+_reap_log "cleanup: candidates=${_seen_cleanup} (ppid=1: ${_seen_cleanup_ppid1}, older_than=${CLEANUP_STUCK_SEC}s: ${_seen_cleanup_stuck}) ${_verb}=${_killed_cleanup}"
+_reap_log "beat-loops: candidates=${_seen_beat} (ppid=1: ${_seen_beat_ppid1}, owned_by_dead_session: ${_seen_beat_owned_dead}) ${_verb}=${_killed_beat}"
 
 printf '[orphan-reaper] %s: %d subject(s) %s\n' \
   "$( (( DRY_RUN )) && printf dry-run || printf reaped )" \
