@@ -563,9 +563,23 @@ fake_freepool_run() { # <sandbox> <repo> <handle> <delay_s> <work_mode:0=empty,1
 # ---- Case FP-08a: a freepool worker that finishes late with a real diff must
 # be WAITED on, never declared no_work early. -------------------------------
 case_freepool_worker_waits() {
-  local d root handle close_pid rc handoff
+  local d root handle close_pid rc handoff start_sha
   d="$(mktemp -d)"; root="${d}/repo"; handle="fp-diff-$$"
   mkdir -p "${root}"; new_repo "${root}"; make_stubs "${d}"
+  # SERIAL-SHARD-SIX-REDS-UNTRIAGED-01 (2026-09-06): this case commits the
+  # worker's diff (work_mode 2), so the close needs a diff base that is not the
+  # HEAD the worker just moved. case_committed_worker_diff seeds origin/main for
+  # exactly that reason; this case was written without it and could therefore
+  # never pass -- it was born red at its introducing commit e26edc67, verified by
+  # running the suite there (54/4, the same four assertions).
+  # Control for this line, run rather than argued: replacing the update-ref with
+  # an equal-cost no-op takes the suite straight back to 54/4, so the fix is the
+  # ref and not the extra milliseconds. Note for whoever mutates the product side
+  # next: the base has SEVERAL independent readers (_pc_lane_commits_ahead,
+  # _pc_diff_base, _pc_diff_base_main), and neutering any ONE of them leaves this
+  # case green -- a single-site mutation is not a valid control here.
+  start_sha="$(git -C "${root}" rev-parse HEAD)"
+  git -C "${root}" update-ref refs/remotes/origin/main "${start_sha}"
   fake_freepool_run "${d}" "${root}" "${handle}" 2 2
   FREEPOOL_RUNS_DIR="${FAKE_RUNS}" LEADV2_PC_RUNS_ROOT="${d}" \
     LEADV2_JOB_REGISTRY_ROOT="${FAKE_JOB_REGISTRY_ROOT}" \
