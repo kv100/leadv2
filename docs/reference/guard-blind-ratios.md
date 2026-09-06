@@ -14,6 +14,17 @@ inside self-declared protections). Every number carries the command that produce
 and 100% are results. "Checked, clean" is not** — where a ratio could not be produced, the entry
 says UNMEASURABLE and why.
 
+> **Corpus correction, 2026-09-06 (the trap was found by the lead, on a different symptom).**
+> Lane journals live in **two** layouts at once, and the first pass of this file read only one:
+> `<repo>/docs/leadv2/tasks/dispatch-*/journal.md` (21 lanes, the pre-fix per-checkout layout named
+> in `leadv2-journal.sh:87`) and `~/.claude/leadv2-state/persona-engine/tasks/*/journal.md`
+> (17 lanes, where the writer puts them today — resolve it with
+> `leadv2-journal.sh path <task>`, never by building the path from the repo root). Both are live:
+> the repo layout's newest file was 12:28 today, the central one's 17:14. Every journal-derived
+> number below has been **recounted over the union**, and the numbers in the entries are the union
+> figures. Anything that builds a journal path from the repo root — a suite, a guard, or a census
+> like this one — reads a real but partial corpus and cannot tell that from a complete one.
+
 ---
 
 ## `codex-task.sh:406` `_codex_quota_gate` — `[[ -z "$_threshold" ]] && return 0`
@@ -67,9 +78,9 @@ says UNMEASURABLE and why.
 ## `leadv2-dispatch-code.sh:4158` `_lane_writes_guard` — `[[ -z "${missing}" ]] && return 0`
 
 - INPUT: `missing` ← `leadv2_writeset_missing "${writes}"` (line 4184).
-- CORPUS: 21 lane journals under `persona-engine/docs/leadv2/tasks/dispatch-*/journal.md`.
+- CORPUS: 38 lane journals across both layouts (21 in the repo, 17 in the central state root).
 - CMD: `grep -rhoE 'writeset_[a-z_]+' dispatch-*/journal.md | sort | uniq -c`
-- RATIO: the line is not reached at all in **17 of 21 lanes (81%)** — the gate exits earlier with
+- RATIO: the line is not reached at all in **17 of the 21 repo-layout lanes (81%)** — the gate exits earlier with
   `mission_writeset_gate_disabled … reason=REQUIRE_MISSION_WRITESET=0 note=no_write_scope_check_ran`.
   The ratio of the `missing`-empty branch itself is **UNMEASURABLE: only the refusal path emits, so
   a pass leaves no record.**
@@ -81,9 +92,9 @@ says UNMEASURABLE and why.
 ## `leadv2-dispatch-product-close.sh:1926,2195` `pc_precheck_writes` — `[[ -n "${WRITES_CSV:-}" ]] || return 0`
 
 - INPUT: `WRITES_CSV`, the lane's declared write set.
-- CORPUS: the same 21 lane journals, 202 `product_close` events.
-- CMD: `grep -rlE 'writes=[^ <0]' dispatch-*/journal.md | wc -l`  → 6 of 21
-- RATIO: **15/21 lanes = 71%** never name a non-empty write set, so the precheck (and with it the
+- CORPUS: both layouts — 38 lane journals, 289 `product_close` events.
+- CMD: `grep -rlE 'writes=[^ <0]' <both roots>/*/journal.md | wc -l`  → 9 of 38
+- RATIO: **29/38 lanes = 76%** never name a non-empty write set, so the precheck (and with it the
   undiffable/scope-writes computation it exists to perform) is skipped for them. Corroborated from
   the other end: `undiffable` appears twice in 202 closes.
 - Unlike `protection_derived`, which resolves an empty write set to `writes_protected=1` and errs
@@ -92,9 +103,9 @@ says UNMEASURABLE and why.
 ## `leadv2-dispatch-product-close.sh:2034` `pc_stop_gate_autocommit` — `[[ -n "${_PC_SCOPE_WRITES_CSV:-}" ]] || return 0`
 
 - INPUT: `_PC_SCOPE_WRITES_CSV`, set only by `pc_precheck_writes` above.
-- CORPUS: the same 202 `product_close` events.
-- CMD: `grep -rh 'stop_gate' dispatch-*/journal.md | wc -l`  → 0
-- RATIO: **202/202 = 100%.** The function emits `stop_gate_autocommit`,
+- CORPUS: both layouts, 289 `product_close` events.
+- CMD: `grep -rh 'stop_gate' <both roots>/*/journal.md | wc -l`  → 0
+- RATIO: **289/289 = 100%.** The function emits `stop_gate_autocommit`,
   `stop_gate_autocommit_failed` and `stop_gate_skipped_foreign_repo` on its working paths (verified
   in the source, so the zero is not a pattern that cannot match), and none of the four strings
   occurs anywhere in the corpus. The stop gate has never run to completion in these lanes.
