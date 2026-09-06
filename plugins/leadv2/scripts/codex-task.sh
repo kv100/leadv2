@@ -1365,21 +1365,21 @@ if [[ -n "$_TIER" ]]; then
   case "$_TIER" in
     top)
       if command -v jq >/dev/null 2>&1 && [[ -f "$MODELS_CACHE" ]] \
-         && jq -e '.models[]? | select(.slug=="gpt-5.6-sol")' "$MODELS_CACHE" >/dev/null 2>&1; then
-        TIER_MODEL="gpt-5.6-sol"; TIER_EFFORT="high"
+         && jq -e '.models[]? | select(.slug=="gpt-6-astra")' "$MODELS_CACHE" >/dev/null 2>&1; then
+        TIER_MODEL="gpt-6-astra"; TIER_EFFORT="high"
       else
         # lean: sol is gov-gated and currently absent from models_cache.json --
         # fall back to terra/ultra. upgrade when sol lands on this plan.
-        TIER_MODEL="gpt-5.6-sol"; TIER_EFFORT="high"
+        TIER_MODEL="gpt-6-astra"; TIER_EFFORT="high"
       fi
       ;;
     standard)
       # EFFORT-RECAL 2026-07-10 (OpenAI 5.6: one-level-lower holds quality; rollback: standard=high, volume=medium)
-      TIER_MODEL="gpt-5.6-terra"; TIER_EFFORT="medium"
+      TIER_MODEL="gpt-6-astra"; TIER_EFFORT="medium"
       ;;
     volume)
       # EFFORT-RECAL 2026-07-10 (OpenAI 5.6: one-level-lower holds quality; rollback: standard=high, volume=medium)
-      TIER_MODEL="gpt-5.6-luna"; TIER_EFFORT="low"
+      TIER_MODEL="gpt-6-astra"; TIER_EFFORT="low"
       ;;
     *)
       echo "[codex-task] unknown --tier: $_TIER (expected top|standard|volume)" >&2
@@ -1968,15 +1968,15 @@ _tier_model_effort() {
   case "$_t" in
     top)
       if command -v jq >/dev/null 2>&1 && [[ -f "$_mc" ]] \
-         && jq -e '.models[]? | select(.slug=="gpt-5.6-sol")' "$_mc" >/dev/null 2>&1; then
-        TIER_MODEL_OUT="gpt-5.6-sol"; _eff="high"
+         && jq -e '.models[]? | select(.slug=="gpt-6-astra")' "$_mc" >/dev/null 2>&1; then
+        TIER_MODEL_OUT="gpt-6-astra"; _eff="high"
       else
-        TIER_MODEL_OUT="gpt-5.6-sol"; _eff="high"
+        TIER_MODEL_OUT="gpt-6-astra"; _eff="high"
       fi
       ;;
-    standard) TIER_MODEL_OUT="gpt-5.6-terra"; _eff="medium" ;;
-    volume)   TIER_MODEL_OUT="gpt-5.6-luna";  _eff="low" ;;
-    *)        TIER_MODEL_OUT="gpt-5.6-terra"; _eff="medium" ;;
+    standard) TIER_MODEL_OUT="gpt-6-astra"; _eff="medium" ;;
+    volume)   TIER_MODEL_OUT="gpt-6-astra";  _eff="low" ;;
+    *)        TIER_MODEL_OUT="gpt-6-astra"; _eff="medium" ;;
   esac
   WIRE_EFFORT_OUT="$_eff"
   [[ "$WIRE_EFFORT_OUT" == "ultra" ]] && WIRE_EFFORT_OUT="xhigh"

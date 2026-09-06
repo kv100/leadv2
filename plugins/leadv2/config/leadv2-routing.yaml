@@ -202,9 +202,9 @@ router_v2:
     # when the gate benches freepool. No glm/codex/sonnet/opus cell carries
     # recon — the doctrine is "the cheapest capable arm", exactly these two.
     - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, cost: 1, kinds: [code, docs, recon, fanout-class-funnel, backlog-pump], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false }
-    - { arm: codex, provider: codex, model: gpt-5.6, tier: volume, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true } # PLUGIN-PAPERCUTS-01 defect 2: was tier: spark — codex-task.sh rejects spark (banned, founder directive 2026-04-28; accepts top|standard|volume only), so this cell won the auction and died at spawn. volume (gpt-5.6-luna/low) is the launcher cheapest valid tier for this cheap leg.
-    - { arm: codex, provider: codex, model: gpt-5.6, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true }
-    - { arm: codex, provider: codex, model: gpt-5.6, tier: top, cost: 7, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true }
+    - { arm: codex, provider: codex, model: gpt-6-astra, tier: volume, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true } # PLUGIN-PAPERCUTS-01 defect 2: was tier: spark — codex-task.sh rejects spark (banned, founder directive 2026-04-28; accepts top|standard|volume only), so this cell won the auction and died at spawn. volume (gpt-6-astra/low after ASTRA-BUMP-01) is the launcher cheapest valid tier for this cheap leg.
+    - { arm: codex, provider: codex, model: gpt-6-astra, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true }
+    - { arm: codex, provider: codex, model: gpt-6-astra, tier: top, cost: 7, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true }
     - { arm: haiku, provider: claude, model: haiku, tier: standard, cost: 2, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
     - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true }
     - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true }
@@ -329,7 +329,7 @@ router_v2:
       health_gated: true
     - id: codex
       channel: codex-task.sh
-      model: gpt-5.6-terra
+      model: gpt-6-astra
       bucket: codex
       reserve_threshold: 2
       reserve_allow: [review]
@@ -420,7 +420,7 @@ router:
       dispatch: false
     - id: codex
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-astra
       when: [all]
       effort: standard
     - id: sonnet

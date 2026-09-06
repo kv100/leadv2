@@ -33,9 +33,9 @@ Usage: leadv2-codex-planner.sh --task-id <id> (--mission "<text>" | --mission-fi
   --log-path <file>      diagnose: log file (tail -100 used as prompt input).
   --prior-verdict <file> reconfirm: prior verdict file content used as prompt input.
   --tier <t>             top | standard | volume (default: standard). Resolves model+effort:
-                           top      -> gpt-5.6-sol/high
-                           standard -> gpt-5.6-terra/medium (EFFORT-RECAL 2026-07-10)
-                           volume   -> gpt-5.6-luna/low   (EFFORT-RECAL 2026-07-10)
+                           top      -> gpt-6-astra/high (ASTRA-BUMP-01)
+                           standard -> gpt-6-astra/medium (EFFORT-RECAL 2026-07-10)
+                           volume   -> gpt-6-astra/low    (EFFORT-RECAL 2026-07-10)
                          Explicit --effort (if also given) overrides the tier's resolved effort.
   --print-model          Dry-run: print resolved "model=<slug> effort=<level>" and exit 0.
                          Skips --task-id/--mission validation and does not call Codex.
@@ -92,26 +92,21 @@ MODELS_CACHE="${CODEX_MODELS_CACHE:-$HOME/.codex/models_cache.json}"
 _resolve_tier() {
   case "$TIER" in
     top)
-      # ASTRA-BUMP-01 2026-09-06, REVERTED the same day. gpt-6-astra IS in
-      # models_cache.json on this plan, and two isolated calls did return
-      # ASTRA-OK -- but ten consecutive trials afterwards were rejected by the
-      # Codex CLI (0/5 on the PATH binary 0.145.0-alpha.1, 0/5 on the bundled
-      # 0.153.4), so every tier silently degraded to the gpt-5.5 fallback,
-      # which is worse than the 5.6 it replaced. The cache listing a slug is
-      # not evidence the CLI will accept it. The sol/terra cache probe and the
-      # "ultra" fallback below are kept because they are proven to work.
-      # Re-attempt is tracked as ASTRA-REJECTED-ON-OUR-PATH-01.
-      TIER_MODEL="gpt-5.6-sol"; TIER_EFFORT="high"
+      # ASTRA-BUMP-01 2026-09-06 (founder order): one model, tier is the effort
+      # dial. gpt-6-astra is present in models_cache.json on this plan, so the
+      # old sol/terra cache probe and its "ultra" fallback are gone -- "ultra"
+      # is not a valid Astra effort (low|medium|high|xhigh). Rollback: /tmp/p.bak.
+      TIER_MODEL="gpt-6-astra"; TIER_EFFORT="high"
       ;;
     standard)
       # CODEX-QUOTA-GUARDRAILS-01 — was "high"; align with codex-task.sh
       # standard=medium (EFFORT-RECAL 2026-07-10). Rollback: restore "high".
-      TIER_MODEL="gpt-5.6-terra"; TIER_EFFORT="medium"
+      TIER_MODEL="gpt-6-astra"; TIER_EFFORT="medium"
       ;;
     volume)
       # CODEX-QUOTA-GUARDRAILS-01 — was "medium"; align with codex-task.sh
       # volume=low. Rollback: restore "medium".
-      TIER_MODEL="gpt-5.6-luna"; TIER_EFFORT="low"
+      TIER_MODEL="gpt-6-astra"; TIER_EFFORT="low"
       ;;
     *)
       echo "[leadv2-codex-planner] unknown --tier: $TIER (expected top|standard|volume)" >&2
