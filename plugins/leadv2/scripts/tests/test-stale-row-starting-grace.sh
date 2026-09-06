@@ -132,6 +132,18 @@ rc=0; leadv2_active_check_limits light 2>/dev/null || rc=$?
 [[ $rc -eq 1 ]] && ok "A4 stale:true row still not counted (only pid=None row counts, rc=1)" \
                  || fail "A4 stale flag regression (rc=$rc)"
 
+# ACTIVE-REGISTRY-FIVE-EPERM-COLLAPSING-PID-ALIVE-01 pair control for
+# check_limits specifically: A1-A4 above only ever use $DEAD_PID (a
+# genuinely ESRCH-dead pid), which never exercises the EPERM branch at
+# all -- a mutation that breaks ONLY EPERM handling would pass A1-A4
+# unchanged. pid=1 (EPERM: process exists, foreign-owned) must count as
+# LIVE, the opposite of a tombstone.
+write_yaml 1
+add_row EPERM-01 s-eperm-cl-1 1 false spawning
+rc=0; leadv2_active_check_limits light 2>/dev/null || rc=$?
+[[ $rc -eq 1 ]] && ok "A5 EPERM-owned pid (1) counts as live, still blocks (rc=1)" \
+                 || fail "A5 EPERM-owned pid (1) wrongly excluded from the count (rc=$rc)"
+
 echo "== B. list header counts liveness-honest rows and marks DEAD"
 write_yaml 5
 add_row TOMB-02 s-tomb-2 "$DEAD_PID" false spawning
@@ -143,6 +155,19 @@ hdr="$(leadv2_active_list 2>/dev/null | head -1)"
 leadv2_active_list 2>/dev/null | grep -q "s-tomb-2.*DEAD" \
   && ok "B2 dead row rendered and marked DEAD" \
   || fail "B2 dead row not marked DEAD in table"
+
+# B3 pair control (same reasoning as A5): the header's own _row_dead must
+# not mark an EPERM-owned pid DEAD.
+write_yaml 5
+add_row EPERM-02 s-eperm-hdr-1 1 false spawning
+add_row LIVE-03 s-live-3 $$ false build
+hdr3="$(leadv2_active_list 2>/dev/null | head -1)"
+[[ "$hdr3" == "Active sessions (2 / 5 max):" ]] \
+  && ok "B3 header counts the EPERM-owned row as live too ($hdr3)" \
+  || fail "B3 header wrong: $hdr3"
+leadv2_active_list 2>/dev/null | grep -q "s-eperm-hdr-1.*DEAD" \
+  && fail "B3b EPERM-owned row wrongly marked DEAD in table" \
+  || ok "B3b EPERM-owned row not marked DEAD in table"
 
 echo "== C. unregister selectors"
 write_yaml 9
@@ -202,6 +227,62 @@ leadv2_active_unregister M-05 2>/dev/null
 [[ "$(count_rows)" == "0" ]] \
   && ok "C7 legacy bare unregister still removes ALL rows of the task_id" \
   || fail "C7 legacy unregister behavior changed ($(count_rows) rows left)"
+
+echo "== D. leadv2_active_release_verified (site 5 of the EPERM fix)"
+# ACTIVE-REGISTRY-FIVE-EPERM-COLLAPSING-PID-ALIVE-01: this is the fifth
+# independent _pid_alive-shaped predicate (named _prlr_alive here), used by
+# the release path (leadv2-dispatch-code.sh's _release_registered_lane
+# delegates to this function). No existing suite exercised its EPERM
+# branch: test-phase-refusal-lane-release.sh's own M3 mutation control
+# targets a pattern that no longer exists in leadv2-dispatch-code.sh (the
+# function was refactored to delegate here) and is confirmed stale/
+# pre-existing-broken independent of this fix. `stale = not
+# _prlr_alive(rpid)` -- before the fix, an EPERM-owned (alive, foreign)
+# pid was misread as dead -> `stale=True` -> a LIVE foreign lane's row
+# could be deleted by a release call that has nothing to do with it.
+write_yaml 9
+add_row REL-01 s-rel-foreign 1 false build   # foreign row, pid=1 (EPERM: alive)
+before_d="$(count_rows)"
+leadv2_active_release_verified REL-01 "not-the-owner" "999999" >/dev/null 2>&1
+after_d="$(count_rows)"
+[[ "$before_d" == "$after_d" && "$(row_exists REL-01 s-rel-foreign)" == "1" ]] \
+  && ok "D1 EPERM-owned (pid 1) foreign row survives release_verified (not misread as stale)" \
+  || fail "D1 EPERM-owned foreign row wrongly removed ($before_d -> $after_d rows)"
+
+write_yaml 9
+add_row REL-02 s-rel-dead "$DEAD_PID" false build   # genuinely dead row (ESRCH)
+leadv2_active_release_verified REL-02 "not-the-owner" "999999" >/dev/null 2>&1
+[[ "$(row_exists REL-02 s-rel-dead)" == "0" ]] \
+  && ok "D2 paired negative: genuinely-dead (ESRCH) row is still released as stale" \
+  || fail "D2 genuinely-dead row survived release_verified (regression)"
+
+echo "== E. leadv2_fanout_register_session duplicate-registration guard (site 4 of the EPERM fix)"
+# ACTIVE-REGISTRY-FIVE-EPERM-COLLAPSING-PID-ALIVE-01: the fourth site,
+# `if existing and pid_alive(existing.get("pid")): refuse (already has a
+# live registered session)`. Before the fix, an EPERM-owned existing row
+# (a live foreign-owned worker) was misread as dead -> the guard did NOT
+# refuse -> a second registration for the same task_id could silently
+# replace a still-alive session's row (two workers believing they own one
+# lane). This check lives in leadv2_fanout_register_session, NOT
+# leadv2_active_register (a different bash function -- the earlier draft
+# of this test called the wrong one and never reached this code path at
+# all, passing for the wrong reason). Its own new pid can't be pointed at
+# an EPERM value directly, but the EXISTING row it checks against can be.
+export PROJECT_ROOT="$LEADV2_PROJECT_ROOT"
+write_yaml 9
+add_row REG-01 s-reg-eperm 1 false build   # EPERM-owned existing row (alive)
+reg_out="$(leadv2_fanout_register_session REG-01 Standard 12345 test-window false 2>&1)"
+[[ "$reg_out" == *"already has a live registered session"* && "$(row_exists REG-01 s-reg-eperm)" == "1" ]] \
+  && ok "E1 EPERM-owned existing row (pid 1) blocks re-registration, is not overwritten" \
+  || fail "E1 EPERM-owned existing row wrongly treated as dead: $reg_out"
+
+write_yaml 9
+add_row REG-02 s-reg-dead "$DEAD_PID" false build   # genuinely dead existing row
+reg_out2="$(leadv2_fanout_register_session REG-02 Standard 12345 test-window false 2>&1)"
+[[ "$reg_out2" != *"already has a live registered session"* && "$(row_exists REG-02 s-reg-dead)" == "0" ]] \
+  && ok "E2 paired negative: genuinely-dead existing row does not block re-registration" \
+  || fail "E2 genuinely-dead existing row wrongly blocked re-registration: $reg_out2"
+unset PROJECT_ROOT
 
 if [[ "${STALE_ROW_GRACE_MUTATION:-0}" == "1" ]]; then
   echo
