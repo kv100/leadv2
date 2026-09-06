@@ -290,10 +290,16 @@ def file_mtime(path):
         return None
 
 def pid_alive(value):
+    # D2-M2-EPERM-IS-READ-AS-DEAD-01 (brief #9, C3): kept in sync with
+    # pid_state's errno split below even though this function is currently
+    # unreferenced inside this heredoc -- EPERM means the pid EXISTS
+    # (owned by someone else), never "dead".
     try:
         os.kill(int(value), 0)
         return True
-    except (TypeError, ValueError, ProcessLookupError, PermissionError):
+    except PermissionError:
+        return True
+    except (TypeError, ValueError, ProcessLookupError):
         return False
 
 # --- LANE-REGISTRY-SELF-DEADLOCK-01 pid identity -------------------------------
@@ -316,6 +322,28 @@ def ps_lstart(value):
                               capture_output=True, text=True, timeout=2).stdout.strip()
     except Exception:
         return ""
+
+def _proc_kind(pid):
+    # D2-M2-EPERM-IS-READ-AS-DEAD-01 / brief #14 (C1): kill(0)==0 only proves
+    # SOME process owns this pid, not that it is THIS lane's worker — a
+    # recorded pid can have been recycled onto the interactive lead session
+    # itself (`claude --dangerously-skip-permissions`, no `-p`/`--print`).
+    # Same discriminator as leadv2-active-registry.sh::_proc_kind
+    # (PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01), duplicated rather than
+    # imported: two independently-invoked bash+embedded-python scripts, no
+    # shared .py module exists yet for this one check. Keep both in sync.
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "args="],
+                              capture_output=True, text=True, timeout=2).stdout.strip()
+    except Exception:
+        return "unknown"
+    if not out:
+        return "dead"
+    if ("claude" in out or "codex" in out) and (" -p" in out or "--print" in out):
+        return "worker"
+    if "claude" in out or "--dangerously-skip-permissions" in out:
+        return "interactive"
+    return "other"
 
 def pid_state(value, birth, identity_on, lane_dead_at=None):
     """(state, identity) — state in ("dead", "alive_verified", "alive_unverified"),
@@ -343,9 +371,22 @@ def pid_state(value, birth, identity_on, lane_dead_at=None):
         return ("dead", "unverified")
     try:
         os.kill(pid, 0)
-    except (TypeError, ValueError, ProcessLookupError, PermissionError):
-        # PermissionError stays "dead" to match pid_alive()'s exact prior
-        # semantics (a pid we cannot signal is not OUR worker).
+    except ProcessLookupError:
+        # ESRCH: the pid genuinely does not exist. The only true "dead".
+        return ("dead", "unverified")
+    except PermissionError:
+        # D2-M2-EPERM-IS-READ-AS-DEAD-01 (brief #9): EPERM means the pid
+        # EXISTS and is owned by someone else -- kill(0) has three answers,
+        # not two, and this is not the dead one. A leadv2 watcher/worker that
+        # reparented to ppid=1 (measured live: 22 leadv2-stale-sweeper.sh
+        # instances at ppid=1) is exactly this shape, and reading it as dead
+        # was the false zero that cost B0-READER-HALF-01 a `terminal=dead`
+        # verdict on delivered work. Degrade the same way an unobservable
+        # birth degrades below: alive, unverified -- never dead, never
+        # promoted to alive_verified either (we cannot confirm identity or
+        # kind for a pid we cannot fully inspect as our own).
+        return ("alive_unverified", "unverified")
+    except (TypeError, ValueError):
         return ("dead", "unverified")
     if not identity_on:
         return ("alive_unverified", "unverified")
@@ -357,8 +398,18 @@ def pid_state(value, birth, identity_on, lane_dead_at=None):
         # pid gone is already caught by kill(0); an empty `ps` here means
         # unobservable — unverified, never mismatch (no double-count).
         return ("alive_unverified", "unverified")
-    if observed == recorded:
+    if observed != recorded:
+        return ("dead", "mismatch")
+    # Birth matches -- same pid, same process, not recycled. D2-M2 (brief
+    # #14/C1): birth equality alone does not prove KIND. Any disagreement on
+    # kind demotes, never promotes (design §3 E2) -- a wedged `ps` (kind
+    # "unknown") degrades to alive_unverified like every other unobservable
+    # case above, it does not get read as a mismatch.
+    kind = _proc_kind(pid)
+    if kind == "worker":
         return ("alive_verified", "verified")
+    if kind == "unknown":
+        return ("alive_unverified", "unverified")
     return ("dead", "mismatch")
 # --- end LANE-REGISTRY-SELF-DEADLOCK-01 pid identity ---------------------------
 
