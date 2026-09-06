@@ -871,3 +871,28 @@ mutations:
       mutation did not apply (python died on the quoting) and the "control" then ran against an
       UNMUTATED file and reported rc=0: a control must assert that the mutation landed, or it
       reads green over work it never did.
+
+  - id: dod-gate-cannot-obtain-run-all-selection
+    product_flow: "The DoD gate's check (c) decides whether a lane's new suite is registered with run-all, and a NO ends the lane (dispatch_terminal terminal=dead cause=review_dod_fail, lane 3a86546f on 2026-09-06 -- the worker had finished, the work survived only because a human looked). It now asks run-all.sh what it actually SELECTS (both repos print `[SELECT] <path>` under their select-only env var and run nothing), with the EXTRA_SUITE_MAP parser as a fallback"
+    file: plugins/leadv2/scripts/lib/leadv2-dod-gate.sh
+    suite: plugins/leadv2/scripts/tests/test-dod-gate-suite-registration.sh
+    anchor: |
+      _dod_run_all_selection() {
+    patch: |
+      insert `return 1` at the top of _dod_run_all_selection's body so the selection can
+      never be obtained
+      -- case (a) goes red: a suite that run-all demonstrably selects, in a repo with no
+      EXTRA_SUITE_MAP at all, is no longer recognised. Measured 8/2.
+
+  - id: dod-gate-reads-only-one-repos-map-syntax
+    product_flow: "The same check's fallback parser. Until 2026-09-06 it was the whole mechanism, and its regexp was written for the leadv2 repo's scalar `EXTRA_SUITE_MAP=\"` form; persona-engine declares `declare -A EXTRA_SUITE_MAP=(` with suite BASENAMES as values (60 rows). The extraction therefore returned ZERO rows in that repo, the comparison below was unreachable, and every suite under tests/unit/ -- the only place that repo keeps suites -- read as unregistered. Survival depended on which directory a suite lived in. The parser now reads both forms and compares on path OR basename, and when neither instrument can answer the check reports UNDETERMINED (rc 2) instead of failing a lane on its own fault"
+    file: plugins/leadv2/scripts/lib/leadv2-dod-gate.sh
+    suite: plugins/leadv2/scripts/tests/test-dod-gate-suite-registration.sh
+    anchor: |
+      # FORM 2 -- bash associative array
+    patch: |
+      delete the FORM 2 block from _dod_extra_suite_map_values
+      -- cases (c) and (g) go red, (g) being the live persona-engine map parsing to nothing
+      again, i.e. the production defect reproduced. Measured 7/3.
+      Note for the next mutation on this file: the two verdict paths are independent, so a
+      single-site mutation only proves one of them; both are catalogued for that reason.

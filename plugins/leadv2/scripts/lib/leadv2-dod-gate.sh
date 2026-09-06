@@ -406,14 +406,56 @@ _dod_check_b() {
 # Returns: 0 pass, 1 fail, 2 undetermined (diff_file unreadable), 3 skip (no
 # tests/run-all.sh in this repo).
 # ---------------------------------------------------------------------------
-_dod_extra_suite_map_values() { # <root> -> stdout, one RHS path per line
+# DOD-GATE-KILLS-A-REGISTERED-SUITE-01 (2026-09-06): ask run-all.sh what it
+# SELECTS, instead of modelling how registration is written. The parser below is
+# the fallback, and it is a fallback because it was the whole mechanism until
+# today: its regexp was written for the leadv2 repo's scalar `EXTRA_SUITE_MAP="`
+# and persona-engine declares an associative array, so the extraction returned
+# zero rows there, every suite outside the four self-select globs read as
+# unregistered, and a lane with correct registration was ENDED, not marked red
+# (`dispatch_terminal terminal=dead cause=review_dod_fail`, lane 3a86546f; the
+# work survived only because a human went looking).
+#
+# Both repos print `[SELECT] <path>` under their select-only env var and run
+# nothing, so one code path serves both. Any failure here is silence, never a
+# verdict: the caller falls back, and if the fallback cannot answer either the
+# check reports UNDETERMINED rather than failing a lane on an instrument fault.
+_dod_run_all_selection() { # <root> -> stdout, one selected suite path per line; rc 1 = could not enumerate
+  local root="$1" run_all="${1}/tests/run-all.sh" out=""
+  [[ -f "${run_all}" ]] || return 1
+  out="$(cd "${root}" 2>/dev/null && \
+    PE_RUN_ALL_SELECT_ONLY=1 LEADV2_RUN_ALL_SELECT_ONLY=1 \
+    PE_TESTS_FAST_LOCAL=1 SUITE_TIMEOUT_S=1 \
+    timeout "${LEADV2_DOD_SELECT_TIMEOUT_S:-90}" bash tests/run-all.sh --scope changed 2>/dev/null)" || return 1
+  printf '%s\n' "${out}" | sed -n 's/^\[SELECT\] //p'
+}
+
+_dod_extra_suite_map_values() { # <root> -> stdout, one suite token (path OR basename) per line
   local run_all="${1}/tests/run-all.sh"
   [[ -f "${run_all}" ]] || return 0
+  # FORM 1 -- string rows: EXTRA_SUITE_MAP="<src>:<suite>" ... (the leadv2 shape).
   sed -n '/^EXTRA_SUITE_MAP="/,/"$/p' "${run_all}" \
     | sed -e '1s/^EXTRA_SUITE_MAP="//' -e '$s/"$//' \
     | while IFS= read -r row; do
         [[ -n "${row}" ]] || continue
         printf '%s\n' "${row#*:}"
+      done
+  # FORM 2 -- bash associative array: declare -A EXTRA_SUITE_MAP=( ["<src>"]="<suite> [<suite>...]" )
+  #
+  # DOD-GATE-KILLS-A-REGISTERED-SUITE-01 (2026-09-06): persona-engine writes the map
+  # this way and its values are suite BASENAMES, not repo-relative paths (60 rows,
+  # e.g. [".claude/hooks/..."]="test-sessionstart-hook-schema.sh"). Only form 1 was
+  # parsed, so in that repo this function returned NOTHING and every suite outside the
+  # four self-select globs -- i.e. all of tests/unit/, which is where that repo keeps
+  # its suites -- was judged unregistered. That verdict does not merely mark a lane
+  # red: it ends it (`dispatch_terminal terminal=dead cause=review_dod_fail`, lane
+  # 3a86546f, work already written and saved only by hand).
+  sed -n '/^declare -A EXTRA_SUITE_MAP=(/,/^)/p' "${run_all}" \
+    | sed -n 's/^[[:space:]]*\[[^]]*\]="\([^"]*\)".*/\1/p' \
+    | tr ' \t' '\n\n' \
+    | while IFS= read -r tok; do
+        [[ -n "${tok}" ]] || continue
+        printf '%s\n' "${tok}"
       done
 }
 
@@ -433,8 +475,19 @@ _dod_check_c() {
   suite_paths="$(_dod_diff_suite_paths "${diff_file}")"
   [[ -n "${suite_paths}" ]] || { printf 'dod_pass check=suite_registration\n'; return 0; }
 
+  # Authoritative first: what does run-all actually select right now?
+  local selection="" selection_ok=0
+  selection="$(_dod_run_all_selection "${root}")" && [[ -n "${selection}" ]] && selection_ok=1
+
   local extra_values
   extra_values="$(_dod_extra_suite_map_values "${root}")"
+
+  if [[ ${selection_ok} -eq 0 && -z "${extra_values}" ]]; then
+    # Neither instrument could answer. That is exactly the state that killed a
+    # lane today, so it must read as "could not check", never as "unregistered".
+    printf 'dod_skip check=suite_registration_undetermined reason=no_selection_and_no_map\n'
+    return 2
+  fi
 
   local rc=0 sp
   while IFS= read -r sp; do
@@ -447,7 +500,17 @@ _dod_check_c() {
     if [[ ${self_select} -eq 1 ]]; then
       continue
     fi
-    if printf '%s\n' "${extra_values}" | grep -qxF "${sp}"; then
+    # run-all's own selection is the answer when we have it: match on the path
+    # it printed (absolute or repo-relative) or on the basename.
+    if [[ ${selection_ok} -eq 1 ]] \
+       && printf '%s\n' "${selection}" | grep -qE "(^|/)$(printf '%s' "${sp##*/}" | sed 's/[.[\*^$]/\\&/g')$"; then
+      continue
+    fi
+    # A map may name a suite by repo-relative path (form 1) or by basename (form 2);
+    # both are the same registration, so compare on both. Matching the path alone is
+    # how a registered basename read as "unregistered".
+    if printf '%s\n' "${extra_values}" | grep -qxF "${sp}" \
+       || printf '%s\n' "${extra_values}" | grep -qxF "${sp##*/}"; then
       continue
     fi
     printf 'dod_fail check=suite_unregistered suite=%s\n' "${sp}"
