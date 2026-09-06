@@ -498,6 +498,26 @@ sessions_all = {}
 for _s in (active.get("sessions") or []):
     if isinstance(_s, dict) and _s.get("task_id"):
         sessions_all.setdefault(str(_s.get("task_id")), []).append(_s)
+
+# D2-M5 (D2-SINGLE-LIVENESS-VERDICT #14/#15, E0 contradiction guard): a
+# genuine WORKER pid (never lead_durable/watcher -- those are excluded from
+# process-liveness evidence everywhere else in this file, and a lead
+# session's own pid legitimately spans every lane it is dispatching) that
+# is recorded as the owner of MORE THAN ONE lane is a structural fact about
+# the registry, not evidence about any one lane -- E0 must see it before
+# resolve() ever reaches E2 for either lane.
+worker_pid_to_tids = {}
+for _tid, _s in sessions.items():
+    _wp = None
+    try:
+        _w = int(_s.get("worker_pid"))
+        if _w > 0 and _s.get("worker_pid_role") != "watcher":
+            _wp = _w
+    except (TypeError, ValueError):
+        _wp = None
+    if _wp is not None:
+        worker_pid_to_tids.setdefault(_wp, set()).add(_tid)
+
 tombstones = load_yaml(tombstones_path, [])
 tombstoned = {str(item.get("task_id")) for item in tombstones if isinstance(item, dict) and item.get("task_id")}
 
@@ -922,6 +942,41 @@ def resolve(tid):
 
     session = sessions.get(tid)
     if session is not None:
+        # D2-M5 (D2-SINGLE-LIVENESS-VERDICT #14/#15): E0 contradiction guard,
+        # evaluated before any other rung. Ordering: lands only after D1 M1,
+        # which makes duplicate active.yaml rows for one task_id impossible
+        # to CREATE going forward -- a survivor here is a genuine structural
+        # fact about the registry (nothing can rescue it), not a normal
+        # multi-attempt history. Decisive: never alive, never dead, and no
+        # lower rung may promote past it.
+        _e0_reason = None
+        if len(sessions_all.get(tid) or []) > 1:
+            _e0_reason = "multiple_rows"
+        else:
+            _e0_wt = str(session.get("worktree") or "")
+            if _e0_wt:
+                try:
+                    _e0_wt_real = os.path.realpath(_e0_wt)
+                    _e0_root_real = os.path.realpath(root)
+                except Exception:
+                    _e0_wt_real, _e0_root_real = _e0_wt, root
+                if _e0_wt_real == _e0_root_real:
+                    _e0_reason = "worktree_is_project_root"
+            if _e0_reason is None:
+                _e0_wpid = None
+                try:
+                    _e0_w = int(session.get("worker_pid"))
+                    if _e0_w > 0 and session.get("worker_pid_role") != "watcher":
+                        _e0_wpid = _e0_w
+                except (TypeError, ValueError):
+                    _e0_wpid = None
+                if _e0_wpid is not None and len(worker_pid_to_tids.get(_e0_wpid, ())) > 1:
+                    _e0_reason = "pid_owns_multiple_lanes"
+        if _e0_reason is not None:
+            row.update(verdict="unknown:contradictory_rows", source="e0_contradiction_guard",
+                       reason=_e0_reason)
+            return row
+
         # LANE-REGISTRY-SELF-DEADLOCK-01: choose the pid the liveness ladder
         # trusts. worker_pid (stamped post-spawn by set_worker_pid, with its
         # own birth) wins; otherwise the row's `pid`, labelled by pid_role —
