@@ -61,6 +61,12 @@
 _lv2ar_caller_flags="$-"
 _lv2ar_caller_pipefail=0
 if [[ -o pipefail ]]; then _lv2ar_caller_pipefail=1; fi
+_lv2ar_restore_caller_opts() {
+  [[ "${_lv2ar_caller_flags:-}" == *e* ]] || set +e
+  [[ "${_lv2ar_caller_flags:-}" == *u* ]] || set +u
+  [[ "${_lv2ar_caller_pipefail:-0}" -eq 1 ]] || set +o pipefail
+  unset _lv2ar_caller_flags _lv2ar_caller_pipefail _lv2ar_restore_caller_opts
+}
 
 set -euo pipefail
 
@@ -77,6 +83,9 @@ elif _lv2ar_top="$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null)"; then
   LEADV2_PROJECT_ROOT="$_lv2ar_top"
 else
   printf -- '[leadv2-active-registry] root_error: could not resolve project root — set LEADV2_PROJECT_ROOT or CLAUDE_PROJECT_DIR, or run from inside a git worktree (cwd=%s)\n' "$(pwd)" >&2
+  # Restore BEFORE the early return: this branch aborts the source, so the
+  # EOF restore would never run and the caller would inherit -euo pipefail.
+  _lv2ar_restore_caller_opts
   return 1 2>/dev/null || exit 1
 fi
 
@@ -2172,8 +2181,6 @@ PY
 # Captured at the top of this file, before our own `set -euo pipefail`;
 # sourcing the registry must be side-effect-free on the caller's shell state
 # (the leak already produced one wrong diagnosis — a caller's unguarded
-# command died and was read as a registry bug).
-[[ "${_lv2ar_caller_flags:-}" == *e* ]] || set +e
-[[ "${_lv2ar_caller_flags:-}" == *u* ]] || set +u
-[[ "${_lv2ar_caller_pipefail:-0}" -eq 1 ]] || set +o pipefail
-unset _lv2ar_caller_flags _lv2ar_caller_pipefail
+# command died and was read as a registry bug). The root_error branch above
+# restores through the same helper on its early-return path.
+_lv2ar_restore_caller_opts
