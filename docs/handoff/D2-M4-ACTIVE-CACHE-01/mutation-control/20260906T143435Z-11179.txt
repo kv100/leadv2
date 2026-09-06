@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-active-cache-liveness.sh
+file=plugins/leadv2/hooks/leadv2-active-cache.sh
+anchor=s/if tid not in alive_by_lane or alive_by_lane.get(tid):/if False:  # NC-MUTATION/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: C1: expected EPERM-LIVE-01, got tid=[] full=[]
+diff_hash=fa04924bf5e4728924467df2c75757e7c452023d58c4802c50835e23b6d3fc7d
+lane_diff_hash=e0428f34c7b9a2960775c704cb351fee122bdfc65737abf85e0edfeb74d0ab45
