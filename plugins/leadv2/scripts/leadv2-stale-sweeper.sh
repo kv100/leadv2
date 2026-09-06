@@ -351,7 +351,17 @@ _ssw_pid_alive() {
     *) return 1 ;;
   esac
 }
-_ssw_norm_lstart() { printf '%s' "$1" | tr -s '[:space:]' ' '; }
+_ssw_norm_lstart() {
+  # squeeze AND trim: see lane-liveness's _ll_norm_lstart — a birth written
+  # by a differently-normalizing writer (suite fixtures, other gates) must
+  # still compare equal (observed live 2026-09-06: leading-space births made
+  # every live holder read as provably stale).
+  local s
+  s="$(printf '%s' "$1" | tr -s '[:space:]' ' ')"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
 _ssw_lock_owner_alive() {
   # dir/owner.pid + dir/owner.birth (ps lstart identity, pid-reuse-proof).
   # A live pid with no/unobservable birth degrades to ALIVE — never reclaim

@@ -68,6 +68,88 @@ _lane_codex_status() {
   # No timeout(1) on this PATH -> run unbounded rather than lose the data.
   ${runner} bash "$CODEX_TASK" "$@" 2>/dev/null || true
 }
+# ── CONTROL-PLANE-SATURATES-01: single-flight + short-TTL verdict share ────
+# lane-liveness is a PURE probe (verdicts on stdout; the python writes no
+# state) with ~60 invokers across the plugin — dispatch-code's ledger sweep,
+# backlog-pump, idle-lead-guard, status-surface, lane-watch, and
+# worktree-cleanup --sweep-dead calling it PER WORKTREE. None of them
+# serialize, so N concurrent sessions each mint N concurrent ~1170-line
+# python3 passes over `ps`. Measured 2026-09-06T10:3xZ: 8 lane-liveness
+# pythons at 25-35% CPU each inside load 167 on 10 cores — the machine
+# saturation that tripped time-sensitive suites red and got lane
+# B0-READER-HALF-01 falsely marked terminal=dead on delivered work.
+#
+# The dedup lives HERE, in the probe itself, so every caller is covered
+# without touching any spawner (several are other lanes' write sets):
+#   * subject = (--lane X | --job Y | --all) × json × codex-mode ×
+#     project root × state paths × the LEADV2_LANE_* verdict knobs — one
+#     slot per subject, next to the resolved active.yaml (cross-worktree
+#     control plane, like the stale-sweeper's single-flight lock);
+#   * a completed verdict fresher than SHARE_TTL_S (default 10s) with no
+#     live in-flight owner is replayed byte-identically — no python3 at all;
+#   * a live in-flight owner (mkdir-atomic in-flight.d, owner.pid +
+#     ps-lstart birth identity) is waited on (up to WAIT_S, default 30s —
+#     the codex shell-out is itself bounded at 20s) and its verdict shared;
+#   * reclaim only on POSITIVE death: kill -0 has three answers, and EPERM
+#     (e.g. pid 1) means ALIVE; a live pid whose birth cannot be observed
+#     degrades to alive — never reclaim a slot on a guess;
+#   * any doubt (wait timeout, reclaim race lost) runs the probe directly —
+#     a duplicate verdict is always cheaper than a blocked one.
+# LEADV2_LANE_LIVENESS_SHARE=0 disables the gate (one-step rollback).
+# LEADV2_TEST_CONTEXT=1 (exported by every suite runner) also disables it,
+# so existing liveness suites stay byte-deterministic and never share state.
+# LEADV2_LANE_LIVENESS_PROBE_COUNT_FILE, when set, gets one line per REAL
+# probe execution — the dedup measurement seam (unset in production: free).
+_ll_sha256() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+  else sha256sum | cut -d' ' -f1; fi
+}
+_ll_pid_alive() {
+  # kill -0 has THREE answers, not two: rc=0 alive; ESRCH dead; EPERM alive
+  # (a process we may not signal — e.g. pid 1 — is running, not gone).
+  local pid="$1" err
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  err="$(kill -0 "$pid" 2>&1)" && return 0
+  case "$err" in
+    *"not permitted"*|*"Not permitted"*|*"operation not permitted"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+_ll_norm_lstart() {
+  # squeeze AND trim: ps lstart output can carry leading/trailing spaces, and
+  # a birth written by one normalizer must compare equal when observed by
+  # another (suite fixtures, the sweeper's gate) — observed live 2026-09-06
+  # as "every live holder read as provably stale".
+  local s
+  s="$(printf '%s' "$1" | tr -s '[:space:]' ' ')"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+_ll_inflight_owner_alive() { # <lockdir>
+  # owner.pid + owner.birth (ps lstart identity, pid-reuse-proof). A live pid
+  # with no/unobservable birth degrades to ALIVE — never reclaim on a guess.
+  # Only a recorded birth CONTRADICTED by a live ps observation (pid
+  # recycled) makes the holder provably stale.
+  local dir="$1" owner birth observed
+  owner="$(cat "$dir/owner.pid" 2>/dev/null || true)"
+  _ll_pid_alive "$owner" || return 1
+  birth="$(cat "$dir/owner.birth" 2>/dev/null || true)"
+  [[ -n "$birth" ]] || return 0
+  observed="$(_ll_norm_lstart "$(ps -o lstart= -p "$owner" 2>/dev/null || true)")"
+  [[ -n "$observed" ]] || return 0
+  [[ "$observed" == "$birth" ]]
+}
+_ll_release_flight() { # <lockdir>
+  local dir="$1"
+  if [[ -d "$dir" ]] && [[ "$(cat "$dir/owner.pid" 2>/dev/null || true)" == "$$" ]]; then
+    rm -f "$dir/owner.pid" "$dir/owner.birth" 2>/dev/null || true
+    rmdir "$dir" 2>/dev/null || true
+  fi
+}
+# The probe itself: codex status fetch + the python pass, verbatim, wrapped
+# so the share gate below can decide WHO runs it and who replays its output.
+_ll_run_probe() {
 CODEX_RAW=''
 if [[ "$NO_CODEX" -ne 1 && -f "$CODEX_TASK" ]]; then
   # --no-codex skips both `codex-task.sh status` shell-outs -- the statusline
@@ -1271,3 +1353,124 @@ else:
         for row in lanes:
             print(f"{row['lane']} {row['verdict']}")
 PY
+}
+
+# ── share gate execution (CONTROL-PLANE-SATURATES-01) ───────────────────────
+if [[ "${LEADV2_LANE_LIVENESS_SHARE:-1}" != "1" || "${LEADV2_TEST_CONTEXT:-0}" == "1" ]]; then
+  # rollback knob or a suite runner: behave exactly like the pre-gate script
+  [[ -z "${LEADV2_LANE_LIVENESS_PROBE_COUNT_FILE:-}" ]] || \
+    printf 'probe pid=%s %s (share-off)\n' "$$" "$(date +%s)" >>"$LEADV2_LANE_LIVENESS_PROBE_COUNT_FILE" 2>/dev/null || true
+  _ll_run_probe
+  exit $?
+fi
+_ll_ttl="${LEADV2_LANE_LIVENESS_SHARE_TTL_S:-10}"
+_ll_wait="${LEADV2_LANE_LIVENESS_SHARE_WAIT_S:-30}"
+[[ "$_ll_ttl" =~ ^[0-9]+$ ]] || _ll_ttl=10
+[[ "$_ll_wait" =~ ^[0-9]+$ ]] || _ll_wait=30
+_ll_share_root="$(dirname "$ACTIVE_YAML")/.lane-liveness-share"
+_ll_slot_key="$(printf '%s\n' \
+  "lane=${LANE_ID}" "job=${JOB_ID}" "all=${ALL}" "json=${JSON}" "nocodex=${NO_CODEX}" \
+  "root=${PROJECT_ROOT}" "active=${ACTIVE_YAML}" "tomb=${TOMBSTONES}" \
+  "suffixes=${LEADV2_LANE_CHILD_SUFFIXES:-}" \
+  "silent=${LEADV2_LANE_SILENT_MAX_S:-900}" "v2=${LEADV2_LANE_LIVENESS_V2:-1}" \
+  "starting=${LEADV2_LANE_STARTING_MAX_S:-300}" "abandon=${LEADV2_LANE_ABANDON_MAX_S:-3600}" \
+  "sentdead=${LEADV2_LANE_SENTINEL_DEAD:-1}" "settle=${LEADV2_LANE_SENTINEL_SETTLE_S:-60}" \
+  "runsroot=${LEADV2_LANE_RUNS_ROOT:-}" "sentclaude=${LEADV2_LANE_SENTINEL_CLAUDE:-1}" \
+  "pidident=${LEADV2_LANE_PID_IDENTITY:-1}" "prepass=${LEADV2_LANE_PREPASS_LIVE:-0}" \
+  "finwin=${LEADV2_LANE_FINISHED_WINDOW_S:-1800}" "codextmo=${LEADV2_CODEX_STATUS_TIMEOUT_S:-20}" \
+  | _ll_sha256)"
+_ll_slot="${_ll_share_root}/${_ll_slot_key}"
+mkdir -p "$_ll_share_root" "$_ll_slot" 2>/dev/null || true
+
+_ll_fresh() { # <slot> — a COMPLETED verdict younger than the TTL
+  local ts
+  ts="$(cat "$1/ts" 2>/dev/null || true)"
+  [[ "$ts" =~ ^[0-9]+$ ]] || return 1
+  (( $(date +%s) - ts <= _ll_ttl ))
+}
+_ll_emit_cached() { # <slot> — replay byte-identically, same exit code
+  local rc
+  [[ -f "$1/result" ]] || return 1
+  rc="$(cat "$1/rc" 2>/dev/null || true)"
+  [[ "$rc" =~ ^[0-9]+$ ]] || rc=0
+  cat "$1/result"
+  exit "$rc"
+}
+_ll_write_verdict() { # <slot> <rc> <tmp> — result first, rc next, ts LAST (waiters poll ts)
+  local slot="$1" rc="$2" tmp="$3"
+  mv "$tmp" "${slot}/result" 2>/dev/null || true
+  printf '%s\n' "$rc" >"${slot}/rc" 2>/dev/null || true
+  date +%s >"${slot}/ts" 2>/dev/null || true
+}
+_ll_own_flight() { # <lockdir> — take ownership of an acquired in-flight.d
+  # NOTE: the traps reference the GLOBAL _ll_flight, never "$1" — a trap
+  # fires after the function has returned, when "$1" is the top-level
+  # script's positional parameter (empty), not this argument.
+  printf '%s\n' "$$" >"$1/owner.pid" 2>/dev/null || true
+  _ll_norm_lstart "$(ps -o lstart= -p "$$" 2>/dev/null || true)" >"$1/owner.birth" 2>/dev/null || true
+  trap '_ll_release_flight "$_ll_flight"' EXIT
+  trap '_ll_release_flight "$_ll_flight"; exit 143' TERM
+  trap '_ll_release_flight "$_ll_flight"; exit 130' INT
+  trap '_ll_release_flight "$_ll_flight"; exit 129' HUP
+}
+_ll_run_owned() { # <slot> <lockdir> — we hold the flight: probe, publish, emit
+  local slot="$1" flight="$2" rc
+  # double-check inside the lock: a fresh verdict may have landed while we raced
+  if _ll_fresh "$slot"; then
+    _ll_release_flight "$flight"; trap - EXIT TERM INT HUP
+    _ll_emit_cached "$slot" || { _ll_run_probe; exit $?; }
+  fi
+  [[ -z "${LEADV2_LANE_LIVENESS_PROBE_COUNT_FILE:-}" ]] || \
+    printf 'probe pid=%s %s\n' "$$" "$(date +%s)" >>"$LEADV2_LANE_LIVENESS_PROBE_COUNT_FILE" 2>/dev/null || true
+  set +e
+  _ll_run_probe >"${slot}/result.tmp.$$"
+  rc=$?
+  set -e
+  _ll_write_verdict "$slot" "$rc" "${slot}/result.tmp.$$"
+  cat "${slot}/result" 2>/dev/null
+  _ll_release_flight "$flight"; trap - EXIT TERM INT HUP
+  exit "$rc"
+}
+
+_ll_flight="${_ll_slot}/in-flight.d"
+_ll_reclaims=0
+while :; do
+  # fresh completed verdict, nobody in flight → replay, no python3 spawned
+  if [[ ! -d "$_ll_flight" ]] && _ll_fresh "$_ll_slot"; then
+    _ll_emit_cached "$_ll_slot" || true
+    break
+  fi
+  if mkdir "$_ll_flight" 2>/dev/null; then
+    _ll_own_flight "$_ll_flight"
+    _ll_run_owned "$_ll_slot" "$_ll_flight"
+  fi
+  if ! _ll_inflight_owner_alive "$_ll_flight"; then
+    # provably dead holder — positive death only; give up after 2 reclaims
+    (( _ll_reclaims += 1 ))
+    (( _ll_reclaims >= 2 )) && break
+    printf '[lane-liveness] share slot had a provably dead in-flight holder (pid=%s) — reclaiming\n' \
+      "$(cat "$_ll_flight/owner.pid" 2>/dev/null || printf '?')" >&2
+    rm -f "$_ll_flight/owner.pid" "$_ll_flight/owner.birth" 2>/dev/null || true
+    rmdir "$_ll_flight" 2>/dev/null || true
+    continue
+  fi
+  # live holder for THIS subject: wait for its verdict (that is the share),
+  # its exit, or its death — whichever comes first
+  _ll_deadline=$(( $(date +%s) + _ll_wait ))
+  while (( $(date +%s) < _ll_deadline )); do
+    if _ll_fresh "$_ll_slot"; then
+      _ll_emit_cached "$_ll_slot" || true
+      break 2
+    fi
+    [[ -d "$_ll_flight" ]] || break
+    _ll_inflight_owner_alive "$_ll_flight" || break
+    sleep 0.3
+  done
+  break
+done
+# wait timed out / reclaim race lost / cached emit refused: never block a
+# verdict — run the probe directly, unshared
+[[ -z "${LEADV2_LANE_LIVENESS_PROBE_COUNT_FILE:-}" ]] || \
+  printf 'probe pid=%s %s (unshared)\n' "$$" "$(date +%s)" >>"$LEADV2_LANE_LIVENESS_PROBE_COUNT_FILE" 2>/dev/null || true
+_ll_run_probe
+exit $?

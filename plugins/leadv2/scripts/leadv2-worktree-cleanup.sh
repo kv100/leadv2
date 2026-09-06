@@ -126,6 +126,99 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ── single-flight gate on the sweep modes (CONTROL-PLANE-SATURATES-01) ──────
+# A sweep walks EVERY lane worktree and shells out to leadv2-lane-liveness.sh
+# (→ python3) per worktree, so N concurrent sweeps multiply the process table
+# (measured 2026-09-06T10:3xZ: 13 concurrent worktree-cleanup instances inside
+# load 167 on 10 cores). The stale-sweeper's own single-flight gate covers its
+# SessionStart path; THIS gate covers every other invoker, from inside the
+# swept program itself — one sweep per control plane at a time, and a second
+# sweep that finds a LIVE owner prints 'sweep already running' and exits 0
+# (the next SessionStart/hook re-runs it; nothing is lost but a duplicate
+# pass). --name is deliberately NOT gated: a targeted reap by the lane's own
+# owner is the one removal that must always work (same rule as usage()).
+# Lock sits next to the control-plane active.yaml (cross-worktree, per repo),
+# like the stale-sweeper's .stale-sweeper-full.lock. Reclaim only on POSITIVE
+# death (kill -0 three answers: EPERM = alive; unobservable birth = alive).
+# LEADV2_WTC_NO_SINGLEFLIGHT=1 disables (tests / rollback).
+if [[ "${LEADV2_WTC_NO_SINGLEFLIGHT:-}" != "1" && ( "$SWEEP_MERGED" -eq 1 || "$SWEEP_DEAD" -eq 1 ) ]]; then
+  _wtc_root="${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")}"
+  _wtc_cp_dir="${_wtc_root}/docs/leadv2"
+  if [[ -f "${_LV2_WT_CLEANUP_DIR}/leadv2-state-path.sh" ]]; then
+    _wtc_cp_dir="$(dirname "$(PROJECT_ROOT="$_wtc_root" "${_LV2_WT_CLEANUP_DIR}/leadv2-state-path.sh" active.yaml 2>/dev/null || printf '%s' "${_wtc_cp_dir}/active.yaml")")"
+  fi
+  WTC_SWEEP_LOCK="${_wtc_cp_dir}/.worktree-cleanup-sweep.lock"
+  _wtc_pid_alive() {
+    # kill -0 has THREE answers, not two: rc=0 alive; ESRCH dead; EPERM alive
+    # (a process we may not signal — e.g. pid 1 — is running, not gone).
+    local pid="$1" err
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    err="$(kill -0 "$pid" 2>&1)" && return 0
+    case "$err" in
+      *"not permitted"*|*"Not permitted"*|*"operation not permitted"*) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  _wtc_norm_lstart() {
+    # squeeze AND trim: see lane-liveness's _ll_norm_lstart — a birth written
+    # by a differently-normalizing writer must still compare equal (observed
+    # live 2026-09-06: leading-space births made every live holder read stale).
+    local s
+    s="$(printf '%s' "$1" | tr -s '[:space:]' ' ')"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+  }
+  _wtc_owner_alive() {
+    # owner.pid + owner.birth (ps lstart identity, pid-reuse-proof). A live
+    # pid with no/unobservable birth degrades to ALIVE — never reclaim on a
+    # guess; only a recorded birth CONTRADICTED by live ps observation does.
+    local owner birth observed
+    owner="$(cat "$WTC_SWEEP_LOCK/owner.pid" 2>/dev/null || true)"
+    _wtc_pid_alive "$owner" || return 1
+    birth="$(cat "$WTC_SWEEP_LOCK/owner.birth" 2>/dev/null || true)"
+    [[ -n "$birth" ]] || return 0
+    observed="$(_wtc_norm_lstart "$(ps -o lstart= -p "$owner" 2>/dev/null || true)")"
+    [[ -n "$observed" ]] || return 0
+    [[ "$observed" == "$birth" ]]
+  }
+  _wtc_write_owner() {
+    printf '%s\n' "$$" >"$WTC_SWEEP_LOCK/owner.pid" 2>/dev/null || true
+    _wtc_norm_lstart "$(ps -o lstart= -p "$$" 2>/dev/null || true)" >"$WTC_SWEEP_LOCK/owner.birth" 2>/dev/null || true
+  }
+  _wtc_release_lock() {
+    if [[ -d "$WTC_SWEEP_LOCK" ]] && [[ "$(cat "$WTC_SWEEP_LOCK/owner.pid" 2>/dev/null || true)" == "$$" ]]; then
+      rm -f "$WTC_SWEEP_LOCK/owner.pid" "$WTC_SWEEP_LOCK/owner.birth" 2>/dev/null || true
+      rmdir "$WTC_SWEEP_LOCK" 2>/dev/null || true
+    fi
+  }
+  mkdir -p "$_wtc_cp_dir" 2>/dev/null || true
+  if mkdir "$WTC_SWEEP_LOCK" 2>/dev/null; then
+    _wtc_write_owner
+  elif _wtc_owner_alive; then
+    printf '[worktree-cleanup] sweep already running (pid=%s) — this instance exits; the next hook re-runs it\n' \
+      "$(cat "$WTC_SWEEP_LOCK/owner.pid" 2>/dev/null || printf '?')"
+    exit 0
+  else
+    printf '[worktree-cleanup] single-flight lock had a provably stale holder (pid=%s) — reclaiming\n' \
+      "$(cat "$WTC_SWEEP_LOCK/owner.pid" 2>/dev/null || printf '?')"
+    rm -f "$WTC_SWEEP_LOCK/owner.pid" "$WTC_SWEEP_LOCK/owner.birth" 2>/dev/null || true
+    rmdir "$WTC_SWEEP_LOCK" 2>/dev/null || true
+    if mkdir "$WTC_SWEEP_LOCK" 2>/dev/null; then
+      _wtc_write_owner
+    else
+      printf '[worktree-cleanup] single-flight lock lost the reclaim race — this instance exits; the next hook re-runs it\n'
+      exit 0
+    fi
+  fi
+  trap '_wtc_release_lock' EXIT
+  # An untrapped SIGTERM (e.g. `timeout`) can terminate bash without the EXIT
+  # trap — release on the common kill signals too (stale-sweeper pattern).
+  trap '_wtc_release_lock; exit 143' TERM
+  trap '_wtc_release_lock; exit 130' INT
+  trap '_wtc_release_lock; exit 129' HUP
+fi
+
 # ── --sweep-dead mode ───────────────────────────────────────────────────────
 # W-1 lane-worktree-isolation (§1.4): --sweep-merged only ever matched
 # agent-<hex> names against MERGED branches; lane worktrees are named after
