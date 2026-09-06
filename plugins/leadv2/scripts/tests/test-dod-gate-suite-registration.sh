@@ -184,5 +184,47 @@ else
   bad "(g) live repo not found at ${PE_ROOT} (set LEADV2_DOD_LIVE_REPO) — this case must not silently skip"
 fi
 
+# ── (h)(i)(j) sustained blindness announces itself ──────────────────────────
+# A dod_skip line in a log nobody reads is indistinguishable from no problem, so
+# every UNDETERMINED verdict is also recorded, and the day's count announces
+# itself once it crosses the threshold. Without this the gate could answer
+# UNDETERMINED forever and we would learn it from the next lost lane.
+export LEADV2_STATE_ROOT="${WORK}/state"
+export LEADV2_DOD_BLIND_ALERT_N=3
+BLIND_LOG="${LEADV2_STATE_ROOT}/dod-undetermined.log"
+rm -f "${BLIND_LOG}"
+
+run_check "${R_NONE}" "${WORK}/d-none.diff"
+if [[ -s "${BLIND_LOG}" ]] && [[ "$(grep -c . "${BLIND_LOG}")" == "1" ]]; then
+  ok "(h) an UNDETERMINED verdict records one line"
+else
+  bad "(h) nothing recorded: $(cat "${BLIND_LOG}" 2>/dev/null | tr '\n' '|')"
+fi
+if grep -q 'dod_blind_streak' <<< "${OUT}"; then
+  bad "(h2) one blind verdict already cries streak — the threshold does nothing"
+else
+  ok "(h2) one blind verdict is not yet a streak (threshold respected)"
+fi
+
+run_check "${R_NONE}" "${WORK}/d-none.diff"
+run_check "${R_NONE}" "${WORK}/d-none.diff"
+if grep -q 'dod_blind_streak check=suite_registration count=3' <<< "${OUT}"; then
+  ok "(i) the third blind verdict of the day announces itself with a count"
+else
+  bad "(i) no dod_blind_streak at the threshold — out=${OUT}"
+fi
+
+# (j) NEG-CTL: a check that CAN answer must not touch the counter. Without this
+# the counter would fill from healthy runs and the alert would mean nothing.
+before="$(grep -c . "${BLIND_LOG}" 2>/dev/null || printf '0')"
+run_check "${R_ARR}" "${WORK}/d-arr.diff"
+after="$(grep -c . "${BLIND_LOG}" 2>/dev/null || printf '0')"
+if [[ "${RC}" == "0" && "${before}" == "${after}" ]]; then
+  ok "(j) NEG-CTL: a check that answers records nothing (counter stays ${after})"
+else
+  bad "(j) NEG-CTL: rc=${RC} counter ${before} -> ${after}"
+fi
+unset LEADV2_STATE_ROOT LEADV2_DOD_BLIND_ALERT_N
+
 printf -- '[TEST] %d passed, %d failed\n' "${PASS}" "${FAIL}"
 [[ ${FAIL} -eq 0 ]]

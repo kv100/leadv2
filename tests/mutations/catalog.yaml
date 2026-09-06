@@ -896,3 +896,15 @@ mutations:
       again, i.e. the production defect reproduced. Measured 7/3.
       Note for the next mutation on this file: the two verdict paths are independent, so a
       single-site mutation only proves one of them; both are catalogued for that reason.
+
+  - id: dod-gate-goes-blind-without-recording-it
+    product_flow: "The follow-up to the gate's deliberate fail-open: when check (c) cannot answer it returns UNDETERMINED instead of killing the lane, and that trade is only safe if sustained blindness surfaces. _dod_blind_record appends one line per undetermined verdict to ${LEADV2_STATE_ROOT}/dod-undetermined.log and prints `dod_blind_streak check=... count=N` once the day's count crosses LEADV2_DOD_BLIND_ALERT_N (3). Ledger row SD-DOD-GATE-BLIND-STREAK-01 reads the same file with one grep, so the log has a reader rather than being a line nobody sees. A check that CAN answer records nothing, or the counter fills from healthy runs and the alert means nothing"
+    file: plugins/leadv2/scripts/lib/leadv2-dod-gate.sh
+    suite: plugins/leadv2/scripts/tests/test-dod-gate-suite-registration.sh
+    anchor: |
+      _dod_blind_record() {
+    patch: |
+      replace the append inside _dod_blind_record with `:` so an undetermined verdict is
+      no longer recorded
+      -- cases (h) and (i) go red (nothing recorded; no dod_blind_streak at the threshold),
+      while (j) stays green because a healthy check never wrote anyway. Measured 12/2.

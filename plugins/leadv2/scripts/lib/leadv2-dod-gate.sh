@@ -430,6 +430,31 @@ _dod_run_all_selection() { # <root> -> stdout, one selected suite path per line;
   printf '%s\n' "${out}" | sed -n 's/^\[SELECT\] //p'
 }
 
+# DOD-GATE-KILLS-A-REGISTERED-SUITE-01, follow-up: a line in a log nobody reads is
+# indistinguishable from no problem. When the registration check cannot answer, it
+# also RECORDS that it could not, and sustained blindness announces itself instead of
+# waiting to be noticed by the next lost lane. One line per undetermined verdict; the
+# 24h count is what the ledger row SD-DOD-GATE-BLIND-STREAK-01 reads.
+_dod_blind_record() { # <check> <reason> -> stdout: a dod_blind_streak line when the window is breached
+  local check="$1" reason="$2"
+  local root="${LEADV2_STATE_ROOT:-${HOME}/.claude/leadv2-state}"
+  local f="${root}/dod-undetermined.log"
+  local n="${LEADV2_DOD_BLIND_ALERT_N:-3}"
+  mkdir -p "${root}" 2>/dev/null || return 0
+  printf '%s %s %s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${check}" "${reason}" \
+    "${LEADV2_TASK_ID:-${TASK:-unknown}}" >> "${f}" 2>/dev/null || return 0
+  # Count today's UTC day rather than a rolling window: one `date` call, no arithmetic
+  # on timestamps, and the ledger row can re-derive the same number with one grep.
+  local today count
+  today="$(date -u '+%Y-%m-%d')"
+  count="$(grep -c "^${today}T.* ${check} " "${f}" 2>/dev/null || printf '0')"
+  [[ "${count}" =~ ^[0-9]+$ ]] || return 0
+  if (( count >= n )); then
+    printf 'dod_blind_streak check=%s count=%s window=utc_day threshold=%s log=%s\n' \
+      "${check}" "${count}" "${n}" "${f}"
+  fi
+}
+
 _dod_extra_suite_map_values() { # <root> -> stdout, one suite token (path OR basename) per line
   local run_all="${1}/tests/run-all.sh"
   [[ -f "${run_all}" ]] || return 0
@@ -468,6 +493,7 @@ _dod_check_c() {
   fi
   if [[ -z "${diff_file}" || ! -f "${diff_file}" ]]; then
     printf 'dod_skip check=suite_registration_undetermined reason=no_diff_file\n'
+    _dod_blind_record suite_registration no_diff_file
     return 2
   fi
 
@@ -486,6 +512,7 @@ _dod_check_c() {
     # Neither instrument could answer. That is exactly the state that killed a
     # lane today, so it must read as "could not check", never as "unregistered".
     printf 'dod_skip check=suite_registration_undetermined reason=no_selection_and_no_map\n'
+    _dod_blind_record suite_registration no_selection_and_no_map
     return 2
   fi
 
