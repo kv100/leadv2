@@ -107,3 +107,22 @@ git grep -c three-state main -- plugins/leadv2/scripts/tests/run-core-offline.sh
 Сюита трёх состояний не просто существует — она **зарегистрирована в раннере**
 (`run-core-offline.sh`), то есть CI её выбирает. Это тот пункт, на котором обычно ломается
 «зелёное, которое никто не гоняет». Плюс merge-коммит `f847f92c merge(...): wave В1`.
+
+---
+
+## 3. `MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01` — **лёг**
+
+Предмет строки — пустой дифф линии, который считался за валидную «личность» вместо отказа.
+Именованные символы отчёта в main все:
+
+```
+LEADV2_LANE_START_SHA          main_files=22  commits=19
+_dod_worker_diff_hash          main_files=3   commits=3
+_mc_resolve_base               main_files=2   commits=1
+_dod_valid_mutation_artifact   main_files=2   commits=1
+e3b0c442 (пустой sha256)       main_files=4   commits=1
+```
+
+Подтверждающий коммит с правкой, а не с отчётом:
+`ad4be1e3 fix(mutation-control): an empty lane diff is a refusal, not an identity`.
+Это ровно то, что строка требовала, и это правка кода, а не документа.
