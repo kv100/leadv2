@@ -771,12 +771,23 @@ def main():
         elif session_pid is not None:
             # A valid PID belonging to a different live process tree is a
             # different lead session even when both rows temporarily point at
-            # the main checkout. Never select it by worktree fallback.
+            # the main checkout. Never select it by worktree fallback. But a
+            # GENUINELY DEAD pid (ESRCH) is not a live foreign session at all
+            # -- its row must fall through to worktree matching below, the
+            # same as any other session_pid-less row (TASK-ANCHOR-DEAD-PID-
+            # SKIPS-WORKTREE-FALLBACK-01: both branches used to `continue`
+            # unconditionally, silently excluding a dead session's row from
+            # worktree fallback even though this comment says only a LIVE
+            # foreign session should be excluded). EPERM still means the pid
+            # EXISTS (owned by another user) -- exclude same as a plain
+            # alive pid.
             try:
                 os.kill(session_pid, 0)
                 continue
-            except (ProcessLookupError, PermissionError):
+            except PermissionError:
                 continue
+            except ProcessLookupError:
+                pass
         wt = s.get("worktree") or ""
         try:
             wt_real = os.path.realpath(wt) if wt else ""
