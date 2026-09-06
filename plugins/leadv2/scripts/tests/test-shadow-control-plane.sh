@@ -68,12 +68,29 @@ PYTEST
   echo "deletion-control: $variant register/list/unregister checked"
 done
 # Run the actual writer from scripts cwd with no project-root override.
-# Only liveness is stubbed; storage, collector and snapshot are real.
+# Storage, collector and snapshot are real; the liveness override applies
+# only to foreign-repo enrichment (own-repo liveness remains real).
 COLLECT="$TMP/collector"
 mkdir -p "$COLLECT/plugins/leadv2/scripts" "$TMP/ledger"
 git -C "$COLLECT" init -q
 git -C "$COLLECT" -c user.name=test -c user.email=test@local commit --allow-empty -qm seed
 lv2_assert_scratch_repo "$COLLECT"
+# A fresh git repository has no registry yet. Snapshot must fail closed;
+# initialize via the same sourced registry API used by dispatch before reading.
+(LEADV2_PROJECT_ROOT="$COLLECT" LEADV2_SUPERVISE_OBSERVE_ONLY=1 \
+  bash "$SCRIPTS/leadv2-lanes-snapshot.sh" --json --no-all-repos) > "$TMP/uninitialized.json" 2> "$TMP/uninitialized.err" || true
+python3 - "$TMP/uninitialized.json" <<'PYTEST'
+import json, sys
+error=json.load(open(sys.argv[1]))
+assert error['error']=='registry_error', error
+print('writer precondition: '+error['message'])
+PYTEST
+(
+  export LEADV2_PROJECT_ROOT="$COLLECT"
+  source "$SCRIPTS/leadv2-active-registry.sh"
+  leadv2_active_register SHADOW-WRITER Standard "$COLLECT" fixture false
+  leadv2_active_unregister SHADOW-WRITER
+) > "$TMP/writer-init.out" 2>&1
 printf '#!/usr/bin/env bash\nprintf '''%%s\\n''' '''{"lanes":[],"jobs":[],"availability":"available"}'''\n' > "$TMP/liveness.sh"
 chmod +x "$TMP/liveness.sh"
 (cd "$COLLECT/plugins/leadv2/scripts" &&
@@ -90,6 +107,9 @@ p=root+'/docs/leadv2/status-snapshot.json'
 assert os.path.isfile(p), p
 doc=json.load(open(p))
 assert doc['sections']['lanes']['ok'], doc['sections']['lanes']
+assert doc['sections']['lanes']['data']['table']==[], doc['sections']['lanes']
+assert not os.path.lexists(root+'/plugins/leadv2/scripts/docs')
+print('writer: lanes.ok=true table=[]; nested docs absent by lexists + os.walk')
 assert not any(p.endswith('/scripts/docs/leadv2') for p, ds, fs in os.walk(root))
 PYTEST
 echo "writer: real collector -> lanes-snapshot -> state-path checked"
