@@ -469,6 +469,7 @@ SUITE_DEFS=(
   "e2e gate arch-01 (lane-tree testing)|||bash $TEST_DIR/test-e2e-gate-arch-01.sh"
   "e2e gate ignores pre-existing red|||bash $TEST_DIR/test-e2e-gate-ignores-pre-existing-red.sh"
   "mutation runner measures only declared files|||bash $TEST_DIR/test-mutation-runner-measures-only-declared-files.sh"
+  "judge-shaped agent notice|||bash $TEST_DIR/test-judge-shaped-agent-guard.sh"
   # parallel (round 2): not on _CORE_OFFLINE_OWNED_SUITES; every case uses its
   # own mktemp -d sandbox (incl. a sandboxed HOME), no shared lock/port.
   # serial WITH A DEATH DATE, not a return to the old placement (measured

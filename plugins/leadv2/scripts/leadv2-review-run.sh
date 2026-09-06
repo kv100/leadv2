@@ -1254,7 +1254,11 @@ _review_roundcap_attempts="${_review_roundcap_pair% *}"
 _review_roundcap_max="$(_review_roundcap_limit)"
 if [[ "${_review_roundcap_max}" -gt 0 && "${_review_roundcap_attempts}" -ge "${_review_roundcap_max}" ]]; then
   {
-    printf 'status: blocked\nreason: review_roundcap\nrounds: %s\nmax_rounds: %s\nescalation: %s/review-roundcap-escalation.md\n' \
+    # LEAD-USES-ITS-OWN-TOOLS-01: name the remedy AT the moment of refusal.
+    # "needs architect escalation or PARK" describes a situation; it does not
+    # say what to run, and on 2026-09-02 the lead answered that silence twice
+    # by hand-writing a ~400-word judge prompt instead of using the skill.
+    printf 'status: blocked\nreason: review_roundcap\nrounds: %s\nmax_rounds: %s\nescalation: %s/review-roundcap-escalation.md\nremedy: Skill(leadv2-judge) mode=review\n' \
       "${_review_roundcap_attempts}" "${_review_roundcap_max}" "${HANDOFF}"
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
@@ -1262,7 +1266,10 @@ if [[ "${_review_roundcap_max}" -gt 0 && "${_review_roundcap_attempts}" -ge "${_
     printf '# Review round cap reached\n\n'
     printf "Task \`%s\` has been reviewed %s time(s) without converging to a passing verdict " "${TASK}" "${_review_roundcap_attempts}"
     printf '(configured maximum: %s). The engine is refusing to spend another review round on it.\n\n' "${_review_roundcap_max}"
-    printf 'This lane needs architect escalation or PARK — a human or the lead must decide next steps.\n'
+    printf 'This lane needs architect escalation or PARK — a human or the lead must decide next steps.\n\n'
+    printf 'Next step, by name: `Skill(leadv2-judge) mode=review`. Do not hand-write an\n'
+    printf 'equivalent Agent prompt — the skill carries the verdict vocabulary and the mode\n'
+    printf 'contract, a hand-written one carries neither and leaves no record.\n'
     printf 'Raise the limit for one more attempt with LEADV2_REVIEW_MAX_ROUNDS, or set it to 0 to disable the cap entirely.\n'
   } > "${HANDOFF}/review-roundcap-escalation.md.tmp"
   mv -f "${HANDOFF}/review-roundcap-escalation.md.tmp" "${HANDOFF}/review-roundcap-escalation.md"
@@ -1271,6 +1278,7 @@ if [[ "${_review_roundcap_max}" -gt 0 && "${_review_roundcap_attempts}" -ge "${_
   emit decision "review_gate task=${TASK} status=blocked reason=review_roundcap rounds=${_review_roundcap_attempts} max=${_review_roundcap_max}"
   printf '[leadv2-review-run] REVIEW ROUNDCAP: task=%s rounds=%s max=%s — refusing a further review round.\n' "${TASK}" "${_review_roundcap_attempts}" "${_review_roundcap_max}" >&2
   printf '[leadv2-review-run] This lane needs architect escalation or PARK. See %s/review-roundcap-escalation.md\n' "${HANDOFF}" >&2
+  printf '[leadv2-review-run] Next step, by name: Skill(leadv2-judge) mode=review\n' >&2
   exit 8
 fi
 
@@ -1496,7 +1504,7 @@ _review_spawncap_spawns="${_review_spawncap_pair#* }"
 _review_spawncap_max="$(_review_spawncap_limit "${_review_roundcap_max}")"
 if [[ "${_review_spawncap_max}" -gt 0 && "${_review_spawncap_spawns}" -ge "${_review_spawncap_max}" ]]; then
   {
-    printf 'status: blocked\nreason: review_spawncap\nspawns: %s\nmax_spawns: %s\nescalation: %s/review-roundcap-escalation.md\n' \
+    printf 'status: blocked\nreason: review_spawncap\nspawns: %s\nmax_spawns: %s\nescalation: %s/review-roundcap-escalation.md\nremedy: Skill(leadv2-judge) mode=review\n' \
       "${_review_spawncap_spawns}" "${_review_spawncap_max}" "${HANDOFF}"
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
@@ -1504,7 +1512,10 @@ if [[ "${_review_spawncap_max}" -gt 0 && "${_review_spawncap_spawns}" -ge "${_re
     printf '# Review spawn cap reached\n\n'
     printf "Task \`%s\` has launched %s reviewer fan-out(s) (configured maximum: %s), " "${TASK}" "${_review_spawncap_spawns}" "${_review_spawncap_max}"
     printf 'including dedup rounds that never advanced the round counter. The engine is refusing to spend another one.\n\n'
-    printf 'This lane needs architect escalation or PARK — a human or the lead must decide next steps.\n'
+    printf 'This lane needs architect escalation or PARK — a human or the lead must decide next steps.\n\n'
+    printf 'Next step, by name: `Skill(leadv2-judge) mode=review`. Do not hand-write an\n'
+    printf 'equivalent Agent prompt — the skill carries the verdict vocabulary and the mode\n'
+    printf 'contract, a hand-written one carries neither and leaves no record.\n'
   } > "${HANDOFF}/review-roundcap-escalation.md.tmp"
   mv -f "${HANDOFF}/review-roundcap-escalation.md.tmp" "${HANDOFF}/review-roundcap-escalation.md"
   _review_spawncap_journal_bin="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
@@ -1512,6 +1523,7 @@ if [[ "${_review_spawncap_max}" -gt 0 && "${_review_spawncap_spawns}" -ge "${_re
   emit decision "review_gate task=${TASK} status=blocked reason=review_spawncap spawns=${_review_spawncap_spawns} max=${_review_spawncap_max}"
   printf '[leadv2-review-run] REVIEW SPAWNCAP: task=%s spawns=%s max=%s — refusing a further review round.\n' "${TASK}" "${_review_spawncap_spawns}" "${_review_spawncap_max}" >&2
   printf '[leadv2-review-run] This lane needs architect escalation or PARK. See %s/review-roundcap-escalation.md\n' "${HANDOFF}" >&2
+  printf '[leadv2-review-run] Next step, by name: Skill(leadv2-judge) mode=review\n' >&2
   exit 8
 fi
 _review_state_write spawn

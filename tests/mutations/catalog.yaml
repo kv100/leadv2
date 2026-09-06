@@ -776,3 +776,25 @@ mutations:
       s|LEADV2_MUTCTL_SNAPSHOT:-head|LEADV2_MUTCTL_SNAPSHOT:-worktree|
       -- the default goes back to snapshotting the whole working tree, so an undeclared dirty
       file from a neighbouring lane decides the verdict
+
+  - id: judge-shaped-agent-guard-notices-nothing
+    product_flow: "when leadv2-review-run.sh refuses another review round (status: blocked, reason: review_roundcap / review_spawncap) the lead needs a judge, and the plugin has one -- the leadv2-judge skill. On 2026-09-02 the lead hit the cap twice and both times hand-wrote a ~400-word Agent(leadv2:critic, opus) prompt instead, losing the verdict vocabulary, the mode contract and the record. LEAD-USES-ITS-OWN-TOOLS-01 names the remedy in the refusal itself and adds a WARN-only PreToolUse notice on judge-shaped Agent prompts. Note the filed row blamed a script leadv2-judge.sh that has never existed in this repo's history: the capability is a skill, and the guard points at the skill"
+    file: plugins/leadv2/hooks/leadv2-judge-shaped-agent-guard.sh
+    suite: plugins/leadv2/scripts/tests/test-judge-shaped-agent-guard.sh
+    anchor: |
+      grep -qiE 'VERDICT:|round cap|roundcap|LAND or FIX-ROUND'
+    patch: |
+      s/VERDICT:|round cap|roundcap|LAND or FIX-ROUND/ZZZ_NEVER_MATCHES/
+      -- the judge-shape vocabulary never matches, so a hand-written judge prompt
+      draws no notice; case (b), ordinary prose staying silent, must remain green
+
+  - id: roundcap-refusal-stops-naming-the-remedy
+    product_flow: "when leadv2-review-run.sh refuses another review round (status: blocked, reason: review_roundcap / review_spawncap) the lead needs a judge, and the plugin has one -- the leadv2-judge skill. On 2026-09-02 the lead hit the cap twice and both times hand-wrote a ~400-word Agent(leadv2:critic, opus) prompt instead, losing the verdict vocabulary, the mode contract and the record. LEAD-USES-ITS-OWN-TOOLS-01 names the remedy in the refusal itself and adds a WARN-only PreToolUse notice on judge-shaped Agent prompts. Note the filed row blamed a script leadv2-judge.sh that has never existed in this repo's history: the capability is a skill, and the guard points at the skill"
+    file: plugins/leadv2/scripts/leadv2-review-run.sh
+    suite: plugins/leadv2/scripts/tests/test-judge-shaped-agent-guard.sh
+    anchor: |
+      reason: review_roundcap\nrounds: %s\nmax_rounds: %s\nescalation: %s/review-roundcap-escalation.md\nremedy: Skill(leadv2-judge) mode=review\n
+    patch: |
+      drop the trailing `\nremedy: Skill(leadv2-judge) mode=review` from the round-cap
+      printf -- the refusal goes back to describing a situation without naming an
+      action; case (g), the cap still exiting 8, must remain green

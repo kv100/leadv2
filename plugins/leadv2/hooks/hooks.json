@@ -1,5 +1,5 @@
 {
-  "description": "leadv2 autonomous orchestrator hooks \u2014 guards, counters, delegations, lifecycle",
+  "description": "leadv2 autonomous orchestrator hooks — guards, counters, delegations, lifecycle",
   "hooks": {
     "SessionStart": [
       {
@@ -294,6 +294,13 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-workflow-bypass-guard.sh\"",
             "timeout": 5,
             "statusMessage": "Workflow-first guard..."
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-judge-shaped-agent-guard.sh\"",
+            "timeout": 5,
+            "continueOnBlock": true,
+            "statusMessage": "Judge-shaped agent notice (LEAD-USES-ITS-OWN-TOOLS-01, WARN-only)"
           }
         ]
       },
