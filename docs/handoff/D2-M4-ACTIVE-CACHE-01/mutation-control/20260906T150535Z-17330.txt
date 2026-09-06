@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-worktree-protected-pid-alive.sh
+file=plugins/leadv2/scripts/lib/leadv2-worktree-protected.sh
+anchor=112s/alive = 1/alive = 0/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: C1: expected alive=1, got '0'
+diff_hash=a70eaf603d7b9d2f581ec6112928bd12d68b78088acf00f406e3be24b0e6ce37
+lane_diff_hash=9bf274e5e176ef7c4bd894a62db0c8e524ef5b3a8f01605f6c817d01b8591bda
