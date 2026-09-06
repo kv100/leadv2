@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-worktree-enforce-liveness.sh
+file=plugins/leadv2/hooks/leadv2-worktree-enforce.sh
+anchor=67s/if tid not in alive_by_lane or alive_by_lane.get(tid):/if False:  # NC-MUTATION/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: C1: expected rc=2, got rc=0, stderr=
+diff_hash=72d44a7703e84653c954d406035dc397b23d4c1c6b5b909aee08391c05546678
+lane_diff_hash=63defecfc97e8cd7ec6330608761515175cddd8408a4254e82e9d21754d5ca6f
