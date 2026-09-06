@@ -92,10 +92,19 @@ MODELS_CACHE="${CODEX_MODELS_CACHE:-$HOME/.codex/models_cache.json}"
 _resolve_tier() {
   case "$TIER" in
     top)
-      # ASTRA-BUMP-01 2026-09-06 (founder order): one model, tier is the effort
-      # dial. gpt-6-astra is present in models_cache.json on this plan, so the
-      # old sol/terra cache probe and its "ultra" fallback are gone -- "ultra"
-      # is not a valid Astra effort (low|medium|high|xhigh). Rollback: /tmp/p.bak.
+      # ASTRA-BUMP-01 2026-09-06 (founder order), reverted the same day and then
+      # restored once the cause was found. One model; tier is the effort dial.
+      # The blocker was the CLI, not the model: @openai/codex was pinned to
+      # 0.145.0-alpha.1 and rejected gpt-6-astra 0/5 at volume and 0/5 at top.
+      # After `npm i -g @openai/codex@latest` (0.153.4): 5/5 at volume and 5/5
+      # at top with effort=high, no fallback. Five trials per cell, because a
+      # single shot cannot tell an intermittent refusal from a deterministic one
+      # -- that mistake cost three wrong conclusions in one evening.
+      # The old sol/terra cache probe and its "ultra" fallback are gone: "ultra"
+      # is not a valid Astra effort (low|medium|high|xhigh).
+      # Rollback: `git revert` this commit; the gpt-6* arm of the CLI-rejection
+      # fallback net in codex-task.sh stays either way and is what kept the arm
+      # alive through all ten refusals.
       TIER_MODEL="gpt-6-astra"; TIER_EFFORT="high"
       ;;
     standard)
