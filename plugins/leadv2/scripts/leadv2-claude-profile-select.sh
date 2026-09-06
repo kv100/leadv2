@@ -209,6 +209,7 @@ DIRS=()
 SOURCES=()
 IDENTITIES=()
 ACCOUNT_UUIDS=()
+DIGESTS=()
 expired_count=0
 re_label='^[a-z0-9][a-z0-9_-]{0,31}$'
 [[ -r "$REGISTRY" ]] || single_profile
@@ -287,6 +288,7 @@ while IFS=$'\t' read -r label config_dir cred expect || [[ -n "${label:-}" ]]; d
   fi
   LABELS+=("$label"); DIRS+=("$config_dir"); SOURCES+=("$cred"); IDENTITIES+=("$identity")
   ACCOUNT_UUIDS+=("$id_uuid")
+  DIGESTS+=("${id_digest:--}")
 done < "$REGISTRY"
 
 # --- alarm file (2b: TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01) -----------------
@@ -379,6 +381,7 @@ completed=0
 i=0
 while (( i < n )); do
   label="${LABELS[$i]}"; dir="${DIRS[$i]}"; cred="${SOURCES[$i]}"; identity="${IDENTITIES[$i]}"
+  digest="${DIGESTS[$i]}"
   i=$((i + 1))
   # Quota bucket keying is by IDENTITY, not by the operator-chosen label --
   # two labels resolving to the same real account must share one quota
@@ -403,12 +406,35 @@ while (( i < n )); do
   # never re-attempted on the very next round, but never a permanent
   # exclusion either (the marker's own timestamp is the only "list").
   cooldown_file="${CACHE_BASE}/identity-${id_key}/probe-cooldown-until"
+  cooldown_cred_file="${cooldown_file}.cred"
   cooldown_until=""
   [[ -f "$cooldown_file" ]] && cooldown_until="$(cat "$cooldown_file" 2>/dev/null || true)"
   if [[ "$cooldown_until" =~ ^[0-9]+$ ]] && (( $(date +%s) < cooldown_until )); then
-    warn "WARN: profile label=${label} cooling down after a recent live probe failure; skipping this round"
-    printf '%s\t%s\t%s\t-\t%s\t1\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
-    continue
+    # PROBE-COOLDOWN-OUTLIVES-ITS-CONDITION-01: the cooldown is a cached
+    # negative result keyed on THIS credential having just failed live. If
+    # the operator re-logs in, the credential changes but the cache does
+    # not know its subject changed -- a re-login inside the cooldown window
+    # was still silently skipped and reported as unchanged, costing the
+    # founder a false "didn't help" (2026-09-06). cooldown_cred_file records
+    # the digest that was failing when the cooldown was set; a mismatch
+    # against the CURRENT digest means the credential underneath has since
+    # changed, so the negative result no longer describes what we are about
+    # to probe -- invalidate and probe now instead of trusting a verdict
+    # about a different credential. A MISSING sidecar (old-format cooldown
+    # written before this fix, or a digest that failed to resolve at write
+    # time) is NOT treated as "changed" -- it is treated as "unknown", and an
+    # unknown must not silently disable the protection this cooldown exists
+    # to provide, so it is honored exactly as before.
+    cooldown_cred=""
+    [[ -f "$cooldown_cred_file" ]] && cooldown_cred="$(cat "$cooldown_cred_file" 2>/dev/null || true)"
+    if [[ -n "$cooldown_cred" && -n "$digest" && "$digest" != "-" && "$cooldown_cred" != "$digest" ]]; then
+      warn "WARN: profile label=${label} cooldown invalidated: credential fingerprint changed (${cooldown_cred} -> ${digest}) -- probing now"
+      rm -f "$cooldown_file" "$cooldown_cred_file" 2>/dev/null || true
+    else
+      warn "WARN: profile label=${label} cooling down after a recent live probe failure; skipping this round (reason=confirmed_live_failure until=${cooldown_until} remaining_s=$(( cooldown_until - $(date +%s) )))"
+      printf '%s\t%s\t%s\t-\t%s\t1\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+      continue
+    fi
   fi
   remaining=$(( deadline - $(date +%s) ))
   if (( remaining < 1 )); then
@@ -473,8 +499,20 @@ if account is None and len(accounts) == 1 and isinstance(accounts[0], dict):
 sys.exit(0 if (isinstance(account, dict) and account.get('status') != 'ok' and account.get('error')) else 1)
 " 2>/dev/null; then
     mkdir -p "$(dirname "$cooldown_file")" 2>/dev/null || true
-    printf '%s' "$(( $(date +%s) + COOLDOWN_S ))" > "$cooldown_file" 2>/dev/null || true
-    warn "WARN: profile label=${label} live probe failed; cooling down ${COOLDOWN_S}s"
+    cooldown_deadline=$(( $(date +%s) + COOLDOWN_S ))
+    printf '%s' "$cooldown_deadline" > "$cooldown_file" 2>/dev/null || true
+    # Record the credential fingerprint that just failed, so a later check
+    # can tell "still the same broken credential" from "operator re-logged
+    # in" (PROBE-COOLDOWN-OUTLIVES-ITS-CONDITION-01). Skip the sidecar when
+    # the digest itself failed to resolve -- an absent sidecar reads as
+    # "unknown" on the check side, which honors the cooldown (safe default),
+    # never as "changed".
+    if [[ -n "$digest" && "$digest" != "-" ]]; then
+      printf '%s' "$digest" > "$cooldown_cred_file" 2>/dev/null || true
+    else
+      rm -f "$cooldown_cred_file" 2>/dev/null || true
+    fi
+    warn "WARN: profile label=${label} live probe failed; cooling down ${COOLDOWN_S}s (reason=confirmed_live_failure cred=${digest} until=${cooldown_deadline})"
   fi
   b64="$(printf '%s' "$json" | base64 | tr -d '\n')"
   printf '%s\t%s\t%s\t%s\t%s\t0\n' "$label" "$dir" "$cred" "$b64" "$identity" >> "$recs"

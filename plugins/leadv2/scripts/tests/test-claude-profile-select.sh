@@ -580,5 +580,94 @@ check_grep "$ERR" 'WARN: profile label=flaky cooling down after a recent live pr
 check_grep "$OUT" '^profile=steady .*score=90 source=live' 'T25d: round 2 -- steady wins despite worse quota, because the cooling profile is excluded, not silently re-trusted'
 [[ "$RC" -eq 0 ]] && pass "T25: exit 0" || fail "T25 exit" "rc=$RC"
 
+# ============================================================================
+# T26/T27 (PROBE-COOLDOWN-OUTLIVES-ITS-CONDITION-01): the cooldown is a cached
+# negative result keyed on the credential that just failed. A re-login changes
+# the credential bytes underneath the same registry slot; the cooldown must
+# not survive that change (T26, positive), but MUST still survive an ordinary
+# next round where the credential did not change (T27, the mandatory paired
+# negative control -- without it this "fix" would just be a 401-storm
+# re-enabler in disguise).  Real credential-file bytes are required here (T25
+# above never exercises this path: its `cred.json` files do not exist on
+# disk, so their digest resolves to "-" and the fix's own missing-sidecar
+# fallback intentionally treats that as "unknown", not "changed").
+mkdir -p "$tmp/dir-gamma" "$tmp/dir-delta"
+
+echo "=== T26: credential fingerprint change invalidates an in-window cooldown ==="
+printf '{"claudeAiOauth":{"subscriptionType":"max","expiresAt":9999999999999}}' > "$tmp/dir-gamma/cred-v1.json"
+printf '{"provider":"anthropic","status":"ok","accounts":[{"entry_suffix":"file","service":"file:stub","status":"error","error":"http 401","active":true,"account_label":"stub"}],"active_account":"stub","fetched_at":"2026-08-25T00:00:00Z"}' > "$FIX/relogina.json"
+acct_json 90 80 > "$FIX/steadyb.json"
+printf 'relogina\t%s\tfile:%s/cred-v1.json\n' "$tmp/dir-gamma" "$tmp/dir-gamma" > "$REG"
+printf 'steadyb\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900 run_select $(base_env) LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900
+check_grep "$ERR" 'WARN: profile label=relogina live probe failed; cooling down' 'T26a: round 1 -- confirmed 401 starts a cooldown for relogina'
+# Simulate a re-login: the SAME registry slot, DIFFERENT credential bytes.
+printf '{"claudeAiOauth":{"subscriptionType":"max","expiresAt":9999999999999,"nonce":"post-relogin"}}' > "$tmp/dir-gamma/cred-v1.json"
+acct_json 5 5 > "$FIX/relogina.json"
+run_select $(base_env)
+check_grep "$ERR" 'WARN: profile label=relogina cooldown invalidated: credential fingerprint changed' 'T26b: round 2 -- changed credential invalidates the cooldown (WARN fires)'
+check_nogrep "$ERR" 'WARN: profile label=relogina cooling down after a recent live probe failure; skipping this round' 'T26c: round 2 -- relogina is NOT silently skipped this time'
+check_grep "$OUT" '^profile=relogina .*score=5 source=live' 'T26d: round 2 -- relogina was actually re-probed live and won on its real (good) quota, not defaulted'
+[[ "$RC" -eq 0 ]] && pass "T26: exit 0" || fail "T26 exit" "rc=$RC"
+
+echo "=== T27 (mandatory paired negative control): unchanged credential -- cooldown still applies ==="
+printf '{"claudeAiOauth":{"subscriptionType":"max","expiresAt":9999999999999}}' > "$tmp/dir-delta/cred-v1.json"
+printf '{"provider":"anthropic","status":"ok","accounts":[{"entry_suffix":"file","service":"file:stub","status":"error","error":"http 401","active":true,"account_label":"stub"}],"active_account":"stub","fetched_at":"2026-08-25T00:00:00Z"}' > "$FIX/reloginc.json"
+acct_json 90 80 > "$FIX/steadyd.json"
+printf 'reloginc\t%s\tfile:%s/cred-v1.json\n' "$tmp/dir-delta" "$tmp/dir-delta" > "$REG"
+printf 'steadyd\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900 run_select $(base_env) LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900
+check_grep "$ERR" 'WARN: profile label=reloginc live probe failed; cooling down' 'T27a: round 1 -- confirmed 401 starts a cooldown for reloginc'
+# NO credential change this time -- same bytes, same file, untouched.
+acct_json 5 5 > "$FIX/reloginc.json"
+run_select $(base_env)
+check_nogrep "$ERR" 'WARN: profile label=reloginc cooldown invalidated' 'T27b: round 2 -- unchanged credential does NOT invalidate the cooldown'
+check_grep "$ERR" 'WARN: profile label=reloginc cooling down after a recent live probe failure; skipping this round' 'T27c: round 2 -- reloginc is still skipped (cooling), exactly like T25 -- the protection is not disabled by this fix'
+check_grep "$OUT" '^profile=steadyd .*score=90 source=live' 'T27d: round 2 -- steadyd still wins; the phantom 5%% never actually re-verified'
+[[ "$RC" -eq 0 ]] && pass "T27: exit 0" || fail "T27 exit" "rc=$RC"
+
+# T28: mutation control -- if the fingerprint comparison in the fix is
+# dropped (cooldown always honored regardless of credential change), T26b/c/d
+# must fail. Run the exact T26 scenario fresh against a copy of the selector
+# with that one comparison neutralized, and require the suite to go red.
+echo "=== T28: mutation control -- neutralizing the fingerprint check must break T26 ==="
+# The mutant must live NEXT TO the real script, not under $tmp: SCRIPT_DIR is
+# derived from its own location and used to resolve PICK="$SCRIPT_DIR/lib/
+# leadv2-claude-profile-pick.py" (no env override exists for PICK), so a
+# copy anywhere else silently fails PICK's readability check and every run
+# degrades to single_profile before ever reaching the mutated line.
+MUT="${SCRIPTS_ROOT}/.mut-profile-select-$$.sh"
+trap 'rm -f "$MUT"; rm -rf "$tmp"' EXIT
+# NOTE: `[[ false ]]` is NOT bash false -- it tests the non-empty STRING
+# "false", which is truthy, and would silently make this mutation a no-op
+# that still passes the diff-differs check below (caught by running this
+# exact idiom against its target before trusting red/green, per today's
+# s3 finding). `[[ 1 -eq 0 ]]` is a genuine false.
+sed -E 's/(\[\[ -n "\$cooldown_cred" && -n "\$digest" && "\$digest" != "-" && "\$cooldown_cred" != "\$digest" \]\])/[[ 1 -eq 0 ]]/' \
+  "$SELECT_BIN" > "$MUT"
+chmod +x "$MUT"
+if diff -q "$SELECT_BIN" "$MUT" >/dev/null 2>&1; then
+  fail "T28: mutation applied" "sed did not change the file -- pattern did not match, mutation is a no-op"
+else
+  pass "T28: mutation applied (file differs from original)"
+fi
+mkdir -p "$tmp/dir-mut"
+printf '{"claudeAiOauth":{"subscriptionType":"max","expiresAt":9999999999999}}' > "$tmp/dir-mut/cred-v1.json"
+printf '{"provider":"anthropic","status":"ok","accounts":[{"entry_suffix":"file","service":"file:stub","status":"error","error":"http 401","active":true,"account_label":"stub"}],"active_account":"stub","fetched_at":"2026-08-25T00:00:00Z"}' > "$FIX/reloginm.json"
+acct_json 90 80 > "$FIX/steadym.json"
+printf 'reloginm\t%s\tfile:%s/cred-v1.json\n' "$tmp/dir-mut" "$tmp/dir-mut" > "$REG"
+printf 'steadym\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+# run_select's $SELECT_BIN is resolved once at script startup from
+# LEADV2_TEST_SELECT_BIN, so a prefix assignment on the call below would be a
+# no-op -- both rounds must invoke $MUT directly, matching what run_select
+# does internally.
+OUT="$(env STUB_FIXDIR="$FIX" $(base_env) LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900 bash "$MUT" 2>"$tmp/select.err")"; RC=$?
+ERR="$(cat "$tmp/select.err")"
+printf '{"claudeAiOauth":{"subscriptionType":"max","expiresAt":9999999999999,"nonce":"post-relogin"}}' > "$tmp/dir-mut/cred-v1.json"
+acct_json 5 5 > "$FIX/reloginm.json"
+OUT="$(env STUB_FIXDIR="$FIX" $(base_env) bash "$MUT" 2>"$tmp/select.err")"; RC=$?
+ERR="$(cat "$tmp/select.err")"
+check_grep "$ERR" 'WARN: profile label=reloginm cooling down after a recent live probe failure; skipping this round' 'T28 (RED under mutation): reloginm wrongly still skipped despite the credential change -- mutation confirmed to break the exact behaviour T26 proves'
+
 printf '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
