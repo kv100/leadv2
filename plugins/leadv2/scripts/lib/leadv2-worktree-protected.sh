@@ -97,8 +97,18 @@ for s in data.get("sessions") or []:
     birth = s.get("pid_birth") or s.get("worker_pid_birth") or ""
     alive = 0
     if pid not in (None, "", "null", "None"):
+        # D2-M4 (D2-SINGLE-LIVENESS-VERDICT #9/#14): kill(pid, 0) has THREE
+        # answers, not two. ESRCH means genuinely gone. EPERM means the pid
+        # EXISTS, owned by another user (e.g. reparented to ppid=1) -- it
+        # must not read as dead here, or rc 3 (live_pid) fails to protect a
+        # still-running lane worktree from an unattended sweeper (the
+        # exact class of incident this file header describes).
         try:
             os.kill(int(pid), 0)
+            alive = 1
+        except ProcessLookupError:
+            alive = 0
+        except PermissionError:
             alive = 1
         except (TypeError, ValueError, OSError):
             alive = 0
