@@ -1,0 +1,10 @@
+# dispatch-6436a2e2 — real name DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01.
+# The work landed under the name of the lane's MECHANISM, never the row's id:
+# no commit carries 6436a2e2 in a subject and no worktree-6436a2e2 branch exists,
+# so no ancestry/subject/docs tier could ever reach it. Adjudicated by s2 in
+# persona-engine docs/handoff/WAVES-CANNOT-CREDIT-A-LANDING-NAMED-AFTER-THE-LANE-01/
+# dispatch-6436a2e2-verdict.md; both shas re-verified as ancestors of leadv2 main
+# before this file was written. Declared by s1 at s2's request — s2 correctly did
+# not write into leadv2 on her own initiative.
+1de50b2c
+f83a7ce8
