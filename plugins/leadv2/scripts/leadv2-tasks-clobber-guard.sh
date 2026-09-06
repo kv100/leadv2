@@ -124,14 +124,30 @@ pre_commit() {
 
   local tmpdir head_yaml staged_yaml msg result rc
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' RETURN EXIT
+  # SET-U-ABORTS-THE-FAILURE-PATH-01: `$tmpdir` is `local` to this function,
+  # so it goes out of scope the instant `pre_commit` returns -- the RETURN
+  # trap below fires fine, but the SAME trap command also runs again on the
+  # outer script's EXIT (both traps were registered together), by which
+  # point `$tmpdir` no longer exists. Under `set -u` that second firing
+  # aborted with "unbound variable" AFTER pre_commit had already returned,
+  # reproduced live 2026-09-06. `${tmpdir:-}` makes the second (now-empty)
+  # firing an inert no-op instead of a crash.
+  trap 'rm -rf "${tmpdir:-}"' RETURN EXIT
   head_yaml="$tmpdir/head.yaml"
   staged_yaml="$tmpdir/staged.yaml"
 
   # HEAD baseline (empty if first commit / file new to HEAD)
   git show "HEAD:docs/tasks.yaml" >"$head_yaml" 2>/dev/null || : >"$head_yaml"
-  # staged (index) version
-  git cat-file blob ":docs/tasks.yaml" >"$staged_yaml" 2>/dev/null || : >"$staged.yaml"
+  # staged (index) version. An unmerged conflict on docs/tasks.yaml (real
+  # shared-tree shape: two branches both touched it) has no stage-0 blob --
+  # `git cat-file blob ":docs/tasks.yaml"` fails with "in the index, but not
+  # at stage 0", taking this fallback. It used to write to the undeclared
+  # `$staged.yaml` (typo for `staged_yaml`) instead of `$staged_yaml` --
+  # under `set -u`, referencing the never-assigned `$staged` aborted the
+  # whole guard instead of leaving `$staged_yaml` at its empty-file default,
+  # reproduced live 2026-09-06 via a real merge conflict on the file this
+  # guard exists to protect.
+  git cat-file blob ":docs/tasks.yaml" >"$staged_yaml" 2>/dev/null || : >"$staged_yaml"
 
   # commit message: .git/COMMIT_EDITMSG is populated before pre-commit runs
   msg=""

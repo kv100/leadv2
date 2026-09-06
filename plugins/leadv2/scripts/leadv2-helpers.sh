@@ -1993,7 +1993,16 @@ leadv2_po_claim() {
 
   if [[ -z "$lane" || -z "$item_id" ]]; then
     printf -- '[helpers] leadv2_po_claim: unexpected output from claim script: %s\n' "$raw_output" >&2
-    rm -f "$_env_file" || true
+    # SET-U-ABORTS-THE-FAILURE-PATH-01: this branch used to also do
+    # `rm -f "$_env_file"`, referencing a variable this function never
+    # declares or assigns -- no env file is created anywhere in
+    # leadv2_po_claim. Under `set -u` (this file's own header) referencing
+    # it aborted the whole calling process with "unbound variable" instead
+    # of reaching `return 1`, turning a normal "claim script gave us
+    # something we can't parse" outcome into a hard crash of the caller.
+    # Reproduced live 2026-09-06 with a fake queue-claim.sh printing
+    # "onlylane:" (a real shape: an empty item_id after the lane's colon).
+    # Removed -- there is nothing to clean up here.
     return 1
   fi
 

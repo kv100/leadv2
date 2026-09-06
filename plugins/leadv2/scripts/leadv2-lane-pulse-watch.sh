@@ -446,7 +446,14 @@ while :; do
     _orphan="$( _orphan_check "$$" "$ACTIVE_YAML" "$ORPHAN_MAX" )"
     if [[ "$_orphan" == "orphan" ]]; then
       printf '[lane-pulse-watch] %s orphaned: row pins my pid as watcher, frozen >%ss — exiting\n' "$SIG" "$ORPHAN_MAX" >&2
-      _pulse "watcher_orphan" "row_frozen>$ORPHAN_MAXs"
+      # SET-U-ABORTS-THE-FAILURE-PATH-01: `$ORPHAN_MAXs` reads as a whole
+      # variable name (bash has no way to tell `$ORPHAN_MAX` + literal "s"
+      # apart from a variable literally named `ORPHAN_MAXs` without braces),
+      # which this script never assigns. Under `set -u`, the orphan-cleanup
+      # path itself aborted with "unbound variable" instead of exiting 0 --
+      # a watcher detecting its own orphan condition crashed rather than
+      # cleanly self-reaping. ShellCheck SC2154; confirmed live 2026-09-06.
+      _pulse "watcher_orphan" "row_frozen>${ORPHAN_MAX}s"
       exit 0
     fi
   fi
