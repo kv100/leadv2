@@ -990,6 +990,28 @@ _dl_derive_lane_state() {
         return 0
       fi
       [[ -n "${st}" ]] && dirty=1
+    elif [[ -z "${writes_csv}" ]]; then
+      # LANE-WRITES-IS-EMPTY-98-PERCENT-01 item 4: an empty lane_writes built an
+      # empty pathspec above, so this whole dirty probe never ran -- `dirty`
+      # stayed 0 unconditionally, and a worker that died holding real
+      # uncommitted bytes was stamped plain `dead` (bytes discarded) instead
+      # of dead_with_unlanded_work (reap-funnel-rescued). Unscoped is safe
+      # HERE, unlike the commit-lookup fallback forbidden above: `repo` is
+      # THIS lane's own worktree, not the shared main checkout, so an
+      # unscoped status probe reflects only this lane's bytes -- no
+      # cross-lane attribution risk. Still exclude dispatcher bookkeeping
+      # paths, the same set _PC_PORCELAIN_EXCLUDE_RE already names for every
+      # other containment check in this codebase (lib/leadv2-lane-guard.sh,
+      # sourced above) -- git's own rc is captured before the filter runs, so
+      # a grep-found-nothing rc never gets misread as a git failure.
+      local st_raw st grc2=0
+      st_raw="$(git -C "${repo}" status --porcelain -uall 2>"${_dl_ge}")" || grc2=$?
+      if [[ ${grc2} -ne 0 ]]; then
+        _dl_derive_git_fail "git status (dirty probe, unscoped)" "${grc2}" "${lane_id}" "${_dl_ge}"
+        return 0
+      fi
+      st="$(printf '%s' "${st_raw}" | grep -vE "${_PC_PORCELAIN_EXCLUDE_RE:-^$}" || true)"
+      [[ -n "${st}" ]] && dirty=1
     fi
     [[ "${_dl_ge}" != /dev/null ]] && rm -f "${_dl_ge}"
   fi
