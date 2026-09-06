@@ -497,6 +497,87 @@ run_c9() {
   fi
 }
 
+# ============================================================================ C10 (D2-M3)
+# finished:*/finished_unlanded:* must not fall into the pre-fix "indeterminate, writing
+# nothing" catch-all -- reap must actually inspect the worktree and write a real terminal
+# row, same as it already does for dead:*. C10 = finished:*, clean tree (mirrors C2's
+# shape exactly, only the fake liveness verdict differs).
+run_c10() {
+  local root term out lane sig8
+  root="$(_new_repo)" || setup_error "C10" "repo fixture construction failed"
+  lane="dispatch-c1c1c1c0"; sig8="c1c1c1c0"
+  term="${root}/term-ledger.jsonl"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C10" "worktree add failed for ${lane}"
+
+  out="$(LEADV2_TEST_LIVENESS_VERDICT=finished:5s _reap "${root}" "${term}" --lane "${lane}")"
+  if [[ "${out}" == *"terminal=no_work"* ]]; then
+    pass "C10: finished:* verdict, clean tree -> reap writes a real terminal (no_work), never silently skipped"
+  else
+    fail "C10: expected a terminal=no_work row for a finished:* verdict, got: ${out}"
+  fi
+  grep -q '"task_sig":"'"${sig8}"'"' "${term}" \
+    && pass "C10: a terminal ledger row exists at all for this sig (pre-D2-M3: none did)" \
+    || fail "C10: no terminal ledger row was written for sig=${sig8}"
+}
+
+# ============================================================================ C11 (D2-M3)
+# The mirror for finished_unlanded:* -- same clean-tree shape, different fake verdict.
+run_c11() {
+  local root term out lane sig8
+  root="$(_new_repo)" || setup_error "C11" "repo fixture construction failed"
+  lane="dispatch-c1c1c1c2"; sig8="c1c1c1c2"
+  term="${root}/term-ledger.jsonl"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C11" "worktree add failed for ${lane}"
+
+  out="$(LEADV2_TEST_LIVENESS_VERDICT=finished_unlanded:9s _reap "${root}" "${term}" --lane "${lane}")"
+  if [[ "${out}" == *"terminal=no_work"* ]]; then
+    pass "C11: finished_unlanded:* verdict, clean tree -> reap writes a real terminal (no_work), never silently skipped"
+  else
+    fail "C11: expected a terminal=no_work row for a finished_unlanded:* verdict, got: ${out}"
+  fi
+  grep -q '"task_sig":"'"${sig8}"'"' "${term}" \
+    && pass "C11: a terminal ledger row exists at all for this sig (pre-D2-M3: none did)" \
+    || fail "C11: no terminal ledger row was written for sig=${sig8}"
+}
+
+# ============================================================================ C12 (D2-M3)
+# Direct unit coverage for _dl_derive_lane_state's two new case arms -- the precise
+# vocabulary mapping (finished:* -> landed with a real sha; finished_unlanded:* -> the
+# new finished_unlanded literal), mirroring C8a/C8b's directness.
+run_c12() {
+  local root wt out lane sha f1
+  # -- C12a: finished:* with a real (unscoped) commit present -> landed with that sha.
+  root="$(_new_repo)" || setup_error "C12a" "repo fixture construction failed"
+  lane="dispatch-c12a12a1"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C12a" "worktree add failed for ${lane}"
+  wt="${root}/.claude/worktrees/${lane}"
+  ( cd "${wt}" && printf 'a\n' > unrelated.txt && git add unrelated.txt \
+      && git commit -qm "unscoped commit, not in the derive pathspec" >/dev/null ) \
+    || setup_error "C12a" "unscoped-commit fixture construction failed"
+  sha="$(git -C "${wt}" log -n1 --pretty=%H 2>/dev/null)"
+  [[ -n "${sha}" ]] || setup_error "C12a" "no commit found after construction"
+  # csv="other.txt" -- deliberately NOT unrelated.txt, so derive's own path-scoped git
+  # log finds nothing and only the liveness-supplied finished:* verdict can decide this.
+  out="$(LEADV2_TEST_LIVENESS_VERDICT=finished:5s _derive "${wt}" "0" "other.txt" "" "${lane}")"
+  if [[ "${out}" == "landed"$'\x1f'"${sha}"$'\x1f'* ]]; then
+    pass "C12a: derive(finished:*, unscoped commit exists) -> landed with the real sha"
+  else
+    fail "C12a: expected landed with sha ${sha}, got: ${out}"
+  fi
+  # -- C12b: finished_unlanded:* -> the new literal, verbatim.
+  root="$(_new_repo)" || setup_error "C12b" "repo fixture construction failed"
+  lane="dispatch-c12b12b2"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C12b" "worktree add failed for ${lane}"
+  wt="${root}/.claude/worktrees/${lane}"
+  out="$(LEADV2_TEST_LIVENESS_VERDICT=finished_unlanded:9s _derive "${wt}" "0" "" "" "${lane}")"
+  f1="${out%%$'\x1f'*}"
+  if [[ "${f1}" == "finished_unlanded" ]]; then
+    pass "C12b: derive(finished_unlanded:*) -> the finished_unlanded literal, verbatim"
+  else
+    fail "C12b: expected finished_unlanded, got: ${out}"
+  fi
+}
+
 C1_WT=""
 run_c1
 run_c1b
@@ -508,6 +589,9 @@ run_c6
 run_c7 "${C1_WT}"
 run_c8
 run_c9
+run_c10
+run_c11
+run_c12
 
 printf '\n[TEST] %d passed, %d failed\n' "${PASS}" "${FAIL}"
 if [[ ${FAIL} -gt 0 ]]; then

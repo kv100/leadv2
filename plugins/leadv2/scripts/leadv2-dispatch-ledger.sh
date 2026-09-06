@@ -315,7 +315,11 @@ dispatch_ledger_write_terminal() {
     fi
   fi
   case "${terminal}" in
-    landed|pass_unlanded|parked|refused|dead|dead_with_unlanded_work|no_work) : ;;
+    # D2-M3: finished_unlanded is additive to the enum (brief §2 vocabulary table) --
+    # every existing literal above is untouched, D3's own three case-arm sites
+    # (leadv2-dispatch-ledger.sh:981,1380,1409 pre-M3 line numbers) still match them
+    # unchanged.
+    landed|pass_unlanded|parked|refused|dead|dead_with_unlanded_work|no_work|finished_unlanded) : ;;
     *) log_err "write_terminal: invalid terminal='${terminal}' for sig=${sig8}"; return 1 ;;
   esac
   founder="$(json_safe "${founder}")"
@@ -1050,6 +1054,44 @@ _dl_derive_lane_state() {
     verdict="$(LEADV2_PROJECT_ROOT="${repo}" bash "${LANE_LIVENESS_BIN}" --project-root "${repo}" --lane "${lane_id}" 2>/dev/null || true)"
   fi
   case "${verdict}" in
+    finished:*)
+      # D2-M3 (D2-SINGLE-LIVENESS-VERDICT §2/§6): leadv2-lane-liveness.sh's E3 found a
+      # real commit in the lane's own worktree within the finished window -- unscoped to
+      # the declared lane_writes CSV, unlike OUR path-scoped git-log lookup above (which
+      # found nothing, or this function would already have returned `landed` at its top).
+      # The work IS committed; treat it the same as a directly-found commit rather than
+      # falling through to `unknown` (this function's behavior before this arm existed,
+      # which discarded the signal). Fetch the real sha with an UNSCOPED lookup (safe
+      # here, unlike the forbidden unscoped fallback at the top of this function: this
+      # is a corroboration of a POSITIVE per-lane signal liveness already gave us, never
+      # a blind unscoped attribution) -- never fabricate a placeholder string where a
+      # caller downstream expects a real commit sha. DERIVE-COERCES-GIT-FAILURE-TO-NO-
+      # COMMIT-01 applies here too: a FAILED lookup (fork failure under load, held
+      # index.lock -- git's rc, not empty output, is what's checked) degrades to
+      # unknown, exactly like the two probes above -- never a fabricated placeholder
+      # sha stamped as `landed`, which a real consumer would treat as a genuine commit.
+      local _finished_sha="" _finished_grc=0 _finished_ef=""
+      _finished_ef="$(mktemp 2>/dev/null || mktemp -t dlge)"
+      [[ -n "${_finished_ef}" ]] || _finished_ef=/dev/null
+      _finished_sha="$(git -C "${repo}" log ${since_arg} --pretty=%H -n 1 2>"${_finished_ef}")" || _finished_grc=$?
+      if [[ ${_finished_grc} -ne 0 ]]; then
+        _dl_derive_git_fail "git log (finished-verdict unscoped lookup)" "${_finished_grc}" "${lane_id}" "${_finished_ef}"
+        return 0
+      fi
+      [[ "${_finished_ef}" != /dev/null ]] && rm -f "${_finished_ef}"
+      [[ -n "${_finished_sha}" ]] || _finished_sha="unscoped_unresolved"
+      printf 'landed\x1f%s\x1f%s' "${_finished_sha}" "${deliverable_state}" ;;
+    finished_unlanded:*)
+      # D2-M3, the incident fix's consumer half: done, but only a non-empty deliverable
+      # and/or an uncommitted tree exists -- never visible to git log. A NEW terminal,
+      # sibling of `landed`/`dead`, not a variant of either: distinct from
+      # dead_with_unlanded_work (requires OUR OWN dirty probe above to have found bytes;
+      # this arm fires even when it did not, e.g. the bytes are only in the deliverable)
+      # and from no_work (which means nothing exists at all). Before D2 M1/M2, this
+      # verdict shape did not exist and this same lane arrived as
+      # dead:no_log_artifact/dead:no_handoff_dir, landing on no_work or dead below and
+      # discarding the work's legibility -- the exact incident D2 exists to fix.
+      printf 'finished_unlanded\x1fnone\x1f%s' "${deliverable_state}" ;;
     alive|starting:*|silent:*)
       # process is alive (or freshly starting, or alive-but-silent) -- NOT terminal. Stamping
       # here would discard the real outcome the live worker is about to record (R1). A dirty
@@ -1291,6 +1333,21 @@ for r in (d.get("lanes") or []):
         stalled=$((stalled + 1))
         _dl_emit_row "${sig8}" "${lane_label}" "${spawn_epoch}" "no_work:empty_diff" "none" "${deliverable_state}" "${json_mode}"
         ;;
+      finished_unlanded)
+        # D2-M3: sibling of `landed`, not of `dead` (brief §2) -- done, but only a
+        # deliverable/dirty tree exists, never a git-log-visible commit. Stamped
+        # directly (unlike dead_with_unlanded_work below): there is no rescue-commit
+        # step needed here because nothing needs rescuing from a live/dying process --
+        # this verdict is already evidence the work is DONE, just not landed as a
+        # commit. Before this arm existed, these lanes fell to the `*)` catch-all below
+        # and were silently left `stalled`/unknown forever -- the exact gap this step
+        # closes (a finished lane now gets a terminal ledger row).
+        if dispatch_ledger_write_terminal "${sig8}" "${lane_label}" finished_unlanded no_commit_but_done \
+            "reconciled finished_unlanded (deliverable=${deliverable_state})" "reconcile-$$" "${lane_label}" "none" "${deliverable_state}"; then
+          stamped=$((stamped + 1))
+        fi
+        _dl_emit_row "${sig8}" "${lane_label}" "${spawn_epoch}" "finished_unlanded:no_commit_but_done" "none" "${deliverable_state}" "${json_mode}"
+        ;;
       dead_with_unlanded_work)
         # D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF: NOT stamped here. Writing this TRUE
         # terminal without first running the reap funnel's rescue commit would free the
@@ -1491,7 +1548,14 @@ _dl_reap_one_lane() {
     alive|starting:*|silent:*)
       log "reap: lane=${lane_id} sig=${sig8} verdict=${verdict} -- alive, writing nothing"
       return 0 ;;
-    dead:*) : ;;
+    # D2-M3: finished:*/finished_unlanded:* are not-alive, evidence-based verdicts,
+    # same standing as dead:* for this decision -- proceed to inspect the worktree
+    # below rather than falling to the `*)` catch-all, which silently wrote NOTHING
+    # for these lanes before D2 M1/M2 introduced the two shapes (the exact gap this
+    # step closes: "a finished lane now gets a terminal ledger row"). The worktree
+    # inspection below still decides the precise terminal (no_work on a clean tree,
+    # dead_with_unlanded_work on a dirty one) -- this arm only stops the silent skip.
+    dead:*|finished:*|finished_unlanded:*) : ;;
     *)
       log "reap: lane=${lane_id} sig=${sig8} verdict=${verdict:-<empty>} -- indeterminate, writing nothing"
       return 0 ;;
@@ -1517,7 +1581,11 @@ _dl_reap_one_lane() {
       # have its in-progress work rescued/committed out from under it.
       local verdict2
       verdict2="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${liveness_bin}" --project-root "${PROJECT_ROOT}" --lane "${lane_id}" 2>/dev/null || true)"
-      case "${verdict2}" in dead:*) : ;; *) exit 6 ;; esac
+      # D2-M3: same widening as the pre-lock check above -- a lane that flipped to
+      # finished:*/finished_unlanded:* between the pre-lock probe and lock acquisition
+      # is still not-alive; only a flip to alive/starting/silent/unknown re-arms the
+      # R2 abort (exit 6).
+      case "${verdict2}" in dead:*|finished:*|finished_unlanded:*) : ;; *) exit 6 ;; esac
 
       # Step 3: resolve the worktree via the real resolver (never a hop-counted guess --
       # GATE-WRONG-ROOT-FALSE-DEAD-01).
