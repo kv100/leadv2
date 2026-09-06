@@ -363,9 +363,19 @@ else
   fail "21: --provider glm under soft" "${out21}"
 fi
 
-# 22: codex over hard (ceiling 90) -> verdict=hard reason=over_hard
-out22="$(FAKE_CODEX_PCT=95 LEADV2_QUOTA_LIVE="${FAKE_LIVE_PROV}" bash "${GOVERNOR_BIN}" --provider codex 2>&1)"
-if grep -q '^verdict=hard ' <<<"${out22}" && grep -q 'reason=over_hard' <<<"${out22}" && grep -q 'hard=90' <<<"${out22}"; then
+# 22: codex over its ceiling -> verdict=hard reason=over_hard
+#
+# SERIAL-SHARD-SIX-REDS-UNTRIAGED-01 (2026-09-06): this case asserted the literal
+# `hard=90`. The ceiling is not a constant of the test -- the governor reads it from
+# config/leadv2-quota-ceilings.sh (leadv2-burn-governor.sh:194-198), and codex's is 95
+# today, so the case has been red for a number that lives somewhere else. Derive the
+# expectation from the SAME source the product reads, or the next ceiling change makes
+# a green suite red again for no defect. The used_pct below is pushed past whatever the
+# ceiling is, so the case keeps testing "over hard", not a particular number.
+_ceil_codex="$(bash -c '. "${1}/../../config/leadv2-quota-ceilings.sh" 2>/dev/null && leadv2_quota_ceiling codex build 2>/dev/null' _ "${SCRIPT_DIR}")"
+[[ "${_ceil_codex}" =~ ^[0-9]+$ ]] || _ceil_codex=95
+out22="$(FAKE_CODEX_PCT=$(( _ceil_codex + 5 > 100 ? 100 : _ceil_codex + 5 )) LEADV2_QUOTA_LIVE="${FAKE_LIVE_PROV}" bash "${GOVERNOR_BIN}" --provider codex 2>&1)"
+if grep -q '^verdict=hard ' <<<"${out22}" && grep -q 'reason=over_hard' <<<"${out22}" && grep -q "hard=${_ceil_codex}" <<<"${out22}"; then
   pass "22: --provider codex over hard -> verdict=hard"
 else
   fail "22: --provider codex over hard" "${out22}"

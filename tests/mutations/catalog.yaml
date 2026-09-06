@@ -858,3 +858,16 @@ mutations:
       both ways: 12/0 on the fixed tree, 6/6 against a mutated copy passed through
       KIMI_HANDLE_SUITE_DISPATCH. The suite's own control refuses to self-pass when
       the source is already halving (mut_rc check), so a mutated tree cannot read green.
+
+  - id: burn-governor-verdict-branch-names-the-wrong-reason
+    product_flow: "leadv2-burn-governor.sh decides whether a provider is under its soft band, over it, or past the hard ceiling, and the dispatcher's _burn_gate reads that verdict line. The per-provider branch (leadv2-burn-governor.sh:236) sets verdict=hard reason=over_hard once used >= ceiling, and the ceiling itself comes from config/leadv2-quota-ceilings.sh, not from any constant in the code -- codex is 95 today, was 90 when the suite was written. The suite's case 22 held the stale literal and had been red for a number that lives somewhere else; it now derives the expectation from leadv2_quota_ceiling codex build and pushes used_pct past whatever that is"
+    file: plugins/leadv2/scripts/leadv2-burn-governor.sh
+    suite: plugins/leadv2/scripts/tests/test-burn-governor.sh
+    anchor: |
+      if (( used >= ceiling )); then verdict=hard; reason=over_hard
+    patch: |
+      inside the provider verdict branch, rename the reason: `reason=over_soft`
+      -- cases 22, 27 and 28 go red (measured 35/0 -> 3 failures). The first attempt at this
+      mutation did not apply (python died on the quoting) and the "control" then ran against an
+      UNMUTATED file and reported rc=0: a control must assert that the mutation landed, or it
+      reads green over work it never did.
