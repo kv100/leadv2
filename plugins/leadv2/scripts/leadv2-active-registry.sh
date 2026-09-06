@@ -2085,7 +2085,8 @@ leadv2_active_release_verified() {
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
-  [[ -n "$session" && -n "$pid" ]] || return 2
+  # Empty session/pid flows into the compare exactly as in the original
+  # dispatch site (ours=false; only provably-stale rows are removed).
   [[ -f "$yaml_file" ]] || return 3
   python3 - "$lockfile" "$yaml_file" "$task_id" "$session" "$pid" <<'PY'
 import fcntl, os, subprocess, sys, tempfile
