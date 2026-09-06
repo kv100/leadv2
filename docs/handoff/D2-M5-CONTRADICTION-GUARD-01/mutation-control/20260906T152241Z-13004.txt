@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-lane-liveness-e0-contradiction.sh
+file=plugins/leadv2/scripts/leadv2-lane-liveness.sh
+anchor=975s/if _e0_reason is not None:/if False:  # D2 E0 mutation gate/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: C1: expected unknown:contradictory_rows, got 'dead:no_handoff_dir' (json: {"lane":"E0-C1-DUP-ROWS","verdict":"dead:no_handoff_dir","age_s":210871358,"source":"handoff","log_path":null,"raw_log_path":null,"pid":2,"pid_alive":false,"reason":"no_handoff_dir","attempt":null,"child_of":null,"pid_source":"legacy","pid_identity":"unverified"})
+diff_hash=bd4403212da29a4d7ceb6a462a21af4cc2d9a87c97bfd832f589facf42b0cf7a
+lane_diff_hash=c137bab3fd4fdb5d54932eb392bb7bfc5e6d9e24a6c3bd37107bf27833a86d17
