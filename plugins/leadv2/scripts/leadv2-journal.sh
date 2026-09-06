@@ -27,7 +27,18 @@ trap 'exit 0' ERR
 
 SCRIPT_NAME="leadv2-journal"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
+# TESTS-POLLUTE-REAL-JOURNAL-01: LEADV2_PROJECT_ROOT is the variable the rest of
+# leadv2 uses to pin a root, and this chain never consulted it -- so a caller who
+# pinned it (every suite that isolates itself, and any script following the
+# documented convention) fell through to cwd and wrote into the REAL checkout.
+# Measured: docs/leadv2/tasks/dispatch-WSOTEST2/journal.md in the live tree,
+# written by test-writeset-pending-overlap.sh, which pins LEADV2_PROJECT_ROOT on
+# every one of its call sites and was ignored.
+# The rung goes AFTER both CLAUDE_* ones and BEFORE the cwd fallback, so the
+# production path -- which sets CLAUDE_PROJECT_ROOT deliberately, to keep a
+# foreign-root dispatch out of the losing repo's journal -- does not change by a
+# byte. Only the case that used to reach cwd is affected.
+PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}}"
 
 log_err() {
   printf -- '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2
@@ -64,6 +75,10 @@ if [[ -x "$_STATE_PATH_SH" ]]; then
     TASK_DIR="$(PROJECT_ROOT="$CLAUDE_PROJECT_ROOT" "$_STATE_PATH_SH" --no-link "tasks/${TASK_ID}" 2>/dev/null)" || TASK_DIR=""
   elif [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
     TASK_DIR="$(PROJECT_ROOT="$CLAUDE_PROJECT_DIR" "$_STATE_PATH_SH" --no-link "tasks/${TASK_ID}" 2>/dev/null)" || TASK_DIR=""
+  elif [[ -n "${LEADV2_PROJECT_ROOT:-}" ]]; then
+    # Same rung as line ~30, same reason (TESTS-POLLUTE-REAL-JOURNAL-01): last
+    # before the cwd fallback, never ahead of an explicit CLAUDE_* pin.
+    TASK_DIR="$(PROJECT_ROOT="$LEADV2_PROJECT_ROOT" "$_STATE_PATH_SH" --no-link "tasks/${TASK_ID}" 2>/dev/null)" || TASK_DIR=""
   else
     TASK_DIR="$("$_STATE_PATH_SH" --no-link "tasks/${TASK_ID}" 2>/dev/null)" || TASK_DIR=""
   fi

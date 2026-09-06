@@ -798,3 +798,25 @@ mutations:
       drop the trailing `\nremedy: Skill(leadv2-judge) mode=review` from the round-cap
       printf -- the refusal goes back to describing a situation without naming an
       action; case (g), the cap still exiting 8, must remain green
+
+  - id: journal-ignores-the-root-the-caller-pinned
+    product_flow: "leadv2-journal.sh addresses every task journal, for writers and readers alike. Its root chain was CLAUDE_PROJECT_ROOT > CLAUDE_PROJECT_DIR > cwd, and LEADV2_PROJECT_ROOT -- the variable the rest of leadv2 uses to pin a root -- was not in it at all. A suite that isolates itself by exporting LEADV2_PROJECT_ROOT was therefore ignored and its write fell through to the cwd checkout: measured as docs/leadv2/tasks/dispatch-WSOTEST2/journal.md in the live tree, written by test-writeset-pending-overlap.sh, which pins the variable on every one of its call sites (TESTS-POLLUTE-REAL-JOURNAL-01). The rung was added AFTER both CLAUDE_* ones and BEFORE the cwd fallback, so the production path -- which sets CLAUDE_PROJECT_ROOT deliberately to keep a foreign-root dispatch out of the losing repo's journal -- is unchanged"
+    file: plugins/leadv2/scripts/leadv2-journal.sh
+    suite: plugins/leadv2/scripts/tests/test-journal-honours-the-pinned-root.sh
+    anchor: |
+      ${CLAUDE_PROJECT_DIR:-${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}
+    patch: |
+      s|CLAUDE_PROJECT_DIR:-\${LEADV2_PROJECT_ROOT:-|CLAUDE_PROJECT_DIR:-|  (and the matching elif)
+      -- the LEADV2_PROJECT_ROOT rung is deleted and a pinned write falls through to cwd again
+      -- measured under the mutation as .ephemeral/cwd-repo/, i.e. the live checkout
+
+  - id: journal-lets-an-ambient-pin-beat-an-explicit-one
+    product_flow: "leadv2-journal.sh addresses every task journal, for writers and readers alike. Its root chain was CLAUDE_PROJECT_ROOT > CLAUDE_PROJECT_DIR > cwd, and LEADV2_PROJECT_ROOT -- the variable the rest of leadv2 uses to pin a root -- was not in it at all. A suite that isolates itself by exporting LEADV2_PROJECT_ROOT was therefore ignored and its write fell through to the cwd checkout: measured as docs/leadv2/tasks/dispatch-WSOTEST2/journal.md in the live tree, written by test-writeset-pending-overlap.sh, which pins the variable on every one of its call sites (TESTS-POLLUTE-REAL-JOURNAL-01). The rung was added AFTER both CLAUDE_* ones and BEFORE the cwd fallback, so the production path -- which sets CLAUDE_PROJECT_ROOT deliberately to keep a foreign-root dispatch out of the losing repo's journal -- is unchanged"
+    file: plugins/leadv2/scripts/leadv2-journal.sh
+    suite: plugins/leadv2/scripts/tests/test-journal-honours-the-pinned-root.sh
+    anchor: |
+      PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${LEADV2_PROJECT_ROOT:-
+    patch: |
+      reorder the chain so LEADV2_PROJECT_ROOT comes FIRST
+      -- an ambient LEADV2_PROJECT_ROOT overrides an explicit CLAUDE_* pin, which is exactly the
+      foreign-root regression the ordering exists to prevent; case (a2) goes red
