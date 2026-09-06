@@ -5008,99 +5008,23 @@ _release_registered_lane() {  # <reg_id> <sig8> <where> -- owner-verified, idemp
     emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=registry_unreadable"
     return 0
   fi
-  local rel_out _prlr_tmp
-  _prlr_tmp="$(mktemp "${TMPDIR:-/tmp}/leadv2-prlr-out.XXXXXX")"
-  python3 - "${lf}" "${yf}" "${rid}" "${DISPATCH_SLOT_SESSION}" "${DISPATCH_SLOT_PID}" <<'PY' 2>/dev/null > "${_prlr_tmp}"
-import fcntl, os, subprocess, sys, tempfile
-try:
-    import yaml
-except Exception:
-    sys.exit(3)
-lock_path, path, task_id, session, pid = sys.argv[1:6]
-try:
-    lock = open(lock_path, "a+")
-except OSError:
-    sys.exit(3)
-try:
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    with open(path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
-    if not isinstance(data, dict) or not isinstance(data.get("sessions"), list):
-        sys.exit(3)
-    rows = [row for row in data["sessions"] if isinstance(row, dict) and row.get("task_id") == task_id]
-    # PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01: duplicate rows for one task_id
-    # used to make release permanently impossible (silent exit 2 indistinguishable
-    # from "foreign row"), so a phase-refused lane stayed registered forever.
-    # Now: the duplicate count is journaled (shell emits active_lane_duplicate_rows
-    # from our stdout summary) and release proceeds per-row instead of failing whole.
-    # Liveness is not just "PID alive": the recorded PID may belong to an
-    # interactive claude session, not a worker (`claude -p`). Kind is read from
-    # the LIVE process argv, so a mislabelled row is still protected.
-    def _prlr_alive(p):
-        try:
-            os.kill(int(p), 0)
-            return True
-        except (TypeError, ValueError, ProcessLookupError, PermissionError, OSError):
-            return False
-    def _prlr_kind(p):
-        try:
-            out = subprocess.run(["ps", "-p", str(int(p)), "-o", "args="],
-                                 capture_output=True, text=True, timeout=5).stdout.strip()
-        except Exception:
-            return "unknown"
-        if not out:
-            return "dead"
-        if ("claude" in out or "codex" in out) and (" -p" in out or "--print" in out):
-            return "worker"
-        if "claude" in out or "--dangerously-skip-permissions" in out:
-            return "interactive"
-        return "other"
-    removed = 0
-    kept_worker = 0
-    removed_ids = set()
-    for row in list(rows):
-        rpid = row.get("pid")
-        if row.get("pid_role") == "worker":
-            kept_worker += 1
-            continue
-        # defence in depth: even a MISLABELLED row whose PID is actually a live
-        # worker process is never released by this dispatcher.
-        if _prlr_alive(rpid) and _prlr_kind(rpid) == "worker":
-            kept_worker += 1
-            continue
-        ours = bool(session) and row.get("session_id") == session \
-            and rpid and str(rpid) == str(pid)
-        stale = not _prlr_alive(rpid)
-        if ours or stale:
-            rows.remove(row)
-            removed_ids.add(id(row))
-            removed += 1
-    print(f"rows={len(rows) + removed} removed={removed} live_worker_kept={kept_worker}", flush=True)
-    if removed == 0:
-        sys.exit(2 if len(rows) <= 1 else 4)
-    data["sessions"] = [s for s in data["sessions"] if id(s) not in removed_ids]
-    fd, tmp = tempfile.mkstemp(prefix=".active-release-", dir=os.path.dirname(path))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as out:
-            yaml.safe_dump(data, out, default_flow_style=False, sort_keys=False)
-            out.flush()
-            os.fsync(out.fileno())
-        os.replace(tmp, path)
-    except Exception:
-        try: os.unlink(tmp)
-        except OSError: pass
-        raise
-except Exception:
-    sys.exit(3)
-finally:
-    try: fcntl.flock(lock, fcntl.LOCK_UN)
-    except Exception: pass
-    lock.close()
-sys.exit(0)
-PY
-  release_rc=$?
-  rel_out="$(tr -d '\n' < "${_prlr_tmp}")"
-  rm -f "${_prlr_tmp}"
+  local rel_out release_rc
+  # D1-SINGLE-WRITER-FOR-LANE-STATE: the release compare-and-delete python
+  # moved into the registry as leadv2_active_release_verified — release-to-
+  # removal has ONE textual body. stdout contract (rows=/removed=/kept=) and
+  # every rc (0/2/4/3) are byte-identical to the inline original.
+  if ! declare -F leadv2_active_release_verified >/dev/null 2>&1; then
+    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${SCRIPT_DIR}/leadv2-active-registry.sh" 2>/dev/null || true
+  fi
+  if declare -F leadv2_active_release_verified >/dev/null 2>&1; then
+    rel_out="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_release_verified "${rid}" "${DISPATCH_SLOT_SESSION}" "${DISPATCH_SLOT_PID}" 2>/dev/null)"
+    release_rc=$?
+    rel_out="${rel_out//$'
+'/ }"
+  else
+    rel_out=""
+    release_rc=3
+  fi
   # PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01: duplicate rows for one task_id
   # must be VISIBLE -- a silent exit 2 is indistinguishable from "foreign row"
   # and made the release path permanently unreachable for that lane.

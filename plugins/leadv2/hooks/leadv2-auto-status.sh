@@ -25,7 +25,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/leadv2-temp.sh"
 trap 'exit 0' ERR
 
-CORE="/tmp/leadv2-astatus-core-v2.py"
+CORE="/tmp/leadv2-astatus-core-v3.py"  # v3: D1 live-registry read (v2 cached in /tmp would keep running the old code)
 if [[ ! -f "$CORE" ]]; then
   _CORE_TMP="$(lv2_mktemp_file "leadv2-astatus-core" "py" 2>/dev/null || true)"
   if [[ -n "$_CORE_TMP" ]]; then
@@ -114,6 +114,51 @@ def parse_active(path):
         return None
     return {"task_id": task_id, "phase": phase}
 
+def parse_live_registry(cwd):
+    # D1-SINGLE-WRITER-FOR-LANE-STATE: active.md is a legacy render with no
+    # writer any more (the helpers md variants are gone); the live registry
+    # (active.yaml, resolved via leadv2-state-path.sh exactly like the
+    # registry library) is the source. Pick the freshest LIVE row (no
+    # dead_at, not stale); returns the same {task_id, phase} shape as
+    # parse_active, or None — callers fall back to active.md, then "none".
+    try:
+        import yaml
+    except ImportError:
+        return None
+    import subprocess
+    # The core is materialized to /tmp, so __file__ says nothing about the
+    # plugin layout; the outer bash exports the hook's real dir.
+    hook_dir = os.environ.get('LEADV2_AUTO_STATUS_SCRIPT_DIR', '')
+    resolver = os.environ.get('LEADV2_STATE_PATH_BIN', '')
+    if not (resolver and os.path.isfile(resolver) and os.access(resolver, os.X_OK)):
+        if hook_dir:
+            resolver = os.path.join(hook_dir, '..', 'scripts', 'leadv2-state-path.sh')
+        else:
+            resolver = ''
+    path = None
+    if os.path.isfile(resolver) and os.access(resolver, os.X_OK):
+        try:
+            env = dict(os.environ, PROJECT_ROOT=cwd)
+            path = subprocess.run([resolver, 'active.yaml'], env=env,
+                                  capture_output=True, text=True, timeout=5).stdout.strip()
+        except Exception:
+            path = None
+    if not path or not os.path.isfile(path):
+        path = os.path.join(cwd, 'docs', 'leadv2', 'active.yaml')
+    try:
+        with open(path, encoding='utf-8') as fh:
+            data = yaml.safe_load(fh) or {}
+    except Exception:
+        return None
+    live = [s for s in (data.get('sessions') or [])
+            if isinstance(s, dict) and s.get('task_id')
+            and not s.get('dead_at') and not s.get('stale')]
+    if not live:
+        return None
+    freshest = max(live, key=lambda s: str(s.get('updated_at') or s.get('started_at') or ''))
+    return {"task_id": str(freshest.get('task_id')),
+            "phase": str(freshest.get('phase') or '')}
+
 def count_due(path):
     try:
         with open(path, encoding='utf-8') as fh:
@@ -186,7 +231,10 @@ def main():
 
     lines = []
     try:
-        active = parse_active(os.path.join(docs_leadv2, 'active.md'))
+        # D1-SINGLE-WRITER-FOR-LANE-STATE: live registry first; the legacy
+        # active.md render second (it may still exist from older runs, but
+        # nothing writes it any more).
+        active = parse_live_registry(cwd) or parse_active(os.path.join(docs_leadv2, 'active.md'))
     except Exception:
         active = None
     lines.append(
@@ -242,5 +290,5 @@ PYCORE
 fi
 
 [[ -f "$CORE" ]] || exit 0
-python3 "$CORE" 2>/dev/null || true
+LEADV2_AUTO_STATUS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" python3 "$CORE" 2>/dev/null || true
 exit 0

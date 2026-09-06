@@ -50,6 +50,24 @@
 # pending refusal surfaces it: "reason=pending_resolution
 # writes_reason=<why>".
 
+# D1-SINGLE-WRITER-FOR-LANE-STATE: this file is SOURCED, and the
+# `set -euo pipefail` below used to leak into every caller (backlog-pump.sh:170
+# and fanout.sh:321 carry `set +e` band-aids for exactly that). Capture the
+# caller's shell options BEFORE applying our own; the bottom of this file
+# restores them, so sourcing the registry is side-effect-free on shell state.
+# Functions defined here run later under whatever options their caller has --
+# every wrapper is written to tolerate that (|| rc=$? guards, no bare
+# unguarded expansion), as they already had to under the leak.
+_lv2ar_caller_flags="$-"
+_lv2ar_caller_pipefail=0
+if [[ -o pipefail ]]; then _lv2ar_caller_pipefail=1; fi
+_lv2ar_restore_caller_opts() {
+  [[ "${_lv2ar_caller_flags:-}" == *e* ]] || set +e
+  [[ "${_lv2ar_caller_flags:-}" == *u* ]] || set +u
+  [[ "${_lv2ar_caller_pipefail:-0}" -eq 1 ]] || set +o pipefail
+  unset _lv2ar_caller_flags _lv2ar_caller_pipefail _lv2ar_restore_caller_opts
+}
+
 set -euo pipefail
 
 # ── Paths ──────────────────────────────────────────────────────────────────
@@ -65,6 +83,9 @@ elif _lv2ar_top="$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null)"; then
   LEADV2_PROJECT_ROOT="$_lv2ar_top"
 else
   printf -- '[leadv2-active-registry] root_error: could not resolve project root — set LEADV2_PROJECT_ROOT or CLAUDE_PROJECT_DIR, or run from inside a git worktree (cwd=%s)\n' "$(pwd)" >&2
+  # Restore BEFORE the early return: this branch aborts the source, so the
+  # EOF restore would never run and the caller would inherit -euo pipefail.
+  _lv2ar_restore_caller_opts
   return 1 2>/dev/null || exit 1
 fi
 
@@ -770,20 +791,50 @@ try:
         # tail.sh:277), which lies once the router picks a different arm. "" / "-" /
         # absent means "no change" -- every pre-existing 2-arg caller is a no-op here.
         new_model = args[2] if len(args) > 2 else ""
+        # D1-SINGLE-WRITER-FOR-LANE-STATE: optional 4th arg is an audit
+        # detail string stamped onto the row's lane_events entry
+        # (`transition:<phase>`), so the lane-state wrapper (lane_transition)
+        # routes through this op -- the single owner of phase advances --
+        # without losing its detail payload.
+        new_detail = args[3] if len(args) > 3 else ""
         now = _now_iso()
-        for s in sessions:
-            if s.get("task_id") == task_id:
-                # phase_started_at is atomic WITH a real phase change only —
-                # a heartbeat (update_pulse) never touches it, and calling
-                # update_phase again with the SAME phase is a no-op on the
-                # timestamp (idempotent re-entry, e.g. a retried hook call).
-                if s.get("phase") != new_phase:
-                    s["phase_started_at"] = now
-                s["phase"] = new_phase
-                if new_model not in ("", "-", "null", "None"):
-                    s["lead_model"] = new_model
-                s["updated_at"] = now
-                break
+        target = next((s for s in sessions if s.get("task_id") == task_id), None)
+        # D1-SINGLE-WRITER-FOR-LANE-STATE: this op is the SINGLE owner of
+        # phase advances; refusals are loud, each with a distinct code:
+        #   rc=4 -- no row for task_id (used to be a SILENT no-op that
+        #           dispatch-code.sh:~7631 depended on register-before-
+        #           update ordering to paper over)
+        #   rc=4 -- row is closed (dead_at tombstone from lane_deregister):
+        #           a finished lane's phase is frozen, which is exactly the
+        #           "merged lane still shows phase=build" ghost; re-opening
+        #           goes through register, not a phase patch
+        #   rc=8 -- row is a recovery placeholder (recovered: true): nobody
+        #           but lane_reconcile owns it; a real worker adopting the
+        #           lane clears the flag via lane_register, which re-opens
+        #           transitions
+        if target is None:
+            print(f"[registry] update_phase: task not registered: {task_id}", file=sys.stderr)
+            sys.exit(4)
+        if target.get("dead_at"):
+            print(f"[registry] update_phase: refused, row is closed (dead_at={target.get('dead_at')}): {task_id}", file=sys.stderr)
+            sys.exit(4)
+        if target.get("recovered"):
+            print(f"[registry] update_phase: refused, row is recovery-owned (recovered=true); only lane_reconcile owns it: {task_id}", file=sys.stderr)
+            sys.exit(8)
+        # phase_started_at is atomic WITH a real phase change only —
+        # a heartbeat (update_pulse) never touches it, and calling
+        # update_phase again with the SAME phase is a no-op on the
+        # timestamp (idempotent re-entry, e.g. a retried hook call).
+        if target.get("phase") != new_phase:
+            target["phase_started_at"] = now
+        target["phase"] = new_phase
+        if new_model not in ("", "-", "null", "None"):
+            target["lead_model"] = new_model
+        target["updated_at"] = now
+        target.setdefault("lane_events", []).append(
+            {"at": now, "event": "transition:" + str(new_phase),
+             **({"detail": str(new_detail)} if new_detail else {})}
+        )
 
     elif op == "update_pulse":
         task_id, ts = args
@@ -849,6 +900,15 @@ try:
             print("[registry] mark_finished: evidence must be a JSON object", file=sys.stderr)
             sys.exit(2)
         now = _now_iso()
+        # D1-SINGLE-WRITER-FOR-LANE-STATE: a recovery placeholder row
+        # (recovered: true, owner "recovered") must not be closed by a
+        # bystander's terminal stamp -- the reaper in lane_reconcile owns
+        # its end of life. rc=8 = ownership refusal, distinct from rc=4
+        # (not registered).
+        target = next((s for s in sessions if s.get("task_id") == task_id), None)
+        if target is not None and target.get("recovered"):
+            print(f"[registry] mark_finished: refused, row is recovery-owned (recovered=true); only lane_reconcile owns it: {task_id}", file=sys.stderr)
+            sys.exit(8)
         for s in sessions:
             if s.get("task_id") == task_id:
                 s["terminal_status"] = outcome
@@ -1229,30 +1289,37 @@ leadv2_active_unregister() {
   }
 }
 
-# leadv2_active_update_phase [<task_id>] <phase> [<resolved_model>]
+# leadv2_active_update_phase [<task_id>] <phase> [<resolved_model>] [<detail>]
 # Legacy 1-arg form (several phase skills call this with phase only, e.g.
 # `leadv2_active_update_phase "$PHASE"`) resolves task_id from
 # $LEADV2_TASK_ID. V2 2-arg form is the explicit, preferred call. Optional
 # 3rd arg (V2 form only) also stamps lead_model -- see the update_phase op's
 # model-stamp comment above; omitted/empty is a no-op, so every pre-existing
-# caller is unaffected. Both forms converge on the same python op — normalize
-# here, not in the python core.
+# caller is unaffected. Optional 4th arg (V2 form only) is an audit detail
+# stamped onto the row's lane_events entry. Both forms converge on the same
+# python op — normalize here, not in the python core.
+# D1-SINGLE-WRITER-FOR-LANE-STATE: this is the SINGLE owner of phase
+# advances. rc=4 = row missing or closed (frozen phase); rc=8 = refused,
+# recovery-owned row. Callers that mirror phase as best-effort keep their
+# `|| true` / `if !` handling and are unaffected.
 leadv2_active_update_phase() {
-  local task_id phase model
+  local task_id phase model detail
   if [[ $# -ge 2 ]]; then
     task_id="${1:?task_id required}"
     phase="${2:?phase required}"
     model="${3:-}"
+    detail="${4:-}"
   else
     task_id="${LEADV2_TASK_ID:?leadv2_active_update_phase: 1-arg legacy form requires LEADV2_TASK_ID to be set}"
     phase="${1:?phase required}"
     model=""
+    detail=""
   fi
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
   [[ -f "$yaml_file" ]] || return 0
-  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" update_phase "$task_id" "$phase" "$model"
+  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" update_phase "$task_id" "$phase" "$model" "$detail"
 }
 
 # leadv2_active_update_pulse <task_id>
@@ -1682,3 +1749,439 @@ if cls_l in ("standard", "standard-light"):
 sys.exit(0)
 PYEOF
 }
+
+# ══ D1-SINGLE-WRITER-FOR-LANE-STATE additions ══════════════════════════════
+# Sentinel: lets lazy delegators (leadv2-helpers.sh stubs, the
+# lane_transition wrapper in lib/leadv2-lane-state.sh) detect that this file
+# is already sourced instead of blindly re-sourcing it.
+_leadv2_active_registry_loaded() { return 0; }
+
+_lv2ar_fanout_log() { printf -- '[fanout] %s\n' "$*" >&2; }
+
+# leadv2_fanout_register_session — relocated VERBATIM from
+# leadv2-fanout.sh:886 (D1-SINGLE-WRITER-FOR-LANE-STATE). It used to exist as
+# TWO hand-synced copies (leadv2-fanout.sh + leadv2-fanout-lane-launcher.sh
+# "keep the two copies in sync") and had already drifted: the launcher's
+# snapshot predated the log_path_override (15th) and writeset (16th/17th)
+# args AND ran heavy_max default 2 vs fanout's 3, so the launcher's 15-arg
+# call at leadv2-fanout-lane-launcher.sh:455 was silently dropping
+# $dc_log_path — funnel rows registered with pulse.md instead of their real
+# stream log. One body here = one behavior; both files source this library
+# before their first call. `log` became _lv2ar_fanout_log so the body has no
+# dependency on the caller's private log().
+leadv2_fanout_register_session() {
+  local tid="$1" cls="$2" pid_val="$3" window_title="$4" daemon_mode="$5"
+  local pid_pending="${6:-false}"
+  local where="${7:-terminal}"
+  local risk_tags="${8:-}"
+  local lead_model="${9:-}"
+  local lead_effort="${10:-}"
+  local class_reason="${11:-}"
+  local provider="${12:-claude}"
+  local route_reason="${13:-}"
+  local group_key="${14:-}"
+  # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): the pulse_log below used
+  # to be hardcoded to the phase-cycle path for EVERY backend, including the
+  # dispatch-code.sh funnel -- which never writes there (it writes
+  # docs/handoff/dispatch-<sig8>/...). liveness/product-close then can't find the
+  # funnel's real log. Optional 15th arg lets a caller (launch_via_dispatch_code)
+  # supply the artifact path it actually knows about; every existing caller omits
+  # it and keeps today's hardcoded path, unchanged.
+  local log_path_override="${15:-}"
+  # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: optional 16th/17th args
+  # -- the lane's write set (when the caller already knows it) and WHY it
+  # does not (when it genuinely cannot). A write-less row inside the pending
+  # window blanket-refuses every concurrent dispatch before any path
+  # comparison, so a creator that knows its write set must declare it here,
+  # and one that cannot must say so.
+  local writes="${16:-}"
+  local writes_reason="${17:-pre_dispatch_spawn}"
+  local branch ts_now yaml_file lockfile session_id pulse_log_path
+  branch="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || printf -- 'unknown')"
+  ts_now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  yaml_file="$(_leadv2_yaml_file)"
+  lockfile="$(_leadv2_yaml_lockfile)"
+  session_id="f-$(date -u +%Y%m%dT%H%M%SZ)-${pid_val}-$$"
+  pulse_log_path="${log_path_override:-docs/leadv2/tasks/${tid}/pulse.md}"
+
+  local _reg_rc=0
+  python3 - "$lockfile" "$yaml_file" "$session_id" "$tid" "$PROJECT_ROOT" \
+    "$branch" "$ts_now" "$cls" "$pid_val" "$window_title" "$daemon_mode" \
+    "$pulse_log_path" "$pid_pending" "$where" \
+    "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" \
+    "$provider" "$route_reason" "$group_key" "$writes" "$writes_reason" <<'PYEOF' || _reg_rc=$?
+import sys, os, fcntl, tempfile, yaml
+
+(lockfile, yaml_path, session_id, task_id, worktree, branch, started_at,
+ cls, pid_str, window_title, daemon_mode_str, pulse_log, pid_pending_str,
+ where, risk_tags, lead_model, lead_effort, class_reason,
+ provider, route_reason, group_key, writes_str, writes_reason_str) = sys.argv[1:24]
+
+writes = None if writes_str in ("", "null", "None", "-") else writes_str
+writes_reason = None if writes_reason_str in ("", "null", "None", "-") else writes_reason_str
+
+pid_val = None if pid_str in ("null", "", "None") else int(pid_str)
+daemon_mode = daemon_mode_str.lower() in ("1", "true", "yes")
+pid_pending = pid_pending_str.lower() in ("1", "true", "yes")
+
+def pid_alive(p):
+    try:
+        os.kill(int(p), 0); return True
+    except (TypeError, ValueError, ProcessLookupError, PermissionError):
+        return False
+
+# FIX3 (HEAVY-MAX-2-WITH-COLLISION-GUARD-01 Codex Phase-5 review): the F6
+# under-lock re-count above only re-checks the numeric heavy_max/hard_limit
+# ceiling -- it never re-ran the pairwise group_key/risk_tags collision the
+# selection pass did OUTSIDE this lock. Two concurrent fanout invocations
+# each selecting a distinct Heavy from the same prod-risk/unknown footprint
+# can both pass the (unlocked) selection-time check and then both register
+# here successfully, because neither sees the other's row until after both
+# locks have already been acquired and released. Re-run ONLY the HARD half
+# of the collision predicate (both_prod OR any unknown risk/group -- see
+# _heavy_collision_kind in the selection pass above) under THIS lock, against
+# every live heavy/strategic session already in the locked snapshot. The SOFT
+# case (same known-non-prod group) is --force-bypassable by design and is not
+# re-enforced under lock, consistent with the selection-pass semantics.
+PROD_RISK_TAGS = {"publish", "deploy", "migration", "prod", "prod-deploy"}
+
+def _norm_tags_reg(raw):
+    if isinstance(raw, (list, tuple, set)):
+        parts = [str(x).strip().lower() for x in raw if str(x).strip()]
+    elif isinstance(raw, str):
+        s = raw.strip()
+        if not s or s.lower() in ("-", "none", "null"):
+            return None
+        parts = [p.strip().lower() for p in s.split(",") if p.strip()]
+    else:
+        return None
+    return set(parts) if parts else None
+
+def _group_key_unknown_reg(gk):
+    if gk is None:
+        return True
+    s = str(gk).strip().lower()
+    return s in ("", "-", "none", "null")
+
+def _hard_collision(cand_gk, cand_tags, other_gk, other_tags):
+    cand_tags_set = _norm_tags_reg(cand_tags)
+    other_tags_set = _norm_tags_reg(other_tags)
+    if cand_tags_set is None or other_tags_set is None:
+        return True
+    if _group_key_unknown_reg(cand_gk) or _group_key_unknown_reg(other_gk):
+        return True
+    return bool(cand_tags_set & PROD_RISK_TAGS) and bool(other_tags_set & PROD_RISK_TAGS)
+
+os.makedirs(os.path.dirname(lockfile), exist_ok=True)
+fd = open(lockfile, "a+")
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    os.makedirs(os.path.dirname(yaml_path), exist_ok=True)
+    if os.path.exists(yaml_path):
+        with open(yaml_path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    else:
+        # P0 concurrency fix (leadv2 0.2 audit): bootstrap default hard_limit
+        # dropped 20 -> 2, same rationale as the read-path fallback above.
+        # Overridable: a founder edit to the resulting active.yaml meta wins
+        # on every subsequent run (this literal only fires once, at first
+        # bootstrap of a missing active.yaml).
+        data = {"meta": {"schema_version": 2, "hard_limit": 2,
+                          "heavy_max": 3, "heavy_strategic_solo": False,
+                          "light_max": 3, "standard_max": 2, "rendered_at": ""},
+                "sessions": []}
+    data.setdefault("meta", {})
+    sessions = data.setdefault("sessions", [])
+
+    existing = next((s for s in sessions if s.get("task_id") == task_id), None)
+    if existing and pid_alive(existing.get("pid")):
+        print(f"[fanout] {task_id} already has a live registered session — not overwriting", file=sys.stderr)
+        sys.exit(0)
+    # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: a recreation over a
+    # dead/absent-pid row must not launder away what that row already
+    # declared, nor reset its pending-window clock (first_seen_at).
+    prev_row = existing or {}
+    if writes is None:
+        writes = prev_row.get("writes")
+        if writes is None:
+            writes = prev_row.get("write_set")
+    if existing:
+        sessions.remove(existing)
+
+    # F6 (HEAVY-MAX-2-WITH-COLLISION-GUARD-01): register-time re-count under
+    # the SAME lock -- the active.yaml snapshot the selection pass read was
+    # taken OUTSIDE this lock, so a concurrent fanout invocation may have
+    # registered a Heavy/strategic session (or hit hard_limit) in the
+    # meantime. Re-derive live counts from THIS locked read and refuse
+    # admission if it would exceed either ceiling. hard_limit/heavy_max are
+    # hard invariants (F5, never --force-bypassable), so no force flag is
+    # threaded through here -- only the numeric ceiling is re-verified.
+    meta_live = data.get("meta") or {}
+    heavy_max_live = int(meta_live.get("heavy_max", 3))
+    hard_limit_live = int(meta_live.get("hard_limit", 2))
+    live_sessions = [s for s in sessions if not s.get("stale")]
+    live_heavy = sum(1 for s in live_sessions if str(s.get("class", "")).lower() in ("heavy", "strategic"))
+    if cls.lower() in ("heavy", "strategic") and live_heavy >= heavy_max_live:
+        print(f"[fanout] LOST_RACE: {task_id} would exceed heavy_max under lock ({live_heavy}/{heavy_max_live}) -- refusing to register", file=sys.stderr)
+        sys.exit(3)
+    if len(live_sessions) >= hard_limit_live:
+        print(f"[fanout] LOST_RACE: {task_id} would exceed hard_limit under lock ({len(live_sessions)}/{hard_limit_live}) -- refusing to register", file=sys.stderr)
+        sys.exit(3)
+
+    # FIX3: pairwise HARD-collision re-check under THIS lock (see
+    # _hard_collision above) -- catches the exact race the numeric re-count
+    # above cannot: two concurrent fanout invocations each independently
+    # selecting a distinct Heavy with a prod-risk/unknown footprint, neither
+    # visible to the other's (unlocked) selection-time snapshot.
+    if cls.lower() in ("heavy", "strategic"):
+        for s in live_sessions:
+            if str(s.get("class", "")).lower() not in ("heavy", "strategic"):
+                continue
+            if _hard_collision(group_key, risk_tags, s.get("group_key"), s.get("risk_tags")):
+                print(f"[fanout] LOST_RACE: {task_id} HARD-collides under lock with live session task_id={s.get('task_id')} (prod/unknown footprint) -- refusing to register", file=sys.stderr)
+                sys.exit(3)
+
+    group_key_norm = None if group_key in ("", "null", "None", "-") else group_key
+
+    sessions.append({
+        "session_id": session_id, "task_id": task_id, "worktree": worktree,
+        "branch": branch, "started_at": started_at, "phase": "spawning",
+        "class": cls, "pulse_log": pulse_log, "pid": pid_val,
+        "pid_birth": None, "parent_session_id": None,
+        "daemon_mode": daemon_mode, "last_pulse_at": started_at,
+        "stale": False, "window_title": window_title, "pid_pending": pid_pending,
+        "where": where,
+        "note": f"window_title={window_title}",
+        # SUPERVISOR-RETRO-01 item 1: persisted classifier output — the
+        # pre-launch decision that picked "class" above, kept for audit.
+        "risk_tags": risk_tags,
+        "group_key": group_key_norm,
+        "lead_model": lead_model,
+        "lead_effort": lead_effort,
+        "class_reason": class_reason,
+        "provider": provider,
+        "route_reason": route_reason,
+        # WRITESET-PENDING-BLOCKS-WITHOUT-ANY-OVERLAP-01: same writeset field
+        # set the shared register() op persists -- fanout is a SECOND writer
+        # of active.yaml, so a row it writes must declare its write set (or
+        # record why it cannot) exactly like one written through
+        # leadv2_active_register.
+        "writes": writes,
+        "writes_reason": writes_reason if writes is None else None,
+        "first_seen_at": prev_row.get("first_seen_at") or prev_row.get("started_at") or started_at,
+        # SUPERVISE-V2-01 fix-1 (Codex#2): same registry-honesty field set
+        # leadv2_active_register()/op=register writes (leadv2-active-registry.sh)
+        # -- fanout is a SECOND writer of active.yaml (window_title has no slot
+        # in the shared register() op, see comment above), so these fields must
+        # be set here too rather than routed through that function.
+        "protocol_version": 2,
+        "backend": where,
+        "phase_started_at": started_at,
+        "updated_at": started_at,
+        "tmux_window": window_title if where == "tmux" else None,
+        # lean: pane index not tracked (one pane per window in this backend)
+        # -- upgrade when launch_tmux ever splits panes within a window.
+        "tmux_pane": None,
+        "log_path": pulse_log,
+        "provider_receipts": [{
+            "provider": provider,
+            "task_id": task_id,
+            "model": lead_model,
+            "effort": lead_effort,
+            "run_id": session_id,
+            "status": "launched",
+            "exit_code": None,
+            "attempt": 0,
+            "recorded_at": started_at,
+        }],
+    })
+
+    d = os.path.dirname(yaml_path)
+    tfd, tpath = tempfile.mkstemp(dir=d, suffix=".tmp")
+    try:
+        with os.fdopen(tfd, "w", encoding="utf-8") as tf:
+            yaml.dump(data, tf, default_flow_style=False, sort_keys=False)
+        os.replace(tpath, yaml_path)
+    except Exception:
+        os.unlink(tpath)
+        raise
+finally:
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    fd.close()
+PYEOF
+  if [[ "$_reg_rc" -eq 3 ]]; then
+    # FIX4: rc==3 means admission was refused under lock (F6 ceiling race OR
+    # FIX3 pairwise HARD-collision race). The caller already spawned the
+    # child process before this call -- returning 3 here tells it to KILL
+    # that child rather than leaving it running unregistered (the ceiling was
+    # cosmetic otherwise: it capped active.yaml rows, not actual processes).
+    log "WARN: ${tid} lost the register-time admission race under lock (F6/FIX3) — refusing to register; caller must terminate the spawned child"
+  elif [[ "$_reg_rc" -ne 0 ]]; then
+    log "WARN: could not register ${tid} in active.yaml — session is running unregistered"
+  fi
+  return "$_reg_rc"
+}
+
+# Back-compat alias: existing call sites in leadv2-fanout.sh (:1236) and
+# leadv2-fanout-lane-launcher.sh (:355, :455) use the underscore name and are
+# left untouched — the alias routes them through the single body above.
+_fanout_register_session() { leadv2_fanout_register_session "$@"; }
+
+# leadv2_active_reserve_lane <task_id> [writes_reason]
+# D1-SINGLE-WRITER-FOR-LANE-STATE: pid-less lane reservation, lifted from
+# leadv2-backlog-pump.sh's _pump_reserve_lane, which called the register op
+# directly "bypassing leadv2_active_register(), which always fills pid=<its
+# own durable pid> and has no null-pid mode". The op call is byte-identical
+# (p- session prefix, class=backlog-pump, pid=null, writes=null with the
+# mandatory reason) — only its home moved into the owner library so the
+# register transition has ONE textual body family. rc propagates (0/5/6/7).
+leadv2_active_reserve_lane() {
+  local tid="${1:?task_id required}"
+  local writes_reason="${2:-reserved before dispatch decides its write set}"
+  local yaml_file lockfile session_id ts branch pulse_log
+  yaml_file="$(_leadv2_yaml_file)"
+  lockfile="$(_leadv2_yaml_lockfile)"
+  ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  branch="$(git -C "${LEADV2_PROJECT_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || printf -- 'unknown')"
+  session_id="p-$(date -u +%Y%m%dT%H%M%SZ)-null-$$"
+  pulse_log="docs/handoff/backlog-pump-${tid}/pulse.md"
+  # 16 positional fields, then the optional 17th (`writes` is genuinely
+  # unknown here -- the lane is reserved BEFORE the dispatch that decides
+  # what it will touch -- so it is null and the 17th field says why).
+  _leadv2_yaml_py_lock \
+    "$lockfile" "$yaml_file" register \
+    "$session_id" "$tid" "${LEADV2_PROJECT_ROOT}" "$branch" "$ts" \
+    "spawning" "backlog-pump" "null" "null" "null" \
+    "true" "$ts" "$pulse_log" "" "" \
+    "null" "$writes_reason"
+}
+
+# leadv2_active_set_lane_pid <task_id> <pid_or_null>
+# D1-SINGLE-WRITER-FOR-LANE-STATE: thin public wrapper over the update_pid
+# op (was leadv2-backlog-pump.sh's _pump_update_lane_pid calling py_lock
+# directly). Best-effort semantics preserved: unknown task is a no-op in the
+# op, callers keep their || true.
+leadv2_active_set_lane_pid() {
+  local tid="${1:?task_id required}" pid_val="${2:-null}"
+  local yaml_file lockfile
+  yaml_file="$(_leadv2_yaml_file)"
+  lockfile="$(_leadv2_yaml_lockfile)"
+  [[ -f "$yaml_file" ]] || return 0
+  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" update_pid "$tid" "$pid_val" >/dev/null 2>&1 || true
+}
+
+# leadv2_active_release_verified <task_id> <session_id> <pid>
+# D1-SINGLE-WRITER-FOR-LANE-STATE: owner-verified compare-and-delete release,
+# lifted VERBATIM from leadv2-dispatch-code.sh's _release_registered_lane
+# (:4997) — release-to-removal now has one textual body in the owner library.
+# Contract preserved exactly:
+#   stdout: "rows=<n> removed=<n> live_worker_kept=<n>"
+#   rc 0 = released (>=1 row removed); 2 = row present but not ours (intact);
+#   rc 4 = duplicate rows unresolvable; rc 3 = unreadable/registry error.
+# Never removes a live worker row (pid_role=worker, or a live pid whose live
+# argv is a `claude -p` worker) regardless of session match.
+leadv2_active_release_verified() {
+  local task_id="${1:?task_id required}" session="${2:-}" pid="${3:-}"
+  local yaml_file lockfile
+  yaml_file="$(_leadv2_yaml_file)"
+  lockfile="$(_leadv2_yaml_lockfile)"
+  # Empty session/pid flows into the compare exactly as in the original
+  # dispatch site (ours=false; only provably-stale rows are removed).
+  [[ -f "$yaml_file" ]] || return 3
+  python3 - "$lockfile" "$yaml_file" "$task_id" "$session" "$pid" <<'PY'
+import fcntl, os, subprocess, sys, tempfile
+try:
+    import yaml
+except Exception:
+    sys.exit(3)
+lock_path, path, task_id, session, pid = sys.argv[1:6]
+try:
+    lock = open(lock_path, "a+")
+except OSError:
+    sys.exit(3)
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    with open(path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    if not isinstance(data, dict) or not isinstance(data.get("sessions"), list):
+        sys.exit(3)
+    rows = [row for row in data["sessions"] if isinstance(row, dict) and row.get("task_id") == task_id]
+    # PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01: duplicate rows for one task_id
+    # used to make release permanently impossible (silent exit 2 indistinguishable
+    # from "foreign row"), so a phase-refused lane stayed registered forever.
+    # Now: the duplicate count is journaled (shell emits active_lane_duplicate_rows
+    # from our stdout summary) and release proceeds per-row instead of failing whole.
+    # Liveness is not just "PID alive": the recorded PID may belong to an
+    # interactive claude session, not a worker (`claude -p`). Kind is read from
+    # the LIVE process argv, so a mislabelled row is still protected.
+    def _prlr_alive(p):
+        try:
+            os.kill(int(p), 0)
+            return True
+        except (TypeError, ValueError, ProcessLookupError, PermissionError, OSError):
+            return False
+    def _prlr_kind(p):
+        try:
+            out = subprocess.run(["ps", "-p", str(int(p)), "-o", "args="],
+                                 capture_output=True, text=True, timeout=5).stdout.strip()
+        except Exception:
+            return "unknown"
+        if not out:
+            return "dead"
+        if ("claude" in out or "codex" in out) and (" -p" in out or "--print" in out):
+            return "worker"
+        if "claude" in out or "--dangerously-skip-permissions" in out:
+            return "interactive"
+        return "other"
+    removed = 0
+    kept_worker = 0
+    removed_ids = set()
+    for row in list(rows):
+        rpid = row.get("pid")
+        if row.get("pid_role") == "worker":
+            kept_worker += 1
+            continue
+        # defence in depth: even a MISLABELLED row whose PID is actually a live
+        # worker process is never released by this dispatcher.
+        if _prlr_alive(rpid) and _prlr_kind(rpid) == "worker":
+            kept_worker += 1
+            continue
+        ours = bool(session) and row.get("session_id") == session \
+            and rpid and str(rpid) == str(pid)
+        stale = not _prlr_alive(rpid)
+        if ours or stale:
+            rows.remove(row)
+            removed_ids.add(id(row))
+            removed += 1
+    print(f"rows={len(rows) + removed} removed={removed} live_worker_kept={kept_worker}", flush=True)
+    if removed == 0:
+        sys.exit(2 if len(rows) <= 1 else 4)
+    data["sessions"] = [s for s in data["sessions"] if id(s) not in removed_ids]
+    fd, tmp = tempfile.mkstemp(prefix=".active-release-", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            yaml.safe_dump(data, out, default_flow_style=False, sort_keys=False)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
+except Exception:
+    sys.exit(3)
+finally:
+    try: fcntl.flock(lock, fcntl.LOCK_UN)
+    except Exception: pass
+    lock.close()
+sys.exit(0)
+PY
+}
+
+# ── D1-SINGLE-WRITER-FOR-LANE-STATE: restore the caller's shell options ────
+# Captured at the top of this file, before our own `set -euo pipefail`;
+# sourcing the registry must be side-effect-free on the caller's shell state
+# (the leak already produced one wrong diagnosis — a caller's unguarded
+# command died and was read as a registry bug). The root_error branch above
+# restores through the same helper on its early-return path.
+_lv2ar_restore_caller_opts

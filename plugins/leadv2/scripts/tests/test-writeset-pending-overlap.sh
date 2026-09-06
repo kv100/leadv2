@@ -74,15 +74,21 @@ if [[ -z "${CUT_LINE}" ]]; then
 fi
 head -n "$((CUT_LINE - 1))" "${DISPATCH_SH}" > "${FUNCS_SH}"
 
-# _fanout_register_session verbatim, by function bounds (never a copy).
-FAN_START="$(grep -n '^_fanout_register_session() {' "${FANOUT_SH}" | cut -d: -f1)"
-FAN_END="$(awk -v s="${FAN_START}" 'NR>s && /^}$/ {print NR; exit}' "${FANOUT_SH}")"
-if [[ -z "${FAN_START}" || -z "${FAN_END}" ]]; then
-  echo "[TEST] SETUP FAILED: cannot bound _fanout_register_session in ${FANOUT_SH}" >&2
-  exit 1
-fi
+# _fanout_register_session used to live in leadv2-fanout.sh and was extracted
+# verbatim by function bounds. D1-SINGLE-WRITER-FOR-LANE-STATE relocated its
+# real body to leadv2-active-registry.sh as leadv2_fanout_register_session,
+# leaving a same-named underscore alias `_fanout_register_session() {
+# leadv2_fanout_register_session "$@"; }` INSIDE leadv2-active-registry.sh
+# itself (registry.sh:2028) so every existing fanout.sh call site keeps
+# working unchanged. That means sourcing REGISTRY_SH — which every heredoc
+# below already does first — now supplies a working `_fanout_register_session`
+# on its own; a second, separate extraction from FANOUT_SH is both no longer
+# possible (the definition is not textually there any more) and no longer
+# necessary. FANOUT_FUNCS_SH is kept as an empty no-op file purely so the
+# heredocs' existing `source "${FANFUNCS}"` line stays valid without touching
+# every call site below.
 FANOUT_FUNCS_SH="${SCRIPTS_DIR}/.test-ws-pend-fanout.$$.sh"
-sed -n "${FAN_START},${FAN_END}p" "${FANOUT_SH}" > "${FANOUT_FUNCS_SH}"
+: > "${FANOUT_FUNCS_SH}"
 
 cleanup() { rm -rf "${TMPDIR_ROOT}"; rm -f "${FUNCS_SH}" "${FANOUT_FUNCS_SH}"; }
 trap cleanup EXIT

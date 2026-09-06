@@ -149,6 +149,15 @@ with open(lock, 'a+') as lf:
       print('lane cap exceeded: lead_session_id=%s live=%d cap=%d' % (lead, len(live), cap), file=sys.stderr); sys.exit(3)
     if existing:
       existing.update(pid=pid, pid_start_time=birth(pid), worktree=worktree, phase=phase, lead_session_id=lead, dead_at=None, updated_at=now())
+      # D1-SINGLE-WRITER-FOR-LANE-STATE: a real worker adopting a lane OWNS
+      # it again. The refresh carries a live pid, so any recovery placeholder
+      # state on the row is over: clear the flag (this is exactly the
+      # "recovered only via a REAL recovery" gate — adoption is one) and the
+      # row's phase transitions re-open (the registry's update_phase refuses
+      # rows with recovered=true).
+      if existing.get('recovered'):
+        existing['recovered']=False
+        event(existing, 'unowned_row_adopted')
       if lead_pid: existing['lead_pid'] = int(lead_pid)
       if lead_pid_birth: existing['lead_pid_birth'] = lead_pid_birth
       event(existing, 'registered_refresh')
@@ -159,11 +168,12 @@ with open(lock, 'a+') as lf:
       if lead_pid: row['lead_pid'] = int(lead_pid)
       if lead_pid_birth: row['lead_pid_birth'] = lead_pid_birth
       event(row, 'registered'); rows.append(row)
-  elif op == 'transition':
-    task, phase, detail = args
-    row=next((r for r in rows if r.get('task_id') == task and not r.get('dead_at')), None)
-    if row is None: sys.exit(4)
-    row['phase']=phase; row['updated_at']=now(); event(row, 'transition:'+phase, detail)
+  # elif op == 'transition': REMOVED (D1-SINGLE-WRITER-FOR-LANE-STATE).
+  # Phase advances have exactly one writer: the registry's update_phase op
+  # (leadv2-active-registry.sh), which now also refuses closed rows (rc=4)
+  # and recovery-owned rows (rc=8) and stamps the same transition lane_event
+  # with the detail payload. The lane_transition shell wrapper below routes
+  # through it; this engine no longer patches phase at all.
   elif op == 'deregister':
     task, reason=args
     row=next((r for r in rows if r.get('task_id') == task and not r.get('dead_at')), None)
@@ -199,6 +209,31 @@ with open(lock, 'a+') as lf:
         continue
       if not alive(row):
         row['dead_at']=now(); row['updated_at']=now(); event(row, 'reconciled_dead')
+    # D1-SINGLE-WRITER-FOR-LANE-STATE: the REAPER. Expiry above only marks
+    # dead_at — expired recovered rows then accumulated forever (24 measured
+    # live 2026-09-06, every one dead_at'd 2026-09-04, still rendering as
+    # ПРИЗРАК ghosts in the pulse). A recovered row is REMOVED once it has
+    # been dead longer than LEADV2_RECOVERED_UNOWNED_RETENTION_SEC (default
+    # 86400s) — long enough for a human to see the ghost across a day of
+    # pulses, short enough that unowned rows nobody owns and nothing closes
+    # cannot fill the registry. reconcile is the single owner of the
+    # recovered lifecycle, so it owns the reaping too. Normal (non-recovered)
+    # tombstones are NOT reaped here — their pruning belongs to the
+    # snapshot's tombstone+prune path, which also preserves history.
+    def dead_age(row):
+        dead=row.get('dead_at')
+        if not dead: return -1
+        try:
+            ts=datetime.datetime.strptime(dead,'%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)
+        except ValueError: return -1
+        return (datetime.datetime.now(datetime.timezone.utc)-ts).total_seconds()
+    try: retention=int(os.environ.get('LEADV2_RECOVERED_UNOWNED_RETENTION_SEC','86400') or 86400)
+    except ValueError: retention=86400
+    if retention < 0: retention=86400
+    reaped=[str(r.get('task_id')) for r in rows if r.get('recovered') and dead_age(r)>retention]
+    if reaped:
+      rows[:] = [r for r in rows if not (r.get('recovered') and dead_age(r)>retention)]
+      print('recovered_rows_reaped=%s' % ','.join(reaped), file=sys.stderr)
     fixture_wt=os.environ.get('LEADV2_LANE_STATE_TEST_WORKTREES_FILE','')
     try:
       wt=open(fixture_wt, encoding='utf-8').read() if fixture_wt else subprocess.run(['git','-C',root,'worktree','list','--porcelain'], text=True, capture_output=True, timeout=5).stdout
@@ -325,7 +360,31 @@ with open(lock, 'a+') as lf:
 PY
 }
 lane_register() { _lv2_lane_state_mutate register "$1" "$2" "$3" "$4" "${5:-$$}" "${6:-}" "${7:-}"; }
-lane_transition() { _lv2_lane_state_mutate transition "$1" "$2" "${3:-}"; }
+lane_transition() { # <task-id> <phase> [detail]
+  # D1-SINGLE-WRITER-FOR-LANE-STATE: phase advances have ONE owner — the
+  # registry's update_phase op. This wrapper routes through it (lazy-sourcing
+  # the registry from this lib's own scripts/ dir) and keeps the wrapper's rc
+  # contract a superset of the old op's: 4 = row missing or closed (the old
+  # op returned 4 only for missing), 8 = refused because the row is
+  # recovery-owned, 9 = registry could not be loaded at all.
+  local _lt_rc=0 _lt_flags _lt_pf=0
+  _lt_flags="$-"
+  if [[ -o pipefail ]]; then _lt_pf=1; fi
+  if ! declare -F _leadv2_active_registry_loaded >/dev/null 2>&1; then
+    source "${_lv2_lane_state_dir}/leadv2-active-registry.sh" >/dev/null 2>&1 || _lt_rc=9
+    # The registry restores the caller's options on its own, but its
+    # root_error EARLY-RETURN path aborts the source before the EOF restore;
+    # belt-and-braces, put the shell back exactly as we found it.
+    if [[ "$_lt_flags" != *e* ]]; then set +e; fi
+    if [[ "$_lt_flags" != *u* ]]; then set +u; fi
+    if [[ "$_lt_pf" -eq 0 ]]; then set +o pipefail; fi
+  fi
+  if [[ "$_lt_rc" -ne 0 ]]; then
+    printf -- '[lane-state] lane_transition: registry unavailable — phase write refused\n' >&2
+    return "$_lt_rc"
+  fi
+  LEADV2_PROJECT_ROOT="$(_lv2_lane_state_root)" leadv2_active_update_phase "$1" "$2" "-" "${3:-}"
+}
 lane_deregister() { _lv2_lane_state_mutate deregister "$1" "${2:-closed}"; }
 lane_alive() { _lv2_lane_state_mutate alive "$1"; }
 lane_lead_alive() { _lv2_lane_state_mutate lead_alive "$1"; }
