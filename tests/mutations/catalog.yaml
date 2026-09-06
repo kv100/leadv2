@@ -754,3 +754,25 @@ mutations:
       s|pre_existing+=("\${suite}")     # red before|still_own+=("\${suite}")     # red before|
       -- the subtraction itself disabled: back to charging every lane for main's
       inherited reds, which is exactly the pre-fix behaviour
+
+  - id: mutation-runner-cannot-see-the-lanes-own-uncommitted-file
+    product_flow: "leadv2-mutation-control.sh is the instrument that proves a suite is real, so what it measures has to be a tree somebody chose. CHALLENGE-05 correctly required a lane's UNCOMMITTED target/suite files to be visible, and fixed that by snapshotting the whole working tree (ls-files -co) -- which in a shared checkout with five live sessions also drags in every other lane's half-finished file, so a mutation can read killed or survived for a reason nobody declared (MUTATION-RUNNER-STAGES-EVERYTHING-01). The snapshot is now HEAD plus the mutation's file, the suite, and LEADV2_MUTCTL_OVERLAY; excluded dirty files are counted out loud, and LEADV2_MUTCTL_SNAPSHOT=worktree restores the old behaviour"
+    file: plugins/leadv2/scripts/leadv2-mutation-control.sh
+    suite: plugins/leadv2/scripts/tests/test-mutation-runner-measures-only-declared-files.sh
+    anchor: |
+      for _d in "${_mc_declared[@]}"; do _mc_overlay "${_d}"; done
+    patch: |
+      s|for _d in "\${_mc_declared\[@\]}"; do _mc_overlay "\${_d}"; done|: # MUTANT|
+      -- the declared file's uncommitted state never reaches the scratch, so the baseline is
+      not green and nothing is measured at all -- CHALLENGE-05's regression, restored
+
+  - id: mutation-runner-measures-every-other-lanes-dirty-file
+    product_flow: "leadv2-mutation-control.sh is the instrument that proves a suite is real, so what it measures has to be a tree somebody chose. CHALLENGE-05 correctly required a lane's UNCOMMITTED target/suite files to be visible, and fixed that by snapshotting the whole working tree (ls-files -co) -- which in a shared checkout with five live sessions also drags in every other lane's half-finished file, so a mutation can read killed or survived for a reason nobody declared (MUTATION-RUNNER-STAGES-EVERYTHING-01). The snapshot is now HEAD plus the mutation's file, the suite, and LEADV2_MUTCTL_OVERLAY; excluded dirty files are counted out loud, and LEADV2_MUTCTL_SNAPSHOT=worktree restores the old behaviour"
+    file: plugins/leadv2/scripts/leadv2-mutation-control.sh
+    suite: plugins/leadv2/scripts/tests/test-mutation-runner-measures-only-declared-files.sh
+    anchor: |
+      if [[ "${LEADV2_MUTCTL_SNAPSHOT:-head}" == "worktree" ]]; then
+    patch: |
+      s|LEADV2_MUTCTL_SNAPSHOT:-head|LEADV2_MUTCTL_SNAPSHOT:-worktree|
+      -- the default goes back to snapshotting the whole working tree, so an undeclared dirty
+      file from a neighbouring lane decides the verdict

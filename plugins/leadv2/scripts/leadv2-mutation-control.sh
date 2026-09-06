@@ -151,16 +151,64 @@ SUITE_REL="${SUITE_ABS#${ROOT}/}"
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-mutctl.XXXXXX")"
 trap 'rm -rf "${SCRATCH}"' EXIT
 
-# ── 1. Snapshot the WORKING tree, not HEAD ──────────────────────────────────
-# `git archive HEAD` is committed-only and misses uncommitted suite/mutation-
-# target files the worker is still iterating on — that produces a lying-green
-# result by construction (CHALLENGE-05). Snapshot tracked+untracked-but-not-
-# ignored files from the actual working tree instead.
-if ! git -C "${ROOT}" ls-files -co --exclude-standard -z 2>/dev/null \
-     | tar -C "${ROOT}" --null -cf - -T - 2>/dev/null \
-     | tar -xf - -C "${SCRATCH}" 2>/dev/null; then
-  printf 'leadv2-mutation-control: control_not_applied reason=snapshot_failed\n'
-  exit 2
+# ── 1. Snapshot HEAD, then overlay ONLY what this measurement is about ──────
+# CHALLENGE-05 was right that `git archive HEAD` alone misses the uncommitted
+# suite/mutation-target files a worker is still iterating on. Its fix copied
+# the WHOLE working tree (`ls-files -co`), and in a shared checkout that drags
+# every other lane's half-finished file into the measured tree
+# (MUTATION-RUNNER-STAGES-EVERYTHING-01): a mutation can then read killed --
+# or survived -- for a reason that came from somebody else's edit.
+#
+# So: HEAD, plus the mutation's file, plus the suite, plus whatever the caller
+# declares in LEADV2_MUTCTL_OVERLAY (csv of repo-relative paths). Nothing else
+# from the working tree reaches the verdict. A suite that needs some OTHER
+# uncommitted file now fails the baseline-green gate in step 3 loudly, instead
+# of being measured against a tree nobody chose. LEADV2_MUTCTL_SNAPSHOT=worktree
+# restores the old behaviour in one flip.
+_mc_overlay() { # <repo-relative path> -- copies from the real tree when present
+  local rel="${1:-}" src dst
+  [[ -n "${rel}" ]] || return 0
+  src="${ROOT}/${rel}"; dst="${SCRATCH}/${rel}"
+  [[ -f "${src}" ]] || return 0
+  mkdir -p "$(dirname "${dst}")" 2>/dev/null || return 0
+  cp "${src}" "${dst}" 2>/dev/null || true
+  return 0
+}
+
+if [[ "${LEADV2_MUTCTL_SNAPSHOT:-head}" == "worktree" ]]; then
+  if ! git -C "${ROOT}" ls-files -co --exclude-standard -z 2>/dev/null \
+       | tar -C "${ROOT}" --null -cf - -T - 2>/dev/null \
+       | tar -xf - -C "${SCRATCH}" 2>/dev/null; then
+    printf 'leadv2-mutation-control: control_not_applied reason=snapshot_failed\n'
+    exit 2
+  fi
+  printf 'leadv2-mutation-control: snapshot=worktree (every dirty file in the checkout is in the measured tree)\n'
+else
+  if ! git -C "${ROOT}" archive HEAD 2>/dev/null | tar -xf - -C "${SCRATCH}" 2>/dev/null; then
+    printf 'leadv2-mutation-control: control_not_applied reason=snapshot_failed\n'
+    exit 2
+  fi
+  _mc_declared=("${FILE_REL}" "${SUITE_REL}")
+  if [[ -n "${LEADV2_MUTCTL_OVERLAY:-}" ]]; then
+    IFS=',' read -r -a _mc_extra <<< "${LEADV2_MUTCTL_OVERLAY}"
+    for _e in "${_mc_extra[@]}"; do
+      _e="$(printf '%s' "${_e}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+      [[ -n "${_e}" ]] && _mc_declared+=("${_e}")
+    done
+  fi
+  for _d in "${_mc_declared[@]}"; do _mc_overlay "${_d}"; done
+  # Loudness: say how many dirty files were deliberately left OUT, so a
+  # contaminated checkout is visible in the record rather than silently baked in.
+  _mc_dirty=0
+  while IFS= read -r _line; do
+    [[ -z "${_line}" ]] && continue
+    _p="${_line:3}"
+    _skip=0
+    for _d in "${_mc_declared[@]}"; do [[ "${_p}" == "${_d}" ]] && { _skip=1; break; }; done
+    (( _skip )) || _mc_dirty=$(( _mc_dirty + 1 ))
+  done < <(git -C "${ROOT}" status --porcelain 2>/dev/null)
+  printf 'leadv2-mutation-control: snapshot=head_plus_declared declared=%s excluded_dirty=%s\n' \
+    "${#_mc_declared[@]}" "${_mc_dirty}"
 fi
 
 # ── 2. Give the scratch tree its own git identity ───────────────────────────
