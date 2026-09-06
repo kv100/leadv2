@@ -33,6 +33,14 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# MONITORS-ARE-THE-SECOND-CONSUMER-OF-THE-ADDRESS-RESOLVER-01: a repo-root
+# arg used to expand via a bare `dispatch-*/journal.md` glob, which only
+# ever matched dispatch-<sig8>-named lane dirs and silently missed every
+# founder-task-id-named journal dir -- the MAJORITY on a live repo (46 of 67
+# on persona-engine main at time of writing). lib/leadv2-journal-address.py
+# `list` is the canonical enumeration both naming schemes, shared with
+# scripts/anti-silence-pulse.sh (persona-engine).
+JOURNAL_ADDRESS_LIB="${SCRIPT_DIR}/lib/leadv2-journal-address.py"
 
 INTERVAL=60
 HEARTBEAT=1800
@@ -67,7 +75,7 @@ for a in "${ARGS[@]}"; do
     while IFS= read -r j; do
       [[ -n "$j" ]] || continue
       JOURNALS+=("$j"); LANE_IDS+=("$(basename "$(dirname "$j")")"); SLUGS+=("$slug"); found=1
-    done < <(ls -1 "${root}/docs/leadv2/tasks/"dispatch-*/journal.md 2>/dev/null || true)
+    done < <(python3 "${JOURNAL_ADDRESS_LIB}" list --root "${root}" 2>/dev/null || true)
     [[ "$found" == "1" ]] || printf '[lane-watch] WARN: no lane journals under %s\n' "$root" >&2
   elif [[ -f "$a" ]]; then
     j="$(cd "$(dirname "$a")" && pwd -P)/$(basename "$a")"

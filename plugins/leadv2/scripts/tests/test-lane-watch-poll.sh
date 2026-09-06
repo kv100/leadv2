@@ -17,6 +17,13 @@
 #       (loop mode, not --once).
 #   W6  a repo-root argument expands to every
 #       <root>/docs/leadv2/tasks/dispatch-*/journal.md.
+#   W7  (MONITORS-ARE-THE-SECOND-CONSUMER-OF-THE-ADDRESS-RESOLVER-01) the
+#       SAME repo-root expansion ALSO sees a founder-task-id-named journal
+#       dir (no `dispatch-` prefix) -- the naming scheme the pre-fix bare
+#       `dispatch-*/journal.md` glob silently missed. Paired negative
+#       control: re-running the OLD glob shape against the identical
+#       fixture proves it drops that lane predictably, not the new code
+#       finding something that was never actually excluded.
 #
 # Hermetic: scratch journal trees, scratch --state-dir, no network, no real
 # lanes. Run: bash scripts/tests/test-lane-watch-poll.sh
@@ -163,6 +170,13 @@ fi
 
 # ── W6: repo-root arg expands to every lane journal ─────────────────────────
 append_lines "$J2" "11:05 question is the second lane visible?"
+
+# ── W7 fixture: a founder-task-id-named lane dir, no dispatch- prefix ───────
+J3DIR="$REPO/docs/leadv2/tasks/FOUNDER-TASK-XY"
+mkdir -p "$J3DIR"
+J3="$J3DIR/journal.md"
+append_lines "$J3" "11:06 dispatch_terminal task=FOUNDER-TASK-XY terminal=merged"
+
 STATE4="$TMP/state4"
 out6="$(bash "$WATCH" --once --state-dir "$STATE4" "$REPO")"
 if printf '%s' "$out6" | grep -q 'repo/dispatch-abcd0001.*dispatch_terminal task=abcd0001' \
@@ -170,6 +184,21 @@ if printf '%s' "$out6" | grep -q 'repo/dispatch-abcd0001.*dispatch_terminal task
   ok "W6: repo-root arg expands to all dispatch-* journals (both lanes seen)"
 else
   bad "W6: expansion incomplete: $(printf '%s' "$out6" | head -3)"
+fi
+
+if printf '%s' "$out6" | grep -q 'repo/FOUNDER-TASK-XY.*dispatch_terminal task=FOUNDER-TASK-XY'; then
+  ok "W7: repo-root expansion ALSO sees a founder-task-id-named journal dir (no dispatch- prefix)"
+else
+  bad "W7: task-id-named lane dir missed: $(printf '%s' "$out6" | head -5)"
+fi
+
+# ── W7 paired negative control: the OLD narrow glob predictably misses it ──
+old_glob_hits="$(ls -1 "${REPO}/docs/leadv2/tasks/"dispatch-*/journal.md 2>/dev/null | wc -l | tr -d ' ')"
+old_glob_sees_taskid="$(ls -1 "${REPO}/docs/leadv2/tasks/"dispatch-*/journal.md 2>/dev/null | grep -c 'FOUNDER-TASK-XY' || true)"
+if [[ "${old_glob_hits}" -eq 2 && "${old_glob_sees_taskid}" -eq 0 ]]; then
+  ok "W7 PAIRED CONTROL: the old dispatch-*-only glob still finds exactly the 2 dispatch- lanes and never the task-id lane (predictable miss, not a fluke)"
+else
+  bad "W7 PAIRED CONTROL: old-glob shape changed (hits=${old_glob_hits} taskid_hits=${old_glob_sees_taskid}) -- fixture drifted, re-check the control"
 fi
 
 printf '\n[lane-watch-poll] PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
