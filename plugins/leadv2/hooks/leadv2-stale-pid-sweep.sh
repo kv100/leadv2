@@ -33,6 +33,14 @@ fi
 #      start. Output appends to /tmp/leadv2-stale-sweeper.<repo>.log.
 #      LEADV2_SSWEEP_NO_DETACH=1 (tests) suppresses stage 2.
 SWEEPER="${SCRIPT_DIR}/../scripts/leadv2-stale-sweeper.sh"
+# CONTROL-PLANE-SATURATES-01: reap orphans of DEAD sessions (pulse loops,
+# stuck sweeps, beat-loops) at every session start — bounded, pure bash/ps,
+# positive-death-only (kill -0 three answers; transcript-age oracle).
+REAPER="${SCRIPT_DIR}/../scripts/leadv2-orphan-reaper.sh"
+if [[ -x "$REAPER" ]]; then
+  LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "$REAPER" \
+    || printf '[leadv2-stale-pid-sweep] orphan reaper failed rc=%s (non-blocking)\n' "$?" >&2
+fi
 if [[ -x "$SWEEPER" ]]; then
   LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "$SWEEPER" --non-interactive --mark-only || \
     printf '[leadv2-stale-pid-sweep] stale sweep (mark-only) failed rc=%s (non-blocking)\n' "$?" >&2
