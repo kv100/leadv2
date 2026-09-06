@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # changed-scope triggers, self-registered (discovered by scan_suite_triggers):
-# run-all-triggers: lib/leadv2-dod-gate.sh leadv2-dod-gate.sh
+# run-all-triggers: leadv2-dod-gate.sh run-all.sh
+# (triggers are BASENAMES -- parse_suite_triggers rejects any token containing "/"
+#  with a FATAL for the whole run, and maps token -> suite by name, so "lib/..." was
+#  both invalid and unnecessary. I wrote the path form here and broke selection for
+#  every session in this repo; run-all --scope changed in THIS repo catches it in one
+#  run, which is the run I owed and did not make.)
 # tests/test-dod-gate-suite-registration.sh — DOD-GATE-KILLS-A-REGISTERED-SUITE-01.
 #
 # The DoD gate's check (c) asks "is this new suite registered with run-all?" and a
