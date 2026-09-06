@@ -77,6 +77,12 @@ plugins/leadv2/scripts/tests/.claude/
 docs/handoff/*/*
 !docs/handoff/*/*.md
 !docs/handoff/*/round*-red
+# WAVES-ROW-DECLARES-ITS-OWN-LANDING-01: a row declares the commits it landed in
+# docs/handoff/<id>/landed.sha, and scripts/waves-refresh.sh credits the row only
+# from shas it declared. An untracked declaration dies with the checkout and is
+# invisible to every other session, so this one narrow name is tracked -- same
+# style as the two exceptions above, never a widening to `!docs/handoff/*/*`.
+!docs/handoff/*/landed.sha
 docs/leadv2/review-*
 docs/leadv2/status-snapshot.json
 docs/leadv2/founder-status*.md

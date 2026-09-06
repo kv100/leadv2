@@ -1,0 +1,3 @@
+# GUARDS-SELF-DISABLE-ON-THE-EMPTY-WRITE-SET-01 — the blind branches of _foreign_check
+# now say they could not check (symbol: "foreign-check UNAVAILABLE").
+eca66591

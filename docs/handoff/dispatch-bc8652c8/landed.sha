@@ -1,0 +1,3 @@
+# SELFCHECK-FORGED-MARKER-REGRESSION-01 — cherry-picked from the stranded 01B lane.
+# Suite re-run 2026-09-06: 38 passed / 0 failed, forged-marker case back to RED-then-GREEN.
+d539d364

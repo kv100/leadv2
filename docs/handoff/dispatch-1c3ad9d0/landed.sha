@@ -1,0 +1,6 @@
+# RECOVER-WAVE1-TEN-01 round 2 — the four wave-1 branches this row had to land.
+# Verified 2026-09-06: each branch is an ancestor of leadv2/main via these merges.
+ad4be1e3
+0a499cb3
+cdf3ffdf
+30615f10
