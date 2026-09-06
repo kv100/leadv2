@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-ledger.sh
+anchor=1057s/finished:\*)/NC4_NOMATCH:*)/; 1084s/finished_unlanded:\*)/NC4_NOMATCH2:*)/
+baseline_rc=0
+mutated_rc=1
+red_line=leadv2-dispatch-ledger: derive dispatch-c9a9a9a9: git log (commit lookup) exited 128 -- measurement failed, verdict downgraded to unknown: shim: simulated git log failure: fatal: unable to fork (Resource temporarily unavailable) 
+diff_hash=d7053e088d30e9dd539b326199b6ba384e7ab1aadc64d6b7a76ed83ce57bfd2f
+lane_diff_hash=b72f5273d25507ef1041e038bf84788221e1c47726095e71024b925c71d9fb27
