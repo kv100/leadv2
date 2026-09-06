@@ -92,7 +92,7 @@ mktemp_guard() {
     # is followed by || true, so a caller's `set -e` is never tripped on the
     # clean path -- that is R5, a historic bug this guard must not relearn:
     # a while whose body last failed returns nonzero and kills the caller.
-    local bline tok t_flag
+    local bline tok t_flag seen_mktemp skip_arg
     while IFS= read -r bline; do
         [[ "$bline" == *XXX* ]] || continue
         t_flag=0
@@ -100,10 +100,29 @@ mktemp_guard() {
             [[ "$tok" == "-t" ]] && t_flag=1
         done < <(_mkg_tokens "$bline") || true
         (( t_flag )) && continue
+        seen_mktemp=0
+        skip_arg=0
         while IFS= read -r tok; do
             [[ -n "$tok" ]] || continue
             [[ "$tok" == \#* ]] && break
-            [[ "$tok" == "mktemp" ]] && continue
+            if [[ "$tok" == "mktemp" ]]; then
+                seen_mktemp=1
+                skip_arg=0
+                continue
+            fi
+            (( seen_mktemp )) || continue
+            if (( skip_arg )); then
+                skip_arg=0
+                continue
+            fi
+            case "$tok" in
+                -p|--tmpdir|-S|--suffix) skip_arg=1; continue ;;
+                --) continue ;;
+                -*) continue ;;
+            esac
+            # Only the template argument belongs to this call; unrelated
+            # assignments or later command arguments must not be flagged.
+            seen_mktemp=0
             if _mkg_flag_word "$tok"; then
                 echo "Error: $script contains a bare mktemp template whose X-run is not final: $tok" >&2
                 echo "Debug: line='$bline'" >&2
