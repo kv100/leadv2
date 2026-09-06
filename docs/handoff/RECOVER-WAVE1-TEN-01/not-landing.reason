@@ -1,0 +1,6 @@
+# LEADV2-WORKTREE-ADJUDICATION-01 (2026-09-06). Every added non-docs line of `worktree-RECOVER-WAVE1-TEN-01` is already present in main's version of the same file (whole-population count, not a sample), so the work landed under another name.
+# Instrument: merge-tree --write-tree against main, --diff-filter=D on the
+# resulting TREE, contribution against the branch's own merge-base, and the
+# landing ratio over ALL added non-docs lines. Branch not deleted, no prune.
+verified-by=0a76780c
+class=landed-elsewhere

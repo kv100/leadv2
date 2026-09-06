@@ -1,0 +1,6 @@
+# LEADV2-WORKTREE-ADJUDICATION-01 (2026-09-06). `worktree-3c0940cd` touches only orchestration spool -- lock files, bus offsets, the compact freeze, a graveyard stamp. Nothing to land.
+# Instrument: merge-tree --write-tree against main, --diff-filter=D on the
+# resulting TREE, contribution against the branch's own merge-base, and the
+# landing ratio over ALL added non-docs lines. Branch not deleted, no prune.
+verified-by=0a76780c
+class=branch-is-junk

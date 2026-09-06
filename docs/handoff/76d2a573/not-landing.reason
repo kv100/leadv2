@@ -1,0 +1,6 @@
+# LEADV2-WORKTREE-ADJUDICATION-01 (2026-09-06). The single commit of `worktree-76d2a573` is an empty lane anchor: `git diff $(git merge-base main worktree-76d2a573) worktree-76d2a573` names zero files.
+# Instrument: merge-tree --write-tree against main, --diff-filter=D on the
+# resulting TREE, contribution against the branch's own merge-base, and the
+# landing ratio over ALL added non-docs lines. Branch not deleted, no prune.
+verified-by=0a76780c
+class=branch-is-junk
