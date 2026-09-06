@@ -1655,6 +1655,19 @@ pc_silent_arm_probe() {
   # parent would advance the arm while finished work remains in the lane directory.
   lv2_lane_root_is_own_worktree "${_lane_root}" || return 1
   lv2_lane_dirty "${_lane_root}" && return 1
+  # PRODUCED-NOTHING-IS-REPO-SCOPED-AND-INDEX-BLIND-01: lv2_lane_dirty excludes
+  # docs/handoff/* and docs/leadv2/* BY DESIGN -- routine lane-state writes are not
+  # SCOPE dirt -- but that same exclusion makes a report the arm staged (or fully
+  # wrote) but never committed under docs/handoff invisible to THIS probe too, which
+  # asks a different question than scope dirt does: "did the arm do anything at
+  # all". Reproduced 2026-09-06 on lane 49be1f0b (ряд 0b89d0b792e0): 159 lines of
+  # report sat in the lane worktree's INDEX under docs/handoff/<task>; unfiltered
+  # `git status --porcelain` would have shown it non-empty, the exclude-filtered
+  # lv2_lane_dirty above could not. Unfiltered on purpose -- ANY trace at all,
+  # staged or not, is evidence of activity regardless of where it landed.
+  if [[ -n "$(git -C "${_lane_root}" status --porcelain --untracked-files=all 2>/dev/null)" ]]; then
+    return 1
+  fi
   # 6) GATE-FALSE-SILENT-01: commits ahead of base are production, whatever the
   # worktree's dirty state says -- a worker that commits cleanly is not silent.
   # round 2: "unknown" (base unresolvable) is NOT silent either -- a probe that cannot
@@ -1669,6 +1682,24 @@ pc_silent_arm_probe() {
   fi
   [[ "${commits_ahead}" =~ ^[0-9]+$ ]] || commits_ahead=0
   (( commits_ahead >= 1 )) && return 1
+  # PRODUCED-NOTHING-IS-REPO-SCOPED-AND-INDEX-BLIND-01: commits_ahead above is
+  # SCOPED to _lane_root's own repository. A lane whose mission touches the shared
+  # leadv2 plugin tree commits its CODE there, in a separate git checkout this
+  # probe never otherwise looks at -- reproduced 2026-09-06, lane 49be1f0b landed
+  # 16efd6fa (+482/-17) in leadv2 while this probe checked only the persona-engine
+  # worktree and saw zero commits ahead. Attribution: the repo-wide commit-message
+  # convention already names the lane's own FOUNDER_TASK_ID in the subject/body
+  # (see e.g. 16efd6fa's own subject line) -- a --grep hit across every ref is
+  # decisive proof of work without needing a second per-repo start-sha; a miss is
+  # simply not evidence either way, so the lane_root-only checks above still own
+  # the true-silence verdict.
+  local _canonical_leadv2="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}"
+  if [[ -n "${FOUNDER_TASK_ID:-}" && -d "${_canonical_leadv2}/.git" ]] \
+     && [[ "$(_lv2_phys "${_canonical_leadv2}" 2>/dev/null)" != "$(_lv2_phys "${_lane_root}" 2>/dev/null)" ]] \
+     && git -C "${_canonical_leadv2}" log --all --fixed-strings \
+          --grep="${FOUNDER_TASK_ID}" --format=%H -1 2>/dev/null | grep -q .; then
+    return 1
+  fi
   _PC_SILENT_COMMITS_AHEAD="${commits_ahead}"
   _PC_SILENT_LANE_BASENAME="$(basename "${_lane_root}")"
   return 0
