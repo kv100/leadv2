@@ -1578,15 +1578,51 @@ work_delta_present() {
 # no reader breaks.
 deadhand_check() {
   local run_dir="$1" exit_code="$2"
-  [[ -f "${run_dir}/.deliverable" ]] || return 0
-  local path
-  path="$(cat "${run_dir}/.deliverable" 2>/dev/null)"
-  [[ -n "${path}" ]] || return 0
+  local path=""
+  if [[ -f "${run_dir}/.deliverable" ]]; then
+    path="$(cat "${run_dir}/.deliverable" 2>/dev/null)"
+  fi
 
   local min_bytes="${LEADV2_DEADHAND_MIN_BYTES:-200}"
   local reason=""
 
-  if [[ ! -f "${path}" ]]; then
+  if [[ -z "${path}" ]]; then
+    # GUARDS-EMPTY-WRITESET-CENSUS-R2-01: no declared deliverable used to mean
+    # "nothing to check" (return 0, silent) -- but an undeclared deliverable is
+    # exactly the shape this detector exists to catch, not an exemption from
+    # it. Measured live 2026-09-06 (GLM corpus, same family of run): 259/281
+    # (92.2%) of real runs never write .deliverable at all, so this branch WAS
+    # the population, not an edge case. Three outcomes now, not two: real
+    # work landed (silent pass, same as the declared-and-satisfied case
+    # below) / nothing landed (flagged, reason=no_deliverable_declared) /
+    # could not be told apart (spoken aloud via LEADV2_DEADHAND_UNVERIFIABLE,
+    # never silently folded into either). This branch does NOT run the G4
+    # parse-gate below -- that check validates the DECLARED deliverable path,
+    # which does not exist here.
+    local cwd_dir code_shaped
+    cwd_dir="$(meta_get "${run_dir}" cwd || true)"
+    if [[ -z "${cwd_dir}" ]]; then
+      echo "LEADV2_DEADHAND_UNVERIFIABLE exit=${exit_code} reason=no_cwd" >> "${run_dir}/progress.log" 2>/dev/null || true
+      return 0
+    fi
+    code_shaped="$(mission_is_code_shaped "${run_dir}" || echo 0)"
+    if [[ "${code_shaped}" != "1" ]]; then
+      echo "LEADV2_DEADHAND_UNVERIFIABLE exit=${exit_code} reason=not_code_shaped" >> "${run_dir}/progress.log" 2>/dev/null || true
+      return 0
+    fi
+    local delta
+    delta="$(work_delta_present "${run_dir}" "${cwd_dir}" || echo skip)"
+    if [[ "${delta}" == "skip" ]]; then
+      echo "LEADV2_DEADHAND_UNVERIFIABLE exit=${exit_code} reason=no_workbase" >> "${run_dir}/progress.log" 2>/dev/null || true
+      return 0
+    fi
+    if [[ "${delta}" == "no" ]]; then
+      reason="no_deliverable_declared"
+    fi
+    # delta == "yes": real work landed despite no declared deliverable -- not
+    # a dead hand; falls through with reason empty, same silent pass as the
+    # declared-and-satisfied branch below.
+  elif [[ ! -f "${path}" ]]; then
     reason="missing"
   else
     local last_line byte_count

@@ -73,6 +73,12 @@ NO_DELIV_PROMPT="Run the self-test and report findings. No file artifact require
 # naming a non-docs/ path -- this is what makes mission_is_code_shaped()
 # return 1 and turns G3 (work-delta) on for a scenario.
 CODE_DELIV_PROMPT="$(printf '%s\nLANE_WRITES: scripts/foo.sh' "${DELIV_PROMPT}")"
+# GUARDS-EMPTY-WRITESET-CENSUS-R2-01: code-shaped mission (LANE_WRITES: names
+# a non-docs/ path) that never mentions "deliverable" at all -- no contract is
+# derivable, .deliverable is never written, and the run is code-shaped so the
+# new undeclared-deliverable branch of deadhand_check must actually engage
+# (unlike case_c/NO_DELIV_PROMPT, which is not code-shaped and stays inert).
+CODE_NO_DELIV_PROMPT="$(printf '%s\nLANE_WRITES: scripts/foo.sh' "${NO_DELIV_PROMPT}")"
 
 # stub-success-no-deliv: coherent non-error result, exits 0, writes NOTHING.
 cat > "${STUBS_DIR}/success-no-deliv.sh" <<'EOF'
@@ -153,6 +159,21 @@ mkdir -p "${HANDOFF_DIR}"
   for i in \$(seq 1 100); do printf 'Detail line %d of the implementation.\n' "\${i}"; done
   printf '\nDELIVERABLE_COMPLETE\n'
 } > "${DELIV_FILE}"
+printf '{"type":"result","result":"done","is_error":false}\n'
+exit 0
+EOF
+
+# stub-real-work-no-deliv (GUARDS-EMPTY-WRITESET-CENSUS-R2-01, paired negative
+# control): exits 0, writes NO deliverable file at all (no marker, no
+# .deliverable contract), but DOES edit the tracked file scripts/foo.sh. Pairs
+# with success-no-deliv.sh under CODE_NO_DELIV_PROMPT: real work in the tree
+# without a declared deliverable must NOT be flagged as a dead hand.
+cat > "${STUBS_DIR}/real-work-no-deliv.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '{"type":"system","subtype":"init","model":"glm-5.2"}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"output_tokens":5}}}\n'
+mkdir -p scripts
+printf '#!/usr/bin/env bash\necho "implemented, no deliverable declared"\n' > scripts/foo.sh
 printf '{"type":"result","result":"done","is_error":false}\n'
 exit 0
 EOF
@@ -362,6 +383,118 @@ TAG="case_j_kimi_mirror"
 RD="$(run_scenario "${TAG}" "${KIMI_CODER}" "${STUBS_DIR}/prose-no-diff.sh" "${CODE_DELIV_PROMPT}")"
 EXPECTED_PATH="${TMP_ROOT}/repo-${TAG}/${DELIV_FILE}"
 assert_flagged "${RD}" "${EXPECTED_PATH}" "no_work_delta"
+
+# ---------------------------------------------------------------------------
+# case_k_undeclared_code_shaped_no_work (GUARDS-EMPTY-WRITESET-CENSUS-R2-01):
+# code-shaped mission, no deliverable ever mentioned -> no .deliverable file
+# -- and the tree is genuinely untouched. Previously silent (return 0 before
+# any check ran); now must flag reason=no_deliverable_declared, path empty.
+# ---------------------------------------------------------------------------
+TAG="case_k_undeclared_code_shaped_no_work"
+RD="$(run_scenario "${TAG}" "${GLM_CODER}" "${STUBS_DIR}/success-no-deliv.sh" "${CODE_NO_DELIV_PROMPT}")"
+if [[ -f "${RD}/.deliverable" ]]; then
+  fail "$TAG" ".deliverable should not exist when no contract derivable"
+else
+  assert_flagged "${RD}" "" "no_deliverable_declared"
+fi
+
+# ---------------------------------------------------------------------------
+# case_l_undeclared_code_shaped_real_work (paired negative control for k):
+# identical mission/contract shape, but the stub genuinely edits
+# scripts/foo.sh. Must NOT be flagged -- an undeclared deliverable is not
+# itself proof of a dead hand once real work is confirmed in the tree.
+# ---------------------------------------------------------------------------
+TAG="case_l_undeclared_code_shaped_real_work"
+RD="$(run_scenario "${TAG}" "${GLM_CODER}" "${STUBS_DIR}/real-work-no-deliv.sh" "${CODE_NO_DELIV_PROMPT}")"
+EXPECTED_PATH="${TMP_ROOT}/repo-${TAG}/${DELIV_FILE}"
+assert_clean "${RD}" "${EXPECTED_PATH}"
+
+# ---------------------------------------------------------------------------
+# case_m_kimi_mirror: case_k repeated through kimi-coder.sh -- three real
+# copies (glm/freepool/kimi), twin-drift guard for the new branch specifically
+# (case_f/case_j already cover the pre-existing branches for kimi).
+# ---------------------------------------------------------------------------
+TAG="case_m_kimi_mirror"
+RD="$(run_scenario "${TAG}" "${KIMI_CODER}" "${STUBS_DIR}/success-no-deliv.sh" "${CODE_NO_DELIV_PROMPT}")"
+assert_flagged "${RD}" "" "no_deliverable_declared"
+
+# ---------------------------------------------------------------------------
+# case_n_unverifiable_not_code_shaped: no contract, NOT code-shaped (plain
+# NO_DELIV_PROMPT, same shape as case_c) -- the third outcome must be spoken
+# aloud (LEADV2_DEADHAND_UNVERIFIABLE) even though the run is not flagged.
+# case_c already proves "not flagged"; this proves the line is not silent.
+# ---------------------------------------------------------------------------
+TAG="case_n_unverifiable_not_code_shaped"
+RD="$(run_scenario "${TAG}" "${GLM_CODER}" "${STUBS_DIR}/success-no-deliv.sh" "${NO_DELIV_PROMPT}")"
+if grep -Fxq "LEADV2_DEADHAND_UNVERIFIABLE exit=0 reason=not_code_shaped" "${RD}/progress.log"; then
+  pass "$TAG (third outcome spoken aloud, not silently folded into 'clean')"
+else
+  fail "$TAG" "progress.log lacks the UNVERIFIABLE line for a non-code-shaped, undeclared run"
+fi
+
+# ---------------------------------------------------------------------------
+# MUTATION CONTROL -- revert the new branch's flagging decision STRICTLY
+# INSIDE deadhand_check's body (never a top-level/line-number insert) on a
+# scratch copy of the real glm-coder.sh, confirm the copy actually differs,
+# then rerun case_k's exact scenario against the mutated binary: it must go
+# RED (no flag at all), proving this suite actually exercises the new branch.
+# ---------------------------------------------------------------------------
+MUT_GLM="${SCRIPT_DIR}/.mut-deadhand-glm-coder-$$.sh"
+python3 - "${GLM_CODER}" "${MUT_GLM}" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+orig = text
+text = text.replace(
+    '    if [[ "${delta}" == "no" ]]; then\n'
+    '      reason="no_deliverable_declared"\n'
+    '    fi\n',
+    '    if [[ "${delta}" == "no" ]]; then\n'
+    '      :\n'
+    '    fi\n',
+    1,
+)
+assert text != orig, "mutation did not apply -- old_string not found"
+open(dst, 'w').write(text)
+PY
+chmod +x "${MUT_GLM}"
+if diff -q "${GLM_CODER}" "${MUT_GLM}" >/dev/null 2>&1; then
+  fail "mutation_control" "mutated copy byte-identical to production -- mutation never applied"
+else
+  TAG="mutation_control_case_k_reverted"
+  # Inline invocation, NOT run_scenario -- that helper picks GLM vs KIMI env
+  # vars by comparing the wrapper path to $GLM_CODER exactly, which a
+  # temp-file mutated copy never equals. Mirrors run_scenario's GLM branch by
+  # hand so the mutated binary still gets the GLM_* env it expects.
+  MUT_CWD="${TMP_ROOT}/repo-${TAG}"
+  rm -rf "${MUT_CWD}"; mkdir -p "${MUT_CWD}"
+  ( cd "${MUT_CWD}" && git init -q && git config user.email t@t.example \
+      && git config user.name test && mkdir -p scripts docs \
+      && printf '#!/usr/bin/env bash\necho baseline\n' > scripts/foo.sh \
+      && git add -A && git commit -q -m baseline )
+  MUT_RAW="$(
+    cd "${MUT_CWD}" && \
+    GLM_SECRETS_FILE="${FAKE_GLM_SECRETS}" \
+    GLM_RUNS_DIR="${GLM_RUNS_DIR}" \
+    GLM_CLAUDE_BIN="${STUBS_DIR}/success-no-deliv.sh" \
+    GLM_TIMEOUT=30 \
+      bash "${MUT_GLM}" bg "${CODE_NO_DELIV_PROMPT}"
+  )"
+  MUT_RUN_ID="$(printf '%s\n' "${MUT_RAW}" | grep -E '^[0-9]{6}-[0-9]{6}-' | tail -1)"
+  MUT_RD="${GLM_RUNS_DIR}/${MUT_RUN_ID}"
+  MUT_WAITED=0
+  while [[ "${MUT_WAITED}" -lt 30 ]]; do
+    [[ -f "${MUT_RD}/.finalized" ]] && break
+    sleep 1
+    MUT_WAITED=$((MUT_WAITED + 1))
+  done
+  if [[ -f "${MUT_RD}/.no-deliverable" ]] || grep -q 'LEADV2_WORKER_NO_DELIVERABLE' "${MUT_RD}/progress.log" 2>/dev/null; then
+    fail "$TAG" "mutated binary still flagged -- mutation had no effect on the observable outcome"
+  else
+    pass "$TAG (mutation reverts the fix; case_k's scenario goes unflagged again -- suite discriminates)"
+  fi
+fi
+rm -f "${MUT_GLM}"
 
 echo "---"
 echo "PASS=${PASSES} FAIL=${FAILURES}"
