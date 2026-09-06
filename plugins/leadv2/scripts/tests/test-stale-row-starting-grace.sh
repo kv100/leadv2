@@ -83,6 +83,11 @@ PYE
 # a pid that is PROVABLY dead: spawn+wait a short-lived process, then reuse its pid
 DEAD_PID="$(python3 -c 'import os,subprocess,time
 p=subprocess.Popen(["/bin/sleep","0.1"]);p.wait();print(p.pid)')"
+# a SECOND provably-dead pid, for a fixture row that needs to be genuinely
+# dead but distinct from DEAD_PID (C1 exercises removing 2 dead rows in one
+# call, not 1).
+DEAD_PID2="$(python3 -c 'import os,subprocess,time
+p=subprocess.Popen(["/bin/sleep","0.1"]);p.wait();print(p.pid)')"
 
 SRC="${REGISTRY_SH}"
 if [[ "${STALE_ROW_GRACE_MUTATION:-0}" == "1" ]]; then
@@ -142,18 +147,27 @@ leadv2_active_list 2>/dev/null | grep -q "s-tomb-2.*DEAD" \
 echo "== C. unregister selectors"
 write_yaml 9
 add_row M-01 s-m-dead-1 "$DEAD_PID" false spawning
-add_row M-01 s-m-dead-2 1 false spawning          # pid 1: EPERM -> dead per _pid_alive
-add_row M-01 s-m-live-1 $$ false build            # LIVE row, same task_id
+add_row M-01 s-m-dead-2 "$DEAD_PID2" false spawning   # second genuinely-dead pid
+add_row M-01 s-m-eperm-1 1 false spawning             # pid 1: EPERM -> ALIVE, must survive --dead
+add_row M-01 s-m-live-1 $$ false build                # LIVE row, same task_id
 add_row OTHER-01 s-other-1 "$DEAD_PID" false build
 before="$(count_rows)"
 leadv2_active_unregister M-01 --dead 2>/dev/null
 after="$(count_rows)"
 [[ $((before - after)) -eq 2 ]] \
-  && ok "C1 --dead removed exactly the 2 dead rows ($before -> $after)" \
+  && ok "C1 --dead removed exactly the 2 genuinely-dead rows ($before -> $after)" \
   || fail "C1 --dead removed wrong count ($before -> $after)"
 [[ "$(row_exists M-01 s-m-live-1)" == "1" ]] \
   && ok "C2 paired negative: LIVE row of same task_id survived" \
   || fail "C2 LIVE row of same task_id was deleted"
+# ACTIVE-REGISTRY-FIVE-EPERM-COLLAPSING-PID-ALIVE-01 pair control, other
+# direction: an EPERM-owned pid (process exists, foreign-owned -- alive)
+# must NOT be treated as dead by --dead. Before the fix, pid=1 (EPERM on a
+# non-root test run) was misread as dead and removed alongside the genuinely
+# dead rows; this fixture used to encode that bug as its own expectation.
+[[ "$(row_exists M-01 s-m-eperm-1)" == "1" ]] \
+  && ok "C1b pair control: EPERM-owned pid (1) is alive, not removed by --dead" \
+  || fail "C1b EPERM-owned pid (1) was wrongly removed by --dead"
 [[ "$(row_exists OTHER-01 s-other-1)" == "1" ]] \
   && ok "C3 other task_id untouched" \
   || fail "C3 other task_id row deleted"

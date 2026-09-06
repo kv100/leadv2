@@ -89,6 +89,17 @@ else
   return 1 2>/dev/null || exit 1
 fi
 
+# ACTIVE-REGISTRY-FIVE-EPERM-COLLAPSING-PID-ALIVE-01: resolve this file's
+# own lib/ dir once, the same BASH_SOURCE-safety as _leadv2_state_path_sh
+# below (empty, not crash, under `eval "$(cat ...)"` sourcing) so every
+# `python3 - ... <<'PYEOF'` heredoc below can import lib/leadv2_pid_alive.py
+# — ONE liveness-collapse predicate instead of five hand-rolled copies.
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  _LV2_AR_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+else
+  _LV2_AR_LIB_DIR="${LEADV2_PROJECT_ROOT}/plugins/leadv2/scripts/lib"
+fi
+
 # LEAD-CONTROL-PLANE-01: active.yaml is a cross-worktree registry — every
 # /leadv2 session runs in its own `git worktree add` checkout, so a
 # repo-relative docs/leadv2/active.yaml gave each session a PRIVATE copy
@@ -284,7 +295,7 @@ PYEOF
 #      read        → writes YAML to stdout (no mutation)
 #
 _leadv2_yaml_py_lock() {
-  python3 - "$@" <<'PYEOF'
+  LEADV2_AR_LIB_DIR="$_LV2_AR_LIB_DIR" python3 - "$@" <<'PYEOF'
 import sys, os, fcntl, tempfile, datetime, json
 try:
     import yaml
@@ -319,13 +330,28 @@ INITIAL = {
     "sessions": [],
 }
 
-def _pid_alive(pid_val) -> bool:
-    try:
-        pid = int(pid_val)
-        os.kill(pid, 0)
+# ACTIVE-REGISTRY-FIVE-EPERM-COLLAPSING-PID-ALIVE-01: route through the
+# shared predicate (lib/leadv2_pid_alive.py) instead of a hand-rolled
+# EPERM-collapsing copy. Fall back to the SAME three-way logic inline only
+# if the lib dir is missing (a drifted `.claude/scripts/` copy, R4).
+try:
+    sys.path.insert(0, os.environ.get("LEADV2_AR_LIB_DIR", ""))
+    from leadv2_pid_alive import pid_alive as _pid_alive
+except Exception:
+    def _pid_alive(pid_val) -> bool:
+        try:
+            pid = int(pid_val)
+        except (TypeError, ValueError):
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return True
         return True
-    except (TypeError, ValueError, ProcessLookupError, PermissionError):
-        return False
 
 # PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01: liveness must not rest on "PID
 # alive" alone -- a recorded PID can belong to the interactive lead session
@@ -1536,7 +1562,7 @@ leadv2_active_list() {
     return 0
   fi
 
-  python3 - "$yaml_file" "$peers_json" <<'PYEOF'
+  LEADV2_AR_LIB_DIR="$_LV2_AR_LIB_DIR" python3 - "$yaml_file" "$peers_json" <<'PYEOF'
 import sys, os
 try:
     import yaml
@@ -1573,13 +1599,27 @@ if peers_path:
 # never spawned) must not inflate it. Rows with NO pid stay counted
 # (fail-closed). The table below still prints every row; a provably-dead
 # row is marked DEAD in the last column instead of silently vanishing.
-def _pid_alive(pid_val) -> bool:
-    try:
-        pid = int(pid_val)
-        os.kill(pid, 0)
+#
+# ACTIVE-REGISTRY-FIVE-EPERM-COLLAPSING-PID-ALIVE-01: shared predicate, see
+# lib/leadv2_pid_alive.py -- inline fallback is the SAME three-way logic.
+try:
+    sys.path.insert(0, os.environ.get("LEADV2_AR_LIB_DIR", ""))
+    from leadv2_pid_alive import pid_alive as _pid_alive
+except Exception:
+    def _pid_alive(pid_val) -> bool:
+        try:
+            pid = int(pid_val)
+        except (TypeError, ValueError):
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return True
         return True
-    except (TypeError, ValueError, ProcessLookupError, PermissionError):
-        return False
 
 def _row_dead(row) -> bool:
     pid = row.get("pid")
@@ -1636,7 +1676,7 @@ leadv2_active_check_limits() {
   yaml_file="$(_leadv2_yaml_file)"
   overrides_file="${LEADV2_PROJECT_ROOT}/.claude/leadv2-overrides/active-limits.yaml"
 
-  python3 - "$yaml_file" "$cls" "$overrides_file" <<'PYEOF'
+  LEADV2_AR_LIB_DIR="$_LV2_AR_LIB_DIR" python3 - "$yaml_file" "$cls" "$overrides_file" <<'PYEOF'
 import sys, os
 try:
     import yaml
@@ -1661,13 +1701,27 @@ meta = data.get("meta") or {}
 # op's writeset admission does (_lv2_ws_dead): a row with a RECORDED,
 # PROVABLY-DEAD pid is not an active session. A row with no pid at all is
 # NOT assumed dead (fail-closed -- recovered_unowned rows still count).
-def _pid_alive(pid_val) -> bool:
-    try:
-        pid = int(pid_val)
-        os.kill(pid, 0)
+#
+# ACTIVE-REGISTRY-FIVE-EPERM-COLLAPSING-PID-ALIVE-01: shared predicate, see
+# lib/leadv2_pid_alive.py -- inline fallback is the SAME three-way logic.
+try:
+    sys.path.insert(0, os.environ.get("LEADV2_AR_LIB_DIR", ""))
+    from leadv2_pid_alive import pid_alive as _pid_alive
+except Exception:
+    def _pid_alive(pid_val) -> bool:
+        try:
+            pid = int(pid_val)
+        except (TypeError, ValueError):
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return True
         return True
-    except (TypeError, ValueError, ProcessLookupError, PermissionError):
-        return False
 
 def _row_dead(row) -> bool:
     pid = row.get("pid")
@@ -1805,7 +1859,7 @@ leadv2_fanout_register_session() {
   pulse_log_path="${log_path_override:-docs/leadv2/tasks/${tid}/pulse.md}"
 
   local _reg_rc=0
-  python3 - "$lockfile" "$yaml_file" "$session_id" "$tid" "$PROJECT_ROOT" \
+  LEADV2_AR_LIB_DIR="$_LV2_AR_LIB_DIR" python3 - "$lockfile" "$yaml_file" "$session_id" "$tid" "$PROJECT_ROOT" \
     "$branch" "$ts_now" "$cls" "$pid_val" "$window_title" "$daemon_mode" \
     "$pulse_log_path" "$pid_pending" "$where" \
     "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" \
@@ -1824,11 +1878,26 @@ pid_val = None if pid_str in ("null", "", "None") else int(pid_str)
 daemon_mode = daemon_mode_str.lower() in ("1", "true", "yes")
 pid_pending = pid_pending_str.lower() in ("1", "true", "yes")
 
-def pid_alive(p):
-    try:
-        os.kill(int(p), 0); return True
-    except (TypeError, ValueError, ProcessLookupError, PermissionError):
-        return False
+# ACTIVE-REGISTRY-FIVE-EPERM-COLLAPSING-PID-ALIVE-01: shared predicate, see
+# lib/leadv2_pid_alive.py -- inline fallback is the SAME three-way logic.
+try:
+    sys.path.insert(0, os.environ.get("LEADV2_AR_LIB_DIR", ""))
+    from leadv2_pid_alive import pid_alive
+except Exception:
+    def pid_alive(p):
+        try:
+            pid = int(p)
+        except (TypeError, ValueError):
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return True
+        return True
 
 # FIX3 (HEAVY-MAX-2-WITH-COLLISION-GUARD-01 Codex Phase-5 review): the F6
 # under-lock re-count above only re-checks the numeric heavy_max/hard_limit
@@ -2088,7 +2157,7 @@ leadv2_active_release_verified() {
   # Empty session/pid flows into the compare exactly as in the original
   # dispatch site (ours=false; only provably-stale rows are removed).
   [[ -f "$yaml_file" ]] || return 3
-  python3 - "$lockfile" "$yaml_file" "$task_id" "$session" "$pid" <<'PY'
+  LEADV2_AR_LIB_DIR="$_LV2_AR_LIB_DIR" python3 - "$lockfile" "$yaml_file" "$task_id" "$session" "$pid" <<'PY'
 import fcntl, os, subprocess, sys, tempfile
 try:
     import yaml
@@ -2114,12 +2183,26 @@ try:
     # Liveness is not just "PID alive": the recorded PID may belong to an
     # interactive claude session, not a worker (`claude -p`). Kind is read from
     # the LIVE process argv, so a mislabelled row is still protected.
-    def _prlr_alive(p):
-        try:
-            os.kill(int(p), 0)
+    # ACTIVE-REGISTRY-FIVE-EPERM-COLLAPSING-PID-ALIVE-01: shared predicate,
+    # see lib/leadv2_pid_alive.py -- inline fallback is the SAME logic.
+    try:
+        sys.path.insert(0, os.environ.get("LEADV2_AR_LIB_DIR", ""))
+        from leadv2_pid_alive import pid_alive as _prlr_alive
+    except Exception:
+        def _prlr_alive(p):
+            try:
+                pid = int(p)
+            except (TypeError, ValueError):
+                return False
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                return True
+            except OSError:
+                return True
             return True
-        except (TypeError, ValueError, ProcessLookupError, PermissionError, OSError):
-            return False
     def _prlr_kind(p):
         try:
             out = subprocess.run(["ps", "-p", str(int(p)), "-o", "args="],
