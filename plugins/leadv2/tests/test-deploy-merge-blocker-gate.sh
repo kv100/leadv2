@@ -213,6 +213,15 @@ cat > "${WORK}/docs/LEAD_V2_STATE.md" <<'EOF'
 history:
 EOF
 
+# MAIN-CORE-SUITE-RED-01 (2026-09-06): render-close.sh reads the state file at
+# ${LEADV2_LEAD_STATE_PATH}, which the state-path resolver puts under the STATE
+# root (${STATE_ROOT}), not under docs/. The fixture seeded only docs/, so
+# render-close aborted with "Target missing" before it could reach the skip it
+# is being tested for -- S1 was red for a fixture reason, not a product one.
+# Seed both: docs/ for anything reading the repo copy, state/ for the resolver.
+mkdir -p "${STATE_ROOT}"
+cp "${WORK}/docs/LEAD_V2_STATE.md" "${STATE_ROOT}/LEAD_V2_STATE.md"
+
 cat > "${WORK}/docs/BOARD.md" <<'EOF'
 <!-- BOARD HEAD -->
 EOF
