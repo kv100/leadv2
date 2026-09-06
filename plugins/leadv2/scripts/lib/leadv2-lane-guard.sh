@@ -93,3 +93,26 @@ lv2_lane_containment_violation() { # <sig8> <work-root> <project-root> <declared
   done < <(git -C "${project_root}" status --porcelain --untracked-files=all 2>/dev/null | grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}" | sed -E 's/^.. //; s/^"//; s/"$//')
   return 1
 }
+
+# NESTED-AGENTS-AND-FORKS-01: observational epilogue check -- a lane whose OWN
+# worktree carries no new work (clean porcelain, ignoring the same control-
+# plane paths every containment check ignores) while a DIFFERENT worktree
+# holds a commit naming this task's sig8 means the worker's actual output
+# landed in the wrong lane. Prints the other worktree's path on stdout when
+# found; empty + rc1 otherwise. Read-only -- callers only journal what this
+# reports, it never mutates lane state or a terminal verdict.
+lv2_lane_wrote_outside_lane() { # <sig8> <own-work-root>
+  local sig8="$1" own_root="$2" wt own_phys
+  [[ -n "${sig8}" && -n "${own_root}" && -d "${own_root}" ]] || return 1
+  git -C "${own_root}" status --porcelain --untracked-files=all 2>/dev/null \
+    | grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}" | grep -q . && return 1
+  own_phys="$(_lv2_phys "${own_root}" 2>/dev/null)"
+  while IFS= read -r wt; do
+    [[ -n "${wt}" ]] || continue
+    [[ "$(_lv2_phys "${wt}" 2>/dev/null)" != "${own_phys}" ]] || continue
+    git -C "${wt}" log --oneline -n 20 2>/dev/null | grep -qF -- "${sig8}" || continue
+    printf '%s\n' "${wt}"
+    return 0
+  done < <(git -C "${own_root}" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
+  return 1
+}

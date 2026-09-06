@@ -408,6 +408,21 @@ dispatch_ledger_write_terminal() {
           bash "${JOURNAL_BIN}" append "dispatch-${sig8}" decision \
             "dispatch_terminal task=${sig8} terminal=${terminal} cause=${cause}" >/dev/null 2>&1 || true
         fi
+        # NESTED-AGENTS-AND-FORKS-01 epilogue guard: observational only, runs
+        # for every terminal (not just "landed" -- the failure this catches is
+        # precisely a lane whose OWN worktree has nothing, which "dead"/
+        # "no_work" describe better than "landed" ever would). Never touches
+        # terminal/cause/rc above -- a missing binary or function is a silent
+        # no-op, same fail-safe shape as every other guard in this funnel.
+        if command -v lv2_lane_wrote_outside_lane >/dev/null 2>&1 && [[ -x "${SCRIPT_DIR}/leadv2-lane-worktree.sh" ]]; then
+          local _epi_root _epi_elsewhere
+          _epi_root="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${founder:-${sig8}}" 2>/dev/null || true)"
+          if [[ -n "${_epi_root}" ]]; then
+            _epi_elsewhere="$(lv2_lane_wrote_outside_lane "${sig8}" "${_epi_root}" 2>/dev/null || true)"
+            [[ -z "${_epi_elsewhere}" ]] || bash "${JOURNAL_BIN}" append "dispatch-${sig8}" decision \
+              "worker_wrote_outside_lane task=${sig8} path=${_epi_elsewhere}" >/dev/null 2>&1 || true
+          fi
+        fi
       fi
       # T16 §10: a freshly-written TRUE terminal ends the lane -- drop its active.yaml
       # row now (dedup exits above keep the row: a later attempt may have re-registered).

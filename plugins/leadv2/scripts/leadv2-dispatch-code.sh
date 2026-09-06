@@ -5887,6 +5887,26 @@ _spawn_worker_body() {
   esac
   [[ -z "${_ci_txt}" ]] || mission="${_ci_txt}"$'\n\n'"${mission}"
   [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
+  # NESTED-AGENTS-AND-FORKS-01: delegation + fork contract for dispatched workers.
+  read -r -d '' _DELEGATION_CONTRACT <<'CONTRACT_EOF' || true
+## Delegation (nested agents)
+You may spawn nested subagents for bulk reads, censuses, or mechanical edits -- prefer a cheap
+model for that work. Two shapes are FORBIDDEN: you are a dispatched worker with exactly one
+turn-chain and no notifications.
+- Never run_in_background=true on a nested Agent spawn. Await it synchronously in the same turn.
+- Never isolation:"worktree". The child must write in THIS lane's worktree, never a new one.
+Commit the child's output yourself before your own turn-chain ends.
+Model guidance: haiku for reads/censuses, sonnet for edits. Never spawn opus from a worker.
+Pulse/silence rules do NOT apply to you -- you have no next turn to be silent into.
+
+## Fork
+Agent(subagent_type="fork") inherits your full conversation and prompt cache. Use it when a
+follow-up subagent needs your accumulated task history (e.g. a fix-round agent that must see the
+whole build so far) rather than a fresh agent that would re-derive context from files. Example:
+after a review verdict, Agent(subagent_type="fork") to apply the fix -- it already has the diff,
+the findings, and the mission in context.
+CONTRACT_EOF
+  mission="${_DELEGATION_CONTRACT}"$'\n\n'"${mission}"
   case "${arm}" in
     glm|glm-flash)
       # GLM-53-FLASH-ARM-01: glm-flash is the same launcher (glm-coder.sh) on
