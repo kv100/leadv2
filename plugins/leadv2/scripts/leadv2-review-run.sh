@@ -1267,7 +1267,7 @@ if [[ "${_review_roundcap_max}" -gt 0 && "${_review_roundcap_attempts}" -ge "${_
     printf "Task \`%s\` has been reviewed %s time(s) without converging to a passing verdict " "${TASK}" "${_review_roundcap_attempts}"
     printf '(configured maximum: %s). The engine is refusing to spend another review round on it.\n\n' "${_review_roundcap_max}"
     printf 'This lane needs architect escalation or PARK — a human or the lead must decide next steps.\n\n'
-    printf 'Next step, by name: `Skill(leadv2-judge) mode=review`. Do not hand-write an\n'
+    printf 'Next step, by name: Skill(leadv2-judge) mode=review — do not hand-write an\n'
     printf 'equivalent Agent prompt — the skill carries the verdict vocabulary and the mode\n'
     printf 'contract, a hand-written one carries neither and leaves no record.\n'
     printf 'Raise the limit for one more attempt with LEADV2_REVIEW_MAX_ROUNDS, or set it to 0 to disable the cap entirely.\n'
@@ -1513,7 +1513,7 @@ if [[ "${_review_spawncap_max}" -gt 0 && "${_review_spawncap_spawns}" -ge "${_re
     printf "Task \`%s\` has launched %s reviewer fan-out(s) (configured maximum: %s), " "${TASK}" "${_review_spawncap_spawns}" "${_review_spawncap_max}"
     printf 'including dedup rounds that never advanced the round counter. The engine is refusing to spend another one.\n\n'
     printf 'This lane needs architect escalation or PARK — a human or the lead must decide next steps.\n\n'
-    printf 'Next step, by name: `Skill(leadv2-judge) mode=review`. Do not hand-write an\n'
+    printf 'Next step, by name: Skill(leadv2-judge) mode=review — do not hand-write an\n'
     printf 'equivalent Agent prompt — the skill carries the verdict vocabulary and the mode\n'
     printf 'contract, a hand-written one carries neither and leaves no record.\n'
   } > "${HANDOFF}/review-roundcap-escalation.md.tmp"
