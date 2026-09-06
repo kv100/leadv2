@@ -36,6 +36,17 @@ leadv2_freepool_gate_script_dir() {
   cd -P "$(dirname "$source")" && pwd
 }
 
+# TESTS-POLLUTE-REAL-JOURNAL-01 §0/§6: runtime test-context detection (same
+# lib leadv2-event.sh uses). Guarded source so a per-file install that did not
+# carry the lib along degrades to the old behaviour instead of breaking the
+# record path; see lib/leadv2-test-context.sh for why record must refuse.
+if [[ -f "$(leadv2_freepool_gate_script_dir)/leadv2-test-context.sh" ]]; then
+  # shellcheck source=leadv2-test-context.sh
+  source "$(leadv2_freepool_gate_script_dir)/leadv2-test-context.sh"
+else
+  lv2_test_context() { return 1; }
+fi
+
 readonly FREEPOOL_HEALTH_URL="${FREEPOOL_PROXY_URL:-http://127.0.0.1:8317}/health"
 # T19 fix-round-2 (B-H1): the pin file freepool-install.sh writes
 # (config/freepool-arm.yaml) previously had no reader anywhere -- a checkout that
@@ -226,6 +237,19 @@ PYEOF
 # unbounded.
 record_result() {
   local ok="$1" latency_s="$2"
+  # TESTS-POLLUTE-REAL-JOURNAL-01 §0/§6: the WRITER refuses a test-context
+  # record into the REAL arm-state window. Measured: one run of
+  # test-model-select-telemetry.sh injected 9 outcomes into
+  # ~/.claude/leadv2-state/freepool-arm-state.json, 5 of them instant
+  # (latency_s=0.0) ok=false records — synthetic failures that trip the
+  # rolling-window breaker and circuit-break freepool out of production
+  # routing. A redirected LEADV2_FREEPOOL_STATE_DIR (fixture dir) stays fully
+  # supported; the dispatcher's own call sites wrap this in `|| true`, so the
+  # non-zero return never breaks dispatch control flow.
+  if lv2_test_context && [[ -z "${LEADV2_FREEPOOL_STATE_DIR:-}" ]]; then
+    lv2_refuse_test_write "leadv2-freepool-gate.sh" "${FREEPOOL_STATE_FILE}" "LEADV2_FREEPOOL_STATE_DIR"
+    return 3
+  fi
   _ensure_state_file
   python3 - "${FREEPOOL_STATE_FILE}" "${ok}" "${latency_s}" <<'PYEOF' 2>/dev/null || true
 import json, sys, time
@@ -252,7 +276,9 @@ main() {
     record)
       shift
       record_result "${1:-0}" "${2:-0}"
-      exit 0
+      # record_result returns 3 on the test-context refusal — propagate it
+      # (acceptance: the refusal is non-zero), never mask it as success.
+      exit $?
       ;;
     check|"")
       [[ "${FREEPOOL_SKIP_GATE:-0}" == "1" ]] && exit 0

@@ -68,6 +68,13 @@ fi
 # on 2026-08-31 before this default existed).
 LEADV2_SUITE_LOCK_DISABLE="${LEADV2_SUITE_LOCK_DISABLE:-0}"
 LEADV2_SUITE_LOCK_WAIT_S="${LEADV2_SUITE_LOCK_WAIT_S:-600}"
+
+# TESTS-POLLUTE-REAL-JOURNAL-01 §1: mark this whole subtree as a test so the
+# shared-state writers (leadv2-event.sh, lib/leadv2-freepool-gate.sh record)
+# refuse unredirected writes to the real journal / freepool arm-state file —
+# the fast path for lib/leadv2-test-context.sh's own detection (its ancestor
+# walk already catches a suite invoked directly with nothing exported).
+export LEADV2_TEST_CONTEXT="${LEADV2_TEST_CONTEXT:-1}"
 # bash-3.2-safe slug: no external hashing tool needed for the default case,
 # and no `${var//pat/rep}` surprises across worktree paths that only differ
 # by non-alnum characters (still enough entropy to keep worktrees distinct —
@@ -393,6 +400,7 @@ SUITE_DEFS=(
   "product-close resumes a died-with-work lane once|||bash $TEST_DIR/test-dwr-resume.sh"
   "parked worker contract and one-shot resume (WORKER-PARKED-ON-BG-01)|||bash $TEST_DIR/test-parked-worker-resume.sh"
   "red-first pinned-baseline resolver (RED-FIRST-SELF-INVALIDATES-01)|||bash $TEST_DIR/test-red-first-baseline.sh"
+  "shared-sink test guard (TESTS-POLLUTE-REAL-JOURNAL-01)|||bash $TEST_DIR/test-shared-sink-test-guard.sh"
   "product-close scopes a single-repo lane worktree|||bash $TEST_DIR/test-lane-diff-single-repo.sh"
   # serial: on _CORE_OFFLINE_OWNED_SUITES -- writes real REPO_ROOT/docs/leadv2
   # state; concurrent with another owned suite's write, run_check's hermetic

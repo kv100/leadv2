@@ -13,6 +13,15 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=leadv2-portable-lock.sh
 source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
+# shellcheck source=lib/leadv2-test-context.sh
+# TESTS-POLLUTE-REAL-JOURNAL-01: runtime test-context detection. Guarded so a
+# per-file install that did not carry the lib along degrades to the old
+# (unguarded) behaviour instead of breaking every emit.
+if [[ -f "${SCRIPT_DIR}/lib/leadv2-test-context.sh" ]]; then
+  source "${SCRIPT_DIR}/lib/leadv2-test-context.sh"
+else
+  lv2_test_context() { return 1; }
+fi
 
 LEADV2_EVENT_LOG_DIR="${LEADV2_EVENT_LOG_DIR:-${HOME}/.claude/cache/leadv2-events}"
 _EVENT_ROTATE_MAX_BYTES=10485760   # 10MB, spec §1 "Rotation: 10MB, keep 3"
@@ -57,6 +66,22 @@ cmd_emit() {
     esac
   done
   [[ -n "${repo}" && -n "${kind}" ]] || return 0
+
+  # TESTS-POLLUTE-REAL-JOURNAL-01 §1: the WRITER refuses a test-context append
+  # to the REAL journal, instead of trusting each of the 88 suites that drive
+  # dispatch-code.sh to remember a redirect. A redirected
+  # LEADV2_EVENT_LOG_DIR (any path other than the real default) stays fully
+  # supported — only the unredirected/redirected-to-real case from a test is
+  # refused, loudly and non-zero. This is the one stage of cmd_emit that is
+  # deliberately NOT fail-open: silently dropping the row is exactly the bug
+  # (fixture worker_terminal rows faking fleet-wide outages in the shared
+  # journal). Production callers wrap emits in `|| true`, so their control
+  # flow is unaffected by the non-zero exit.
+  local _real_events_dir="${HOME}/.claude/cache/leadv2-events"
+  if lv2_test_context && { [[ -z "${LEADV2_EVENT_LOG_DIR:-}" ]] || [[ "${LEADV2_EVENT_LOG_DIR}" == "${_real_events_dir}" ]]; }; then
+    lv2_refuse_test_write "leadv2-event.sh" "${_real_events_dir}/${repo}.jsonl" "LEADV2_EVENT_LOG_DIR"
+    exit 3
+  fi
 
   mkdir -p "${LEADV2_EVENT_LOG_DIR}" 2>/dev/null || return 0
   local logf="${LEADV2_EVENT_LOG_DIR}/${repo}.jsonl"

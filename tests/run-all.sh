@@ -13,6 +13,13 @@
 # exit 2: bad usage
 set -uo pipefail
 
+# TESTS-POLLUTE-REAL-JOURNAL-01 §1: mark this whole subtree as a test so the
+# shared-state writers (leadv2-event.sh, lib/leadv2-freepool-gate.sh record)
+# refuse unredirected writes to the real journal / arm-state file. Fast path
+# for the writers' own detection (lib/leadv2-test-context.sh) — the ancestor
+# walk there already catches a directly-invoked suite that sets nothing.
+export LEADV2_TEST_CONTEXT="${LEADV2_TEST_CONTEXT:-1}"
+
 # zsh-tolerant boot (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01): zsh has no
 # BASH_SOURCE; under `zsh tests/run-all.sh` $0 is the script path, same as a
 # direct bash execution — fall through without tripping set -u.
