@@ -155,16 +155,26 @@ def parse_iso(s):
         return None
 
 def pid_confirmed_dead(pid_val):
-    """True only when a LOCAL pid is present AND kill(pid, 0) fails. This is
-    the ONLY place a pid is consulted — never a ps/pgrep scan (that trap is
-    what produced false verdicts before: ps output differs in shape across
-    arms, and a Codex/GLM job never HAS a local pid to check)."""
+    """True only when a LOCAL pid is present AND kill(pid, 0) fails with
+    ESRCH. This is the ONLY place a pid is consulted — never a ps/pgrep scan
+    (that trap is what produced false verdicts before: ps output differs in
+    shape across arms, and a Codex/GLM job never HAS a local pid to check).
+
+    D2-M4 (D2-SINGLE-LIVENESS-VERDICT #9/#14): kill(pid, 0) has THREE
+    answers, not two. ESRCH means the pid is genuinely gone. EPERM means
+    the pid EXISTS but is owned by someone else (e.g. reparented to
+    ppid=1) — it must never read as "confirmed dead", or a live-but-
+    foreign-owned lane worker gets reaped."""
     if pid_val is None:
         return False
     try:
         os.kill(int(pid_val), 0)
         return False
-    except (TypeError, ValueError, ProcessLookupError, PermissionError):
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    except (TypeError, ValueError):
         return True
 
 def resolve_verdict(row, now):

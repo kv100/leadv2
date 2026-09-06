@@ -321,6 +321,37 @@ test_9_worked_example() {
   rm -rf "$sandbox"
 }
 
+# ── Test 10: EPERM pid (owned by another user) must NOT read as dead ────────
+# D2-M4 (D2-SINGLE-LIVENESS-VERDICT #9/#14): pid_confirmed_dead() used to
+# collapse ProcessLookupError (ESRCH, genuinely gone) and PermissionError
+# (EPERM, pid exists but not signalable) into the same "confirmed dead"
+# branch. pid 1 is always EPERM for a non-root caller and is guaranteed to
+# exist -- a stale-heartbeat row pointing at it must resolve to
+# running_stale ("I don't know"), never dead.
+test_10_eperm_not_dead() {
+  log "Test 10: stale heartbeat + EPERM pid (1) -> running_stale, NOT dead"
+  if [[ "$(id -u)" == "0" ]]; then
+    log "SKIP Test 10: running as root, kill(1,0) would not raise EPERM here"
+    return 0
+  fi
+  local sandbox tid yaml_file json status
+  sandbox="$(_new_sandbox)"; tid="T10"
+  _register "$sandbox" "$tid"
+  yaml_file="$(_yaml_file_of "$sandbox")"
+  local old_ts
+  old_ts="$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(minutes=60)).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
+  _set_field_raw "$yaml_file" "$tid" "pid" "1"
+  _set_field_raw "$yaml_file" "$tid" "last_pulse_at" "'$old_ts'"
+  json="$(_status_json "$sandbox" "$tid" 25)"
+  status="$(_field_of "$json" status)"
+  if [[ "$status" == "running_stale" ]]; then
+    pass "Test 10: EPERM pid (1) with stale heartbeat -> running_stale, not dead"
+  else
+    fail "Test 10: expected running_stale, got '$status' — $json"
+  fi
+  rm -rf "$sandbox"
+}
+
 main() {
   log "=== leadv2-lane-heartbeat (PULSE-01) unit tests ==="
   log "Script: $HEARTBEAT_SH"
@@ -334,6 +365,7 @@ main() {
   test_7_dead_requires_confirmed_pid
   test_8_concurrent_writes
   test_9_worked_example
+  test_10_eperm_not_dead
   echo ""
   log "=== Results: PASS=$PASS FAIL=$FAIL ==="
   if [[ "${#ERRORS[@]}" -gt 0 ]]; then
