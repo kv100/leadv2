@@ -6,9 +6,12 @@
 # script and driven directly. Nothing in it is stubbed — the same python/yaml
 # read, the same age arithmetic. Faked one level lower: the question yaml.
 #
-# The finding this pins (measured 2026-09-06, second-pass census): NOT ONE of
-# 8270 q-*.yaml rows on this machine carries an owner_session, so the branch
-# commented "old row (pre-OWNERSHIP)" is the entire population — the foreign
+# The finding this pins (measured 2026-09-06; these are the CORRECTED numbers --
+# the first census grepped one directory with a pattern that missed and reported
+# "the field is absent", where the truth is "the field is written and is always
+# null"): of the 8283 q-*.yaml rows that carry owner_session, ZERO carry a
+# non-null value, and yaml null reads back as the empty string. So the branch
+# commented "old row (pre-OWNERSHIP)" is not the exception, it is the population — the foreign
 # question protection has never engaged, and returned success without a word.
 # The fix does not turn it into a refusal (that would block every answer); it
 # makes "could not check" distinguishable from "checked and it is yours".
