@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-lane-verdict-pid-is-a-worker.sh
+file=plugins/leadv2/scripts/leadv2-lane-liveness.sh
+anchor=388s/.*/        return ("dead", "unverified")  # NC-MUTATION-C3/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: C3 pid_alive=False out={"lane":"PID-EPERM","verdict":"alive","age_s":1,"source":"/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//lv-pid-worker-repo.tytOY0/docs/handoff/PID-EPERM/session.log","log_path":"/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//lv-pid-worker-repo.tytOY0/docs/handoff/PID-EPERM/session.log","raw_log_path":null,"pid":1,"pid_alive":false,"reason":"log_fresh","attempt":null,"child_of":null,"pid_source":"legacy","pid_identity":"unverified","stream_end":"truncated"}
+diff_hash=4e1bc4d2e1d9e79da7e8222374598127c6e1bd82fe0367f37b18baf76625e41d
+lane_diff_hash=872f6cccc7a2abccc68f3e6850b2b419699fcdae743e245fb8be09f1841247f6

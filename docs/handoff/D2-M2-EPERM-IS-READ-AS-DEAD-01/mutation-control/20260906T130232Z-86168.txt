@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-lane-verdict-pid-is-a-worker.sh
+file=plugins/leadv2/scripts/leadv2-lane-liveness.sh
+anchor=s/^    kind = _proc_kind(pid)$/    return ("alive_verified", "verified")  # NC-MUTATION-C1/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: C1 pid_alive=True out={"lane":"PID-KIND-MISMATCH","verdict":"alive","age_s":5,"source":"/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//lv-pid-worker-repo.O45jgp/docs/handoff/PID-KIND-MISMATCH/session.log","log_path":"/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//lv-pid-worker-repo.O45jgp/docs/handoff/PID-KIND-MISMATCH/session.log","raw_log_path":null,"pid":28108,"pid_alive":true,"reason":"log_fresh","attempt":null,"child_of":null,"pid_source":"legacy","pid_identity":"verified","stream_end":"truncated"}
+diff_hash=4dad51798d22444573d61d604b022aeb2a3a3193294584f23293390203fc9b6a
+lane_diff_hash=872f6cccc7a2abccc68f3e6850b2b419699fcdae743e245fb8be09f1841247f6
