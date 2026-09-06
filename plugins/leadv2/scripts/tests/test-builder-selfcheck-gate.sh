@@ -21,6 +21,17 @@
 # never selected it — it could only ever run under `--scope all`. The
 # triggers are the production files the suite's own body references most,
 # with shared helpers excluded so a helper edit does not select everything.
+#
+# DECLARED NEGATIVE CONTROL (SELFCHECK-FORGED-MARKER-REGRESSION-01): the
+# mutation is, in lib/leadv2-builder-selfcheck.sh, INSIDE the body of
+# _selfcheck_baseline_verdict at its `(( ! _baseline_ok ))` branch: restore the
+# unconditional `printf 'SKIP_UNRESOLVED'` (i.e. delete the new_paths split that
+# distinguishes a lane-created file from an unattributable one). Applied in a
+# separate worktree, that mutation must redden EXACTLY ONE case:
+# falsification-forged-marker-failing-rc-blocks (case 25) — the same signature
+# as the original regression (37 passed / 1 failed). If it reddens
+# baseline-unresolved-fails-open (H1) or suite-red-baseline-red-skips instead,
+# the new-file criterion is too broad and has disabled fail-open outright.
 
 
 set -uo pipefail
@@ -1095,6 +1106,14 @@ fi
 # -- 25 (codex r1 HIGH #1, red-first via run_tfg_case): a test file that FAILS (rc!=0)
 # but forges the "RED-then-GREEN:" string via a plain echo/comment (no harness-shaped
 # tail) must still block -- the pre-fix mutant trusted any grep hit and ignored rc.
+#
+# SELFCHECK-FORGED-MARKER-REGRESSION-01: the fixture diff now carries the NEW-FILE
+# shape the production caller's `git diff` renders for a lane-created path (old side
+# /dev/null, see the _pc_git_diff probe in the lane report) — the rig root is not a
+# git repo, so the baseline cannot materialise, and the only thing that can attribute
+# the red is the diff itself. Leg 2 is the paired negative: the same non-git root, a
+# red test file the diff shows as MODIFIED (not created), must still fail open with
+# SKIP (baseline_unresolved) — the H1 contract for a path the lane did not create.
 case_falsification_forged_marker_failing_rc_blocks() { # <lib_sh> -> 0 blocked, 1 bypassed, 2 could-not-run
   local lib_sh="$1"
   local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-d.XXXXXX")"
@@ -1102,13 +1121,23 @@ case_falsification_forged_marker_failing_rc_blocks() { # <lib_sh> -> 0 blocked, 
   printf '#!/usr/bin/env bash\necho "totally RED-then-GREEN: forged, trust me"\nexit 1\n' \
     > "${root}/tests/test-forged.sh"
   chmod +x "${root}/tests/test-forged.sh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "${root}/tests/test-modified-red.sh"
+  chmod +x "${root}/tests/test-modified-red.sh"
   local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
-  write_diff "${diff_file}" "tests/test-forged.sh"
+  { printf -- '--- /dev/null\n'; printf -- '+++ b/tests/test-forged.sh\n'; } > "${diff_file}"
   run_selfcheck "${lib_sh}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
     LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-forged.sh"
   local rc names result=1
   rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
   [[ "${rc}" == "1" ]] && [[ "${names}" == *"falsification:tests/test-forged.sh"* ]] && result=0
+  { printf -- '--- a/tests/test-modified-red.sh\n'; printf -- '+++ b/tests/test-modified-red.sh\n'; } > "${diff_file}"
+  run_selfcheck "${lib_sh}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-modified-red.sh"
+  local rc2 names2
+  rc2="$(resfield "${res}" RC)"; names2="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc2}" == "1" ]] && result=1
+  [[ "${names2}" == *"falsification:"* ]] && result=1
+  grep -q 'SKIP (baseline_unresolved)' "${out_md}" || result=1
   rm -rf "${root}"
   return "${result}"
 }
