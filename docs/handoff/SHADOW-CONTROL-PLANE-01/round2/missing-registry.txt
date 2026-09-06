@@ -1,0 +1,4 @@
+{
+  "error": "registry_error",
+  "message": "active.yaml not found at /tmp/shadow-debug-evidence/state/collector/active.yaml (never initialized \u2014 run leadv2-active-registry.sh to create it)"
+}

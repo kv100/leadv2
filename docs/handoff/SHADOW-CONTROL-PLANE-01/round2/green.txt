@@ -1,0 +1,12 @@
+deletion-control: present dangling_links=9
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=22043
+unregistered 1 row(s) task=SHADOW-CRUD selector=all
+deletion-control: present register/list/unregister checked
+deletion-control: absent dangling_links=0
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=22043
+unregistered 1 row(s) task=SHADOW-CRUD selector=all
+deletion-control: absent register/list/unregister checked
+writer: before scripts directory empty (test + ls -A)
+writer: after scripts entries=0; docs lexists=False; lanes.ok=True; table=[]
+writer: real collector -> lanes-snapshot -> state-path checked
+shadow-control-plane: PASS=15 FAIL=0
