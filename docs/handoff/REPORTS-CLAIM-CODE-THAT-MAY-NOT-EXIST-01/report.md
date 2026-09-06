@@ -78,3 +78,32 @@ STOP-баннеру отчёта — она обязана стоять НЕ т�
 (`leadv2-backlog-pump.sh`) сам зовёт `leadv2_admission_class` и для `Standard`/`Heavy` запускает
 полноцикловый раннер напрямую, минуя диспетчер. Правка только в диспетчере оставит пол
 необеспеченным ровно на том пути, ради которого он нужен.
+
+---
+
+## 2. `D2-SINGLE-LIVENESS-VERDICT` — **лёг**
+
+Отчёт (`docs/handoff/D2-SINGLE-LIVENESS-VERDICT/report.md`) относится к
+`D2-UNBLIND-AND-THIRD-STATE-M0M1-01`, строки M0+M1. Три именованные переменные, которые он
+называет, все в main:
+
+```
+LEADV2_LANE_FINISHED_WINDOW_S   main_files=5  commits=7
+LEADV2_SUITE_SHARDS_DUMP        main_files=3  commits=3
+LEADV2_SUITE_DEFS_OVERRIDE      main_files=3  commits=3
+```
+
+**Второе выведение**, не по переменным окружения, а по самому предмету строки — третьему
+состоянию. Оно называется `finished_unlanded`, и оно в main в пяти файлах, включая
+`leadv2-lane-liveness.sh` и `leadv2-lanes-snapshot.sh`:
+
+```
+git grep -c finished_unlanded main -- plugins/
+git ls-tree -r main --name-only | grep three-state
+#   plugins/leadv2/scripts/tests/test-lane-verdict-three-states.sh
+git grep -c three-state main -- plugins/leadv2/scripts/tests/run-core-offline.sh   # 1
+```
+
+Сюита трёх состояний не просто существует — она **зарегистрирована в раннере**
+(`run-core-offline.sh`), то есть CI её выбирает. Это тот пункт, на котором обычно ломается
+«зелёное, которое никто не гоняет». Плюс merge-коммит `f847f92c merge(...): wave В1`.
