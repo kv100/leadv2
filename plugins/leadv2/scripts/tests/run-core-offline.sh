@@ -471,6 +471,7 @@ SUITE_DEFS=(
   "mutation runner measures only declared files|||bash $TEST_DIR/test-mutation-runner-measures-only-declared-files.sh"
   "judge-shaped agent notice|||bash $TEST_DIR/test-judge-shaped-agent-guard.sh"
   "journal honours the pinned root|||bash $TEST_DIR/test-journal-honours-the-pinned-root.sh"
+  "guard says when it could not check|||bash $TEST_DIR/test-guard-says-when-it-could-not-check.sh"
   # parallel (round 2): not on _CORE_OFFLINE_OWNED_SUITES; every case uses its
   # own mktemp -d sandbox (incl. a sandboxed HOME), no shared lock/port.
   # serial WITH A DEATH DATE, not a return to the old placement (measured

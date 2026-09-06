@@ -820,3 +820,25 @@ mutations:
       reorder the chain so LEADV2_PROJECT_ROOT comes FIRST
       -- an ambient LEADV2_PROJECT_ROOT overrides an explicit CLAUDE_* pin, which is exactly the
       foreign-root regression the ordering exists to prevent; case (a2) goes red
+
+  - id: foreign-check-goes-silent-when-it-cannot-check
+    product_flow: "leadv2-reply-router.sh refuses an answer to a young question owned by another session (QUESTION-DELIVERY-OWNERSHIP-01). Its first branch fails open on a row with no owner_session, commented 'old row (pre-OWNERSHIP)'. That branch is not the exception, it is the whole population: leadv2-ask.sh:176 fills owner_session from LEADV2_ASK_OWNER_SESSION or CLAUDE_SESSION_ID, neither is set in the asking process, and the string 'owner' appears in zero of 8270 q-*.yaml rows on this machine. So the protection has never once engaged -- and returned success without a word, which from the outside is indistinguishable from 'checked, and it is yours'. The fix does not close the gap with a wall; it makes the blind path say so"
+    file: plugins/leadv2/scripts/leadv2-reply-router.sh
+    suite: plugins/leadv2/scripts/tests/test-guard-says-when-it-could-not-check.sh
+    anchor: |
+      reason=no_owner_session — allowing, but nothing was verified
+    patch: |
+      delete the UNAVAILABLE printf inside the empty-owner branch of _foreign_check
+      -- the guard is silent again on the path it takes for 100% of real rows; case (a) goes red,
+      case (c) stays green (the protection itself is untouched). Measured: 4/1
+
+  - id: foreign-check-answers-an-empty-input-with-a-wall
+    product_flow: "The paired half of the same fix, and the more important one. Every real question row lacks owner_session, so a guard that answered its blind input with a refusal would block every answer on the machine rather than protect anything. Naming a gap is not licence to close it: the empty-owner branch must keep returning 0. This mutation is the one that catches a 'fix' that turns a self-disabled guard into a wall"
+    file: plugins/leadv2/scripts/leadv2-reply-router.sh
+    suite: plugins/leadv2/scripts/tests/test-guard-says-when-it-could-not-check.sh
+    anchor: |
+      reason=no_owner_session — allowing, but nothing was verified
+    patch: |
+      change the empty-owner branch inside _foreign_check from `return 0` to `return 6`
+      -- case (b) goes red while (c),(d),(e) stay green, so the suite separates 'the guard speaks'
+      from 'the guard blocks'. Measured: 3/2

@@ -64,7 +64,21 @@ print(v if v else "")
 ' "$qfile" 2>/dev/null || true)"
 
   # No owner_session → old row (pre-OWNERSHIP) → always allow.
-  [[ -z "$owner_session" ]] && return 0
+  #
+  # GUARDS-SELF-DISABLE-ON-THE-EMPTY-WRITE-SET-01 (pass two, measured
+  # 2026-09-06): this branch is not the exception, it is the whole population.
+  # Not one of 8270 q-*.yaml rows on this machine carries an owner_session at
+  # all -- leadv2-ask.sh fills it from LEADV2_ASK_OWNER_SESSION or
+  # CLAUDE_SESSION_ID, and neither is set in the process that asks. So the
+  # foreign-question protection has never once engaged, and said nothing about
+  # it: from the outside, "I could not check" looked exactly like "I checked and
+  # it is yours". Still allowed -- turning this into a refusal would block every
+  # answer on the machine -- but no longer silent.
+  if [[ -z "$owner_session" ]]; then
+    printf -- '[leadv2-reply-router] foreign-check UNAVAILABLE qid=%s reason=no_owner_session — allowing, but nothing was verified (the row carries no owner)\n' \
+      "$QID" >&2
+    return 0
+  fi
 
   # Own question → always allow.
   [[ "$owner_session" == "$caller_session" ]] && return 0
@@ -97,7 +111,11 @@ except Exception:
 ' "$qfile" 2>/dev/null || true)"
 
   if [[ -z "$asked_at" ]]; then
-    # Cannot determine age — fail-open (allow, like old rows).
+    # Cannot determine age — fail-open (allow, like old rows), and say so for
+    # the same reason as above: an unverifiable check must not read as a passed
+    # one (GUARDS-SELF-DISABLE-ON-THE-EMPTY-WRITE-SET-01).
+    printf -- '[leadv2-reply-router] foreign-check UNAVAILABLE qid=%s reason=unparseable_asked_at — allowing, but the age was not verified\n' \
+      "$QID" >&2
     return 0
   fi
 
