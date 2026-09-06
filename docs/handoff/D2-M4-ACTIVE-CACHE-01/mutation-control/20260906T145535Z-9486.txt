@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-leadv2-lane-heartbeat.sh
+file=plugins/leadv2/scripts/leadv2-lane-heartbeat.sh
+anchor=176s/return False/return True/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: Test 10: expected running_stale, got 'dead' — {
+diff_hash=c40146450fefbc99ab67fdf25aef74a666f659ef529b11714975a349065d0055
+lane_diff_hash=5141a8ca09c241006066fcc67b62a3531b40add8f654a83afd2f68acee1c2beb
