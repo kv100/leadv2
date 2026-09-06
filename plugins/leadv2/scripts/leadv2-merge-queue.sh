@@ -141,11 +141,22 @@ def replay(events):
     return queue, holder, holder_ev, enq_ev
 
 def pid_alive(pid):
+    # D2-M4 (D2-SINGLE-LIVENESS-VERDICT #9/#14): kill(pid, 0) has THREE
+    # answers, not two. ESRCH (ProcessLookupError) means genuinely gone.
+    # EPERM (PermissionError) means the pid EXISTS, owned by another user
+    # (e.g. reparented to ppid=1) -- it must read as alive, or a live
+    # merge-queue holder/waiter gets reclaimed out from under it.
     try:
-        os.kill(int(pid), 0)
-        return True
-    except (OSError, ValueError):
+        pid = int(pid)
+    except (TypeError, ValueError):
         return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
 
 def event_age_sec(ev):
     ts = ev.get("ts", "")

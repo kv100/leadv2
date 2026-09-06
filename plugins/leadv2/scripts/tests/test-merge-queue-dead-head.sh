@@ -224,10 +224,56 @@ test_self_reacquire_not_evicted() {
   unset LEADV2_DIR LEADV2_MERGE_STALE_SEC LEADV2_MERGE_TIMEOUT_SEC LEADV2_MERGE_POLL_SEC
 }
 
+# ---------------------------------------------------------------------------
+# Case (e) — D2-M4 (D2-SINGLE-LIVENESS-VERDICT #9/#14): pid_alive() used to
+#           catch bare `OSError`, which PermissionError subclasses -- an
+#           EPERM pid (exists, owned by another user, e.g. pid 1) read as
+#           "dead" exactly like a genuinely gone ESRCH pid. A stale-but-EPERM
+#           enqueued head must NOT be reclaimed: it is provably still
+#           running, just not signalable by this process.
+# ---------------------------------------------------------------------------
+test_eperm_head_not_reclaimed() {
+  if [[ "$(id -u)" == "0" ]]; then
+    printf 'SKIP - case (e): running as root, kill(1,0) would not raise EPERM here\n'
+    return 0
+  fi
+  local tmp
+  tmp="$(mktemp -d)"
+  export LEADV2_DIR="$tmp"
+  export LEADV2_MERGE_STALE_SEC=1
+
+  local qfile="${tmp}/merge-queue.jsonl"
+  local old_ts
+  old_ts="$(python3 -c 'import time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time()-30)))')"
+  # pid 1: guaranteed to exist, guaranteed EPERM for a non-root caller.
+  printf '{"ts":"%s","type":"enqueued","task_id":"eperm-head-task","branch":"x","pid":1}\n' \
+    "$old_ts" >> "$qfile"
+
+  local result
+  result="$(LEADV2_MERGE_OWNER_PID=$$ "$MQ" enqueue waiting-task-e branch-e > /dev/null; \
+    "$MQ" status)"
+
+  if echo "$result" | grep -q 'DEAD-ENQUEUED'; then
+    _fail "case (e): EPERM head wrongly marked DEAD-ENQUEUED ($result)"
+  else
+    _ok "case (e): EPERM head NOT reclaimed, status clean"
+  fi
+
+  if grep -q 'dead-enqueued' "$qfile" 2>/dev/null; then
+    _fail "case (e): ledger unexpectedly recorded a dead-enqueued reclaim for an EPERM pid"
+  else
+    _ok "case (e): no dead-enqueued reclaim in ledger for an EPERM pid"
+  fi
+
+  rm -rf "$tmp"
+  unset LEADV2_DIR LEADV2_MERGE_STALE_SEC
+}
+
 test_dead_stale_head_reclaimed
 test_live_head_waits
 test_fresh_dead_head_no_reclaim_yet
 test_self_reacquire_not_evicted
+test_eperm_head_not_reclaimed
 
 printf -- '--- %d passed, %d failed ---\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
