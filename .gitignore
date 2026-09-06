@@ -83,6 +83,10 @@ docs/handoff/*/*
 # invisible to every other session, so this one narrow name is tracked -- same
 # style as the two exceptions above, never a widening to `!docs/handoff/*/*`.
 !docs/handoff/*/landed.sha
+# not-landing.reason is landed.sha's opposite-polarity declaration (a row
+# refusing to merge a specific branch, not claiming one landed) -- same
+# narrow-name reasoning as the line above, added by the author of that form.
+!docs/handoff/*/not-landing.reason
 docs/leadv2/review-*
 docs/leadv2/status-snapshot.json
 docs/leadv2/founder-status*.md
