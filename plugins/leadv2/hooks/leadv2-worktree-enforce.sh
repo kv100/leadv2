@@ -30,18 +30,43 @@ for candidate in "$PWD/${_lv2_leadv2_dir}/active.yaml" \
 done
 [[ -n "$ACTIVE_YAML" ]] || exit 0
 
+# D2-M4: bare os.kill(pid, 0) has three answers, not two -- ESRCH is dead,
+# but EPERM means the pid EXISTS (owned by someone else, e.g. a leadv2
+# watcher reparented to ppid=1), and kill(0)==0 alone does not prove the pid
+# is THIS session's own worker (a recycled pid onto an interactive claude
+# session reads as alive -- D2 brief #9/#14). Route through
+# leadv2-lane-liveness.sh's --all --json (its pid_alive field already
+# carries the ESRCH/EPERM split and the process-kind check) instead of a
+# raw per-session kill(0) loop.
+_lv2_liveness_bin="$(dirname "$0")/../scripts/leadv2-lane-liveness.sh"
+[[ -x "$_lv2_liveness_bin" ]] || _lv2_liveness_bin="${_lv2_sp_root}/.claude/leadv2/scripts/leadv2-lane-liveness.sh"
+_lv2_liveness_json=""
+if [[ -x "$_lv2_liveness_bin" ]]; then
+  _lv2_liveness_json="$(LEADV2_PROJECT_ROOT="$_lv2_sp_root" bash "$_lv2_liveness_bin" \
+    --project-root "$_lv2_sp_root" --all --json 2>/dev/null || true)"
+fi
 LIVE_TASK=$(python3 -c "
-import yaml, sys, os
+import yaml, sys, json
 d = yaml.safe_load(open(sys.argv[1])) or {}
+alive_by_lane = {}
+liveness_raw = sys.argv[2]
+if liveness_raw:
+    try:
+        for row in (json.loads(liveness_raw).get('lanes') or []):
+            if isinstance(row, dict) and row.get('lane'):
+                alive_by_lane[row['lane']] = bool(row.get('pid_alive'))
+    except Exception:
+        alive_by_lane = {}
 for sess in (d.get('sessions') or []):
     pid = sess.get('pid')
     if not pid: continue
-    try:
-        os.kill(int(pid), 0)
-        print(sess.get('task_id','')); break
-    except (OSError, ValueError):
-        pass
-" "$ACTIVE_YAML" 2>/dev/null || true)
+    tid = sess.get('task_id')
+    # No liveness answer for this lane degrades to the OLD fail-open
+    # behavior (treat as alive) -- never silently drop a session this
+    # function cannot verify.
+    if tid not in alive_by_lane or alive_by_lane.get(tid):
+        print(tid or ''); break
+" "$ACTIVE_YAML" "$_lv2_liveness_json" 2>/dev/null || true)
 [[ -n "$LIVE_TASK" ]] || exit 0
 
 [[ "${LEADV2_ALLOW_MAIN_REPO:-0}" == "1" ]] && exit 0
