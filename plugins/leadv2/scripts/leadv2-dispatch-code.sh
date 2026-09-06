@@ -6028,15 +6028,19 @@ CONTRACT_EOF
         log_err "spawn(kimi) failed rc=${rc}: ${out} ${err}"
         return 1
       fi
-      # Extract handle from kimi-coder.sh output: format is "$RUNS/$handle$handle"
-      # Remove trailing newline
-      local _kimi_out="${out%$'\n'}"
-      # Get everything after the last slash
-      local _kimi_temp="${_kimi_out##*/}"
-      # Extract first half (since it's handle+handle)
-      local _kimi_len=${#_kimi_temp}
-      local _kimi_half=$((_kimi_len / 2))
-      handle="${_kimi_temp:0:_kimi_half}"
+      # DISPATCH-HANDLE-SLICE-UNATTRIBUTED-01: this used to strip to the last
+      # slash-segment and then take the first HALF of it by character count,
+      # on the stated assumption that the launcher prints "$RUNS/$handle$handle".
+      # The launcher does not: kimi-coder.sh's cmd_bg ends with a bare
+      # `echo "${run_id}"` (kimi-coder.sh:94) -- one copy, no path prefix --
+      # exactly like glm-coder.sh, whose identical halving was removed under
+      # GLM-ARM-THROUGHPUT-01 after it truncated every handle into a string
+      # `status` could never resolve, so the arm never actually launched.
+      # A parser that recovers a value by halving a string holds only while the
+      # launcher's last line is exactly the doubled form, and nothing asserted
+      # that. The run id IS the handle; trim the newline and let the `status`
+      # round-trip below refuse anything that names no run.
+      handle="${out%$'\n'}"
       if [[ -z "${handle}" ]]; then
         emit decision "spawn_failed by=router model=kimi task=${sig8} reason=empty_handle"
         log_err "spawn(kimi) returned an empty handle -- treating as launch failure (no-op launcher?)"

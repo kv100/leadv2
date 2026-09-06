@@ -842,3 +842,19 @@ mutations:
       change the empty-owner branch inside _foreign_check from `return 0` to `return 6`
       -- case (b) goes red while (c),(d),(e) stay green, so the suite separates 'the guard speaks'
       from 'the guard blocks'. Measured: 3/2
+
+  - id: kimi-handle-recovered-by-halving-a-string
+    product_flow: "The kimi arm of _spawn_worker_body recovered a worker handle by stripping to the last slash-segment of the launcher's stdout and then taking the FIRST HALF of it by character count, on the stated assumption that kimi-coder.sh prints \"$RUNS/$handle$handle\". Measured against the launcher itself: cmd_bg ends with a bare `echo \"${run_id}\"` (kimi-coder.sh:94) -- one copy, no path prefix, exactly like glm-coder.sh, whose identical halving was removed under GLM-ARM-THROUGHPUT-01 after it truncated every handle into a string `status` could never resolve, so that arm never launched a worker through the router at all. A parser that recovers a value by halving a string holds only while the launcher's last line is exactly the doubled form, and nothing asserted that"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    suite: plugins/leadv2/scripts/tests/test-spawn-handle-parse.sh
+    anchor: |
+      handle="${out%$'\n'}"
+    patch: |
+      inside the kimi case block, replace the assignment with the old halving:
+        local _kimi_out="${out%$'\n'}"; local _kimi_temp="${_kimi_out##*/}"
+        local _kimi_half=$(( ${#_kimi_temp} / 2 )); handle="${_kimi_temp:0:_kimi_half}"
+      -- the suite goes 6/6: the real launcher's handle no longer round-trips through
+      `status` (c2), and all three synthetic shapes come back halved (d). Measured
+      both ways: 12/0 on the fixed tree, 6/6 against a mutated copy passed through
+      KIMI_HANDLE_SUITE_DISPATCH. The suite's own control refuses to self-pass when
+      the source is already halving (mut_rc check), so a mutated tree cannot read green.
