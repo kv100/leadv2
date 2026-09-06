@@ -1,198 +1,112 @@
 # REPORTS-CLAIM-CODE-THAT-MAY-NOT-EXIST-01 — сверка пяти отчётов с кодом
 
-Вердикт по каждой строке опирается на грep ИМЕНОВАННОГО символа, который правка обязана была
-создать. Совпадение по id задачи не считается доказательством: id живёт в сообщениях коммитов,
-брифах и журналах работы, которая не легла. Правок не делала.
+Каждый вердикт опирается на грep ИМЕНОВАННОГО символа, который правка обязана была создать.
+Совпадение по id задачи не считается доказательством: id живёт в сообщениях коммитов, брифах и
+журналах работы, которая не легла. Правок кода нет.
 
 | # | строка | вердикт |
 |---|---|---|
-| 1 | `CLASS-IS-COMPUTED-NOT-DECLARED-01` | **раздваивается**: классификатор ЛЁГ (по другой строке), пол класса — **заявлен и не существовал никогда** |
-
----
-
-## 1. `CLASS-IS-COMPUTED-NOT-DECLARED-01`
-
-Отчёт `docs/handoff/CLASS-IS-COMPUTED-NOT-DECLARED-01/report.md` (2026-09-01, 11.8 КБ)
-озаглавлен «— implemented» и **сам себе противоречит**: сразу под заголовком стоит баннер
-`STOP — PREPASS-MECHANISM-CLOSURE-01 census falsified`, запрещающий линии идти в реализацию,
-ревью, E2E и закрытие. То есть даже по собственным словам отчёт не является отчётом о
-сделанном. Это первое, что видно, и этого достаточно, чтобы не верить заголовку.
-
-Именованные символы, которые отчёт называет, разделились надвое:
-
-```
-for sym in _admission_classify _lv2_class_rank _lv2_class_canonical _pump_classify \
-           leadv2_admission_class _class_floor_check LEADV2_REQUIRE_CLASS_FLOOR _class_floor_alerts; do
-  printf '%-28s files_in_main=%s commits_anywhere=%s\n' "$sym" \
-    "$(git grep -c "$sym" main -- plugins/ | wc -l)" \
-    "$(git log --all --oneline -S"$sym" -- plugins/ | wc -l)"
-done
-```
-
-```
-_admission_classify        files_in_main=7   commits_anywhere=9     ЕСТЬ
-_lv2_class_rank            files_in_main=6   commits_anywhere=8     ЕСТЬ
-_lv2_class_canonical       files_in_main=5   commits_anywhere=5     ЕСТЬ
-_pump_classify             files_in_main=2   commits_anywhere=2     ЕСТЬ
-leadv2_admission_class     files_in_main=5   commits_anywhere=6     ЕСТЬ
-_class_floor_check         files_in_main=0   commits_anywhere=0     НЕТ НИКОГДА
-LEADV2_REQUIRE_CLASS_FLOOR files_in_main=0   commits_anywhere=0     НЕТ НИКОГДА
-_class_floor_alerts        files_in_main=0   commits_anywhere=0     НЕТ НИКОГДА
-```
-
-`commits_anywhere=0` от `git log -S` означает, что символ не появлялся ни в одном коммите за всю
-историю — не «не в main», а не существовал вовсе.
-
-**Ноль выведен вторым способом**, как требует бриф: грep по ВСЕМ ссылкам, а не по main, с
-отбрасыванием `docs/handoff` (иначе отчёт сам себя подтвердит):
-
-```
-git grep -l "<sym>" $(git for-each-ref --format='%(refname)' refs/heads refs/remotes) \
-  | grep -v docs/handoff | wc -l        # для всех трёх: 0
-```
-
-**Вердикт: раздваивается, и обе половины важны.**
-
-- Классификатор (`lib/leadv2-admission-class.sh` + `tests/test-admission-class.sh` +
-  `_admission_classify`) **лёг** — но лёг он по СОСЕДНЕЙ строке
-  `ADMISSION-CLASS-FALLS-BACK-TO-LIGHT-01`, чей каталог лежит рядом. Именно поэтому строка
-  читалась выполненной: часть заявленного действительно есть, и поверхностная проверка это
-  подтверждает.
-- **Пол класса — та половина, ради которой строка заводилась** (`_class_floor_check`,
-  `LEADV2_REQUIRE_CLASS_FLOOR`, `_class_floor_alerts`) — **не существовал никогда**. Это ровно
-  форма 2026-09-04: отчёт пережил, код не родился.
-
-### Оговорка о конфликте интересов
-
-Сегодня, 2026-09-06, я сама трогала этот id: коммит `8c0f75f4`
-(`LEADV2_NON_PRODUCT_KINDS`, явная петля разбора вместо арма `case`). Это ТРЕТЬЯ, ещё одна
-половина — именованная «люк» для непродуктовых видов работ, — и она к полу класса отношения не
-имеет. Отмечаю прямо, потому что судить строку, которую сам чинил, — конфликт; смягчение в том,
-что вердикт держится на грепе, который любой может перезапустить, а не на моём слове.
-
-### Что осталось сделать (для последующей линии)
-
-Нужен сам пол: проверка, которая при вычисленном классе `Standard`/`Heavy` требует минимального
-набора записи и отказывает, если его нет, плюс её флаг и оповещение. И — по собственному
-STOP-баннеру отчёта — она обязана стоять НЕ только в `leadv2-dispatch-code.sh`: путь помпы
-(`leadv2-backlog-pump.sh`) сам зовёт `leadv2_admission_class` и для `Standard`/`Heavy` запускает
-полноцикловый раннер напрямую, минуя диспетчер. Правка только в диспетчере оставит пол
-необеспеченным ровно на том пути, ради которого он нужен.
-
----
-
-## 2. `D2-SINGLE-LIVENESS-VERDICT` — **лёг**
-
-Отчёт (`docs/handoff/D2-SINGLE-LIVENESS-VERDICT/report.md`) относится к
-`D2-UNBLIND-AND-THIRD-STATE-M0M1-01`, строки M0+M1. Три именованные переменные, которые он
-называет, все в main:
-
-```
-LEADV2_LANE_FINISHED_WINDOW_S   main_files=5  commits=7
-LEADV2_SUITE_SHARDS_DUMP        main_files=3  commits=3
-LEADV2_SUITE_DEFS_OVERRIDE      main_files=3  commits=3
-```
-
-**Второе выведение**, не по переменным окружения, а по самому предмету строки — третьему
-состоянию. Оно называется `finished_unlanded`, и оно в main в пяти файлах, включая
-`leadv2-lane-liveness.sh` и `leadv2-lanes-snapshot.sh`:
-
-```
-git grep -c finished_unlanded main -- plugins/
-git ls-tree -r main --name-only | grep three-state
-#   plugins/leadv2/scripts/tests/test-lane-verdict-three-states.sh
-git grep -c three-state main -- plugins/leadv2/scripts/tests/run-core-offline.sh   # 1
-```
-
-Сюита трёх состояний не просто существует — она **зарегистрирована в раннере**
-(`run-core-offline.sh`), то есть CI её выбирает. Это тот пункт, на котором обычно ломается
-«зелёное, которое никто не гоняет». Плюс merge-коммит `f847f92c merge(...): wave В1`.
-
----
-
-## 3. `MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01` — **лёг**
-
-Предмет строки — пустой дифф линии, который считался за валидную «личность» вместо отказа.
-Именованные символы отчёта в main все:
-
-```
-LEADV2_LANE_START_SHA          main_files=22  commits=19
-_dod_worker_diff_hash          main_files=3   commits=3
-_mc_resolve_base               main_files=2   commits=1
-_dod_valid_mutation_artifact   main_files=2   commits=1
-e3b0c442 (пустой sha256)       main_files=4   commits=1
-```
-
-Подтверждающий коммит с правкой, а не с отчётом:
-`ad4be1e3 fix(mutation-control): an empty lane diff is a refusal, not an identity`.
-Это ровно то, что строка требовала, и это правка кода, а не документа.
-
----
-
-## 4. `W1-LAND-STRANDED-8F14220D` — **лёг**, и отчёт честен насчёт границ
-
-Особый случай: отчёт **сам** говорит, что кода он не приносил — код уже был на main
-(`2e34cd9d`, четырёхфайловый патч из перебазированного коммита линии `093620ad`), а этот
-коммит добавляет только отчёт и улики. Проверила обе половины:
-
-```
-git merge-base --is-ancestor 2e34cd9d main && echo YES          # YES
-for t in test-idle-lead-guard test-phase-precondition \
-         test-lane-diff-single-repo test-injector-dedup; do
-  git ls-tree -r main --name-only | grep -c "/$t.sh$"; done      # 1 1 1 1
-```
-
-Все четыре сюиты в main. Отчёт при этом прямо пишет: «Verification is partial: current main
-has two red target suites; no all-green claim» — то есть он не выдаёт себя за зелёный, и это
-редкий и правильный случай, который не надо путать с формой 09-04.
-
-Замечание в сторону, не входящее в пятёрку: одна из этих двух краснот мне уже известна —
-`test-idle-lead-guard.sh` падает детерминированно, потому что сам гвард не зарегистрирован в
-`hooks/hooks.json`. Строка `IDLE-LEAD-GUARD-IS-NOT-REGISTERED-01` уже заведена, здесь не
-трогаю.
-
----
-
-## 5. `dispatch-6436a2e2` — **лёг**
-
-Это `DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01`, продолжение коммита `1de50b2c`
-(писатель + перенос шва). Обе опорные точки — предки main, и именованные символы на месте:
-
-```
-git merge-base --is-ancestor 1de50b2c main && echo YES     # YES
-git merge-base --is-ancestor f495f881 main && echo YES     # YES
-LEADV2_LEAD_STATE_PATH   main_files=13  commits=4
-_dod_check_d             main_files=2   commits=4
-leadv2-state-compact.sh  main_files=2   commits=1
-```
-
-`f495f881 test(state): finish DOD-GATE acceptance — census, negative control, missed reader`
-несёт в теме и приёмку, и негативный контроль, и «missed reader», то есть ровно те три вещи,
-которые отчёт заявляет как содержание раунда.
-
----
-
-## Итог
-
-| # | строка | вердикт |
-|---|---|---|
-| 1 | `CLASS-IS-COMPUTED-NOT-DECLARED-01` | классификатор лёг по соседней строке; **пол класса не существовал никогда** |
-| 2 | `D2-SINGLE-LIVENESS-VERDICT` | лёг, сюита третьего состояния выбирается раннером |
+| 1 | `CLASS-IS-COMPUTED-NOT-DECLARED-01` | классификатор лёг **по соседней строке**; пол класса — **не существовал никогда** |
+| 2 | `D2-SINGLE-LIVENESS-VERDICT` | лёг; сюита третьего состояния выбирается раннером |
 | 3 | `MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01` | лёг, правкой кода |
-| 4 | `W1-LAND-STRANDED-8F14220D` | лёг раньше; отчёт честно говорит, что кода не нёс |
+| 4 | `W1-LAND-STRANDED-8F14220D` | лёг раньше; отчёт сам говорит, что кода не нёс |
 | 5 | `dispatch-6436a2e2` | лёг |
 
-**Один из пяти оказался формой 2026-09-04, и не целиком, а половиной.** Это важнее, чем
-звучит: строка читалась выполненной именно потому, что ДРУГАЯ её половина действительно есть.
-Поверхностная проверка — «символы из отчёта в main? да» — подтвердила бы её. Развалить её
-удалось только тем, что символы проверялись поштучно, а не пачкой.
+---
 
-Второй по значимости вывод: три отчёта из пяти оказались точны, а четвёртый прямо заявил
-границу своей проверки. Значит «отчёт-разобрать» — это не диагноз, а очередь; презумпция
-виновности к ним неприменима, и я её не применяла.
+## 1. `CLASS-IS-COMPUTED-NOT-DECLARED-01` — раздваивается
+
+Отчёт от 2026-09-01 озаглавлен «— implemented» и **противоречит себе во второй строке**: под
+заголовком стоит баннер `STOP — PREPASS-MECHANISM-CLOSURE-01 census falsified`, запрещающий
+линии идти в реализацию, ревью, E2E и закрытие. По собственным словам это не отчёт о сделанном.
+
+Счёт `main=<файлов> / hist=<коммитов>` по каждому символу
+(`git grep -c <sym> main -- plugins/` и `git log --all -S<sym> -- plugins/`):
+
+```
+_admission_classify 7/9   _lv2_class_rank 6/8   _lv2_class_canonical 5/5
+_pump_classify 2/2        leadv2_admission_class 5/6                      ← ЕСТЬ
+_class_floor_check 0/0    LEADV2_REQUIRE_CLASS_FLOOR 0/0  _class_floor_alerts 0/0  ← НЕТ НИКОГДА
+```
+
+`hist=0` от `git log -S` значит «не появлялся ни в одном коммите за всю историю», а не «не в
+main». **Ноль выведен вторым способом**: `git grep -l <sym>` по ВСЕМ ссылкам с отбрасыванием
+`docs/handoff` (иначе отчёт подтвердит сам себя) — для всех трёх снова 0.
+
+Классификатор (`lib/leadv2-admission-class.sh`, его сюита, `_admission_classify`) **лёг по
+СОСЕДНЕЙ строке** `ADMISSION-CLASS-FALLS-BACK-TO-LIGHT-01`. Поэтому строка и читалась
+выполненной: часть заявленного действительно есть. **Пол класса — та половина, ради которой
+строка заводилась, — не существовал никогда.** Это форма 2026-09-04.
+
+**Конфликт интересов, объявляю прямо:** сегодня я сама трогала этот id (`8c0f75f4`,
+`LEADV2_NON_PRODUCT_KINDS`). Это ТРЕТЬЯ половина — именованный люк для непродуктовых видов
+работ — и к полу класса отношения не имеет. Смягчение конфликта в том, что вердикт держится на
+перезапускаемом грепе, а не на моём слове.
+
+**Что осталось сделать.** Нужен сам пол: проверка, которая при вычисленном классе
+`Standard`/`Heavy` требует минимального набора записи и отказывает без него, плюс её флаг и
+оповещение. И по собственному STOP-баннеру отчёта она обязана стоять не только в
+`leadv2-dispatch-code.sh`: путь помпы (`leadv2-backlog-pump.sh`) сам зовёт
+`leadv2_admission_class` и для `Standard`/`Heavy` запускает полноцикловый раннер напрямую, мимо
+диспетчера. Правка только в диспетчере оставит пол необеспеченным ровно там, где он нужен.
+
+## 2. `D2-SINGLE-LIVENESS-VERDICT` — лёг
+
+Три именованные переменные отчёта в main: `LEADV2_LANE_FINISHED_WINDOW_S` 5/7,
+`LEADV2_SUITE_SHARDS_DUMP` 3/3, `LEADV2_SUITE_DEFS_OVERRIDE` 3/3.
+
+Второе выведение — не по переменным, а по предмету строки. Третье состояние называется
+`finished_unlanded` и лежит в main в пяти файлах, включая `leadv2-lane-liveness.sh`:
+
+`git grep -c finished_unlanded main -- plugins/` → 5 файлов;
+`git ls-tree -r main --name-only | grep three-state` → `tests/test-lane-verdict-three-states.sh`;
+`git grep -c three-state main -- …/tests/run-core-offline.sh` → 1. Сюита не просто существует —
+она **зарегистрирована в раннере**, то есть CI её выбирает; это тот пункт, на котором обычно
+ломается «зелёное, которое никто не гоняет». Плюс merge-коммит `f847f92c ... wave В1`.
+
+## 3. `MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01` — лёг
+
+`LEADV2_LANE_START_SHA` 22/19, `_dod_worker_diff_hash` 3/3, `_mc_resolve_base` 2/1,
+`_dod_valid_mutation_artifact` 2/1, пустой sha256 `e3b0c442` 4/1 — все в main. Подтверждает
+коммит с ПРАВКОЙ, а не с документом: `ad4be1e3 fix(mutation-control): an empty lane diff is a
+refusal, not an identity`.
+
+## 4. `W1-LAND-STRANDED-8F14220D` — лёг раньше, отчёт честен
+
+Отчёт **сам** говорит, что кода не нёс: он уже был на main (`2e34cd9d`), а коммит добавляет
+отчёт и улики. Проверила обе половины:
+
+`git merge-base --is-ancestor 2e34cd9d main` → да; `git ls-tree -r main --name-only |
+grep -cE "/(test-idle-lead-guard|test-phase-precondition|test-lane-diff-single-repo|test-injector-dedup)\.sh$"` → 4.
+
+Отчёт прямо пишет: «Verification is partial: current main has two red target suites; no
+all-green claim». Он не выдаёт себя за зелёный — редкий и правильный случай, который нельзя
+путать с формой 09-04. В сторону: одна из этих краснот уже известна —
+`test-idle-lead-guard.sh` падает детерминированно, потому что гвард не зарегистрирован в
+`hooks/hooks.json`; строка `IDLE-LEAD-GUARD-IS-NOT-REGISTERED-01` заведена, здесь не трогаю.
+
+## 5. `dispatch-6436a2e2` — лёг
+
+`DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01`, продолжение `1de50b2c`. Обе опорные точки —
+предки main (`git merge-base --is-ancestor 1de50b2c main`, то же для `f495f881`), символы на
+месте: `LEADV2_LEAD_STATE_PATH` 13/4, `_dod_check_d` 2/4, `leadv2-state-compact.sh` 2/1. Тема
+`f495f881` несёт приёмку, негативный контроль и «missed reader» — ровно три вещи, заявленные
+отчётом как содержание раунда.
+
+---
+
+## Два вывода
+
+**Один из пяти оказался формой 09-04, и только половиной.** Это важнее, чем звучит: строка
+читалась выполненной именно потому, что ДРУГАЯ её половина действительно есть. Проверка пачкой
+(«символы из отчёта в main? да») её бы подтвердила. Развалить удалось только поштучным грепом.
+
+**Три отчёта из пяти точны, четвёртый сам объявил границу своей проверки.** Значит
+«отчёт-разобрать» — это очередь, а не диагноз; презумпция виновности к ним неприменима, и я её
+не применяла.
 
 ## Границы
 
-Правок кода нет, вердикты держатся на командах, перечисленных выше, — все перезапускаемы.
-Общее дерево: без `git add -A`, `reset --hard`, `clean`, `stash`, push. По строке 1 объявлен
-конфликт интересов (см. §1). Ничего за пределами пятёрки не чинила.
+Правок кода нет, все перечисленные команды перезапускаемы. Общее дерево: без `git add -A`,
+`reset --hard`, `clean`, `stash`, push. По строке 1 объявлен конфликт интересов. Ничего за
+пределами пятёрки не чинила.
