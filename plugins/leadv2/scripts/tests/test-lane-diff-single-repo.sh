@@ -34,6 +34,13 @@
 
 set -uo pipefail
 
+# The suite's own tripwire flags ANY new path under plugins/ — including
+# __pycache__/*.pyc that CPython writes next to the imported lib modules
+# (observed 2026-09-05: leadv2_tasks_yaml_common + lib/leadv2_pid_birth).
+# Bytecode caches are not lane writes; suppress them at the interpreter level
+# so the tripwire only ever sees real file changes.
+export PYTHONDONTWRITEBYTECODE=1
+
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LEADV2_REPO="$(cd "${SELF_DIR}" && git rev-parse --show-toplevel 2>/dev/null)"
 

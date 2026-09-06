@@ -441,6 +441,9 @@ assert d["decision"] == "block"
 # The assert runs WITHOUT 2>/dev/null: the old version silenced the
 # AssertionError that named the missing hook (the suite knew the answer and
 # stayed silent while red). A failure here must print what it saw.
+# Additionally asserted (from lane 8f14220d1e93): promise-guard stays
+# registered, and lane-watch-v2 arms on SessionStart and disarms on
+# SessionEnd — so the replacement really replaced, not just removed.
 # ════════════════════════════════════════════════════════════════════════════
 {
   HOOKS_JSON="$PLUGIN_DIR/hooks/hooks.json"
@@ -455,6 +458,18 @@ assert not hits, (
     "leadv2-idle-lead-guard.sh is REGISTERED in hooks.json Stop[0] but was "
     "retired by ONE-LANE-WATCH-01 (9f00e7ed): " + repr(hits)
     + ". If re-registration is deliberate, update case 10 in the same commit."
+)
+assert any("leadv2-promise-guard.sh" in c for c in ids), (
+    "promise-guard (the old ordering partner) vanished from Stop: "
+    + repr(ids)
+)
+arm = [h["command"] for h in d["hooks"]["SessionStart"][0]["hooks"]]
+disarm = [h["command"] for h in d["hooks"]["SessionEnd"][0]["hooks"]]
+assert any("leadv2-lane-watch-v2.sh" in c and "--arm-from-hook" in c for c in arm), (
+    "lane-watch-v2 --arm-from-hook missing from SessionStart: " + repr(arm)
+)
+assert any("leadv2-lane-watch-v2.sh" in c and "--disarm-from-hook" in c for c in disarm), (
+    "lane-watch-v2 --disarm-from-hook missing from SessionEnd: " + repr(disarm)
 )
 print(f"ok: {len(ids)} Stop hooks registered, none is idle-lead-guard")
 ' "$HOOKS_JSON"; then

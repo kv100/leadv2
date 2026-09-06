@@ -120,6 +120,11 @@ _glm_run() {
     export GLM_RUNS_DIR="${RUNS_DIR}"
     export GLM_SKIP_QUOTA_GATE=1
     export LEADV2_BURN_GOVERNOR=0
+    # Hermeticity: pin GLM_EFFORT so a host-exported value (observed
+    # 2026-09-06: GLM_EFFORT=low in the lead session env) cannot drift the
+    # kill-switch=0 baseline argv. The baseline contract (lane 8f14220d1e93,
+    # GLM-EFFICIENCY-01) is `--effort max`.
+    export GLM_EFFORT=max
     export TMPDIR="${FIXTURE}"
     # Deterministic allowlist source (this checkout's config/), overridable
     # per-case (T14-04 passes its own CLAUDE_PLUGIN_ROOT after the defaults).
@@ -188,6 +193,9 @@ test_03_killswitch_off() {
     fail "kill-switch=0 still emits MCP flags (rc=${G_RC})"
   fi
   local argv_masked baseline_file
+  # Baseline includes the effort seam's `--effort max` (GLM-EFFICIENCY-01,
+  # probes 2026-09-04): it rides the spawn line regardless of MCP state, so it
+  # is part of the kill-switch=0 contract, not drift.
   baseline_file="${FIXTURE}/t14-03-baseline-$$.txt"
   cat > "${baseline_file}" <<'BASEEOF'
 -p
@@ -199,6 +207,8 @@ Agent
 sonnet
 --output-format
 json
+--effort
+max
 BASEEOF
   CLEANUP_PATHS+=("${baseline_file}")
   # Mask from `-p` until the first REAL spawn flag (the FINISH CONTRACT trailer
@@ -247,6 +257,11 @@ test_05_bg_path() {
     export GLM_RUNS_DIR="${RUNS_DIR}"
     export GLM_SKIP_QUOTA_GATE=1
     export LEADV2_BURN_GOVERNOR=0
+    # Hermeticity: pin GLM_EFFORT so a host-exported value (observed
+    # 2026-09-06: GLM_EFFORT=low in the lead session env) cannot drift the
+    # kill-switch=0 baseline argv. The baseline contract (lane 8f14220d1e93,
+    # GLM-EFFICIENCY-01) is `--effort max`.
+    export GLM_EFFORT=max
     export TMPDIR="${FIXTURE}"
     export CLAUDE_PLUGIN_ROOT="${PLUGIN_ROOT}"
     export LEADV2_WORKER_ROLE=critic

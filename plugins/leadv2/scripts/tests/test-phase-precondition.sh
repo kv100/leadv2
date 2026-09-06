@@ -295,11 +295,12 @@ case "${1:-}" in
     mkdir -p "$RUNS" 2>/dev/null
     handle="stub-run-$(date +%s)-$$"
     printf '%s' "$handle" > "$RUNS/$handle" 2>/dev/null
-    # dispatch-code's GLM adapter extracts a handle from the legacy
-    # "<run-dir>/<handle><handle>" launch envelope.  Emit that exact envelope
-    # so the fixture exercises its liveness check instead of falling through
-    # to a real later arm after a false not_live result.
-    printf '%s/%s%s\n' "$RUNS" "$handle" "$handle"
+    # GLM-ARM-THROUGHPUT-01: dispatch-code's GLM adapter treats bg's stdout as
+    # the BARE run_id (trimmed newline, no doubling, no "$RUNS/" prefix) — the
+    # legacy "<run-dir>/<handle><handle>" envelope was retired with the
+    # halving logic. Emit the bare handle so `status <handle>` below resolves
+    # the run record this stub just wrote.
+    printf '%s\n' "$handle"
     exit 0
     ;;
   status)
