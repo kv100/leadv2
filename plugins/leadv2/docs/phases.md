@@ -75,7 +75,7 @@ Each phase entry calls `leadv2_pulse_log "<phase>" "<one-line summary>"` — emi
   ```
 - `LEADV2_MAIN_MODEL=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-main-model-check.sh")` — pick orchestrator model
 - `source "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-helpers.sh" && leadv2_lock_acquire || exit` — per-task lock (delegates to `leadv2_active_register` in active.yaml)
-- `bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-stale-sweeper.sh"` — surface stale sessions at startup; ghost-spawn reconciliation; GC worktrees whose branch is an ancestor of origin/<default>
+- `bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-stale-sweeper.sh"` — surface stale sessions at startup; ghost-spawn reconciliation; GC worktrees whose branch is an ancestor of origin/<default>. Runs automatically at every SessionStart via the registered `hooks/leadv2-stale-pid-sweep.sh` hook (stale marks synchronously via `--mark-only`; the slow maintenance tail detached via nohup, log `/tmp/leadv2-stale-sweeper.<repo>.log`); the manual call here is a mid-session re-run.
 - `bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-main-sync.sh"` — FF-sync local default branch to origin before worktree creation (warn-not-reset on divergence); prevents stale-main drift from in-worktree deploys
 - `leadv2_threshold_warn_if_inverted || true` — sanity check
 - `leadv2_live_update intake startup` — LIVE tracker

@@ -223,8 +223,10 @@ fi
 
 This writes `docs/leadv2/watches/<task-id>.yaml` with `status: pending`, `due_at`, `deploy_class`,
 `delay_hours`, and `min_hours_before_check` populated from `config/soak-class-delays.yaml` (D22).
-The sweep runs automatically at every SessionStart via `leadv2-stale-sweeper.sh`, which calls
-`leadv2-outcome-watch.sh --sweep`. When due, the sweep executes `.claude/leadv2-overrides/outcome-watch.sh`
+The sweep runs automatically at every SessionStart: the registered SessionStart hook
+`hooks/leadv2-stale-pid-sweep.sh` runs `leadv2-stale-sweeper.sh --non-interactive --mark-only`
+synchronously (registry stale marks) and the full sweep — which calls
+`leadv2-outcome-watch.sh --sweep` — detached. When due, the sweep executes `.claude/leadv2-overrides/outcome-watch.sh`
 (if present) and flips `outcome_watch: pending` → `stable|regression|inconclusive` in `LEAD_V2_STATE.md`.
 
 **Flag-absent invariant (D1):** LEADV2_SOAK_EVERY_DEPLOY unset → Heavy-only (existing behavior).

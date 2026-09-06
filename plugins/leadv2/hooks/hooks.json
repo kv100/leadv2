@@ -33,7 +33,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-stale-pid-sweep.sh\"; r=$?; if [ \"$r\" -le 2 ]; then exit \"$r\"; fi; printf '%s rc=%s\\n' 'leadv2-stale-pid-sweep.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; exit 0",
-            "timeout": 5,
+            "timeout": 30,
             "statusMessage": "Sweeping stale leadv2 sessions..."
           },
           {

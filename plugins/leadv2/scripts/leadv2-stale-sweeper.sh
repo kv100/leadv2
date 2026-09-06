@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # leadv2-stale-sweeper.sh — Sweep active.yaml for stale sessions at /leadv2 startup.
 #
-# Usage: leadv2-stale-sweeper.sh [--non-interactive]
+# Usage: leadv2-stale-sweeper.sh [--non-interactive] [--mark-only]
 #
 # What it does:
 #   1. Load active.yaml
@@ -31,13 +31,39 @@ source "$SCRIPT_DIR/leadv2-branch-merged.sh"
 log() { printf -- '[sweeper] %s\n' "$*" >&2; }
 
 # ── Determine interactive mode ─────────────────────────────────────────────
+# STALE-SWEEPER-WIRING-01: --mark-only is the SessionStart hook's synchronous
+# stage (hooks/leadv2-stale-pid-sweep.sh) — registry stale marks + ghost-spawn
+# reconciliation + summary, skipping the slow tail (orphan-worktree detection,
+# dead-worktree GC — measured minutes on a ~250-worktree tree — graveyard,
+# outcome-watch). The hook nohup's the FULL sweep for the tail; marks already
+# set are skipped here (already_stale), so the two stages compose.
 INTERACTIVE=true
-if [[ "${1:-}" == "--non-interactive" ]] || [[ ! -t 0 ]]; then
+MARK_ONLY=false
+for _ssw_arg in "$@"; do
+  case "$_ssw_arg" in
+    --non-interactive) INTERACTIVE=false ;;
+    --mark-only)       INTERACTIVE=false; MARK_ONLY=true ;;
+  esac
+done
+if [[ ! -t 0 ]]; then
   INTERACTIVE=false
 fi
 
 _lv2_dir="${LEADV2_LEADV2_DIR:-${LEADV2_PROJECT_ROOT}/docs/leadv2}"
-YAML_FILE="${_lv2_dir}/active.yaml"
+# STALE-SWEEPER-WIRING-01: read and write the registry through the
+# library's own resolver (_leadv2_yaml_file -> leadv2-state-path.sh), the
+# same cross-worktree control-plane path every registry op uses. The old
+# ${_lv2_dir}/active.yaml formula was wrong twice: (a) the docs/leadv2/
+# active.yaml entry is a SYMLINK to the control-plane file, and
+# _leadv2_yaml_py_lock writes via tempfile+os.replace — os.replace over a
+# symlink path replaces the LINK with a regular file, so every mark_stale
+# stranded itself in a shadow copy and the real registry never changed;
+# (b) in a worktree whose symlink set is not yet repaired the path is a
+# stale or absent render and the sweep silently marks nothing.
+# LEADV2_LEADV2_DIR still governs the auxiliary dirs below (spawned/,
+# budget.yaml, graveyard marker); the registry itself is never overridable
+# to a repo-relative path.
+YAML_FILE="$(_leadv2_yaml_file)"
 SPAWNED_DIR="${_lv2_dir}/spawned"
 BUDGET_YAML="${_lv2_dir}/budget.yaml"
 QUOTA_SCRIPT="${SCRIPT_DIR}/leadv2-quota-status.sh"
@@ -96,6 +122,27 @@ with open(yaml_file, encoding="utf-8") as fh:
 sessions = data.get("sessions") or []
 stale_results = []
 
+# STALE-SWEEPER-WIRING-01: eligibility floor, predicate IDENTICAL to
+# _row_dead in leadv2-active-registry.sh (the rule leadv2_active_unregister
+# --dead already follows): only a row carrying a RECORDED pid that is
+# provably dead may ever be marked. A row with a LIVE pid is never marked;
+# a row with NO pid at all (None/""/"null"/"None" — recovered visibility
+# rows, funnel rows between arms) can never be PROVEN dead and is never
+# marked either. The old code defaulted pid_dead=True for a missing pid, so
+# a pid-less row with an old pulse was sweepable — exactly the
+# kill-a-live-lane failure mode this sweeper must not have.
+def _pid_alive(pid_val) -> bool:
+    try:
+        pid = int(pid_val)
+        os.kill(pid, 0)
+        return True
+    except (TypeError, ValueError, ProcessLookupError, PermissionError):
+        return False
+
+def _row_dead(row) -> bool:
+    pid = row.get("pid")
+    return pid not in (None, "", "null", "None") and not _pid_alive(pid)
+
 for s in sessions:
     task_id = s.get("task_id", "?")
     pid = s.get("pid")
@@ -106,21 +153,22 @@ for s in sessions:
     if already_stale:
         continue
 
-    # Check pid liveness (primary signal — always evaluated)
-    pid_dead = True
-    if pid is not None:
-        try:
-            os.kill(int(pid), 0)
-            pid_dead = False
-        except (ProcessLookupError, PermissionError):
-            pid_dead = True
-        except (TypeError, ValueError):
-            pid_dead = True
+    # Hard floor: no recorded provably-dead pid -> not eligible, regardless
+    # of pulse age or agents-list evidence.
+    if not _row_dead(s):
+        continue
+    pid_dead = True  # _row_dead(s) held
 
     # Check pulse age
     pulse_old = True
     if last_pulse:
         try:
+            # Parse ISO-Z timestamp. The registry's yaml.dump QUOTES timestamps
+            # (so they load as str), but a hand-edited unquoted row loads as a
+            # datetime.datetime — coerce instead of crashing the whole sweep
+            # on rstrip (AttributeError is not in the except clause below).
+            if not isinstance(last_pulse, str):
+                last_pulse = last_pulse.isoformat()
             # Parse ISO-Z timestamp
             ts_str = last_pulse.rstrip("Z")
             ts = datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
@@ -270,6 +318,12 @@ if [[ "$stale_count" -gt 0 && "$INTERACTIVE" == "true" ]]; then
       log "skipped — stale rows remain marked"
       ;;
   esac
+fi
+
+# ── 5a: mark-only exit (SessionStart hook synchronous stage) ───────────────
+if [[ "$MARK_ONLY" == "true" ]]; then
+  log "mark-only: skipping slow tail (orphan worktrees, dead-worktree GC, graveyard, outcome-watch) — the hook runs the full sweep detached"
+  exit 0
 fi
 
 # ── 5b: Orphan worktree detection ─────────────────────────────────────────
