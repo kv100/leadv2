@@ -165,6 +165,58 @@ _pc_worker_reason() {
   _PC_WORKER_REASON="$(lv2_worker_reason "${HANDOFF:-}" "${AUTHOR:-}" "${TASK:-}" 2>/dev/null || true)"
   printf '%s' "${_PC_WORKER_REASON}"
 }
+# WORKER-ENDS-TURN-ON-WAIT-01. A dispatched worker has exactly one turn-chain and
+# nothing that wakes it, so a final message of the shape "I'll wait for the background
+# job" is not a pause -- it is the end of the lane, with the work left uncommitted in
+# the worktree. The mission preamble now forbids the shape (leadv2-dispatch-code.sh,
+# ## Waiting); this is the half that runs when a worker does it anyway.
+#
+# WHY HERE and not in leadv2-dispatch-code.sh's _dispatch_terminal_ledger_state():
+# that function is a wrapper over `ledger state <sig8>` -- it never sees the worker's
+# text, so a phrase check hung there would have no input at all. lib/leadv2-worker-
+# reason.sh is the layer that knows all four stream shapes, and _dl_note is the single
+# funnel every terminal verdict passes through, whatever decided it. Ordering-proof by
+# construction: pc_silent_arm_probe returning early (it runs before pc_scope_diff and
+# can end the gate) cannot route around a check that sits on the terminal write itself.
+_PC_WAIT_PHRASE_RE='waiting for|awaiting|i.ll wait|i will wait|before continuing|before proceeding'
+_pc_wait_phrase_hit() { # <text> -> stdout: the matched phrase; rc0 on hit, rc1 on miss
+  local txt="${1:-}" hit
+  [[ -n "${txt}" ]] || return 1
+  hit="$(printf '%s' "${txt}" | grep -ioE "${_PC_WAIT_PHRASE_RE}" | head -1)"
+  [[ -n "${hit}" ]] || return 1
+  printf '%s' "${hit// /_}"
+}
+
+_PC_WAIT_COMMIT_DONE=0
+_pc_commit_lane_on_wait() { # -> stdout: one word naming what happened; always rc0
+  local root="${_lane_root:-}"
+  [[ "${_PC_WAIT_COMMIT_DONE}" == "0" ]] || { printf 'already_done'; return 0; }
+  _PC_WAIT_COMMIT_DONE=1
+  [[ -n "${root}" && -d "${root}" ]] || { printf 'no_lane'; return 0; }
+  # never grade (or commit inside) a tree whose identity is unknown -- same guard the
+  # silent probe uses before it dares call a lane empty.
+  lv2_lane_root_is_own_worktree "${root}" || { printf 'not_own_worktree'; return 0; }
+  # BY NAME ONLY. `git add -A` in a shared checkout sweeps up other sessions' work --
+  # the declared write set is the whole authority for what this lane may commit.
+  local -a paths=(); local p
+  local _ifs_save="${IFS}"; IFS=','
+  for p in ${WRITES_CSV:-}; do
+    p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"
+    [[ -n "${p}" ]] && paths+=("${p}")
+  done
+  IFS="${_ifs_save}"
+  [[ ${#paths[@]} -gt 0 ]] || { printf 'no_write_set'; return 0; }
+  git -C "${root}" add -- "${paths[@]}" >/dev/null 2>&1 || { printf 'add_failed'; return 0; }
+  git -C "${root}" diff --cached --quiet 2>/dev/null && { printf 'nothing_to_commit'; return 0; }
+  if git -C "${root}" -c user.name='leadv2-close-gate' -c user.email='leadv2@localhost' \
+       commit -q -m "chore(${FOUNDER_TASK_ID:-${TASK}}): salvage lane work -- worker ended its turn on a wait" \
+       >/dev/null 2>&1; then
+    printf 'committed'
+  else
+    printf 'commit_failed'
+  fi
+}
+
 _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
   _PC_TERMINAL_STATE="$1"
   _PC_TERMINAL_CAUSE="$2"
@@ -178,6 +230,20 @@ _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
   case "$1" in
     no_work|dead) _wr="$(_pc_worker_reason)" ;;
   esac
+  # WORKER-ENDS-TURN-ON-WAIT-01: the same last words, asked a second question --
+  # did the worker stop ON a wait? If so the lane is committed BEFORE the terminal row
+  # is written, so the work survives the verdict, and the journal says it in one
+  # greppable line. Kill switch: LEADV2_WORKER_ENDED_ON_WAIT=0.
+  if [[ -n "${_wr}" && "${LEADV2_WORKER_ENDED_ON_WAIT:-1}" == "1" ]]; then
+    local _wait_hit=""
+    if _wait_hit="$(_pc_wait_phrase_hit "${_wr}")" && [[ -n "${_wait_hit}" ]]; then
+      local _wait_act; _wait_act="$(_pc_commit_lane_on_wait)"
+      emit decision "worker_ended_on_wait task=${TASK} arm=${AUTHOR} phrase=${_wait_hit} lane=${_lane_root:+$(basename "${_lane_root}")} action=${_wait_act}"
+      if [[ "${_PC_TERMINAL_EVIDENCE}" != *'ended_on_wait='* ]]; then
+        _PC_TERMINAL_EVIDENCE="${_PC_TERMINAL_EVIDENCE}${_PC_TERMINAL_EVIDENCE:+ }ended_on_wait=${_wait_act}"
+      fi
+    fi
+  fi
   if [[ -n "${_wr}" && "${_PC_TERMINAL_EVIDENCE}" != *' worker_reason="'* ]]; then
     # the second guard keeps the EXIT trap's idempotent retry (which replays
     # _PC_TERMINAL_EVIDENCE verbatim) from appending the key a second time.

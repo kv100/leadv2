@@ -473,6 +473,7 @@ SUITE_DEFS=(
   "journal honours the pinned root|||bash $TEST_DIR/test-journal-honours-the-pinned-root.sh"
   "guard says when it could not check|||bash $TEST_DIR/test-guard-says-when-it-could-not-check.sh"
   "dod gate suite registration (both map forms + run-all selection)|||bash $TEST_DIR/test-dod-gate-suite-registration.sh"
+  "worker ends turn on a wait (contract + detector + salvage)|||bash $TEST_DIR/test-worker-ended-on-wait.sh"
   # parallel (round 2): not on _CORE_OFFLINE_OWNED_SUITES; every case uses its
   # own mktemp -d sandbox (incl. a sandboxed HOME), no shared lock/port.
   # serial WITH A DEATH DATE, not a return to the old placement (measured

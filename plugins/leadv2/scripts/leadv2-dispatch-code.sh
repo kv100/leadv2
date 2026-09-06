@@ -5823,6 +5823,17 @@ Commit the child's output yourself before your own turn-chain ends.
 Model guidance: haiku for reads/censuses, sonnet for edits. Never spawn opus from a worker.
 Pulse/silence rules do NOT apply to you -- you have no next turn to be silent into.
 
+## Waiting (you have no next turn)
+Ending your turn on "I'll wait for X" / "before continuing" ENDS THE LANE. Nothing wakes you,
+no notification arrives, and whatever sits uncommitted in the worktree is all the close gate
+will ever see -- measured repeatedly: the work was done and then lost at the last inch.
+- Never end a turn on a wait. Await the thing synchronously inside this same turn-chain
+  (a nested Agent, a foreground command with a timeout), or stop for good.
+- If you truly cannot finish, COMMIT what you have FIRST, then make your last line
+  `BLOCKED: <what you are blocked on>`. A committed lane with an honest blocker is
+  recoverable by the next session; an uncommitted one is indistinguishable from a lane
+  that did nothing.
+
 ## Fork
 Agent(subagent_type="fork") inherits your full conversation and prompt cache. Use it when a
 follow-up subagent needs your accumulated task history (e.g. a fix-round agent that must see the
