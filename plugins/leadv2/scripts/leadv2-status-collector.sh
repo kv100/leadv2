@@ -45,7 +45,10 @@ while [[ $# -gt 0 ]]; do
     *) shift;;
   esac
 done
-PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
+_SC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use the registry's resolver for both the snapshot output and delegated
+# readers. A cwd under scripts/ is a location inside a project, not its root.
+PROJECT_ROOT="$(PROJECT_ROOT="$PROJECT_ROOT" bash "$_SC_DIR/leadv2-state-path.sh" --project-root)"
 : "${OUT_PATH:=$PROJECT_ROOT/docs/leadv2/status-snapshot.json}"
 
 _sc_git_compute_raw() {
@@ -80,7 +83,6 @@ if [[ "$_SC_GIT_FACTS_ONLY" == "1" ]]; then
   exit 0
 fi
 
-_SC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${_SC_DIR}/lib/leadv2-trace.sh"
 else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
 _SC_TMPDIR="$(mktemp -d)"

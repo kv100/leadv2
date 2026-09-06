@@ -1,0 +1,14 @@
+FAIL: test -L /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//shadow-control-plane.xNs24h/repo/docs/leadv2/active.yaml
+FAIL: test  = /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//shadow-control-plane.xNs24h/state/repo/active.yaml
+FAIL: test ! -e /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/shadow-control-plane.xNs24h/repo/plugins/leadv2/scripts/docs/leadv2
+Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+AssertionError
+FAIL: python3 - /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//shadow-control-plane.xNs24h/repo
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=56734
+unregistered 1 row(s) task=SHADOW-CRUD selector=all
+deletion-control: present register/list/unregister checked
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=56734
+unregistered 1 row(s) task=SHADOW-CRUD selector=all
+deletion-control: absent register/list/unregister checked
+shadow-control-plane: PASS=8 FAIL=4
