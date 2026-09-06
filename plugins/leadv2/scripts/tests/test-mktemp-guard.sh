@@ -101,11 +101,14 @@ write_fixture() {
   chmod +x "$path"
 }
 
+# Feed captured output directly to grep: with pipefail, echo | grep -q can
+# report failure when grep matches early and echo receives SIGPIPE.
+
 # ── R1: bare `mktemp -t name` (no XXX) must be caught ───────────────────────
 FIX_BARE="$WORK/fix-bare.sh"
 write_fixture "$FIX_BARE" "$GUARD" 'x="$(mktemp -t leadv2-ss-mini)"; echo "reached-end"'
 out=$(bash "$FIX_BARE" 2>&1); rc=$?
-if [[ "$rc" -ne 0 ]] && echo "$out" | grep -q "Error:.*without XXX"; then
+if [[ "$rc" -ne 0 ]] && grep -q "Error:.*without XXX" <<< "$out"; then
   pass "R1: guard fires on bare 'mktemp -t name'"
 else
   fail "R1: guard fires on bare 'mktemp -t name' (rc=$rc, out='$out')"
@@ -115,7 +118,7 @@ fi
 FIX_DT="$WORK/fix-dt.sh"
 write_fixture "$FIX_DT" "$GUARD" 'x="$(mktemp -d -t leadv2-batch01)"; echo "reached-end"'
 out=$(bash "$FIX_DT" 2>&1); rc=$?
-if [[ "$rc" -ne 0 ]] && echo "$out" | grep -q "Error:.*without XXX"; then
+if [[ "$rc" -ne 0 ]] && grep -q "Error:.*without XXX" <<< "$out"; then
   pass "R2: guard fires on 'mktemp -d -t name' (incident pattern)"
 else
   fail "R2: guard fires on 'mktemp -d -t name' (incident pattern) (rc=$rc, out='$out')"
@@ -125,7 +128,7 @@ fi
 FIX_GOOD="$WORK/fix-good.sh"
 write_fixture "$FIX_GOOD" "$GUARD" 'x="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-batch01.XXXXXX")"; echo "reached-end"; rm -rf "$x"'
 out=$(bash "$FIX_GOOD" 2>&1); rc=$?
-if [[ "$rc" -eq 0 ]] && echo "$out" | grep -q "reached-end"; then
+if [[ "$rc" -eq 0 ]] && grep -q "reached-end" <<< "$out"; then
   pass "R3: guard is silent on the portable form"
 else
   fail "R3: guard is silent on the portable form (rc=$rc, out='$out')"
@@ -135,7 +138,7 @@ fi
 FIX_TXXX="$WORK/fix-t-xxx.sh"
 write_fixture "$FIX_TXXX" "$GUARD" 'x="$(mktemp -t sp.XXXXXX.json)"; echo "reached-end"; rm -f "$x"'
 out=$(bash "$FIX_TXXX" 2>&1); rc=$?
-if [[ "$rc" -eq 0 ]] && echo "$out" | grep -q "reached-end"; then
+if [[ "$rc" -eq 0 ]] && grep -q "reached-end" <<< "$out"; then
   pass "R4: guard is silent on '-t name.XXXXXX.json'"
 else
   fail "R4: guard is silent on '-t name.XXXXXX.json' (rc=$rc, out='$out')"
@@ -159,7 +162,7 @@ FIX_SETE="$WORK/fix-sete.sh"
 } > "$FIX_SETE"
 chmod +x "$FIX_SETE"
 out=$(bash "$FIX_SETE" 2>&1); rc=$?
-if [[ "$rc" -eq 0 ]] && echo "$out" | grep -q "reached-end"; then
+if [[ "$rc" -eq 0 ]] && grep -q "reached-end" <<< "$out"; then
   pass "R5: guard does not trip caller's 'set -e' on the clean path"
 else
   fail "R5: guard does not trip caller's 'set -e' on the clean path (rc=$rc, out='$out')"
@@ -217,7 +220,7 @@ fi
 FIX_BARE_SUFFIX="$WORK/fix-bare-suffix.sh"
 write_fixture "$FIX_BARE_SUFFIX" "$GUARD" '_a=$(mktemp /tmp/foo-XXXXXX.json); echo "reached-end"'
 out=$(bash "$FIX_BARE_SUFFIX" 2>&1); rc=$?
-if [[ "$rc" -ne 0 ]] && echo "$out" | grep -q "X-run is not final"; then
+if [[ "$rc" -ne 0 ]] && grep -q "X-run is not final" <<< "$out"; then
   pass "R7: guard fires on bare 'mktemp /tmp/foo-XXXXXX.json' (X-run not final)"
 else
   fail "R7: guard fires on bare 'mktemp /tmp/foo-XXXXXX.json' (X-run not final) (rc=$rc, out='$out')"
@@ -227,7 +230,7 @@ fi
 FIX_BARE_OK="$WORK/fix-bare-ok.sh"
 write_fixture "$FIX_BARE_OK" "$GUARD" '_a=$(mktemp /tmp/foo-XXXXXX); echo "reached-end"; rm -f "$_a"'
 out=$(bash "$FIX_BARE_OK" 2>&1); rc=$?
-if [[ "$rc" -eq 0 ]] && echo "$out" | grep -q "reached-end"; then
+if [[ "$rc" -eq 0 ]] && grep -q "reached-end" <<< "$out"; then
   pass "R8: guard is silent on the portable bare form 'mktemp /tmp/foo-XXXXXX'"
 else
   fail "R8: guard is silent on the portable bare form 'mktemp /tmp/foo-XXXXXX' (rc=$rc, out='$out')"
@@ -237,7 +240,7 @@ fi
 FIX_T_DISJOINT="$WORK/fix-t-disjoint.sh"
 write_fixture "$FIX_T_DISJOINT" "$GUARD" '_a=$(mktemp -t sp.XXXXXX.json); echo "reached-end"; rm -f "$_a"'
 out=$(bash "$FIX_T_DISJOINT" 2>&1); rc=$?
-if [[ "$rc" -eq 0 ]] && echo "$out" | grep -q "reached-end"; then
+if [[ "$rc" -eq 0 ]] && grep -q "reached-end" <<< "$out"; then
   pass "R9: detection 2 is silent on 'mktemp -t sp.XXXXXX.json' (R4 boundary)"
 else
   fail "R9: detection 2 is silent on 'mktemp -t sp.XXXXXX.json' (R4 boundary) (rc=$rc, out='$out')"
