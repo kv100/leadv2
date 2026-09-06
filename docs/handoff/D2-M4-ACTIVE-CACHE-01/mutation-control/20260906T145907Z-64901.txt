@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-merge-queue-dead-head.sh
+file=plugins/leadv2/scripts/leadv2-merge-queue.sh
+anchor=159s/return True/return False/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL - case (e): EPERM head wrongly marked DEAD-ENQUEUED ({"holder": null, "queue": [{"state": "DEAD-ENQUEUED", "task_id": "eperm-head-task"}, {"state": "queued", "task_id": "waiting-task-e"}]})
+diff_hash=1ca8ff8b4aac3a1f22f1e456ffaec37dbd86fc625747b7fe83ea103e55a0ccea
+lane_diff_hash=066319e9244148d2d0e093ea45786784158e9dc61ffccaf8ec93638d35dc9e35
