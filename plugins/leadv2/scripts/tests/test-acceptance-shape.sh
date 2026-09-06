@@ -134,6 +134,63 @@ else
   pass "assert-precedence: authored after LANE_WRITES mtime refused"
 fi
 
+# ── assert-precedence: no LANE_WRITES at all -> NOT_APPLICABLE (rc=2), ──
+# ── never conflated with a real pass (rc=0). ACCEPTANCE-SHAPE-VACUOUS-OK-01. ──
+EMPTY_ROOT="$(lv2_mktemp_dir as-emptyroot)"
+mkdir -p "${EMPTY_ROOT}/docs/handoff/AS-EMPTY-1"
+cat > "${EMPTY_ROOT}/docs/handoff/AS-EMPTY-1/context.yaml" <<'EOF'
+acceptance:
+  authored_at: 2020-01-01T00:00:00Z
+  surface: file_artifact
+  observable: "nothing named yet"
+EOF
+LEADV2_PROJECT_ROOT="${EMPTY_ROOT}" bash "${BIN}" assert-precedence --task-id AS-EMPTY-1 >/dev/null 2>&1
+_rc=$?
+if [[ "${_rc}" -eq 2 ]]; then
+  pass "assert-precedence: no LANE_WRITES -> rc=2 not-applicable (not conflated with rc=0 pass)"
+else
+  fail "assert-precedence: no LANE_WRITES should return rc=2, got rc=${_rc}"
+fi
+
+# ── assert-precedence: LANE_WRITES named but none exist yet -> NOT_APPLICABLE (rc=2) ──
+NOTBUILT_ROOT="$(lv2_mktemp_dir as-notbuilt)"
+mkdir -p "${NOTBUILT_ROOT}/docs/handoff/AS-NOTBUILT-1"
+cat > "${NOTBUILT_ROOT}/docs/handoff/AS-NOTBUILT-1/context.yaml" <<'EOF'
+lane_writes:
+  - some/dir/not-built-yet.sh
+acceptance:
+  authored_at: 2020-01-01T00:00:00Z
+  surface: file_artifact
+  observable: "not-built-yet.sh exists on disk"
+EOF
+LEADV2_PROJECT_ROOT="${NOTBUILT_ROOT}" bash "${BIN}" assert-precedence --task-id AS-NOTBUILT-1 >/dev/null 2>&1
+_rc=$?
+if [[ "${_rc}" -eq 2 ]]; then
+  pass "assert-precedence: LANE_WRITES named but none exist -> rc=2 not-applicable"
+else
+  fail "assert-precedence: not-yet-built LANE_WRITES should return rc=2, got rc=${_rc}"
+fi
+
+# ── PAIRED CONTROL: a lane with a REAL non-empty declaration must still be ──
+# ── compared, not silently start returning not-applicable too. Re-runs the ──
+# ── existing authored-after-mtime case above and requires rc=1 exactly ──
+# ── (a mutation that made assert-precedence always return 2 must fail this). ──
+cat > "${FAKE_ROOT}/docs/handoff/AS-PRE-1/context.yaml" <<'EOF'
+lane_writes:
+  - some/dir/target.sh
+acceptance:
+  authored_at: 2026-12-01T00:00:00Z
+  surface: file_artifact
+  observable: "target.sh exists on disk with the new flag wired"
+EOF
+LEADV2_PROJECT_ROOT="${FAKE_ROOT}" bash "${BIN}" assert-precedence --task-id AS-PRE-1 >/dev/null 2>&1
+_rc=$?
+if [[ "${_rc}" -eq 1 ]]; then
+  pass "assert-precedence PAIRED CONTROL: real non-empty LANE_WRITES still compared and refused (rc=1, not swallowed into rc=2)"
+else
+  fail "assert-precedence PAIRED CONTROL: real declaration should still refuse with rc=1, got rc=${_rc}"
+fi
+
 log ""
 log "=== ${PASS} passed, ${FAIL} failed ==="
 [[ "$FAIL" -eq 0 ]]

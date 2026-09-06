@@ -827,13 +827,17 @@ validate_and_merge() {
   fi
 
   # assert-precedence when lane_writes names existing files (design §2.1 step 9c).
-  local has_existing=0 _w _w_trimmed
+  local has_existing=0 _w _w_trimmed _precedence_rc
   for _w in ${WRITES_CSV//,/ }; do
     _w_trimmed="$(printf '%s' "${_w}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     [[ -n "${_w_trimmed}" && -f "${ROOT}/${_w_trimmed}" ]] && has_existing=1 && break
   done
   if [[ "${has_existing}" == "1" ]]; then
-    if ! bash "${SCRIPT_DIR}/leadv2-acceptance-shape.sh" assert-precedence --task-id "${TASK}" --context "${out_ctx}" 2>"${HANDOFF}/.precedence-err"; then
+    bash "${SCRIPT_DIR}/leadv2-acceptance-shape.sh" assert-precedence --task-id "${TASK}" --context "${out_ctx}" 2>"${HANDOFF}/.precedence-err"
+    _precedence_rc=$?
+    # rc=1 refuse (real violation) blocks; rc=2 not-applicable (nothing to
+    # compare) does NOT block — it is not a pass either, just uncontested.
+    if [[ "${_precedence_rc}" -eq 1 ]]; then
       VALIDATE_REASON="precedence_violated"
       return 1
     fi

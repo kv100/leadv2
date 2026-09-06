@@ -28,9 +28,14 @@
 #     named in LANE_WRITES for this task (read from context.yaml `lane_writes:`
 #     if present, else the architect prepass artifact's trailing
 #     `LANE_WRITES:` line). Files that do not exist yet are skipped (nothing
-#     to compare against); if none of the named files exist, precedence is
-#     vacuously true (not yet buildable), never a refusal.
-#     exit 0 ok / 1 refuse
+#     to compare against); if no LANE_WRITES are named at all, or none of the
+#     named files exist yet, there is nothing to compare — that is a distinct
+#     verdict from a real pass, never conflated with one.
+#     exit 0 ok (compared, held) / 1 refuse / 2 not-applicable (nothing to
+#     compare — no LANE_WRITES found, or none of the named files exist yet).
+#     Callers that branch on rc=0 for "cleared" must treat rc=2 as cleared-
+#     too (not blocking) while still counting it separately from rc=0 if they
+#     report pass counts — ACCEPTANCE-SHAPE-VACUOUS-OK-IS-COUNTED-AS-A-PASS-01.
 #
 # GATE FLAG: LEADV2_REQUIRE_ACCEPTANCE=0|1 (default 1) — read by callers
 # (leadv2-dispatch-code.sh park branch, leadv2-phase8-assert.sh A11), not by
@@ -168,8 +173,8 @@ print(int(datetime.datetime.fromisoformat(s).timestamp()))
 
   local writes; writes="$(_as_lane_writes "$task_id" "$ctx")"
   if [[ -z "$writes" ]]; then
-    log "assert-precedence: no LANE_WRITES found for ${task_id} — nothing to compare, treating as vacuously ok"
-    return 0
+    log "assert-precedence NOT_APPLICABLE: no LANE_WRITES found for ${task_id} — nothing to compare"
+    return 2
   fi
 
   local earliest="" f mtime
@@ -182,8 +187,8 @@ print(int(datetime.datetime.fromisoformat(s).timestamp()))
   done <<< "$writes"
 
   if [[ -z "$earliest" ]]; then
-    log "assert-precedence: none of the LANE_WRITES files exist yet — vacuously ok (not yet built)"
-    return 0
+    log "assert-precedence NOT_APPLICABLE: none of the LANE_WRITES files exist yet (not yet built) — nothing to compare"
+    return 2
   fi
 
   if [[ "$authored_epoch" -le "$earliest" ]]; then

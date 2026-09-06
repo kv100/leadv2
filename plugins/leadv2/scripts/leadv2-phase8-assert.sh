@@ -574,7 +574,11 @@ if [[ -f "${A11_CTX}" && -x "${A11_BIN}" ]]; then
       A11_FAIL=1
       failures+=("A11: ${TASK_ID} — acceptance block invalid, see stderr above; run: ${A11_BIN} validate ${A11_CTX}")
     fi
-    if ! "${A11_BIN}" assert-precedence --task-id "${TASK_ID}"; then
+    A11_PRECEDENCE_RC=0
+    "${A11_BIN}" assert-precedence --task-id "${TASK_ID}" || A11_PRECEDENCE_RC=$?
+    # rc=1 refuse (real violation) fails the gate; rc=2 not-applicable
+    # (nothing to compare) is not a violation — do not count it as a failure.
+    if [[ "${A11_PRECEDENCE_RC}" -eq 1 ]]; then
       A11_FAIL=1
       failures+=("A11: ${TASK_ID} — acceptance.authored_at is not before the diff existed, see stderr above")
     fi
