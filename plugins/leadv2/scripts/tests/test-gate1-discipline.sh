@@ -31,6 +31,7 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/scripts/lib" "$TMP/root/docs/handoff" "$TMP/root/.claude/scripts"
 cp "$GATE1_SRC" "$TMP/scripts/leadv2-gate1-prompt.sh"
 cp "$PHASE_RECORD" "$TMP/scripts/leadv2-phase-record.sh"
+cp "${PLUGIN_DIR}/scripts/lib/leadv2-test-context.sh" "$TMP/scripts/lib/leadv2-test-context.sh"
 cp "${PLUGIN_DIR}/scripts/lib/leadv2-admission-class.sh" "$TMP/scripts/lib/leadv2-admission-class.sh"
 chmod +x "$TMP/scripts/"*.sh
 # Stub ledger emitter at <root>/.claude/scripts/lv2-ledger-emit.py (where the

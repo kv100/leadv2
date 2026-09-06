@@ -144,6 +144,7 @@ set -uo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/leadv2-test-context.sh" || exit 4
 
 # ── project root resolution ──────────────────────────────────────────────────
 # PHASE-GATE-IS-INVERTED-01 [Medium] 4: this script read ONLY LEADV2_PROJECT_ROOT
@@ -198,6 +199,44 @@ _sha256() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
 # ── phases.d path helpers ────────────────────────────────────────────────────
 _phases_d() { printf '%s/dispatch-%s/phases.d' "$PHASES_DIR_BASE" "$1"; }
 _phase_file() { printf '%s/%s.yaml' "$(_phases_d "$1")" "$2"; }
+
+# Common-dir identifies a repository; toplevel identifies ONE working tree.
+# Resolve git's relative/absolute output from the directory it was queried in.
+_phase_common_dir() {
+  local dir
+  dir="$(git -C "$1" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  case "$dir" in /*) ;; *) dir="$1/$dir" ;; esac
+  (cd "$dir" && pwd -P)
+}
+
+_phase_check_worktree() {
+  local target="$1" root_id script_id cwd_id root_tree cwd_tree in_test=0
+  lv2_test_context && in_test=1
+  if [[ "$in_test" == 1 && -z "$_lv2_root_a" && -z "$_lv2_root_b" ]]; then
+    lv2_refuse_test_write "$SCRIPT_NAME" "$target" "LEADV2_PROJECT_ROOT (isolated fixture)"
+    return 3
+  fi
+  root_id="$(_phase_common_dir "$PROJECT_ROOT")" || return 0
+  script_id="$(_phase_common_dir "$SCRIPT_DIR")" || script_id=""
+  # Extend the shared-sink test refusal to every worktree of the code's repo.
+  # Merely exporting a root that points back at a live tree is not isolation.
+  # Separate fixture repos (and non-git fixture directories) remain writable.
+  if [[ "$in_test" == 1 && -n "$script_id" && "$root_id" == "$script_id" ]]; then
+    lv2_refuse_test_write "$SCRIPT_NAME" "$target" "LEADV2_PROJECT_ROOT (isolated fixture)"
+    return 3
+  fi
+  cwd_id="$(_phase_common_dir "$(pwd -P)")" || return 0
+  if [[ "$cwd_id" == "$root_id" ]]; then
+    root_tree="$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel)" || return 4
+    cwd_tree="$(git rev-parse --show-toplevel)" || return 4
+    root_tree="$(cd "$root_tree" && pwd -P)" || return 4
+    cwd_tree="$(cd "$cwd_tree" && pwd -P)" || return 4
+    if [[ "$root_tree" != "$cwd_tree" ]]; then
+      _log_err "record: REFUSED foreign worktree: cwd=$cwd_tree resolved_root=$root_tree target=$target; run from the owning tree with matching LEADV2_PROJECT_ROOT/PROJECT_ROOT"
+      return 4
+    fi
+  fi
+}
 
 # ── class → phase table (§4) ─────────────────────────────────────────────────
 # Returns mandatory/optional/conditional for a class+phase.
@@ -806,6 +845,7 @@ cmd_record() {
   local phases_d phase_file
   phases_d="$(_phases_d "$sig8")"
   phase_file="${phases_d}/${phase}.yaml"
+  _phase_check_worktree "$phase_file" || exit $?
 
   # PHASE-RECORD-WRITES-TO-THE-WRONG-REPO-01: `record` trusts the resolved
   # root blindly, and an inherited LEADV2_PROJECT_ROOT (another repo's
@@ -825,18 +865,9 @@ cmd_record() {
   local _own_dispatch_dir="${PHASES_DIR_BASE}/dispatch-${sig8}"
   if [[ ! -d "$_own_dispatch_dir" ]]; then
     local _cwd_id _root_id
-    _cwd_id="$(git rev-parse --git-common-dir 2>/dev/null || true)"
-    if [[ -n "$_cwd_id" ]]; then
-      _cwd_id="$(cd "$_cwd_id" 2>/dev/null && pwd -P)" || _cwd_id="$(pwd -P)"
-    else
-      _cwd_id="$(pwd -P)"
-    fi
-    _root_id="$(git -C "$PROJECT_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
-    if [[ -n "$_root_id" ]]; then
-      _root_id="$(cd "$PROJECT_ROOT/$_root_id" 2>/dev/null && pwd -P)" || :
-    else
+    _cwd_id="$(_phase_common_dir "$(pwd -P)")" || _cwd_id="$(pwd -P)"
+    _root_id="$(_phase_common_dir "$PROJECT_ROOT")" || \
       _root_id="$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P || printf '%s' "$PROJECT_ROOT")"
-    fi
     if [[ "${_cwd_id%/}" != "${_root_id%/}" ]]; then
       _log_err "record: project root not permitted: dispatch-${sig8}/ does not exist under resolved root ${PROJECT_ROOT} (missing: ${_own_dispatch_dir}), and cwd resolves to a different repo (${_cwd_id} vs ${_root_id}) — refusing to write phase ${phase}; an inherited LEADV2_PROJECT_ROOT/PROJECT_ROOT from another repo's session makes record write into a foreign repo, check LEADV2_PROJECT_ROOT / PROJECT_ROOT / cwd"
       exit 4
