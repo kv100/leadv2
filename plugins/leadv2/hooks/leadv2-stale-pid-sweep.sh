@@ -37,10 +37,34 @@ if [[ -x "$SWEEPER" ]]; then
   LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "$SWEEPER" --non-interactive --mark-only || \
     printf '[leadv2-stale-pid-sweep] stale sweep (mark-only) failed rc=%s (non-blocking)\n' "$?" >&2
   if [[ -z "${LEADV2_SSWEEP_NO_DETACH:-}" ]]; then
-    _ssw_log="/tmp/leadv2-stale-sweeper.$(basename "$PROJECT_ROOT").log"
-    nohup env LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "$SWEEPER" --non-interactive \
-      >>"$_ssw_log" 2>&1 &
-    disown 2>/dev/null || true
+    # CONTROL-PLANE-SATURATES-01: dedup belongs in the SPAWNER, not in a
+    # later kill-list. Before nohup'ing the slow full sweep, check the
+    # sweeper's single-flight lock (same control-plane path the sweeper
+    # itself gates on) for a live owner — if one runs, skip the spawn
+    # entirely. The sweeper's own mkdir gate stays authoritative (this
+    # pre-check is advisory only: a lost race just spawns a bash that exits
+    # in <1s). Without this, every SessionStart of every live session bred
+    # another concurrent sweep (measured 2026-09-06: 8 sweepers, 13
+    # cleanups, 11 lane-liveness pythons, load 167 on 10 cores).
+    _ssw_should_spawn=1
+    _ssw_lock=""
+    _ssw_yaml="$(cd "$PROJECT_ROOT" 2>/dev/null && bash "${SCRIPT_DIR}/../scripts/leadv2-state-path.sh" --no-link active.yaml 2>/dev/null || true)"
+    if [[ -n "$_ssw_yaml" ]]; then
+      _ssw_lock="$(dirname "$_ssw_yaml")/.stale-sweeper-full.lock"
+    fi
+    if [[ -n "$_ssw_lock" && -d "$_ssw_lock" ]]; then
+      _ssw_owner="$(cat "${_ssw_lock}/owner.pid" 2>/dev/null || true)"
+      if [[ "$_ssw_owner" =~ ^[0-9]+$ ]] && kill -0 "$_ssw_owner" 2>/dev/null; then
+        _ssw_should_spawn=0
+        printf '[leadv2-stale-pid-sweep] full sweep already running (pid=%s) — skipping detached spawn\n' "$_ssw_owner" >&2
+      fi
+    fi
+    if [[ "$_ssw_should_spawn" == "1" ]]; then
+      _ssw_log="/tmp/leadv2-stale-sweeper.$(basename "$PROJECT_ROOT").log"
+      nohup env LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "$SWEEPER" --non-interactive \
+        >>"$_ssw_log" 2>&1 &
+      disown 2>/dev/null || true
+    fi
   fi
 fi
 # end STALE-SWEEPER-WIRING-01 wiring

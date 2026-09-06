@@ -326,6 +326,82 @@ if [[ "$MARK_ONLY" == "true" ]]; then
   exit 0
 fi
 
+# ── 5a.5: single-flight gate for the slow tail (CONTROL-PLANE-SATURATES-01) ──
+# The SessionStart hook nohups this FULL sweep on every session start with no
+# liveness check, and the tail walks ~100 worktrees through
+# leadv2-worktree-cleanup.sh --sweep-dead → leadv2-lane-liveness.sh → python3
+# per worktree. With N live sessions that is N concurrent sweeps multiplying
+# the table (measured 2026-09-06T10:3xZ: 8 sweepers, 13 cleanups, 11 liveness
+# pythons, load 167 on 10 cores). Gate: ONE full sweep per control plane at a
+# time. A later sweep whose lock shows a live owner exits 0 immediately — the
+# essential marks were already set by the synchronous mark-only stage, and the
+# tail re-runs at the next SessionStart. Lock lives next to the resolved
+# registry yaml (cross-worktree control plane), so sweeps from every worktree
+# of this repo serialize against each other; different repos keep independent
+# locks. LEADV2_SSWEEP_NO_SINGLEFLIGHT=1 disables the gate (tests).
+FULL_SWEEP_LOCK="$(dirname "$YAML_FILE")/.stale-sweeper-full.lock"
+_ssw_pid_alive() {
+  # kill -0 has THREE answers, not two: rc=0 alive; ESRCH dead; EPERM alive
+  # (a process we may not signal — e.g. pid 1 — is running, not gone).
+  local pid="$1" err
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  err="$(kill -0 "$pid" 2>&1)" && return 0
+  case "$err" in
+    *"not permitted"*|*"Not permitted"*|*"operation not permitted"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+_ssw_norm_lstart() { printf '%s' "$1" | tr -s '[:space:]' ' '; }
+_ssw_lock_owner_alive() {
+  # dir/owner.pid + dir/owner.birth (ps lstart identity, pid-reuse-proof).
+  # A live pid with no/unobservable birth degrades to ALIVE — never reclaim
+  # a lock on a guess. Only a recorded birth CONTRADICTED by a live ps
+  # observation (pid recycled) makes the holder provably stale.
+  local dir="$1" owner birth observed
+  owner="$(cat "$dir/owner.pid" 2>/dev/null || true)"
+  _ssw_pid_alive "$owner" || return 1
+  birth="$(cat "$dir/owner.birth" 2>/dev/null || true)"
+  [[ -n "$birth" ]] || return 0
+  observed="$(_ssw_norm_lstart "$(ps -o lstart= -p "$owner" 2>/dev/null || true)")"
+  [[ -n "$observed" ]] || return 0
+  [[ "$observed" == "$birth" ]]
+}
+_ssw_write_owner() {
+  printf '%s\n' "$$" >"$FULL_SWEEP_LOCK/owner.pid" 2>/dev/null || true
+  _ssw_norm_lstart "$(ps -o lstart= -p "$$" 2>/dev/null || true)" >"$FULL_SWEEP_LOCK/owner.birth" 2>/dev/null || true
+}
+_ssw_release_lock() {
+  if [[ -d "$FULL_SWEEP_LOCK" ]] && [[ "$(cat "$FULL_SWEEP_LOCK/owner.pid" 2>/dev/null || true)" == "$$" ]]; then
+    rm -f "$FULL_SWEEP_LOCK/owner.pid" "$FULL_SWEEP_LOCK/owner.birth" 2>/dev/null || true
+    rmdir "$FULL_SWEEP_LOCK" 2>/dev/null || true
+  fi
+}
+if [[ "${LEADV2_SSWEEP_NO_SINGLEFLIGHT:-}" != "1" ]]; then
+  trap '_ssw_release_lock' EXIT
+  # An untrapped SIGTERM (e.g. `timeout`) can terminate bash without the
+  # EXIT trap, leaving the lock behind for the reclaim path. Release on the
+  # common kill signals too — same pattern as anti-silence-pulse.sh.
+  trap '_ssw_release_lock; exit 143' TERM
+  trap '_ssw_release_lock; exit 130' INT
+  trap '_ssw_release_lock; exit 129' HUP
+  if mkdir "$FULL_SWEEP_LOCK" 2>/dev/null; then
+    _ssw_write_owner
+  elif _ssw_lock_owner_alive "$FULL_SWEEP_LOCK"; then
+    log "full sweep already running (pid=$(cat "$FULL_SWEEP_LOCK/owner.pid" 2>/dev/null || printf '?')) — this instance exits; tail re-runs at next SessionStart"
+    exit 0
+  else
+    log "single-flight lock had a provably stale holder (pid=$(cat "$FULL_SWEEP_LOCK/owner.pid" 2>/dev/null || printf '?')) — reclaiming"
+    rm -f "$FULL_SWEEP_LOCK/owner.pid" "$FULL_SWEEP_LOCK/owner.birth" 2>/dev/null || true
+    rmdir "$FULL_SWEEP_LOCK" 2>/dev/null || true
+    if mkdir "$FULL_SWEEP_LOCK" 2>/dev/null; then
+      _ssw_write_owner
+    else
+      log "single-flight lock lost the reclaim race — this instance exits; tail re-runs at next SessionStart"
+      exit 0
+    fi
+  fi
+fi
+
 # ── 5b: Orphan worktree detection ─────────────────────────────────────────
 # A worktree exists on disk but its task_id is NOT in active.yaml. Two sub-cases:
 #   (i)  branch is fully merged into main  → cleanup handled by GC at end of file
