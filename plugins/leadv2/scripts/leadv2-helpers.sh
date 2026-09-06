@@ -1364,6 +1364,9 @@ _leadv2_active_ensure_header() {
 #   The header (if missing) is written inside the locked section.
 # H3 fix: register refreshes rows with dead PIDs rather than silently
 #   treating them as successful registrations.
+# DEPRECATED (D1-SINGLE-WRITER-FOR-LANE-STATE): the active.md engine below
+# is no longer wired to any public function — kept only so external
+# references resolve; do not build on it.
 _leadv2_active_py_lock() {
   python3 - "$@" <<'PYEOF'
 import sys, os, fcntl, tempfile
@@ -1473,86 +1476,34 @@ finally:
 PYEOF
 }
 
+# D1-SINGLE-WRITER-FOR-LANE-STATE: the active.md variant of these four
+# functions is GONE. This file sources the real registry near the bottom
+# ("Registry sourced LAST so active.yaml functions override active.md legacy
+# stubs above"), which redefines all four names onto active.yaml; the bodies
+# below only survive that source's FAILURE — and then they must fail LOUD
+# (rc=4 + stderr) instead of writing a private repo-relative
+# docs/leadv2/active.md that no live reader resolves. That silent dead-file
+# write is the "lane registered but the registry never saw it" failure mode
+# this task exists to end. (auto-status reads the registry now too — it was
+# the one active.md reader.)
 leadv2_active_register() {
-  # Atomic add of a row to docs/leadv2/active.md.
-  # Args: phase
-  # H1 fix: lock is acquired BEFORE the existence check and header write
-  #   (both happen inside _leadv2_active_py_lock now).
-  # H3 fix: stale rows (dead PID) are refreshed rather than silently accepted.
-  local phase="${1:-intake}"
-  local tid
-  tid="${LEADV2_TASK_ID:-}"
-  if [[ -z "$tid" ]]; then
-    printf -- '[helpers] leadv2_active_register: LEADV2_TASK_ID not set — skipping\n' >&2
-    return 0
-  fi
-
-  local ts pid_val session_label
-  ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  pid_val="$$"
-  session_label="${LEADV2_SESSION_LABEL:-$(hostname -s 2>/dev/null || printf -- 'unknown')}"
-
-  local active lockfile
-  active="$(_leadv2_active_file)"
-  lockfile="$(_leadv2_active_lockfile)"
-
-  # Do NOT call _leadv2_active_ensure_header here: header creation is now
-  # serialised inside _leadv2_active_py_lock (H1 fix).
-  _leadv2_active_py_lock \
-    "$lockfile" "$active" register \
-    "$tid" "$ts" "$phase" "$pid_val" "$session_label"
+  printf -- '[helpers] leadv2_active_register: registry not loaded — refusing to write legacy active.md\n' >&2
+  return 4
 }
 
 leadv2_active_update_phase() {
-  # Atomically update the phase column for our task_id row.
-  # Args: new_phase
-  local new_phase="${1:-}"
-  local tid
-  tid="${LEADV2_TASK_ID:-}"
-  if [[ -z "$tid" ]] || [[ -z "$new_phase" ]]; then
-    return 0
-  fi
-
-  local active lockfile
-  active="$(_leadv2_active_file)"
-  lockfile="$(_leadv2_active_lockfile)"
-
-  [[ -f "$active" ]] || return 0
-
-  _leadv2_active_py_lock "$lockfile" "$active" update_phase "$tid" "$new_phase"
-
-  if [[ -f "docs/handoff/${tid}/cost-estimate.yaml" ]]; then
-    # FIX-7: log exit code before returning 1 so caller can diagnose budget gate failures
-    bash "$(dirname "${BASH_SOURCE[0]}")/phase-advance.sh" --task-id "$tid" --phase "$new_phase" || {
-      echo "[BUDGET_GATE] phase-advance.sh exited $? for task ${tid} phase ${new_phase}" >&2
-      return 1
-    }
-  fi
+  printf -- '[helpers] leadv2_active_update_phase: registry not loaded — refusing to write legacy active.md\n' >&2
+  return 4
 }
 
 leadv2_active_unregister() {
-  # Atomically remove the row for the current task_id.
-  local tid
-  tid="${LEADV2_TASK_ID:-}"
-  if [[ -z "$tid" ]]; then
-    return 0
-  fi
-
-  local active lockfile
-  active="$(_leadv2_active_file)"
-  lockfile="$(_leadv2_active_lockfile)"
-
-  [[ -f "$active" ]] || return 0
-
-  _leadv2_active_py_lock "$lockfile" "$active" unregister "$tid"
+  printf -- '[helpers] leadv2_active_unregister: registry not loaded — refusing to write legacy active.md\n' >&2
+  return 4
 }
 
-
 leadv2_active_list() {
-  # Print currently-active task rows (atomic read).
-  local active
-  active="$(_leadv2_active_file)"
-  [[ -f "$active" ]] && cat "$active" || printf -- '(no active.md)\n'
+  printf -- '(no registry)\n'
+  return 4
 }
 
 # _leadv2_derive_real_state <task_id> <project_root> [worktree_dir]
