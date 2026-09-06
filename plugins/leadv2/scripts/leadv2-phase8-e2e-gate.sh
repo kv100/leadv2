@@ -281,7 +281,7 @@ fi
 # GATE-FOREIGN-FAILURE-01: same ownership classification as the dispatch
 # close gate (leadv2-e2e-ownership.sh) -- own failures always win over
 # foreign ones, and undecidable folds into own (fail-closed).
-OWN_CSV=""; FOREIGN_CSV=""; UNDECIDABLE_CSV=""; OWNER_LANE="unknown"
+OWN_CSV=""; FOREIGN_CSV=""; UNDECIDABLE_CSV=""; OWNER_LANE="unknown"; PRE_EXISTING_CSV=""
 if [[ "${E2E_OWNERSHIP}" == "1" && -n "${WRITES_CSV}" ]]; then
   # C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): pass the validated e2e root so the
   # overlay uses the lane's actual working tree state.
@@ -290,10 +290,13 @@ if [[ "${E2E_OWNERSHIP}" == "1" && -n "${WRITES_CSV}" ]]; then
   FOREIGN_CSV="$(sed -n 's/^foreign=//p' <<< "${OWN_OUT}")"
   UNDECIDABLE_CSV="$(sed -n 's/^undecidable=//p' <<< "${OWN_OUT}")"
   OWNER_LANE="$(sed -n 's/^owner_lane=//p' <<< "${OWN_OUT}")"
+  PRE_EXISTING_CSV="$(sed -n 's/^pre_existing=//p' <<< "${OWN_OUT}")"
   [[ -z "${OWNER_LANE}" ]] && OWNER_LANE="unknown"
 fi
 
-if [[ -n "${FOREIGN_CSV}" && -z "${OWN_CSV}" && -z "${UNDECIDABLE_CSV}" ]]; then
+# pre_existing = red at this lane's own merge-base, so not caused here
+# (HARNESS-COSTS-MORE-THAN-IT-CATCHES-01). Same non-kill treatment as foreign.
+if [[ ( -n "${FOREIGN_CSV}" || -n "${PRE_EXISTING_CSV}" ) && -z "${OWN_CSV}" && -z "${UNDECIDABLE_CSV}" ]]; then
   IFS=',' read -r -a _lane_writes <<< "${WRITES_CSV}"
   mapfile -t _all_changed < <(
     { git -C "${_p8_e2e_root}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
@@ -309,11 +312,18 @@ if [[ -n "${FOREIGN_CSV}" && -z "${OWN_CSV}" && -z "${UNDECIDABLE_CSV}" ]]; then
   FOREIGN_FILES_CSV="$(IFS=,; echo "${_foreign_files[*]:-}")"
   printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: lane_writes\nbypassed: false\nbypass_reason: \nforeign_failures: %s\ndeploy_verified: %s\ndeploy_verify_bypassed: %s\ndeploy_verify_bypass_reason: %s\n' \
     "$TASK_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${FOREIGN_CSV}" "$DEPLOY_VERIFIED" "$DEPLOY_VERIFY_BYPASSED" "$DEPLOY_VERIFY_BYPASS_REASON" > "$SENTINEL"
-  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=foreign_failure scope=lane_writes foreign_suites=${FOREIGN_CSV} foreign_files=${FOREIGN_FILES_CSV} owner_lane=${OWNER_LANE} own_failures=0"
+  _P8_VERDICT="foreign_failure"
+  [[ -z "${FOREIGN_CSV}" ]] && _P8_VERDICT="pre_existing_red"
+  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=${_P8_VERDICT} scope=lane_writes foreign_suites=${FOREIGN_CSV} pre_existing_suites=${PRE_EXISTING_CSV} foreign_files=${FOREIGN_FILES_CSV} owner_lane=${OWNER_LANE} own_failures=0"
   IFS=',' read -r -a _foreign_suite_arr <<< "${FOREIGN_CSV}"
   for _s in "${_foreign_suite_arr[@]}"; do
     [[ -z "${_s}" ]] && continue
     _p8_emit decision "foreign_failure task=${TASK_ID} suite=${_s} file=${FOREIGN_FILES_CSV} owner_lane=${OWNER_LANE}"
+  done
+  IFS=',' read -r -a _pre_suite_arr <<< "${PRE_EXISTING_CSV}"
+  for _s in "${_pre_suite_arr[@]}"; do
+    [[ -z "${_s}" ]] && continue
+    _p8_emit decision "pre_existing_red task=${TASK_ID} suite=${_s} baseline=merge_base note=already_red_before_this_lane"
   done
   echo "leadv2-phase8-e2e-gate: FOREIGN_FAILURE — ${FOREIGN_CSV} not reproducible against lane's own writes (owner_lane=${OWNER_LANE}); sentinel written — see ${LOG}" >&2
   exit 0

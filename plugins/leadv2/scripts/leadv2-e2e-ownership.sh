@@ -26,6 +26,17 @@
 #   foreign=<csv>
 #   undecidable=<csv>
 #   owner_lane=<sig8|unknown>
+#   pre_existing=<csv>
+#
+# GATE-CHARGES-A-LANE-FOR-A-RED-IT-DID-NOT-CAUSE (HARNESS-COSTS-MORE-THAN-IT-
+# CATCHES-01): ownership answers "does this suite fail with only YOUR files?"
+# -- which is still yes for a suite that was ALREADY red before the lane
+# branched. Every suite classified own is therefore re-run once more against
+# the lane's own merge-base tree, with NO lane overlay at all. Fails there too
+# -> the red predates the lane -> `pre_existing`, and it leaves `own`. Only a
+# NEW red stays own. Fail-closed everywhere: no resolvable merge-base, no
+# archive, suite absent at merge-base (the lane ADDED it), or the time budget
+# spent -> the suite stays own and the lane still dies.
 # Any preparation failure (archive, scratch dir, overlay) folds every
 # blocking suite into `undecidable` — fail-closed to the caller's pre-fix
 # (kill) behaviour, never silently permissive.
@@ -36,8 +47,9 @@ TASK="${2:?task sig8 required}"
 WRITES_CSV="${3:-}"
 LOG_FILE="${4:?log file required}"
 
-_emit() { # <own_csv> <foreign_csv> <undecidable_csv> <owner_lane>
-  printf 'own=%s\nforeign=%s\nundecidable=%s\nowner_lane=%s\n' "$1" "$2" "$3" "${4:-unknown}"
+_emit() { # <own_csv> <foreign_csv> <undecidable_csv> <owner_lane> [pre_existing_csv]
+  printf 'own=%s\nforeign=%s\nundecidable=%s\nowner_lane=%s\npre_existing=%s\n' \
+    "$1" "$2" "$3" "${4:-unknown}" "${5:-}"
 }
 _join() { local IFS=,; echo "$*"; }
 
@@ -117,6 +129,67 @@ for suite in "${F[@]}"; do
   fi
 done
 
+# -- subtract the reds that predate the lane --------------------------------
+_baseline_sha() { # <root> -> prints a merge-base sha, or nothing (exit 1)
+  local root="$1" b mb
+  for b in "${LEADV2_E2E_BASELINE_REF:-}" main origin/main master origin/master; do
+    [[ -z "${b}" ]] && continue
+    git -C "${root}" rev-parse --verify --quiet "${b}" >/dev/null 2>&1 || continue
+    mb="$(git -C "${root}" merge-base HEAD "${b}" 2>/dev/null)" || continue
+    [[ -n "${mb}" ]] || continue
+    printf '%s\n' "${mb}"
+    return 0
+  done
+  return 1
+}
+
+pre_existing=()
+if [[ ${#own[@]} -gt 0 && "${LEADV2_E2E_BASELINE:-1}" != "0" ]]; then
+  base_sha="$(_baseline_sha "${ROOT}" 2>/dev/null || true)"
+  base_scratch=""
+  if [[ -n "${base_sha}" ]]; then
+    base_scratch="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-e2e-base-${TASK}-$$.XXXX" 2>/dev/null || true)"
+    if [[ -n "${base_scratch}" ]]; then
+      git -C "${ROOT}" archive "${base_sha}" 2>/dev/null | tar -x -C "${base_scratch}" 2>/dev/null \
+        || base_scratch=""
+    fi
+  fi
+  if [[ -n "${base_scratch}" ]]; then
+    trap 'rm -rf "${SCRATCH}" "${base_scratch}"' EXIT
+    budget="${LEADV2_E2E_BASELINE_BUDGET_S:-300}"
+    started="$(date +%s 2>/dev/null || echo 0)"
+    still_own=()
+    for suite in "${own[@]}"; do
+      [[ -z "${suite}" ]] && continue
+      now="$(date +%s 2>/dev/null || echo 0)"
+      if (( started > 0 && now - started >= budget )); then
+        # Budget spent. Everything left is unmeasured, so it stays own.
+        still_own+=("${suite}")   # unmeasured is not innocent
+        continue
+      fi
+      base_path=""
+      if [[ -f "${base_scratch}/${suite}" ]]; then
+        base_path="${base_scratch}/${suite}"
+      elif [[ -f "${base_scratch}/tests/unit/${suite}" ]]; then
+        base_path="${base_scratch}/tests/unit/${suite}"
+      fi
+      if [[ -z "${base_path}" ]]; then
+        # The suite does not exist at merge-base: the lane added it. A suite
+        # that did not exist cannot have been red. Stays own.
+        still_own+=("${suite}")   # absent at merge-base
+        continue
+      fi
+      if ( cd "${base_scratch}" && timeout 120 env RUN_MODE=dry_run bash "${base_path}" ) >/dev/null 2>&1; then
+        still_own+=("${suite}")        # green before the lane, red now -> NEW.
+      else
+        pre_existing+=("${suite}")     # red before the lane touched anything.
+      fi
+    done
+    own=()
+    [[ ${#still_own[@]} -gt 0 ]] && own=("${still_own[@]}")
+  fi
+fi
+
 owner_lane="unknown"
 if [[ ${#foreign[@]} -gt 0 ]]; then
   mapfile -t all_changed < <(
@@ -159,4 +232,5 @@ if [[ ${#foreign[@]} -gt 0 ]]; then
   fi
 fi
 
-_emit "$(_join "${own[@]:-}")" "$(_join "${foreign[@]:-}")" "$(_join "${undecidable[@]:-}")" "${owner_lane}"
+_emit "$(_join "${own[@]:-}")" "$(_join "${foreign[@]:-}")" "$(_join "${undecidable[@]:-}")" \
+  "${owner_lane}" "$(_join "${pre_existing[@]:-}")"

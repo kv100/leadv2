@@ -467,6 +467,7 @@ SUITE_DEFS=(
   "plugin reliability-02 (zombie-reaper: run_dir arg + group signaling + ordering + TASK)|||bash $TEST_DIR/test-plugin-reliability-02.sh"
   "plan-followups-01|||bash $TEST_DIR/test-plan-followups-01.sh"
   "e2e gate arch-01 (lane-tree testing)|||bash $TEST_DIR/test-e2e-gate-arch-01.sh"
+  "e2e gate ignores pre-existing red|||bash $TEST_DIR/test-e2e-gate-ignores-pre-existing-red.sh"
   # parallel (round 2): not on _CORE_OFFLINE_OWNED_SUITES; every case uses its
   # own mktemp -d sandbox (incl. a sandboxed HOME), no shared lock/port.
   # serial WITH A DEATH DATE, not a return to the old placement (measured

@@ -710,3 +710,47 @@ mutations:
       regardless of the suite's actual state on either tree
     expected: killed
     note: "measured 2026-09-05 via leadv2-mutation-control.sh (working-tree snapshot, baseline-green gate passed first): killed, rc=0. This is control (B), the paired negative that matters -- without it, control (A) (inherited-red SKIPs) could pass on a classifier that always answers SKIP_RED, silently opening the falsification gate to any lane-introduced regression. Under the mutation, case (B) (green on baseline, red only in the lane) flips from the required FAIL row to a SKIP row, and the suite goes red proving the wiring -- not just the classifier's own logic -- is what's under test"
+
+  - id: gate-blames-the-lane-for-a-red-it-inherited
+    product_flow: "the e2e gate (leadv2-dispatch-product-close.sh / leadv2-phase8-e2e-gate.sh) kills a lane on reason=e2e_regression. Ownership alone asks 'does this suite fail with only YOUR files?', which is still yes for a suite that was ALREADY red before the lane branched -- so main's inherited reds were charged to whoever dispatched next. HARNESS-COSTS-MORE-THAN-IT-CATCHES-01 re-runs every own-classified suite against the lane's own merge-base tree and moves the ones already red there into pre_existing. The paired obligation is the other colour: a suite the lane genuinely broke must still land in own and must still kill the lane"
+    file: plugins/leadv2/scripts/leadv2-e2e-ownership.sh
+    suite: plugins/leadv2/scripts/tests/test-e2e-gate-ignores-pre-existing-red.sh
+    anchor: |
+      still_own+=("${suite}")        # green before the lane, red now -> NEW.
+    patch: |
+      s|still_own+=("\${suite}")        # green before|pre_existing+=("\${suite}")  # green before|
+      -- a suite that was GREEN at merge-base and is red now gets filed as pre-existing,
+      i.e. every lane-caused regression is laundered and the gate stops killing
+
+  - id: gate-launders-a-suite-the-lane-itself-added
+    product_flow: "the e2e gate (leadv2-dispatch-product-close.sh / leadv2-phase8-e2e-gate.sh) kills a lane on reason=e2e_regression. Ownership alone asks 'does this suite fail with only YOUR files?', which is still yes for a suite that was ALREADY red before the lane branched -- so main's inherited reds were charged to whoever dispatched next. HARNESS-COSTS-MORE-THAN-IT-CATCHES-01 re-runs every own-classified suite against the lane's own merge-base tree and moves the ones already red there into pre_existing. The paired obligation is the other colour: a suite the lane genuinely broke must still land in own and must still kill the lane"
+    file: plugins/leadv2/scripts/leadv2-e2e-ownership.sh
+    suite: plugins/leadv2/scripts/tests/test-e2e-gate-ignores-pre-existing-red.sh
+    anchor: |
+      still_own+=("${suite}")   # absent at merge-base
+    patch: |
+      s|still_own+=("\${suite}")   # absent at merge-base|pre_existing+=("\${suite}")   # absent|
+      -- a suite the lane ADDED cannot have been red before it existed; treating it as
+      pre-existing excuses brand-new breakage
+
+  - id: gate-fails-open-when-the-baseline-budget-is-spent
+    product_flow: "the e2e gate (leadv2-dispatch-product-close.sh / leadv2-phase8-e2e-gate.sh) kills a lane on reason=e2e_regression. Ownership alone asks 'does this suite fail with only YOUR files?', which is still yes for a suite that was ALREADY red before the lane branched -- so main's inherited reds were charged to whoever dispatched next. HARNESS-COSTS-MORE-THAN-IT-CATCHES-01 re-runs every own-classified suite against the lane's own merge-base tree and moves the ones already red there into pre_existing. The paired obligation is the other colour: a suite the lane genuinely broke must still land in own and must still kill the lane"
+    file: plugins/leadv2/scripts/leadv2-e2e-ownership.sh
+    suite: plugins/leadv2/scripts/tests/test-e2e-gate-ignores-pre-existing-red.sh
+    anchor: |
+      still_own+=("${suite}")   # unmeasured is not innocent
+    patch: |
+      s|still_own+=("\${suite}")   # unmeasured is not innocent|pre_existing+=("\${suite}")   # unmeasured|
+      -- once LEADV2_E2E_BASELINE_BUDGET_S is spent the remaining suites are UNMEASURED,
+      and unmeasured must never mean innocent
+
+  - id: gate-never-recognises-an-inherited-red
+    product_flow: "the e2e gate (leadv2-dispatch-product-close.sh / leadv2-phase8-e2e-gate.sh) kills a lane on reason=e2e_regression. Ownership alone asks 'does this suite fail with only YOUR files?', which is still yes for a suite that was ALREADY red before the lane branched -- so main's inherited reds were charged to whoever dispatched next. HARNESS-COSTS-MORE-THAN-IT-CATCHES-01 re-runs every own-classified suite against the lane's own merge-base tree and moves the ones already red there into pre_existing. The paired obligation is the other colour: a suite the lane genuinely broke must still land in own and must still kill the lane"
+    file: plugins/leadv2/scripts/leadv2-e2e-ownership.sh
+    suite: plugins/leadv2/scripts/tests/test-e2e-gate-ignores-pre-existing-red.sh
+    anchor: |
+      pre_existing+=("${suite}")     # red before the lane touched anything.
+    patch: |
+      s|pre_existing+=("\${suite}")     # red before|still_own+=("\${suite}")     # red before|
+      -- the subtraction itself disabled: back to charging every lane for main's
+      inherited reds, which is exactly the pre-fix behaviour

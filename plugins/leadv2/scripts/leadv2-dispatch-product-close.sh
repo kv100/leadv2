@@ -3128,7 +3128,7 @@ else
     # against a lane-only scratch tree, see leadv2-e2e-ownership.sh). Own
     # failures ALWAYS win over foreign ones -- a lane can never launder its
     # own regression behind someone else's unfinished file.
-    _own_csv=""; _foreign_csv=""; _undecidable_csv=""; _owner_lane="unknown"
+    _own_csv=""; _foreign_csv=""; _undecidable_csv=""; _owner_lane="unknown"; _pre_existing_csv=""
     if [[ "${_e2e_ownership}" == "1" && -n "${WRITES_CSV}" ]]; then
       # C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): pass the validated e2e root
       # (the lane's worktree) so the overlay copies the lane's ACTUAL working
@@ -3138,13 +3138,16 @@ else
       _foreign_csv="$(sed -n 's/^foreign=//p' <<< "${_own_out}")"
       _undecidable_csv="$(sed -n 's/^undecidable=//p' <<< "${_own_out}")"
       _owner_lane="$(sed -n 's/^owner_lane=//p' <<< "${_own_out}")"
+      _pre_existing_csv="$(sed -n 's/^pre_existing=//p' <<< "${_own_out}")"
       [[ -z "${_owner_lane}" ]] && _owner_lane="unknown"
     fi
 
-    if [[ -n "${_foreign_csv}" && -z "${_own_csv}" && -z "${_undecidable_csv}" ]]; then
-      # Pure foreign failure: not a single blocking suite reproduces against
-      # this lane's own write set alone. Do NOT kill the lane -- but never
-      # swallow the red suite silently either (loudness contract below).
+    if [[ ( -n "${_foreign_csv}" || -n "${_pre_existing_csv}" ) && -z "${_own_csv}" && -z "${_undecidable_csv}" ]]; then
+      # Nothing the lane CAUSED. Either the failure belongs to another lane's
+      # uncommitted edit (foreign), or the suite was already red at this lane's
+      # own merge-base (pre_existing -- HARNESS-COSTS-MORE-THAN-IT-CATCHES-01).
+      # Do NOT kill the lane -- but never swallow the red suite silently
+      # either (loudness contract below).
       IFS=',' read -r -a _lane_writes <<< "${WRITES_CSV}"
       mapfile -t _all_changed < <(
         { git -C "${_lv2_e2e_root}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
@@ -3160,13 +3163,21 @@ else
       _foreign_files_csv="$(IFS=,; echo "${_foreign_files[*]:-}")"
       printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: lane_writes\nbypassed: false\nforeign_failures: %s\n' \
         "${TASK}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_foreign_csv}" > "${HANDOFF}/e2e-gate-passed.flag"
-      printf 'status: fail_foreign\nreason: foreign_failure\nforeign_suites: %s\nforeign_files: %s\nowner_lane: %s\n' \
-        "${_foreign_csv}" "${_foreign_files_csv}" "${_owner_lane}" > "${HANDOFF}/e2e-gate.md"
-      emit decision "e2e_gate task=${TASK} status=ran verdict=foreign_failure scope=lane_writes foreign_suites=${_foreign_csv} foreign_files=${_foreign_files_csv} owner_lane=${_owner_lane} own_failures=0"
+      printf 'status: fail_foreign\nreason: foreign_failure\nforeign_suites: %s\nforeign_files: %s\nowner_lane: %s\npre_existing_suites: %s\n' \
+        "${_foreign_csv}" "${_foreign_files_csv}" "${_owner_lane}" "${_pre_existing_csv}" > "${HANDOFF}/e2e-gate.md"
+      _e2e_verdict="foreign_failure"
+      [[ -z "${_foreign_csv}" ]] && _e2e_verdict="pre_existing_red"
+      emit decision "e2e_gate task=${TASK} status=ran verdict=${_e2e_verdict} scope=lane_writes foreign_suites=${_foreign_csv} pre_existing_suites=${_pre_existing_csv} foreign_files=${_foreign_files_csv} owner_lane=${_owner_lane} own_failures=0"
       IFS=',' read -r -a _foreign_suite_arr <<< "${_foreign_csv}"
       for _s in "${_foreign_suite_arr[@]}"; do
         [[ -z "${_s}" ]] && continue
         emit decision "foreign_failure task=${TASK} suite=${_s} file=${_foreign_files_csv} owner_lane=${_owner_lane}"
+      done
+      # Loudness: a pre-existing red is not the lane's fault and not invisible.
+      IFS=',' read -r -a _pre_suite_arr <<< "${_pre_existing_csv}"
+      for _s in "${_pre_suite_arr[@]}"; do
+        [[ -z "${_s}" ]] && continue
+        emit decision "pre_existing_red task=${TASK} suite=${_s} baseline=merge_base note=already_red_before_this_lane"
       done
       # NOT dead, NOT exit 8 -- falls through to the review gate below.
     else
