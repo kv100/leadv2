@@ -126,3 +126,27 @@ e3b0c442 (пустой sha256)       main_files=4   commits=1
 Подтверждающий коммит с правкой, а не с отчётом:
 `ad4be1e3 fix(mutation-control): an empty lane diff is a refusal, not an identity`.
 Это ровно то, что строка требовала, и это правка кода, а не документа.
+
+---
+
+## 4. `W1-LAND-STRANDED-8F14220D` — **лёг**, и отчёт честен насчёт границ
+
+Особый случай: отчёт **сам** говорит, что кода он не приносил — код уже был на main
+(`2e34cd9d`, четырёхфайловый патч из перебазированного коммита линии `093620ad`), а этот
+коммит добавляет только отчёт и улики. Проверила обе половины:
+
+```
+git merge-base --is-ancestor 2e34cd9d main && echo YES          # YES
+for t in test-idle-lead-guard test-phase-precondition \
+         test-lane-diff-single-repo test-injector-dedup; do
+  git ls-tree -r main --name-only | grep -c "/$t.sh$"; done      # 1 1 1 1
+```
+
+Все четыре сюиты в main. Отчёт при этом прямо пишет: «Verification is partial: current main
+has two red target suites; no all-green claim» — то есть он не выдаёт себя за зелёный, и это
+редкий и правильный случай, который не надо путать с формой 09-04.
+
+Замечание в сторону, не входящее в пятёрку: одна из этих двух краснот мне уже известна —
+`test-idle-lead-guard.sh` падает детерминированно, потому что сам гвард не зарегистрирован в
+`hooks/hooks.json`. Строка `IDLE-LEAD-GUARD-IS-NOT-REGISTERED-01` уже заведена, здесь не
+трогаю.
