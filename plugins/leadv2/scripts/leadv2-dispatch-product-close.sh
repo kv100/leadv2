@@ -2340,6 +2340,26 @@ _pc_diff_base() {  # <repo_abs> -> a rev to diff FROM on stdout; empty stdout =>
   fi
 }
 
+# CLOSE-GATE-CALLS-A-FINISHED-LANE-no_work-01: a re-dispatch records a FRESH
+# LEADV2_LANE_START_SHA/cache file at the CURRENT tip before the worker runs
+# again -- so when that tip already contains the previous round's real,
+# committed work (worker exits without touching the tree this round),
+# merge-base(sha, HEAD) degenerates to HEAD itself and _pc_diff_base above
+# returns a base whose diff is empty by construction, even though the branch
+# carries real commits main has never seen (the origin/main fallback inside
+# _pc_diff_base never fires here because the start-sha candidate resolved
+# fine -- it just resolved to the wrong fact). origin/main is truth-independent
+# of any recorded start-sha and must be consulted UNCONDITIONALLY, not only
+# when the start-sha candidate fails outright. Reproduced in
+# test-close-gate-nowork-abandoned.sh Case A; the 2026-09-04 lane
+# (DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01) matches this shape exactly.
+_pc_diff_base_main() {  # <repo_abs> -> merge-base(origin/main, HEAD) if resolvable, else empty
+  local repo="$1" base
+  git -C "${repo}" cat-file -e "origin/main^{commit}" 2>/dev/null || return 0
+  base="$(git -C "${repo}" merge-base origin/main HEAD 2>/dev/null || true)"
+  [[ -n "${base}" ]] && printf '%s' "${base}"
+}
+
 # _pc_repo_diff runs inside a `repo_diff="$(...)"` command substitution at every call site,
 # i.e. its own subshell -- a plain variable it set would never reach the caller. Record
 # which base it picked (HEAD, or an abbreviated sha) to a file instead, mirroring the
@@ -2353,7 +2373,7 @@ _pc_last_diff_base() { cat "${_PC_LAST_BASE_FILE}" 2>/dev/null || printf 'HEAD';
 # -- it cannot regress any arm below today's HEAD-diff baseline by construction.
 _pc_repo_diff() { # <repo_abs> <path...> -> diff on stdout (tracked + untracked + deletions)
   local repo="$1"; shift
-  local base head_out base_out chosen
+  local base mbase head_out base_out main_out chosen winner
   head_out="$(_pc_git_diff "${repo}" HEAD "$@")"
   base="$(_pc_diff_base "${repo}")"
   if [[ -n "${base}" ]]; then
@@ -2361,13 +2381,30 @@ _pc_repo_diff() { # <repo_abs> <path...> -> diff on stdout (tracked + untracked 
   else
     base_out=""
   fi
-  if [[ ${#base_out} -gt ${#head_out} ]]; then
-    chosen="${base:0:8}"
-    printf '%s' "${base_out}"
+  # Third, independent candidate (CLOSE-GATE-CALLS-A-FINISHED-LANE-no_work-01):
+  # origin/main, consulted unconditionally -- not only when ${base} failed to
+  # resolve -- because a start-sha that resolves fine can still resolve to a
+  # tip that already contains the branch's own prior work (re-dispatch), which
+  # makes ${base_out} empty for the wrong reason. Skip the recompute when it's
+  # the same commit as ${base} (already covered by base_out above).
+  mbase="$(_pc_diff_base_main "${repo}")"
+  if [[ -n "${mbase}" && "${mbase}" != "${base}" ]]; then
+    main_out="$(_pc_git_diff "${repo}" "${mbase}" "$@")"
   else
-    chosen="HEAD"
-    printf '%s' "${head_out}"
+    main_out=""
   fi
+  # `chosen` is fed straight into `_pc_git_diff_names "${diff_root}"
+  # "${_pc_base_used}"` and the drift-widen `_pc_git_diff` call downstream
+  # (both need a real, resolvable revision) -- so it MUST stay a bare rev
+  # (abbreviated sha or the literal HEAD), never a labeled/prefixed string.
+  chosen="HEAD"; winner="${head_out}"
+  if [[ ${#base_out} -gt ${#winner} ]]; then
+    chosen="${base:0:8}"; winner="${base_out}"
+  fi
+  if [[ ${#main_out} -gt ${#winner} ]]; then
+    chosen="${mbase:0:8}"; winner="${main_out}"
+  fi
+  printf '%s' "${winner}"
   printf '%s' "${chosen}" > "${_PC_LAST_BASE_FILE}" 2>/dev/null || true
 }
 if [[ -n "${WRITES_CSV}" ]]; then
