@@ -1,0 +1,15 @@
+after-idle-lead-guard.log: summary=19/0; explicit_failure_lines=0; unique_failure_texts=0; ZERO_CROSSCHECK=PASS
+after-injector-dedup.log: summary=10/0; explicit_failure_lines=0; unique_failure_texts=0; ZERO_CROSSCHECK=PASS
+after-lane-diff-single-repo.log: summary=5/0; explicit_failure_lines=0; unique_failure_texts=0; ZERO_CROSSCHECK=PASS
+after-phase-precondition.log: summary=80/2; explicit_failure_lines=2; unique_failure_texts=2
+after-t14-effort-low.log: summary=21/1; explicit_failure_lines=2; unique_failure_texts=2
+after-t14-worker-mcp.log: summary=21/1; explicit_failure_lines=2; unique_failure_texts=2
+before-idle-lead-guard.log: summary=19/0; explicit_failure_lines=0; unique_failure_texts=0; ZERO_CROSSCHECK=PASS
+before-injector-dedup.log: summary=10/0; explicit_failure_lines=0; unique_failure_texts=0; ZERO_CROSSCHECK=PASS
+before-lane-diff-single-repo.log: summary=5/0; explicit_failure_lines=0; unique_failure_texts=0; ZERO_CROSSCHECK=PASS
+before-phase-precondition.log: summary=81/1; explicit_failure_lines=1; unique_failure_texts=1
+before-t14-effort-low.log: summary=20/2; explicit_failure_lines=4; unique_failure_texts=4
+before-t14-worker-mcp.log: summary=21/1; explicit_failure_lines=2; unique_failure_texts=2
+current-without-phase-precondition.log: summary=78/4; explicit_failure_lines=4; unique_failure_texts=4
+current-without-t14-worker-mcp.log: summary=21/1; explicit_failure_lines=2; unique_failure_texts=2
+rebased-phase-precondition.log: summary=82/0; explicit_failure_lines=0; unique_failure_texts=0; ZERO_CROSSCHECK=PASS

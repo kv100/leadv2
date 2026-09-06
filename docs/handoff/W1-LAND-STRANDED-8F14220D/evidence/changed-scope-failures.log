@@ -1,0 +1,18 @@
+phase record round-trip
+core-offline cross-run exclusive lock (SUITE-SPEED-01)
+shared-sink test guard (TESTS-POLLUTE-REAL-JOURNAL-01)
+lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)
+landed-at-spawn (no terminal=landed at spawn; target repo keying)
+dispatch arm vocabulary (kimi retirement)
+phase precondition guard matrix
+T14 worker MCP (glm spawn role config)
+plugin reliability-02 (zombie-reaper: run_dir arg + group signaling + ordering + TASK)
+hook token + mode isolation
+Phase-8 merge/completion proof
+deferred-GLM ladder (V3-GLM-LADDER-01)
+dispatch refusal fallback chain
+product-close waits for worker exit
+Codex full-cycle runner
+lanes snapshot reconciliation
+lane truth batch (log_path + quarantine convergence)
+No aggregate completion summary: outer timeout returned 124. Serial-tail transcript is incomplete.

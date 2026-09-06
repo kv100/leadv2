@@ -1,0 +1,14 @@
+[TEST] PASS: hook scripts parse
+[TEST] PASS: (a) first turn: task-anchor emits a full injection (active-task path confirmed)
+[TEST] PASS: (b) second turn unchanged: stub, 4 line(s) <=5, active-task path confirmed
+[TEST] PASS: (c) changed state: full re-inject reflects the new goal, active-task path confirmed
+[TEST] PASS: (c.delta) turn after a full re-inject collapses back to the stub
+[TEST] PASS: (d) unwritable state sidecar: fail-open to full injection
+[TEST] PASS: (e) default handoff: true duplicate suppressed, unique content preserved
+[TEST] PASS: (e control) LEADV2_ANCHOR_OWNS_CONTEXT=0 legacy path byte-identical to the checked-in 9e9677b golden
+/Users/kostiantyn.vlasenko/Projects/leadv2/plugins/leadv2/hooks/leadv2-user-prompt-context.sh: line 167: phase: command not found
+[TEST] PASS: multisession: 4th session (note+blocked_by) reaches output
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//leadv2-injector-dedup.c8tbo9/hooks-mut/leadv2-user-prompt-context.sh: line 167: phase: command not found
+[TEST] PASS: multisession negative-control red (cap reintroduced => 4th session lost)
+[TEST] Results: PASS=10 FAIL=0
+process_rc=0

@@ -1,0 +1,579 @@
+
+[CORE-OFFLINE] dispatch refusal fallback chain
+PASS: quota gate emits machine-readable reroute marker
+PASS: quota gate emits machine-readable peak marker
+FAIL: quota refusal advances chain -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=8b072639 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=derived task=8b072639
+[leadv2-dispatch-code] brain_decision task=8b072639 class=Light class_source=computed phases=classify,build,test,review,close reason=no_explicit_class
+[leadv2-dispatch-code] cost_estimate_recorded task=8b072639 founder_task=8b072639 complexity=simple duration_class=short phase=pre_arm_selection path=docs/handoff/8b072639/cost-estimate.yaml
+[leadv2-dispatch-code] dispatch_classified task=8b072639 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] phase_precondition_warn task=8b072639 class=Light missing=classify,build,test,review,close mode=warn
+[leadv2-dispatch-code] protection_derived by=router task=8b072639 writes=<none> write_class=unknown writes_protected=1 manual_protected=0 effective_protected=1
+[leadv2-dispatch-code] arm_resolved job=build arm=sonnet reason=safety_gate_publish_payments complexity=simple duration_class=short
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=8b072639 reason=protected_path
+[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start
+[leadv2-dispatch-code] freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=8b072639
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=high task=8b072639 reason=cheapest_capable arbiter_pick=sonnet util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=down reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe arm_excluded=codex:not_allowed,freepool:untrusted,glm:not_allowed,glm-flash:untrusted arb_rev=1db32e0cbbaa matrix_rev=63a8c1755e3f floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=simple duration_class=short complexity_policy=none remaining=unknown reset_in=n/a reset_basis=n/a freepool_gate=arm_down probe_outage=glm,codex,claude failure_memory=unavailable
+[leadv2-dispatch-code] candidate_chain task=8b072639 arms=sonnet
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=8b072639 var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=8b072639 var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[leadv2-dispatch-code] code_intel_preamble arm=sonnet task=8b072639 mode=skipped reason=fail_open cause=resolve_role_mcp_config_rc=12
+[leadv2-dispatch-code] spawn_failed by=router model=sonnet task=8b072639 rc=99 reason=launcher_nonzero_exit
+[leadv2-dispatch-code] ERROR: spawn(sonnet) failed rc=99:  POISON: real provider spawn attempted
+[leadv2-dispatch-code] ERROR: spawn(sonnet) full launcher stderr preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.pX71Nd/leadv2-dispatch-spawn-8b072639.stderr.log
+
+[leadv2-dispatch-code] dispatch_rolled_back reason=all_arms_unavailable task=8b072639 attempts=sonnet_failed_launcher
+[leadv2-dispatch-code] model_select_telemetry task=8b072639 role=worker class=light work_kind=build arm=sonnet model=sonnet fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_unavailable
+[leadv2-dispatch-code] ERROR: all eligible dispatch arms declined or failed for task=8b072639: sonnet_failed_launcher
+[leadv2-dispatch-code] active_lane_released task=8b072639 id=dispatch-8b072639 where=exit_trap rows=1 removed=1 live_worker_kept=0
+FAIL: peak-hours refusal advances chain -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=0324041f reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=derived task=0324041f
+[leadv2-dispatch-code] brain_decision task=0324041f class=Light class_source=computed phases=classify,build,test,review,close reason=no_explicit_class
+[leadv2-dispatch-code] cost_estimate_recorded task=0324041f founder_task=0324041f complexity=simple duration_class=short phase=pre_arm_selection path=docs/handoff/0324041f/cost-estimate.yaml
+[leadv2-dispatch-code] dispatch_classified task=0324041f class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] phase_precondition_warn task=0324041f class=Light missing=classify,build,test,review,close mode=warn
+[leadv2-dispatch-code] protection_derived by=router task=0324041f writes=<none> write_class=unknown writes_protected=1 manual_protected=0 effective_protected=1
+[leadv2-dispatch-code] arm_resolved job=build arm=sonnet reason=safety_gate_publish_payments complexity=simple duration_class=short
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=0324041f reason=protected_path
+[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start
+[leadv2-dispatch-code] freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=0324041f
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=high task=0324041f reason=cheapest_capable arbiter_pick=sonnet util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=down reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe arm_excluded=codex:not_allowed,freepool:untrusted,glm:not_allowed,glm-flash:untrusted arb_rev=1db32e0cbbaa matrix_rev=63a8c1755e3f floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=simple duration_class=short complexity_policy=none remaining=unknown reset_in=n/a reset_basis=n/a freepool_gate=arm_down probe_outage=glm,codex,claude failure_memory=unavailable
+[leadv2-dispatch-code] candidate_chain task=0324041f arms=sonnet
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=0324041f var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=0324041f var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[leadv2-dispatch-code] code_intel_preamble arm=sonnet task=0324041f mode=skipped reason=fail_open cause=resolve_role_mcp_config_rc=12
+[leadv2-dispatch-code] spawn_failed by=router model=sonnet task=0324041f rc=99 reason=launcher_nonzero_exit
+[leadv2-dispatch-code] ERROR: spawn(sonnet) failed rc=99:  POISON: real provider spawn attempted
+[leadv2-dispatch-code] ERROR: spawn(sonnet) full launcher stderr preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.pX71Nd/leadv2-dispatch-spawn-0324041f.stderr.log
+
+[leadv2-dispatch-code] dispatch_rolled_back reason=all_arms_unavailable task=0324041f attempts=sonnet_failed_launcher
+[leadv2-dispatch-code] model_select_telemetry task=0324041f role=worker class=light work_kind=build arm=sonnet model=sonnet fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_unavailable
+[leadv2-dispatch-code] ERROR: all eligible dispatch arms declined or failed for task=0324041f: sonnet_failed_launcher
+[leadv2-dispatch-code] active_lane_released task=0324041f id=dispatch-0324041f where=exit_trap rows=1 removed=1 live_worker_kept=0
+FAIL: codex dead-arm no_first_byte spill -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=0fb1d606 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=derived task=0fb1d606
+[leadv2-dispatch-code] brain_decision task=0fb1d606 class=Light class_source=computed phases=classify,build,test,review,close reason=no_explicit_class
+[leadv2-dispatch-code] cost_estimate_recorded task=0fb1d606 founder_task=0fb1d606 complexity=simple duration_class=short phase=pre_arm_selection path=docs/handoff/0fb1d606/cost-estimate.yaml
+[leadv2-dispatch-code] dispatch_classified task=0fb1d606 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] phase_precondition_warn task=0fb1d606 class=Light missing=classify,build,test,review,close mode=warn
+[leadv2-dispatch-code] protection_derived by=router task=0fb1d606 writes=<none> write_class=unknown writes_protected=1 manual_protected=0 effective_protected=1
+[leadv2-dispatch-code] arm_resolved job=build arm=sonnet reason=safety_gate_publish_payments complexity=simple duration_class=short
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=0fb1d606 reason=protected_path
+[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start
+[leadv2-dispatch-code] freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=0fb1d606
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=high task=0fb1d606 reason=cheapest_capable arbiter_pick=sonnet util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=down reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe arm_excluded=codex:not_allowed,freepool:untrusted,glm:not_allowed,glm-flash:untrusted arb_rev=1db32e0cbbaa matrix_rev=63a8c1755e3f floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=simple duration_class=short complexity_policy=none remaining=unknown reset_in=n/a reset_basis=n/a freepool_gate=arm_down probe_outage=glm,codex,claude failure_memory=unavailable
+[leadv2-dispatch-code] candidate_chain task=0fb1d606 arms=sonnet
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=0fb1d606 var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=0fb1d606 var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[leadv2-dispatch-code] code_intel_preamble arm=sonnet task=0fb1d606 mode=skipped reason=fail_open cause=resolve_role_mcp_config_rc=12
+[leadv2-dispatch-code] spawn_failed by=router model=sonnet task=0fb1d606 rc=42 reason=launcher_nonzero_exit
+[leadv2-dispatch-code] ERROR: spawn(sonnet) failed rc=42:  simulated launcher crash
+[leadv2-dispatch-code] ERROR: spawn(sonnet) full launcher stderr preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.pX71Nd/leadv2-dispatch-spawn-0fb1d606.stderr.log
+
+[leadv2-dispatch-code] dispatch_rolled_back reason=all_arms_unavailable task=0fb1d606 attempts=sonnet_failed_launcher
+[leadv2-dispatch-code] model_select_telemetry task=0fb1d606 role=worker class=light work_kind=build arm=sonnet model=sonnet fallback_depth=0 floor=none spawn_to_terminal_s=2 terminal=fail cause=all_arms_unavailable
+[leadv2-dispatch-code] ERROR: all eligible dispatch arms declined or failed for task=0fb1d606: sonnet_failed_launcher
+[leadv2-dispatch-code] active_lane_released task=0fb1d606 id=dispatch-0fb1d606 where=exit_trap rows=1 removed=1 live_worker_kept=0
+FAIL: launcher crash remains failure -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=947b8269 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=derived task=947b8269
+[leadv2-dispatch-code] brain_decision task=947b8269 class=Light class_source=computed phases=classify,build,test,review,close reason=no_explicit_class
+[leadv2-dispatch-code] cost_estimate_recorded task=947b8269 founder_task=947b8269 complexity=simple duration_class=short phase=pre_arm_selection path=docs/handoff/947b8269/cost-estimate.yaml
+[leadv2-dispatch-code] dispatch_classified task=947b8269 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] phase_precondition_warn task=947b8269 class=Light missing=classify,build,test,review,close mode=warn
+[leadv2-dispatch-code] protection_derived by=router task=947b8269 writes=<none> write_class=unknown writes_protected=1 manual_protected=0 effective_protected=1
+[leadv2-dispatch-code] arm_resolved job=build arm=sonnet reason=safety_gate_publish_payments complexity=simple duration_class=short
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=947b8269 reason=protected_path
+[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start
+[leadv2-dispatch-code] freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=947b8269
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=high task=947b8269 reason=cheapest_capable arbiter_pick=sonnet util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=down reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe arm_excluded=codex:not_allowed,freepool:untrusted,glm:not_allowed,glm-flash:untrusted arb_rev=1db32e0cbbaa matrix_rev=63a8c1755e3f floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=simple duration_class=short complexity_policy=none remaining=unknown reset_in=n/a reset_basis=n/a freepool_gate=arm_down probe_outage=glm,codex,claude failure_memory=unavailable
+[leadv2-dispatch-code] candidate_chain task=947b8269 arms=sonnet
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=947b8269 var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=947b8269 var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[leadv2-dispatch-code] code_intel_preamble arm=sonnet task=947b8269 mode=skipped reason=fail_open cause=resolve_role_mcp_config_rc=12
+[leadv2-dispatch-code] spawn_failed by=router model=sonnet task=947b8269 rc=42 reason=launcher_nonzero_exit
+[leadv2-dispatch-code] ERROR: spawn(sonnet) failed rc=42:  simulated launcher crash
+[leadv2-dispatch-code] ERROR: spawn(sonnet) full launcher stderr preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.pX71Nd/leadv2-dispatch-spawn-947b8269.stderr.log
+
+[leadv2-dispatch-code] dispatch_rolled_back reason=all_arms_unavailable task=947b8269 attempts=sonnet_failed_launcher
+[leadv2-dispatch-code] model_select_telemetry task=947b8269 role=worker class=light work_kind=build arm=sonnet model=sonnet fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_unavailable
+[leadv2-dispatch-code] ERROR: all eligible dispatch arms declined or failed for task=947b8269: sonnet_failed_launcher
+[leadv2-dispatch-code] active_lane_released task=947b8269 id=dispatch-947b8269 where=exit_trap rows=1 removed=1 live_worker_kept=0
+FAIL: duplicate dispatch refusal -- first_rc=4 second_rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=0aa7889a reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=derived task=0aa7889a
+[leadv2-dispatch-code] brain_decision task=0aa7889a class=Light class_source=computed phases=classify,build,test,review,close reason=no_explicit_class
+[leadv2-dispatch-code] cost_estimate_recorded task=0aa7889a founder_task=0aa7889a complexity=simple duration_class=short phase=pre_arm_selection path=docs/handoff/0aa7889a/cost-estimate.yaml
+[leadv2-dispatch-code] dispatch_classified task=0aa7889a class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] phase_precondition_warn task=0aa7889a class=Light missing=classify,build,test,review,close mode=warn
+[leadv2-dispatch-code] protection_derived by=router task=0aa7889a writes=<none> write_class=unknown writes_protected=1 manual_protected=0 effective_protected=1
+[leadv2-dispatch-code] arm_resolved job=build arm=sonnet reason=safety_gate_publish_payments complexity=simple duration_class=short
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=0aa7889a reason=protected_path
+[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start
+[leadv2-dispatch-code] freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=0aa7889a
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=high task=0aa7889a reason=cheapest_capable arbiter_pick=sonnet util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=down reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe arm_excluded=codex:not_allowed,freepool:untrusted,glm:not_allowed,glm-flash:untrusted arb_rev=1db32e0cbbaa matrix_rev=63a8c1755e3f floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=simple duration_class=short complexity_policy=none remaining=unknown reset_in=n/a reset_basis=n/a freepool_gate=arm_down probe_outage=glm,codex,claude failure_memory=unavailable
+[leadv2-dispatch-code] candidate_chain task=0aa7889a arms=sonnet
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=0aa7889a var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=0aa7889a var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[leadv2-dispatch-code] code_intel_preamble arm=sonnet task=0aa7889a mode=skipped reason=fail_open cause=resolve_role_mcp_config_rc=12
+[leadv2-dispatch-code] spawn_failed by=router model=sonnet task=0aa7889a rc=99 reason=launcher_nonzero_exit
+[leadv2-dispatch-code] ERROR: spawn(sonnet) failed rc=99:  POISON: real provider spawn attempted
+[leadv2-dispatch-code] ERROR: spawn(sonnet) full launcher stderr preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.pX71Nd/leadv2-dispatch-spawn-0aa7889a.stderr.log
+
+[leadv2-dispatch-code] dispatch_rolled_back reason=all_arms_unavailable task=0aa7889a attempts=sonnet_failed_launcher
+[leadv2-dispatch-code] model_select_telemetry task=0aa7889a role=worker class=light work_kind=build arm=sonnet model=sonnet fallback_depth=0 floor=none spawn_to_terminal_s=2 terminal=fail cause=all_arms_unavailable
+[leadv2-dispatch-code] ERROR: all eligible dispatch arms declined or failed for task=0aa7889a: sonnet_failed_launcher
+[leadv2-dispatch-code] active_lane_released task=0aa7889a id=dispatch-0aa7889a where=exit_trap rows=1 removed=1 live_worker_kept=0 [leadv2-dispatch-code] lane_plan_skipped task=0aa7889a reason=shared_tree
+[leadv2-dispatch-code] cost_estimate_recorded task=0aa7889a founder_task=0aa7889a complexity=simple duration_class=short phase=pre_arm_selection path=docs/handoff/0aa7889a/cost-estimate.yaml
+[leadv2-dispatch-code] dispatch_classified task=0aa7889a class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] phase_precondition_warn task=0aa7889a class=Light missing=build,test,review,close mode=warn
+[leadv2-dispatch-code] protection_derived by=router task=0aa7889a writes=<none> write_class=unknown writes_protected=1 manual_protected=0 effective_protected=1
+[leadv2-dispatch-code] arm_resolved job=build arm=sonnet reason=safety_gate_publish_payments complexity=simple duration_class=short
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=0aa7889a reason=protected_path
+[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start
+[leadv2-dispatch-code] freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=0aa7889a
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=high task=0aa7889a reason=cheapest_capable arbiter_pick=sonnet util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=down reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe arm_excluded=codex:not_allowed,freepool:untrusted,glm:not_allowed,glm-flash:untrusted arb_rev=1db32e0cbbaa matrix_rev=63a8c1755e3f floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=simple duration_class=short complexity_policy=none remaining=unknown reset_in=n/a reset_basis=n/a freepool_gate=arm_down probe_outage=glm,codex,claude failure_memory=unavailable
+[leadv2-dispatch-code] candidate_chain task=0aa7889a arms=sonnet
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=0aa7889a var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=0aa7889a var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[leadv2-dispatch-code] code_intel_preamble arm=sonnet task=0aa7889a mode=skipped reason=fail_open cause=resolve_role_mcp_config_rc=12
+[leadv2-dispatch-code] spawn_failed by=router model=sonnet task=0aa7889a rc=99 reason=launcher_nonzero_exit
+[leadv2-dispatch-code] ERROR: spawn(sonnet) failed rc=99:  POISON: real provider spawn attempted
+[leadv2-dispatch-code] ERROR: spawn(sonnet) full launcher stderr preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.pX71Nd/leadv2-dispatch-spawn-0aa7889a.stderr.log
+
+[leadv2-dispatch-code] dispatch_rolled_back reason=all_arms_unavailable task=0aa7889a attempts=sonnet_failed_launcher
+[leadv2-dispatch-code] model_select_telemetry task=0aa7889a role=worker class=light work_kind=build arm=sonnet model=sonnet fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_unavailable
+[leadv2-dispatch-code] ERROR: all eligible dispatch arms declined or failed for task=0aa7889a: sonnet_failed_launcher
+[leadv2-dispatch-code] active_lane_released task=0aa7889a id=dispatch-0aa7889a where=exit_trap rows=1 removed=1 live_worker_kept=0
+PASS: record-review refuses duplicate diff hash
+FAIL: racing reserve exclusivity -- rcs=4,2 outputs=[leadv2-dispatch-code] lane_plan_skipped task=09a92cf2 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=derived task=09a92cf2
+[leadv2-dispatch-code] brain_decision task=09a92cf2 class=Light class_source=computed phases=classify,build,test,review,close reason=no_explicit_class
+[leadv2-dispatch-code] cost_estimate_recorded task=09a92cf2 founder_task=09a92cf2 complexity=simple duration_class=short phase=pre_arm_selection path=docs/handoff/09a92cf2/cost-estimate.yaml
+[leadv2-dispatch-code] dispatch_classified task=09a92cf2 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] phase_precondition_warn task=09a92cf2 class=Light missing=classify,build,test,review,close mode=warn
+[leadv2-dispatch-code] protection_derived by=router task=09a92cf2 writes=<none> write_class=unknown writes_protected=1 manual_protected=0 effective_protected=1
+[leadv2-dispatch-code] arm_resolved job=build arm=sonnet reason=safety_gate_publish_payments complexity=simple duration_class=short
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=09a92cf2 reason=protected_path
+[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start
+[leadv2-dispatch-code] freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=09a92cf2
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=high task=09a92cf2 reason=cheapest_capable arbiter_pick=sonnet util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=down reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe arm_excluded=codex:not_allowed,freepool:untrusted,glm:not_allowed,glm-flash:untrusted arb_rev=1db32e0cbbaa matrix_rev=63a8c1755e3f floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=simple duration_class=short complexity_policy=none remaining=unknown reset_in=n/a reset_basis=n/a freepool_gate=arm_down probe_outage=glm,codex,claude failure_memory=unavailable
+[leadv2-dispatch-code] candidate_chain task=09a92cf2 arms=sonnet
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=09a92cf2 var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=09a92cf2 var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[leadv2-dispatch-code] code_intel_preamble arm=sonnet task=09a92cf2 mode=skipped reason=fail_open cause=resolve_role_mcp_config_rc=12
+[leadv2-dispatch-code] spawn_failed by=router model=sonnet task=09a92cf2 rc=99 reason=launcher_nonzero_exit
+[leadv2-dispatch-code] ERROR: spawn(sonnet) failed rc=99:  POISON: real provider spawn attempted
+[leadv2-dispatch-code] ERROR: spawn(sonnet) full launcher stderr preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.pX71Nd/leadv2-dispatch-spawn-09a92cf2.stderr.log
+
+[leadv2-dispatch-code] dispatch_rolled_back reason=all_arms_unavailable task=09a92cf2 attempts=sonnet_failed_launcher
+[leadv2-dispatch-code] model_select_telemetry task=09a92cf2 role=worker class=light work_kind=build arm=sonnet model=sonnet fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_unavailable
+[leadv2-dispatch-code] ERROR: all eligible dispatch arms declined or failed for task=09a92cf2: sonnet_failed_launcher
+[leadv2-dispatch-code] active_lane_release_skipped task=09a92cf2 id=dispatch-09a92cf2 where=exit_trap reason=not_owner_row_intact rows=0 removed=0 live_worker_kept=0 [leadv2-dispatch-code] lane_plan_skipped task=09a92cf2 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=derived task=09a92cf2
+[leadv2-dispatch-code] brain_decision task=09a92cf2 class=Light class_source=computed phases=classify,build,test,review,close reason=no_explicit_class
+[leadv2-dispatch-code] cost_estimate_recorded task=09a92cf2 founder_task=09a92cf2 complexity=simple duration_class=short phase=pre_arm_selection path=docs/handoff/09a92cf2/cost-estimate.yaml
+[leadv2-dispatch-code] dispatch_classified task=09a92cf2 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] phase_precondition_warn task=09a92cf2 class=Light missing=classify,build,test,review,close mode=warn
+[leadv2-dispatch-code] protection_derived by=router task=09a92cf2 writes=<none> write_class=unknown writes_protected=1 manual_protected=0 effective_protected=1
+[leadv2-dispatch-code] arm_resolved job=build arm=sonnet reason=safety_gate_publish_payments complexity=simple duration_class=short
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=09a92cf2 reason=protected_path
+[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start
+[leadv2-dispatch-code] freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=09a92cf2
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=high task=09a92cf2 reason=cheapest_capable arbiter_pick=sonnet util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=down reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe arm_excluded=codex:not_allowed,freepool:untrusted,glm:not_allowed,glm-flash:untrusted arb_rev=1db32e0cbbaa matrix_rev=63a8c1755e3f floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=simple duration_class=short complexity_policy=none remaining=unknown reset_in=n/a reset_basis=n/a freepool_gate=arm_down probe_outage=glm,codex,claude failure_memory=unavailable
+[leadv2-dispatch-code] candidate_chain task=09a92cf2 arms=sonnet
+[leadv2-dispatch-code] dispatch_refused reason=duplicate_task_signature task=09a92cf2 ledger=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.pfRZVGIlL2/race-cache/dispatch-ledger/race-root.jsonl
+dispatch_refused reason=duplicate_task_signature task=09a92cf2
+[leadv2-dispatch-code] active_lane_released task=09a92cf2 id=dispatch-09a92cf2 where=exit_trap rows=1 removed=1 live_worker_kept=0
+PASS: ladder order from yaml, dispatch:false entries excluded: resolved glm → candidates glm (no kimi)
+FAIL: quota precheck skip -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=e94410d5 reason=shared_tree
+⚠ PRIMARY ARM BENCHED: glm for 1440m (class=unknown, until 1788752776) — cause: test_quota_lockout
+[leadv2-dispatch-code] primary_arm_benched provider=glm arm=glm class=unknown minutes=1440 until=1788752776 source=test_quota_lockout task=e94410d5
+[leadv2-dispatch-code] task_class=Light route=dispatch source=derived task=e94410d5
+[leadv2-dispatch-code] brain_decision task=e94410d5 class=Light class_source=computed phases=classify,build,test,review,close reason=no_explicit_class
+[leadv2-dispatch-code] cost_estimate_recorded task=e94410d5 founder_task=e94410d5 complexity=simple duration_class=short phase=pre_arm_selection path=docs/handoff/e94410d5/cost-estimate.yaml
+[leadv2-dispatch-code] dispatch_classified task=e94410d5 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] phase_precondition_warn task=e94410d5 class=Light missing=classify,build,test,review,close mode=warn
+[leadv2-dispatch-code] protection_derived by=router task=e94410d5 writes=<none> write_class=unknown writes_protected=1 manual_protected=0 effective_protected=1
+[leadv2-dispatch-code] arm_resolved job=build arm=sonnet reason=safety_gate_publish_payments complexity=simple duration_class=short
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=e94410d5 reason=protected_path
+[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start
+[leadv2-dispatch-code] freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=e94410d5
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=high task=e94410d5 reason=cheapest_capable arbiter_pick=sonnet util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=down reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe arm_excluded=codex:not_allowed,freepool:untrusted,glm:not_allowed,glm-flash:untrusted arb_rev=1db32e0cbbaa matrix_rev=63a8c1755e3f floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=simple duration_class=short complexity_policy=none remaining=unknown reset_in=n/a reset_basis=n/a freepool_gate=arm_down probe_outage=glm,codex,claude failure_memory=unavailable
+[leadv2-dispatch-code] candidate_chain task=e94410d5 arms=sonnet
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=e94410d5 var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=e94410d5 var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[leadv2-dispatch-code] code_intel_preamble arm=sonnet task=e94410d5 mode=skipped reason=fail_open cause=resolve_role_mcp_config_rc=12
+[leadv2-dispatch-code] spawn_failed by=router model=sonnet task=e94410d5 rc=99 reason=launcher_nonzero_exit
+[leadv2-dispatch-code] ERROR: spawn(sonnet) failed rc=99:  POISON: real provider spawn attempted
+[leadv2-dispatch-code] ERROR: spawn(sonnet) full launcher stderr preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.pX71Nd/leadv2-dispatch-spawn-e94410d5.stderr.log
+
+[leadv2-dispatch-code] dispatch_rolled_back reason=all_arms_unavailable task=e94410d5 attempts=sonnet_failed_launcher
+[leadv2-dispatch-code] model_select_telemetry task=e94410d5 role=worker class=light work_kind=build arm=sonnet model=sonnet fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_unavailable
+[leadv2-dispatch-code] ERROR: all eligible dispatch arms declined or failed for task=e94410d5: sonnet_failed_launcher
+[leadv2-dispatch-code] active_lane_released task=e94410d5 id=dispatch-e94410d5 where=exit_trap rows=1 removed=1 live_worker_kept=0
+FAIL: past lockout ignored -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=4c009418 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=derived task=4c009418
+[leadv2-dispatch-code] brain_decision task=4c009418 class=Light class_source=computed phases=classify,build,test,review,close reason=no_explicit_class
+[leadv2-dispatch-code] cost_estimate_recorded task=4c009418 founder_task=4c009418 complexity=simple duration_class=short phase=pre_arm_selection path=docs/handoff/4c009418/cost-estimate.yaml
+[leadv2-dispatch-code] dispatch_classified task=4c009418 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] phase_precondition_warn task=4c009418 class=Light missing=classify,build,test,review,close mode=warn
+[leadv2-dispatch-code] protection_derived by=router task=4c009418 writes=<none> write_class=unknown writes_protected=1 manual_protected=0 effective_protected=1
+[leadv2-dispatch-code] arm_resolved job=build arm=sonnet reason=safety_gate_publish_payments complexity=simple duration_class=short
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=4c009418 reason=protected_path
+[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start
+[leadv2-dispatch-code] freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=4c009418
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=high task=4c009418 reason=cheapest_capable arbiter_pick=sonnet util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=down reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe arm_excluded=codex:not_allowed,freepool:untrusted,glm:not_allowed,glm-flash:untrusted arb_rev=1db32e0cbbaa matrix_rev=63a8c1755e3f floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=simple duration_class=short complexity_policy=none remaining=unknown reset_in=n/a reset_basis=n/a freepool_gate=arm_down probe_outage=glm,codex,claude failure_memory=unavailable
+[leadv2-dispatch-code] candidate_chain task=4c009418 arms=sonnet
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=4c009418 var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=4c009418 var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[leadv2-dispatch-code] code_intel_preamble arm=sonnet task=4c009418 mode=skipped reason=fail_open cause=resolve_role_mcp_config_rc=12
+[leadv2-dispatch-code] spawn_failed by=router model=sonnet task=4c009418 rc=99 reason=launcher_nonzero_exit
+[leadv2-dispatch-code] ERROR: spawn(sonnet) failed rc=99:  POISON: real provider spawn attempted
+[leadv2-dispatch-code] ERROR: spawn(sonnet) full launcher stderr preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.pX71Nd/leadv2-dispatch-spawn-4c009418.stderr.log
+
+[leadv2-dispatch-code] dispatch_rolled_back reason=all_arms_unavailable task=4c009418 attempts=sonnet_failed_launcher
+[leadv2-dispatch-code] model_select_telemetry task=4c009418 role=worker class=light work_kind=build arm=sonnet model=sonnet fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_unavailable
+[leadv2-dispatch-code] ERROR: all eligible dispatch arms declined or failed for task=4c009418: sonnet_failed_launcher
+[leadv2-dispatch-code] active_lane_released task=4c009418 id=dispatch-4c009418 where=exit_trap rows=1 removed=1 live_worker_kept=0
+FAIL: absent lockout no-block -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=80151a75 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=derived task=80151a75
+[leadv2-dispatch-code] brain_decision task=80151a75 class=Light class_source=computed phases=classify,build,test,review,close reason=no_explicit_class
+[leadv2-dispatch-code] cost_estimate_recorded task=80151a75 founder_task=80151a75 complexity=simple duration_class=short phase=pre_arm_selection path=docs/handoff/80151a75/cost-estimate.yaml
+[leadv2-dispatch-code] dispatch_classified task=80151a75 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] phase_precondition_warn task=80151a75 class=Light missing=classify,build,test,review,close mode=warn
+[leadv2-dispatch-code] protection_derived by=router task=80151a75 writes=<none> write_class=unknown writes_protected=1 manual_protected=0 effective_protected=1
+[leadv2-dispatch-code] arm_resolved job=build arm=sonnet reason=safety_gate_publish_payments complexity=simple duration_class=short
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=80151a75 reason=protected_path
+[route-arbiter] FREEPOOL ARM DOWN: gate refused arm_down (proxy unreachable) — NOT quota exhaustion; util_freepool=down on this line. Restart with: plugins/leadv2/scripts/freepool-proxy.sh start
+[leadv2-dispatch-code] freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=80151a75
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=high task=80151a75 reason=cheapest_capable arbiter_pick=sonnet util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=down reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe arm_excluded=codex:not_allowed,freepool:untrusted,glm:not_allowed,glm-flash:untrusted arb_rev=1db32e0cbbaa matrix_rev=63a8c1755e3f floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=simple duration_class=short complexity_policy=none remaining=unknown reset_in=n/a reset_basis=n/a freepool_gate=arm_down probe_outage=glm,codex,claude failure_memory=unavailable
+[leadv2-dispatch-code] candidate_chain task=80151a75 arms=sonnet
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=80151a75 var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[leadv2-dispatch-code] worker_env_assert arm=sonnet task=80151a75 var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[leadv2-dispatch-code] code_intel_preamble arm=sonnet task=80151a75 mode=skipped reason=fail_open cause=resolve_role_mcp_config_rc=12
+[leadv2-dispatch-code] spawn_failed by=router model=sonnet task=80151a75 rc=99 reason=launcher_nonzero_exit
+[leadv2-dispatch-code] ERROR: spawn(sonnet) failed rc=99:  POISON: real provider spawn attempted
+[leadv2-dispatch-code] ERROR: spawn(sonnet) full launcher stderr preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.pX71Nd/leadv2-dispatch-spawn-80151a75.stderr.log
+
+[leadv2-dispatch-code] dispatch_rolled_back reason=all_arms_unavailable task=80151a75 attempts=sonnet_failed_launcher
+[leadv2-dispatch-code] model_select_telemetry task=80151a75 role=worker class=light work_kind=build arm=sonnet model=sonnet fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_unavailable
+[leadv2-dispatch-code] ERROR: all eligible dispatch arms declined or failed for task=80151a75: sonnet_failed_launcher
+[leadv2-dispatch-code] active_lane_released task=80151a75 id=dispatch-80151a75 where=exit_trap rows=1 removed=1 live_worker_kept=0
+PASS: dispatch from plugin repo resolves routing config (no no_routing_yaml)
+PASS: degraded mode announces routing_config_degraded and still dispatches
+FAIL: spawn fence -- POISON found in: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.pfRZVGIlL2/race-one.out
+PASS: production yaml dry run: candidate_chain arms=glm,codex,sonnet (no kimi)
+PASS: quota lockout write side: quota_lockout_recorded provider=glm, lockout file with future epoch
+PASS: quota lockout read side: 2nd dispatch skips glm, spawns codex
+[CORE-OFFLINE] FAILED: dispatch refusal fallback chain
+
+[CORE-OFFLINE] product-close waits for worker exit
+[TEST] PASS: empty-diff exits 5
+[TEST] PASS: review-gate.md reason=no_work
+[TEST] PASS: e2e-gate-passed.flag absent
+[TEST] PASS: ledger decision line terminal=no_work cause=empty_diff
+[TEST] PASS: foreign-landed lane exits 0
+[TEST] PASS: review-gate.md reason=landed_foreign status=passed
+[TEST] PASS: ledger decision line terminal=landed cause=landed_foreign
+[TEST] PASS: no-marker empty-diff lane still exits 5
+[TEST] PASS: review-gate.md reason=no_work (no foreign-repo marker present)
+[TEST] PASS: partial_diff stays refused (reason=partial_diff, not no_work)
+[TEST] PASS: surface renders no-work(empty-diff)
+[TEST] PASS: R1: no_work row NOT laundered into done(...)
+[TEST] PASS: alive worker has no review-gate.md
+[TEST] PASS: alive worker has no early review.diff
+[TEST] PASS: alive worker emits no terminal row
+[TEST] PASS: alive worker journals waiting_worker
+[TEST] PASS: diff-writing worker exits through non-empty path
+[TEST] PASS: exit-time review.diff is non-empty
+[TEST] PASS: diff-writing worker is not no_work
+[TEST] PASS: diff-writing worker terminal reflects non-empty path
+[TEST] PASS: finished empty worker exits 5
+[TEST] PASS: finished empty worker may emit empty_diff/no_work
+[TEST] PASS: finished empty worker journals empty_diff
+[TEST] PASS: finished empty worker writes no_work terminal row
+[TEST] PASS: live worker timeout exits 5
+[TEST] PASS: timeout gate says worker_timeout
+[TEST] PASS: timeout journals dead/timeout
+[TEST] PASS: timeout writes dead/timeout terminal row
+[TEST] PASS: timeout never emits no_work
+[TEST] PASS: codex finished-empty path remains no_work
+[TEST] PASS: codex wrapped jobs verdict is polled through done
+[TEST] PASS: codex close honors registry-root seam until handle clears
+[TEST] PASS: Sonnet natural completion reaches non-empty close path
+[TEST] PASS: Sonnet close waits for numeric PID exit
+[TEST] PASS: Sonnet exit-time diff is classified after natural completion
+[TEST] PASS: revived reaches ordinary empty-diff terminal
+[TEST] PASS: revived ignores stale original registry handle
+[TEST] PASS: revived never writes dead/timeout
+[TEST] PASS: revive_blocked_by_gate reaches ordinary empty-diff terminal
+[TEST] PASS: revive_blocked_by_gate ignores stale original registry handle
+[TEST] PASS: revive_blocked_by_gate never writes dead/timeout
+[TEST] PASS: live close watcher extends lease without changing claim ownership
+[TEST] PASS: committed worker reaches non-empty close path
+[TEST] PASS: committed-ahead diff is non-empty despite clean worker path
+[TEST] PASS: committed worker terminal reflects committed diff
+[TEST] PASS: slow Codex probe reaches bounded timeout path
+[TEST] PASS: Codex probe latency stays inside wait budget
+[TEST] PASS: Codex probe failures stay quiet
+[TEST] FAIL: freepool diff-writing worker exits through non-empty path (got '5' want '0')
+[TEST] FAIL: freepool review.diff is empty
+[TEST] FAIL: freepool worker misclassified no_work (the live FP-08 defect)
+[TEST] FAIL: freepool terminal row is not landed
+[TEST] PASS: freepool liveness resolves through its own author case
+[TEST] PASS: freepool rides the shared waiting_worker beat
+[TEST] PASS: freepool timeout reaches the bounded worker_timeout path
+[TEST] PASS: freepool honors LEADV2_PC_FREEPOOL_MAX_WAIT_S (2s), not 60s (3s)
+[TEST] PASS: freepool timeout gate says worker_timeout
+[TEST] PASS: freepool timeout never emits no_work
+
+=== 54 passed, 4 failed ===
+[CORE-OFFLINE] FAILED: product-close waits for worker exit
+
+[CORE-OFFLINE] Codex full-cycle runner
+[TEST] PASS: runner syntax
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=82689
+[TEST] FAIL: complete case rc=0 statuses= out=[leadv2-lead-identity] WARNING: resolver unavailable or failed, falling back to direct
+[leadv2-codex-session-runner] task=CODEX-SMOKE-COMPLETE provider=codex model=gpt-5.6-terra effort=medium log=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.qOc7lQ/leadv2-codex-runner-test.A42QS4/complete/docs/handoff/CODEX-SMOKE-COMPLETE/codex-session-runner.log resume=fresh
+[leadv2-codex-session-runner] attempt 0/3: codex fresh (model=gpt-5.6-terra effort=medium)
+[leadv2-codex-session-runner] captured Codex thread_id=codex-thread-test
+[leadv2-codex-session-runner] attempt 0 changed no phase/git/handoff evidence (stall_streak=1/6)
+[leadv2-codex-session-runner] attempt 0 exited rc=0 thread_id=codex-thread-test
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/scripts/leadv2-helpers.sh: line 64: PROJECT_ROOT: readonly variable
+[leadv2-codex-session-runner] attempt 1/3: codex resume (model=gpt-5.6-terra effort=medium)
+[leadv2-codex-session-runner] attempt 1 exited rc=0 thread_id=codex-thread-test
+[leadv2-codex-session-runner] Phase-8 completion proof observed for CODEX-SMOKE-COMPLETE
+[TEST] PASS: seeded closed circuit + empty cooldown: quota gate does not refuse
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=85788
+[TEST] PASS: seeded open circuit refuses with reason=circuit
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=86942
+[TEST] PASS: successful model turn without Phase-8 sentinel returns INCOMPLETE
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=88452
+[TEST] PASS: missing thread receipt fails closed without a blind restart
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=89039
+[TEST] PASS: validated shared receipt closes a main-checkout runner without a model call
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=89509
+[TEST] PASS: stall_max turns without phase/git/handoff progress stop the runner (STALL_MAX=6)
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=92550
+[TEST] PASS: launcher self-invocation fails immediately before retrying
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=94702
+[TEST] PASS: recursion via exec wrapper is caught
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=96242
+[TEST] PASS: recursion via env wrapper is caught
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=96817
+[TEST] PASS: recursion via if wrapper is caught
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=97943
+[TEST] PASS: recursion via bash wrapper is caught
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=99302
+[TEST] PASS: round-2 recursion via env-split is caught
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=99994
+[TEST] PASS: round-2 recursion via env-split-long is caught
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=960
+[TEST] PASS: round-2 recursion via time is caught
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=1903
+[TEST] PASS: round-2 recursion via coproc is caught
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=2782
+[TEST] PASS: round-2 recursion via coproc-direct is caught
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=3948
+[TEST] PASS: round-2 recursion via coproc-unnamed-group is caught
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=4815
+[TEST] PASS: coproc coproc-direct launcher mention does not trip falsekill
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=8274
+[TEST] PASS: coproc coproc-named-group launcher mention does not trip falsekill
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=13226
+[TEST] PASS: all launcher-mention, option-operand, closing-word, and sentinel shapes do not trip falsekill
+[TEST] PASS: live ~/.claude/cache/arm-cooldown unchanged by this suite
+[TEST] Results: PASS=22 FAIL=1
+[TEST] complete case rc=0 statuses= out=[leadv2-lead-identity] WARNING: resolver unavailable or failed, falling back to direct
+[leadv2-codex-session-runner] task=CODEX-SMOKE-COMPLETE provider=codex model=gpt-5.6-terra effort=medium log=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.qOc7lQ/leadv2-codex-runner-test.A42QS4/complete/docs/handoff/CODEX-SMOKE-COMPLETE/codex-session-runner.log resume=fresh
+[leadv2-codex-session-runner] attempt 0/3: codex fresh (model=gpt-5.6-terra effort=medium)
+[leadv2-codex-session-runner] captured Codex thread_id=codex-thread-test
+[leadv2-codex-session-runner] attempt 0 changed no phase/git/handoff evidence (stall_streak=1/6)
+[leadv2-codex-session-runner] attempt 0 exited rc=0 thread_id=codex-thread-test
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/scripts/leadv2-helpers.sh: line 64: PROJECT_ROOT: readonly variable
+[leadv2-codex-session-runner] attempt 1/3: codex resume (model=gpt-5.6-terra effort=medium)
+[leadv2-codex-session-runner] attempt 1 exited rc=0 thread_id=codex-thread-test
+[leadv2-codex-session-runner] Phase-8 completion proof observed for CODEX-SMOKE-COMPLETE
+[CORE-OFFLINE] FAILED: Codex full-cycle runner
+
+[CORE-OFFLINE] lanes snapshot reconciliation
+[TEST] === leadv2-lanes-snapshot unit tests (SUPERVISOR-DELETE-01, retargeted from test-supervise-v2.sh) ===
+[TEST] Scripts: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/scripts/leadv2-lanes-snapshot.sh / /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/scripts/leadv2-lanes-resume.sh / /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/scripts/leadv2-active-registry.sh
+
+[TEST] Test 6: bash -n syntax check
+[TEST] PASS: Test 6: bash -n OK on all 3 scripts
+[TEST] Test 3: adoption triple-proof matrix (name-only -> orphan; full proof -> adopt)
+[TEST] PASS: Test 3a: unknown-name window -> orphan, never adopted
+[TEST] FAIL: Test 3b: adopted=False out={
+  "warnings": [],
+  "delta_mode": false,
+  "birth_norm_source": "shared",
+  "table": [],
+  "requires_founder": [],
+  "questions": [],
+  "waiting": false,
+  "stuck": [],
+  "closed_since_last": [],
+  "truth_probe": "no_probe_configured",
+  "truth_probe_reason": null,
+  "truth_breaches": [],
+  "orphans": [
+    {
+      "window": "KEEPALIVE",
+      "reason": "unknown_task_id"
+    },
+    {
+      "window": "TASK-KNOWN",
+      "reason": "no_live_claude_pid"
+    }
+  ],
+  "adopted": [],
+  "would_adopt": [],
+  "would_prune": [],
+  "dead": [],
+  "degraded": [],
+  "observe_only": true,
+  "reconcile_cycle": 2,
+  "resume": {
+    "status": "degraded",
+    "role_present": false,
+    "lanes": [],
+    "focus": null,
+    "next_action": null,
+    "recent": [],
+    "tasks_top10": [],
+    "degraded": [
+      "open-threads.md unavailable (/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.koo3mh/lns-repo.XEjur5/docs/leadv2/open-threads.md)"
+    ],
+    "degraded_resume_instruction": "ROLE UNAVAILABLE: read docs/leadv2/open-threads.md head verbatim; do not hand-rank docs/tasks.yaml",
+    "pointers": "Full: docs/leadv2/open-threads.md . docs/leadv2/active.yaml . docs/tasks.yaml",
+    "block": "<supervisor-handoff>\nROLE (sacrosanct):\n  (unavailable -- see degraded)\n\nLIVE LANES (0):\n  (none live)\n\nFOCUS: (unavailable)\nNEXT-ACTION: (none captured -- see tail below)\n\nHANDOFF DEGRADED:\n  - open-threads.md unavailable (/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.koo3mh/lns-repo.XEjur5/docs/leadv2/open-threads.md)\n  - ROLE UNAVAILABLE: read docs/leadv2/open-threads.md head verbatim; do not hand-rank docs/tasks.yaml\n\nFull: docs/leadv2/open-threads.md . docs/leadv2/active.yaml . docs/tasks.yaml\n</supervisor-handoff>",
+    "block_lines": 16,
+    "block_bytes": 559
+  },
+  "hidden_lanes_summary": null
+}
+[TEST] Test 4: tombstone-before-prune + would_prune visibility (observe_only gap fix)
+[TEST] PASS: Test 4a: observe_only=1 -> would_prune reports DEAD-1, row NOT removed
+[TEST] PASS: Test 4b: corroborated dead row pruned AND tombstoned
+[TEST] Test 5: truth-probe timeout -> unavailable (fail-open-to-EMPTY, never -clear)
+[TEST] PASS: Test 5: timed-out probe process group was killed; status never reported clear
+[TEST] Test 7: R2-3 death requires BOTH window-missing AND pid-issue (tmux backend) — fix the OR
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+    r = subprocess.run(['ps', '-o', 'lstart=', '-p', '19103'], capture_output=True, text=True)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 1038, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 1989, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+PermissionError: [Errno 1] Operation not permitted: 'ps'
+[CORE-OFFLINE] FAILED: lanes snapshot reconciliation
+
+[CORE-OFFLINE] lane truth batch (log_path + quarantine convergence)
+s-20260906T035056Z-37268-25301
+[registry] rendered /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.7s6JQV/lane-truth.WR0LvH/state/LEAD_V2_STATE.md (1 sessions, history_preserved=False)
+[TEST] PASS: register sets default log_path to pulse.md
+[TEST] PASS: set_log_path stamps the real stream path
+[TEST] PASS: log_path no longer defaults to pulse.md
+[TEST] PASS: Row 1: lane with set_log_path resolves alive via real stream
+[TEST] PASS: Row 1: liveness source is the stamped log_path
+[TEST] PASS: set_log_path on unregistered task returns non-zero
+[TEST] PASS: Row 2: unregistered dispatch lane discoverable via glob
+[TEST] PASS: Row 2: direct dispatch registers its dispatch-<sig8> lane
+[TEST] FAIL: Row 1 mutation gate HEAD must resolve stamped stream alive
+  got: {"lane":"MUT-HEAD","verdict":"dead:no_log_artifact","age_s":null,"source":"handoff","log_path":null,"raw_log_path":null,"pid":null,"pid_alive":null,"reason":"no_log_artifact","attempt":null,"child_of":null,"pid_source":null,"pid_identity":null}
+[TEST] PASS: Row 1 mutation gate mutant: registry read does not treat pulse.md as live stream
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+[TEST] PASS: Row 3: dry-run reports block without writing quarantine
+[TEST] PASS: Row 3: dry-run writes no quarantine files
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-causal-critique.js
+leadv2-ledger.js
+leadv2-learn.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[TEST] PASS: Row 3: divergent user-script quarantined in exclude mode
+[TEST] PASS: Row 3: quarantined copy preserves the un-landed fix
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-causal-critique.js
+leadv2-ledger.js
+leadv2-learn.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-causal-critique.js
+leadv2-ledger.js
+leadv2-learn.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-causal-critique.js
+leadv2-ledger.js
+leadv2-learn.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[TEST] PASS: Row 3 convergence: 3 additional syncs produced 1 quarantine files (no duplicates)
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-causal-critique.js
+leadv2-ledger.js
+leadv2-learn.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[TEST] PASS: Row 3 convergence: changed content produces new quarantine (1 → 2)
+
+[LANE-TRUTH-BATCH-01] pass=15 fail=1
+[CORE-OFFLINE] FAILED: lane truth batch (log_path + quarantine convergence)
+
+[CORE-OFFLINE] report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)
+[TEST] PASS: bash -n clean (gate scripts + lib)
+[TEST] PASS: /bin/bash -n (bash 3.2 syntax) product-close
+=== pass 1/2: post-fix (live tree) ===
+[TEST] PASS C1-good-report
+[TEST] PASS C2-report-missing
+[TEST] PASS C3-report-too-thin
+[TEST] FAIL C4-diff-lane-golden
+[TEST] PASS C5-dead-worker-kind
+[TEST] PASS C6a-unknown-kind-gate
+[TEST] FAIL C6b-unknown-kind-journal
+[TEST] FAIL C6c-guard-exemption
+[TEST] PASS C7-symlink-report
+[TEST] PASS C8-dest-collision
+[TEST] PASS C9-hardlink-report
+[TEST] PASS C10-dest-symlink
+[TEST] PASS C11-report-plus-code
+[TEST] PASS C12-committed-change
+[TEST] PASS C13-git-path
+[TEST] PASS C14-rename-launder
+
+=== pass 2/2: red-first pre-fix — reds here are EVIDENCE ===

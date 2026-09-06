@@ -1,0 +1,455 @@
+
+[CORE-OFFLINE] provider/model router
+[TEST] PASS: router syntax
+[leadv2-session-route] provider=glm model=glm-5.3 effort=medium reason=routine Standard task routed to GLM (primary code writer, GLM-FIRST-01) to preserve Claude/Codex quota displaced=codex
+[TEST] PASS: routine Standard -> GLM (GLM-FIRST-01)
+[leadv2-session-route] provider=glm model=glm-5.3 effort=low reason=routine Light task routed to GLM (primary code writer, GLM-FIRST-01) to preserve Claude/Codex quota displaced=codex
+[TEST] PASS: Light -> GLM (GLM-FIRST-01)
+[leadv2-session-route] provider=claude model=fable effort=high reason=high-risk class/tags force Claude; Codex/GLM full-session routing is blocked displaced=none
+[TEST] PASS: Heavy (think tier) -> Claude fable
+[leadv2-session-route] provider=claude model=opus effort=high reason=high-risk class/tags force Claude; Codex/GLM full-session routing is blocked displaced=none
+[TEST] PASS: high-risk tag blocks explicit Codex
+[leadv2-session-route] provider=claude model=opus effort=high reason=high-risk class/tags force Claude; Codex/GLM full-session routing is blocked displaced=none
+[TEST] PASS: Heavy + safety tag -> opus (safety outranks think tier)
+[leadv2-session-route] provider=claude model=fable effort=high reason=high-risk class/tags force Claude; Codex/GLM full-session routing is blocked displaced=none
+[TEST] PASS: Heavy + arch tag stays think-tier (arch carve-out)
+[leadv2-session-route] provider=claude model=opus effort=high reason=high-risk class/tags force Claude; Codex/GLM full-session routing is blocked displaced=none
+[TEST] PASS: Standard + safety tag pins opus
+[leadv2-session-route] provider=claude model=opus effort=high reason=high-risk class/tags force Claude; Codex/GLM full-session routing is blocked displaced=none
+[TEST] PASS: Standard + arch tag pins opus
+[leadv2-session-route] provider=claude model=sonnet effort=medium reason=Codex quota 90% reached policy threshold 85%; Claude fallback displaced=none
+[TEST] PASS: Codex quota threshold -> Claude fallback (GLM+kimi unavailable)
+[leadv2-session-route] provider=claude model=sonnet effort=medium reason=Codex unavailable (codex binary unavailable); Claude fallback displaced=none
+[TEST] PASS: missing Codex CLI -> Claude fallback (GLM+kimi unavailable)
+[leadv2-session-route] provider=claude model=sonnet effort=medium reason=explicit provider override: claude displaced=none
+[TEST] PASS: explicit Claude override
+[TEST] Results: PASS=12 FAIL=0
+
+[CORE-OFFLINE] parked worker contract and one-shot resume (WORKER-PARKED-ON-BG-01)
+[TEST] PASS: red-first foreground contract reaches glm/kimi/sonnet/codex without changing spawn identity site
+[TEST] PASS: clean waiting result with unsatisfied deliverable classifies parked
+[TEST] PASS: parked outcome carries continue next
+[TEST] PASS: clean success stream replay is parked-shaped
+[TEST] PASS: clean success with deliverable does not resume
+[TEST] PASS: parked lane launches exactly one resume
+[TEST] PASS: second parked exit does not loop
+[TEST] PASS: second parked exit journals already_attempted
+[TEST] PASS: positive control died-with-work resume remains green
+[TEST] RESULT: pass=9 fail=0 skip=0
+
+[CORE-OFFLINE] hook token + mode isolation
+[TEST] PASS: hook/cache scripts parse
+[TEST] FAIL: supervisor/child prompt contexts leaked: 
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/hooks/leadv2-user-prompt-context.sh: line 167: phase: command not found
+[TEST] PASS: supervisor compact hook does not write resume state into a child task
+[TEST] PASS: supervisor task hooks do not mutate or inject child state
+[TEST] PASS: ordinary lead ignores a foreign live session in the same checkout
+[TEST] FAIL: task anchor token cap failed: first=1 second=1
+[TEST] FAIL: parallel lead task hook selected the wrong registry row
+[TEST] PASS: standalone cache warm is disabled by default (zero token spend)
+[TEST] Results: PASS=5 FAIL=3
+[CORE-OFFLINE] FAILED: hook token + mode isolation
+
+[CORE-OFFLINE] active registry fail-closed
+[TEST] === leadv2-active-registry.sh fail-closed unit tests ===
+[TEST] Script: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/scripts/tests/../leadv2-active-registry.sh
+
+[TEST] Test 3: bash -n syntax check
+[TEST] PASS: Test 3: bash -n OK
+[TEST] Test 1: no LEADV2_PROJECT_ROOT/CLAUDE_PROJECT_DIR/PROJECT_ROOT, cwd not a git repo -> fail closed
+[TEST] PASS: Test 1: fail-closed (root_error, no silent continuation)
+[TEST] Test 2: LEADV2_PROJECT_ROOT set -> sourcing succeeds, register() works
+[TEST] PASS: Test 2: root resolved via LEADV2_PROJECT_ROOT, register() succeeded
+
+[TEST] === Results: PASS=3 FAIL=0 ===
+[TEST] All tests passed.
+
+[CORE-OFFLINE] fanout classifier/runner guard
+[TEST] === leadv2-fanout.sh classify/runner existence-guard tests ===
+[TEST] fanout: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/scripts/leadv2-fanout.sh
+
+[TEST] Test 1: bash -n syntax check
+[TEST] PASS: Test 1: bash -n OK (fanout + classify + session-runner)
+[TEST] Test 2: classify script present -> class=Standard, no WARN
+[TEST] PASS: Test 2: class=Standard, classifier ran normally
+[TEST] Test 3: classify script hidden -> loud WARN + safe fallback (NOT Heavy)
+[TEST] PASS: Test 3: loud WARN printed, class=Standard (no silent Heavy escalation)
+[TEST] Test 4: session-runner hidden -> real headless launch fails closed
+[TEST] PASS: Test 4: missing completion runner refused the launch
+[TEST] Test 5: registry resolves via SCRIPT_DIR sibling alone -- no host $HOME, no vendored .claude/scripts; active.yaml under LEADV2_STATE_ROOT
+[TEST] PASS: Test 5: sibling-only resolution sufficient; active.yaml read from state root, no real file at docs/leadv2/
+[TEST] Test 6: stale (pre-state-path) registry copy is skipped; all-stale refuses to launch
+[TEST] PASS: Test 6a: stale sibling skipped, vendored (state-path-aware) copy used
+[TEST] PASS: Test 6b: all candidates stale -> loud refusal, no launch
+
+[TEST] === Results: PASS=7 FAIL=0 ===
+[TEST] All tests passed.
+
+[CORE-OFFLINE] Phase-8 merge/completion proof
+warning: You appear to have cloned an empty repository.
+PASS: S1: deploy-merge.sh exits nonzero on Step-0 rebase conflict (rc=1)
+PASS: S1: merge-blocker.flag written: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.Sl6AVrnZdp/work/docs/handoff/TEST-MERGE-RACE-01/merge-blocker.flag
+PASS: S1: merge-blocker.flag has expected reason + task_id
+PASS: S1: phase8-assert.sh exits 1 with A1-A5 seeded (A6 blocks) (rc=1)
+PASS: S1: phase8-assert.sh cites A6 merge-blocker failure
+PASS: S1: phase8-passed.flag NOT written
+PASS: S1: leadv2-queue-release.sh (daemon path) does NOT flip status to done (status=queued)
+PASS: S1: leadv2-queue-release.sh logs the merge-blocker skip
+FAIL: S1: render-close.sh exited 1; output:
+[2026-09-06 06:39:02] ERROR: Target missing: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.Sl6AVrnZdp/state/LEAD_V2_STATE.md — aborting render for TEST-MERGE-RACE-01
+FAIL: S1: render-close.sh did not log the status=done skip; output:
+[2026-09-06 06:39:02] ERROR: Target missing: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.Sl6AVrnZdp/state/LEAD_V2_STATE.md — aborting render for TEST-MERGE-RACE-01
+PASS: S1: tasks.yaml status still non-terminal after render-close.sh (status=queued)
+PASS: S1: phase8-assert.sh with A1-A5 terminal still exits 1 (A6 alone blocks) (rc=1)
+PASS: S1: A6 is the SOLE cited failure once A1-A5 pass (not a tautology riding on A2)
+PASS: S1: A6 failure message includes recovery guidance
+PASS: S1: Phase 8 PASS writes local sentinel and shared completion receipt
+PASS: S1: shared completion receipt has the fail-closed schema
+PASS: S1: Phase 8 PASS publishes a shared closed event
+warning: You appear to have cloned an empty repository.
+PASS: S2: deploy-merge.sh exits nonzero on ff-only merge race (rc=1)
+PASS: S2: competing push was injected at git-pull-ff-only time
+PASS: S2: merge-blocker.flag written with the literal ff-only-merge reason
+PASS: S3: LOCKTEST-A acquires the merge-queue lock
+PASS: S3: LOCKTEST-B blocks while LOCKTEST-A still holds the lock
+PASS: S3: status shows LOCKTEST-A holding, LOCKTEST-B queued
+OK
+PASS: S3: LOCKTEST-B acquires promptly once LOCKTEST-A releases
+warning: You appear to have cloned an empty repository.
+PASS: S4: clean deploy-merge.sh run succeeds end-to-end (rc=0)
+PASS: S4: merge-queue lock is already free during the deploy step (released before, not through, deploy)
+PASS: zero [leadv2-state-path] ABORT lines across the whole run
+
+=== 25 passed, 2 failed ===
+[CORE-OFFLINE] FAILED: Phase-8 merge/completion proof
+
+[CORE-OFFLINE] plugin sync quarantine/dry-run safety
+PASS: quarantine: cache/probe.sh reconciled to canonical (guard stays satisfiable)
+PASS: quarantine: original content preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.zMe4BwObIk/q-quarantine/20260906T033908Z-bea54f15db6ad9545719a15ce96ed7e009410e76e98ee524d58f1403a93395bd/cache/scripts/probe.sh
+PASS: quarantine: preserved content byte-identical to the un-landed fix
+PASS: quarantine: warning named the warn+quarantine mode + the quarantine root
+PASS: quarantine: --dry-run target left unchanged
+PASS: quarantine: --dry-run created zero quarantine content
+PASS: quarantine: --dry-run emitted the DRY_RUN DIRECTION-SAFETY line
+PASS: perimeter: healthy baseline (all 9 subdirs mirrored) -> exit 0
+PASS: perimeter: scripts/ divergence caught (rc!=0, entry plugin-cache:probe.sh:CONTENT_DIFFERS)
+PASS: perimeter: contracts/ divergence caught (rc!=0, entry plugin-cache:contracts/probe.json:CONTENT_DIFFERS)
+PASS: perimeter: workflows/ divergence caught (rc!=0, entry plugin-cache:workflows/probe.js:CONTENT_DIFFERS)
+PASS: perimeter: hooks/ divergence caught (rc!=0, entry plugin-cache:hooks/probe.sh:CONTENT_DIFFERS)
+PASS: perimeter: config/ divergence caught (rc!=0, entry plugin-cache:config/probe.yaml:CONTENT_DIFFERS)
+PASS: perimeter: skills/ divergence caught (rc!=0, entry plugin-cache:skills/probe.md:CONTENT_DIFFERS)
+PASS: perimeter: commands/ divergence caught (rc!=0, entry plugin-cache:commands/probe.md:CONTENT_DIFFERS)
+PASS: perimeter: agents/ divergence caught (rc!=0, entry plugin-cache:agents/probe.md:CONTENT_DIFFERS)
+PASS: perimeter: docs/ divergence caught (rc!=0, entry plugin-cache:docs/probe.md:CONTENT_DIFFERS)
+PASS: perimeter: docs/leadv2/ runtime state excluded (perturbed, no drift)
+---
+ALL TESTS PASSED
+
+[CORE-OFFLINE] reply router dual-store resolution
+[TEST] === leadv2-reply-router.sh dual-store resolution tests ===
+[TEST] router: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/scripts/tests/../leadv2-reply-router.sh
+
+[TEST] Test 1: bash -n syntax check
+[TEST] PASS: Test 1: bash -n OK
+[TEST] Test 2: control-plane store, multi-word option accepted
+[TEST] PASS: Test 2: router resolved control-plane qid, status=answered selected=restart
+[TEST] Test 3: control-plane store, invalid option rejected with named valid list
+[TEST] PASS: Test 3: invalid option rejected exit=3, message names wait,stop
+[TEST] Test 4: legacy-handoff store, multi-word option accepted, task-id auto-discovered
+[TEST] PASS: Test 4: router auto-discovered legacy task-id and answered chosen=stop
+[TEST] Test 5: legacy-handoff store, single-letter option still works (regression check)
+[TEST] PASS: Test 5: single-letter option 'a' still accepted (no regression)
+[TEST] Test 6: qid absent from both stores -> exit 5, names both paths checked
+[TEST] PASS: Test 6: exit=5, message names both control-plane and legacy paths
+[TEST] Test 7: --task-id hint resolves legacy qid without a directory scan
+[TEST] PASS: Test 7: --task-id hint resolved and answered
+
+[TEST] === Results: PASS=7 FAIL=0 ===
+[TEST] All tests passed.
+
+[CORE-OFFLINE] Codex quota guardrails (effort/circuit/hook)
+[TEST] PASS: a1 no-tier → --effort medium
+[TEST] PASS: a2 --tier standard → --effort medium
+[TEST] PASS: a3 --tier volume → --effort low
+[provider-quota-gate] OK — codex 0% < 95%
+[TEST] PASS: a4 spawn gate passes when circuit closed
+[TEST] PASS: a4b spawn gate hermetic — passes on fixture 0% reading regardless of host quota state
+[TEST] PASS: a4c check 3 executes end-to-end (fixture 95% -> rc 2 reason=threshold)
+[TEST] PASS: a5 planner default tier → effort=medium
+[TEST] PASS: b1a codex-task --tier top without --reason → refused rc 2
+[TEST] PASS: b1b planner --tier top without --reason → refused rc 2
+[TEST] PASS: b2 --tier top --reason → xhigh/high permitted
+[TEST] PASS: b3 standard tier does not emit xhigh
+[TEST] PASS: c1 parse usage-limit date → 2026-08-08T08:49:00Z
+[TEST] PASS: c2 unparseable → parser declined + until ≈ now+24h
+[TEST] PASS: c3 gate refuses while circuit open (rc 2, marker)
+[provider-quota-gate] OK — codex 0% < 95%
+[TEST] PASS: c4 circuit expired → gate passes
+[TEST] PASS: c5 idempotent: exactly one codex_circuit_open journal line
+[TEST] PASS: d1 hook blocks bare codex exec (rc 2, deny line)
+[TEST] PASS: d2 hook blocks despite LEADV2_CODEX_SANCTIONED=1
+[TEST] PASS: d3 hook allows LEADV2_ALLOW_DIRECT_CODEX=1 + logged
+[TEST] PASS: d3a hook allows inline LEADV2_ALLOW_DIRECT_CODEX=1 prefix + logged
+[TEST] PASS: d3b hook blocks when the assignment is only an echo argument
+[TEST] PASS: d3c multi-assignment prefix allows; =0 value still blocks
+[TEST] PASS: d4 hook allows codex-task.sh invocation
+[TEST] PASS: d5 hook rc 0 on ls/git status/malformed/empty
+[TEST] PASS: e1 unparseable circuit marker → gate refuses (fail-closed)
+[TEST] PASS: e2 quota reader missing → fail-OPEN (rc=1 != 2)
+[TEST] PASS: f1 pre-opened circuit → exit 2, zero codex invocations
+[TEST] PASS: f2 codex usage-limit → circuit opened with parsed horizon, 1 spawn
+[TEST] PASS: f3 gate unavailable → exit 2, no spawn
+
+[CODEX-QUOTA-GUARDRAILS] pass=29 fail=0
+
+[CORE-OFFLINE] quota stand-down duration (record-quota-lockout --hours)
+[TEST] PASS: bash -n clean (leadv2-dispatch-code.sh)
+[TEST] PASS: /bin/bash 3.2 -n clean (leadv2-dispatch-code.sh)
+[TEST] PASS: Test 1: exit 0
+[TEST] PASS: Test 1: locked_until_epoch ~= now+10800 (delta=0s)
+[TEST] PASS: Test 1: source starts 'standdown:' (got standdown:provider_broken)
+[TEST] PASS: Test 2: exit 0
+[TEST] PASS: Test 2: expired lockout file overwritten, epoch now in the future
+[TEST] PASS: Test 3: codex refused by the quota precheck (locked_until_epoch in the future)
+[TEST] PASS: Test 4: exit 0
+[TEST] PASS: Test 4: no lockout file written (legacy quota=no path)
+[TEST] PASS: Test 4: journal shows arm_postspawn_verdict ... quota=no
+[TEST] PASS: Test 5a: --hours abc -> rc0, no file, stderr names bad value
+[TEST] PASS: Test 5b: --hours 0 -> rc0, no file
+[TEST] PASS: Test 5c: --hours 999 (out of 1..168 range) -> rc0, no file
+[TEST] PASS: Test 6: journal emits quota_standdown_recorded provider=codex hours=3
+[TEST] PASS: Test 6: journal does NOT emit quota_lockout_recorded for a stand-down
+
+[TEST] 16 passed, 0 failed
+
+[CORE-OFFLINE] idle-lead guard hook
+[TEST] PASS: case 1: queued+0live blocks with reason naming task id
+[TEST] PASS: case 2: queued+1live allows stop (empty stdout)
+[TEST] PASS: case 3: no queued work allows stop
+[TEST] PASS: case 4: pending question allows stop
+[TEST] PASS: case 5: 8 blocks then 9th allows with cap warning
+[TEST] PASS: case 6: kill switch allows stop silently
+[TEST] PASS: case 7a: malformed stdin allows stop
+[TEST] PASS: case 7b: deleted tasks.yaml allows stop
+[TEST] PASS: case 7c: absent liveness probe allows stop
+[TEST] PASS: case 7d: unavailable liveness allows stop
+[TEST] PASS: case 8: no docs/leadv2/ allows stop
+[TEST] PASS: case 9: counter resets on allow, re-blocks from 1
+ok: 6 Stop hooks registered, none is idle-lead-guard
+[TEST] PASS: case 10: idle-lead-guard stays UNREGISTERED (retired by ONE-LANE-WATCH-01)
+[TEST] PASS: case 11: unwritable state dir allows stop on all 10 calls (call2=empty call5=empty call10=empty )
+[TEST] PASS: case 12: unresolvable questions dir allows stop, stderr names it
+[TEST] PASS: case 13: pending question allows stop, stderr names id
+[TEST] PASS: case 14: writable state dir still reaches cap at 8/8
+[TEST] PASS: case 15: unsatisfied goal does not suppress a legitimate block
+[TEST] PASS: case 16: satisfied file_exists goal allows stop
+
+[TEST] idle-lead-guard: PASS=19 FAIL=0
+[TEST] 
+
+[CORE-OFFLINE] plan-followups-01
+[TEST] Caveat 1a: classify_arm_failure returns refused_quota for LEADV2_DISPATCH_REFUSED
+[TEST] PASS: classify_arm_failure returns refused_quota
+[TEST] Caveat 1b: refused_quota arm spills to next :ok: arm → status=pass
+[TEST] PASS: refused codex spilled to next arm → status=pass (rc=0)
+[TEST] PASS: journal recorded arm_refused for codex
+[TEST] Caveat 2a: extract_plan_yaml handles marker→fence order (A)
+[TEST] PASS: Order A (marker→fence) extracts YAML content correctly
+[TEST] Caveat 2aa: Order A ignores prose fences before the marker
+[TEST] PASS: Order A extracts YAML after a preceding prose fence
+[TEST] Caveat 2b: extract_plan_yaml handles fence→marker order (B)
+[TEST] PASS: Order B (fence→marker) extracts YAML content correctly
+[TEST] Caveat 2bb: Order B ignores a preceding prose fence
+[TEST] PASS: Order B selects the marker-bearing fence after prose
+[TEST] Caveat 2c: Order B extraction ignores trailing prose
+[TEST] PASS: Order B extraction stops at the closing fence
+[TEST] Caveat 2d: marker-only extraction preserves legacy raw-YAML form
+[TEST] PASS: Marker-only form extracts everything after PLAN_YAML
+[TEST] Caveat 2e: extract_plan_yaml on real stub-architect.sh output
+[TEST] PASS: Real fixture (stub-architect) extracts correctly
+[TEST] Caveat 3a: non-dict acceptance causes nonzero exit
+[TEST] PASS: Non-dict acceptance rejected with nonzero exit (rc=1)
+[TEST] Caveat 3b: dict acceptance preserves engine-authored_at
+[TEST] PASS: authored_at preserved (arm value 2099-01-01 was discarded, got '2026-08-12 00:00:00+00:00')
+[TEST] Caveat 4a: _review_floor filters by DISPATCHABLE_PLAN_ARMS for plan
+[TEST] PASS: Plan floor does not pick haiku (got 'None')
+[TEST] PASS: Review floor CAN pick haiku (unfiltered — got 'haiku')
+[TEST] Caveat 4b: --plan-pool resolver never selects haiku
+[TEST] PASS: --plan-pool output excludes haiku from active pool
+[TEST] PASS: --plan-pool reviewer is not haiku (got 'codex')
+[TEST] Caveat 4c: _best_effort_floor_pool filters haiku under --plan-pool
+[TEST] PASS: _best_effort_floor_pool excludes haiku under --plan-pool (got 'codex')
+[TEST] Caveat 4d: empty post-filter plan pool degrades without degenerate hard error
+[TEST] PASS: Empty post-filter plan pool uses all_review_arms_unavailable fallback
+[TEST] Caveat 4e: sole dispatchable plan arm remains a valid floor
+[TEST] PASS: Sole dispatchable arm is honored as the plan floor
+[TEST] Caveat 4f: empty rank table returns all_review_arms_unavailable
+[TEST] PASS: Empty rank table uses all_review_arms_unavailable fallback
+[TEST] Caveat 4g: best-effort empty rank table returns all_review_arms_unavailable
+[TEST] PASS: Best-effort empty rank table uses all_review_arms_unavailable fallback
+
+Results: 21 pass, 0 fail
+
+[CORE-OFFLINE] review round exhaustive/verify-only (REVIEW-ROUND1-EXHAUSTIVE-01)
+PASS: shellcheck clean: leadv2-review-run.sh
+PASS: shellcheck clean: test-review-round-exhaustive.sh
+PASS: T1 round-1 content
+PASS: T2 round-2 verification-only
+PASS: T3 stale-diff guard
+PASS: T4 no-sidecar/blocked-gate guard
+PASS: T5 snapshot preservation
+PASS: T6 codex focus flattening
+PASS: T8 journal prior_findings count
+PASS: T9a forced round=1 -> exhaustive
+PASS: T9b forced round=2, empty body -> exhaustive
+PASS: T9c forced round=2, body -> verify_only
+PASS: T10 H1 repro: rounds 1,2,2,3
+PASS: T11 40-line/300-char cap + real count
+PASS: T12 missing diff file -> exhaustive, no sidecar, stderr
+PASS: T13 corrupt sidecar round -> exhaustive round 1
+PASS: T7 red-first: T1 fails against baseline 85ae886
+PASS: T7 red-first: T2 fails against baseline 85ae886
+PASS: T7 red-first: case_t8_journal_prior_findings fails against baseline 85ae886
+PASS: T7 red-first: case_t9b_forced_round2_empty fails against baseline 85ae886
+PASS: T7 red-first: case_t10_h1_repro fails against baseline 85ae886
+PASS: T7 red-first: case_t11_finding_cap fails against baseline 85ae886
+PASS: T7 red-first: case_t12_missing_diff fails against baseline 85ae886
+PASS: T7 red-first: case_t13_corrupt_round fails against baseline 85ae886
+
+================================================
+  review-round-exhaustive: PASS=24 FAIL=0
+================================================
+
+[CORE-OFFLINE] deferred-GLM ladder (V3-GLM-LADDER-01)
+PASS: (a) park row written before sonnet fallback worker spawn (ordering holds)
+PASS: (a) poison fence held
+PASS: (b) glm-deferred --list prints the parked sig8
+PASS: (b) glm-deferred --list prints 'no deferred glm tasks' when empty
+PASS: (c) two credit-empty computations within 24h emit exactly ONE journal line
+PASS: (c) a third computation after the stamp ages past 24h emits a second journal line
+FAIL: (d) expected sonnet-fallback line missing from rendered artifact -- content=| Линия | Что делает | Состояние |
+|---|---|---|
+| (живых линий нет) | — | — |
+
+Детали линий: (нет активных линий)
+
+Очередь — по влиянию:
+
+(очередь пуста)
+
+отложено на GLM: 1 задач (dispatch glm-deferred --list)
+
+Закрыто сегодня: закрытых линий и коммитов сегодня нет
+PASS: (d) a day with no fallback renders no sonnet-fallback line
+PASS: (e) shared-cache double refusal: count=2, both distinct sig8s recorded
+PASS: (e) park queue holds a row for both distinct sig8s
+PASS: (e) run 2's park row carries reason=glm_refused_quota_precheck (benched, never attempted)
+PASS: (e2) a repeat bump for an already-present sig8 is a no-op (count stays 1)
+PASS: (g) a parked row whose sig8 already landed is reaped, not retried
+PASS: (h) a parked row with no usable mission is skipped and stays in the queue (H3)
+FAIL: (i) expected 'retry_failed iiiiiiii rc=...' and the row still in --list -- out=retry_failed iiiiiiii rc=4 [leadv2-dispatch-code] ERROR: all eligible dispatch arms declined or failed for task=b70ca374: glm_refused_quota_gate,glm_refused_quota_gate list=b70ca374 2026-09-06T03:41:28Z quota=None /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.fK4tREI9fl/root-retry-i/docs/leadv2/glm-deferred.d/b70ca374.md
+b70ca374 2026-09-06T03:41:29Z quota=None /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.fK4tREI9fl/root-retry-i/docs/leadv2/glm-deferred.d/b70ca374.md
+PASS: (f) real retry-all: new dispatch observed (marker file), 'retried as=', old sig8 reaped from --list
+PASS: poison fence held across the suite
+
+================================================
+  glm-deferred-ladder suite: FAIL=1
+================================================
+[CORE-OFFLINE] FAILED: deferred-GLM ladder (V3-GLM-LADDER-01)
+
+[CORE-OFFLINE] core-offline per-suite TMPDIR isolation (SUITE-SPEED-01)
+[TMPDIR-01] case: two suites each see a distinct, private TMPDIR
+[TMPDIR-01]   distinct private TMPDIRs: seen1=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.25ve9m/lv2-caller-tmp.jW9BjA/core-offline-run.aRQ4bD/suite.IHAHDS seen2=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.25ve9m/lv2-caller-tmp.jW9BjA/core-offline-run.aRQ4bD/suite.48av5r ✓
+[TMPDIR-01] pass=1 fail=0
+[TMPDIR-01] case: sharded suites each see a distinct private HOME skeleton
+[TMPDIR-01]   distinct private HOME skeletons ✓
+[TMPDIR-01] pass=2 fail=0
+
+[CORE-OFFLINE] lane trace instrument (Mission B: writer/concurrency/off-path/reader)
+[TEST] PASS: 1.1 exactly one record written
+[TEST] PASS: 1.1 all required keys present
+[TEST] PASS: 1.1 child_exec_count present and null (honest not-measured)
+[TEST] PASS: 1.2 exit_code round-trips non-zero
+[TEST] PASS: 1.3 nesting: inner has parent_span, outer does not
+[TEST] PASS: 1.4 monotonic timing survives a backwards wall clock; wall_iso is cosmetic only
+[TEST] PASS: 1.5 64-char id accepted
+[TEST] PASS: 1.5 65-char id disables trace with a diagnostic
+[TEST] PASS: 1.5 path-traversal id writes nothing named after it (charset whitelist holds)
+[TEST] PASS: 2 line count == 600
+[TEST] PASS: 2 every line parses standalone as JSON
+[TEST] PASS: 2 no interleaving signature (}{  or duplicate trace_id in one line)
+[TEST] PASS: 2 multiset of (pid,span_index) pairs is exactly the expected 600 — none lost, none duplicated
+[TEST] 3.1 find(*.ndjson)='' find(traces dir)='' — ndjson=0 traces_dir=0
+[TEST] PASS: 3.1 OFF path creates zero ndjson files and never creates the traces dir
+[TEST] PASS: 3.2 all nine load stanzas' OFF else-arm is the ':' builtin (no subshell, no exec, no file open)
+[TEST] 3.3 OFF exec count=0 ON exec count=12
+[TEST] PASS: 3.3 OFF run makes zero exec calls through perl/python3/awk/basename/date
+[TEST] PASS: 3.3 ON run's exec count is strictly greater than OFF's (12 > 0)
+[TEST] PASS: 4 single-sample fixture: p50/p95/max equal, marked (raw)
+[TEST] PASS: 4 single-sample fixture: count=1 and p50==p95==max
+[TEST] PASS: 4 even-sample fixture: p50_ms=3, p95_ms=100 (pinned percentile arithmetic)
+[TEST] PASS: 4 lane-total fixture: lane_ms=1000 child_span_ms_sum=400 unattributed=600
+[TEST] PASS: 4 malformed fixture: malformed_lines=1 (empty line not counted)
+[TEST] PASS: 4 malformed fixture: rc=0 (not fatal)
+[TEST] PASS: 4 nonexistent path: rc=1
+[TEST] PASS: 4 nonexistent path: prints 'no trace data found'
+[TEST] PASS: 4 empty dir: rc=0
+[TEST] PASS: 4 noise-floor footer fires for a span whose p50 is below 10x instrument cost
+[TEST] PASS: 4 --json mode: output parses and carries spans/traces/malformed_lines
+[TEST] 5a run rc=0 (124 == timed out / hung; anything else == returned to the prompt)
+[TEST] PASS: 5a a script that armed the trace and then lost its clock returns to the shell prompt instead of hanging
+[TEST] PASS: 5b no host installs its own EXIT trap after lv2_trace_arm_exit (single-trap-slot hazard)
+[TEST] PASS: 5c status.collect writes a record even when invoked from a CWD that is not the scripts dir
+[TEST] ----
+[TEST] PASS=31 FAIL=0
+
+[CORE-OFFLINE] Claude account collapse check (TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01)
+=== T1: two distinct accountUuids -> TWO_BUCKETS, exit 0 ===
+[TEST] PASS: T1a: personal slot line
+[TEST] PASS: T1b: work slot line
+[TEST] PASS: T1c: verdict line
+[TEST] PASS: T1: exit 0
+[TEST] PASS: T1d: no token value ever printed
+=== T2: COLLAPSED -- both slots share one accountUuid -> ONE_BUCKET, exit 1 ===
+[TEST] PASS: T2a: collapse verdict names both labels + uuid tail
+[TEST] PASS: T2: exit 1
+=== T3: a slot's .claude.json unreadable -> INDETERMINATE, exit 2 ===
+[TEST] PASS: T3a: names the unreadable slot
+[TEST] PASS: T3: exit 2
+=== T4: no keychain binary -> TWO_BUCKETS with creds=unavailable(no-keychain), never exit 2 ===
+[TEST] PASS: T4a: keychain-less verdict still resolves via accountUuid
+[TEST] PASS: T4b: per-slot cred field reads unavailable, not a value
+[TEST] PASS: T4: exit 0 (missing keychain never forces INDETERMINATE)
+=== T5: keychain present -> per-slot cred is a real digest, distinct across slots ===
+[TEST] PASS: T5a: two distinct credential digests
+[TEST] PASS: T5b: no token value printed even with a live keychain stub
+[TEST] PASS: T5: exit 0
+=== T6: distinct accountUuids, SAME organizationUuid -> ORG_COLLAPSE, exit 3 ===
+[TEST] PASS: T6a: org-collapse verdict names both labels + org tail
+[TEST] PASS: T6: exit 3
+[TEST] PASS: T6b: no token value printed on the org-collapse path
+=== T7: different accountUuids AND different organizationUuids -> still TWO_BUCKETS (org branch must not over-fire) ===
+[TEST] PASS: T7a: distinct accounts + distinct orgs stays TWO_BUCKETS
+[TEST] PASS: T7: exit 0
+=== T8: one slot's organizationUuid unresolved (-) -> TWO_BUCKETS, no spurious ORG_COLLAPSE ===
+[TEST] PASS: T8a: unresolved org on one slot never triggers ORG_COLLAPSE
+[TEST] PASS: T8: exit 0
+[TEST] Results: PASS=22 FAIL=0
+
+[CORE-OFFLINE] poll-based lane watcher (LANE-OBSERVABILITY-02)
+[TEST] PASS: W2a: non-matching existing lines print nothing
+[TEST] PASS: W1a: mv-replaced journal yields the new terminal line
+[TEST] PASS: W2b: dispatch_terminal_dedup never fires the emit
+[TEST] PASS: W2c: non-matching new lines never printed
+[TEST] PASS: W2d: question lines DO reach the lead
+[TEST] PASS: W1b: emitted line carries <slug>/<task-id> prefix
+[TEST] PASS: W1c: second pass prints nothing new (exactly-once)
+[lane-watch] repo/dispatch-abcd0001 rotated (lines 2 < seen 5), re-reading
+[TEST] PASS: W3: rotation reset re-reads the truncated journal
+[TEST] PASS: W4: heartbeat fires per watched lane on the injected clock (3+3 hb lines)
+[TEST] PASS: W4b: heartbeat line carries stream_age + phase
+[TEST] PASS: W5: watcher exits 0 once every watched lane is terminal
+[TEST] PASS: W6: repo-root arg expands to all dispatch-* journals (both lanes seen)
+
+[lane-watch-poll] PASS=12 FAIL=0
+[CORE-OFFLINE] SHARD_RESULT idx=3 pass=15 fail=3 missing=0

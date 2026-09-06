@@ -1,0 +1,28 @@
+diff --git a/plugins/leadv2/scripts/tests/test-t14-worker-mcp.sh b/plugins/leadv2/scripts/tests/test-t14-worker-mcp.sh
+index 09b5cf83..cd5c330e 100644
+--- a/plugins/leadv2/scripts/tests/test-t14-worker-mcp.sh
++++ b/plugins/leadv2/scripts/tests/test-t14-worker-mcp.sh
+@@ -120,6 +120,11 @@ _glm_run() {
+     export GLM_RUNS_DIR="${RUNS_DIR}"
+     export GLM_SKIP_QUOTA_GATE=1
+     export LEADV2_BURN_GOVERNOR=0
++    # Hermeticity: pin GLM_EFFORT so a host-exported value (observed
++    # 2026-09-06: GLM_EFFORT=low in the lead session env) cannot drift the
++    # kill-switch=0 baseline argv. The baseline contract (lane 8f14220d1e93,
++    # GLM-EFFICIENCY-01) is `--effort max`.
++    export GLM_EFFORT=max
+     export TMPDIR="${FIXTURE}"
+     # Deterministic allowlist source (this checkout's config/), overridable
+     # per-case (T14-04 passes its own CLAUDE_PLUGIN_ROOT after the defaults).
+@@ -252,6 +257,11 @@ test_05_bg_path() {
+     export GLM_RUNS_DIR="${RUNS_DIR}"
+     export GLM_SKIP_QUOTA_GATE=1
+     export LEADV2_BURN_GOVERNOR=0
++    # Hermeticity: pin GLM_EFFORT so a host-exported value (observed
++    # 2026-09-06: GLM_EFFORT=low in the lead session env) cannot drift the
++    # kill-switch=0 baseline argv. The baseline contract (lane 8f14220d1e93,
++    # GLM-EFFICIENCY-01) is `--effort max`.
++    export GLM_EFFORT=max
+     export TMPDIR="${FIXTURE}"
+     export CLAUDE_PLUGIN_ROOT="${PLUGIN_ROOT}"
+     export LEADV2_WORKER_ROLE=critic

@@ -1,0 +1,272 @@
+
+[CORE-OFFLINE] all plugin shell syntax
+
+[CORE-OFFLINE] red-first pinned-baseline resolver (RED-FIRST-SELF-INVALIDATES-01)
+[TEST] PASS: pickaxe resolves intro commit's parent
+[TEST] PASS: env override honoured when marker absent
+[TEST] PASS: override containing marker returns rc 4 with a reason
+[TEST] PASS: marker never in history returns rc 3
+[TEST] PASS: nonexistent override ref returns rc 3
+[TEST] PASS: marker introduced at repo root with no pin returns rc 3
+[TEST] PASS: shallow clone returns rc 3
+[TEST] PASS: lv2_rf_extract materialises the pinned ref
+[TEST] RESULT: pass=8 fail=0
+
+[CORE-OFFLINE] Codex terminal lead intake
+[TEST] PASS: wrapper and test runner stub syntax
+[TEST] PASS: next uses shared root envs, lane cwd, zero args, and names both sentinel paths
+[TEST] PASS: next skips reserved priority and duplicate-marker rows before claiming the next eligible task
+[TEST] PASS: an all-poisoned queue refuses clearly without claiming or creating a lane
+[TEST] PASS: explicit task id resolves independently of queue priority
+[TEST] PASS: open ledger rows, live job handles, and active claims refuse without queue claim or launch
+[TEST] PASS: terminal ledger landed and dead outcomes both refuse before claim or launch
+[TEST] PASS: parked, refused, and no_work terminals warn while allowing a retry
+[TEST] PASS: post-guard launch failure removes claim, canonical lane, branch, and handoff residue
+[TEST] PASS: the /model sonnet advisory is emitted first, including on refusal
+[TEST] Results: PASS=10 FAIL=0
+
+[CORE-OFFLINE] per-turn injection dedup (HOOK-INJECT-DEDUP-01)
+[TEST] PASS: hook scripts parse
+[TEST] PASS: G2->G3: second identical fire collapses to a one-line marker
+[TEST] PASS: G4: changed content re-injects full block
+[TEST] PASS: G5: a stored digest from a prior day forces full re-inject
+[TEST] PASS: G0: LEADV2_INJECT_DEDUP=0 disables the gate on every fire
+[TEST] PASS: G1: missing session id never collapses to the marker
+[inject-dedup] fail-open: PermissionError: [Errno 13] Permission denied: '/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.k9930c/leadv2-inject-dedup.9z54TV/unwritable/nested'
+[inject-dedup] fail-open: PermissionError: [Errno 13] Permission denied: '/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.k9930c/leadv2-inject-dedup.9z54TV/unwritable/nested'
+[TEST] PASS: G6: unwritable state dir fails open, hook still exits 0
+[TEST] PASS: R2 setup: marker present before compaction
+[TEST] PASS: R2: PreCompact removes the stored digest for the compacting session
+[TEST] PASS: R2: first prompt after /compact is a full re-inject, not a marker
+[TEST] PASS: G5b setup: unchanged ledger (DUE TODAY) still collapses to marker
+[TEST] PASS: G5b: DUE_TODAY -> OVERDUE classification flip forces full re-inject
+[TEST] PASS: finding-3: PreCompact clears the /tmp task-anchor-full marker glob
+[TEST] PASS: finding-5: fail-open path emits a [inject-dedup] fail-open: WARN on stderr
+[TEST] Results: PASS=14 FAIL=0
+
+[CORE-OFFLINE] lane write-set admission block (LANE-WRITESET-REGISTRY-01)
+[TEST] === lane write-set admission block (LANE-WRITESET-REGISTRY-01) ===
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=35264
+[TEST] PASS: live signal: rc=5, conflict names LANE-A, LANE-B not appended
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=35185
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=35185
+[registry] writeset conflict: other=RACE-B paths=target/path
+[TEST] PASS: race: exactly one intersecting register wins under the registry lock
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=35185
+LEADV2_WRITESET_UNKNOWN other=LEGACY
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=35185
+[registry] writeset unknown: other=LEGACY
+[registry] writeset conflict: other=PEER paths=contested/b
+[TEST] PASS: legacy and drift re-check: warn admits, block=6, free=0, contested=5
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=35185
+[TEST] PASS: H1: a lane mid-resolution (writes not yet persisted) refuses an intersecting concurrent register, even under warn
+[TEST] PASS: H2/H3: _pc_git_diff_names sees an untracked new file and excludes docs/leadv2/
+[TEST] PASS: H4: writeset_drift_conflict is never reclassified landed_foreign; unscopable_diff escape still fires
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.GMDjds/pc-reclass-block.4XhMo0/block.sh: line 16: lv2_lane_root_is_own_worktree: command not found
+[TEST] PASS: M1: writeset_drift_conflict blocks reclassification; other non-partial_diff reasons still trigger it
+[TEST] === Results: PASS=7 FAIL=0 ===
+
+[CORE-OFFLINE] subsession model downgrade
+[TEST] Test 1: burn>=60% THIS spawn -> --model=sonnet (downgrade reaches launch)
+[TEST] PASS: fresh 60% breach -> --model=sonnet reaches launch (dead wire fixed)
+[TEST] Test 2: bash -n syntax check on claude-subsession.sh
+[TEST] PASS: bash -n syntax OK
+
+=== Results: 2 passed, 0 failed ===
+
+[CORE-OFFLINE] skill lint
+[TEST] PASS: bash -n syntax check: leadv2-skill-lint.sh
+[TEST] PASS: shellcheck: leadv2-skill-lint.sh
+[TEST] PASS: bad fixture -> exit 2 (HIGH finding present)
+[TEST] PASS: bad fixture -> duplicate frontmatter key detected
+[TEST] PASS: bad fixture -> unbounded loop+spawn detected
+[TEST] PASS: clean fixture -> exit 0
+[TEST] PASS: missing file -> exit 1 (not silently 0)
+[TEST] ----
+[TEST] PASS=7 FAIL=0
+
+[CORE-OFFLINE] question delivery ownership
+[TEST] === QUESTION-DELIVERY-OWNERSHIP-01 test suite ===
+
+[TEST] PASS: Syntax: leadv2-ask.sh OK
+[TEST] PASS: Syntax: leadv2-reply-router.sh OK
+[TEST] PASS: Syntax: leadv2-dispatch-product-close.sh OK
+[TEST] Test (a): ask stamps owner_session / owner_task / asked_repo
+[TEST] PASS: Test (a): owner_session=sess-alpha-123 owner_task=TASK-OWNER asked_repo=link
+[TEST] Test (b1): router refuses young foreign answer (exit 6)
+[TEST] PASS: Test (b1): young foreign answer refused (exit 6), owner printed
+[TEST] Test (b2): router allows old foreign answer (age >= threshold)
+[TEST] PASS: Test (b2): old foreign answer allowed and recorded
+[TEST] Test (b3): router allows own session to answer (regardless of age)
+[TEST] PASS: Test (b3): own session answered immediately (no age gate)
+[TEST] Test (b4): --force overrides young foreign refusal
+[TEST] PASS: Test (b4): --force overrode refusal and logged FORCE_FOREIGN
+[TEST] Test (c): old-row (no owner fields) tolerated by router
+[TEST] PASS: Test (c): old-row without owner fields answered (no refusal)
+[TEST] Test (d): _pc_emit_pending_questions emits for own task, not others
+<string>:3: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+[TEST] PASS: Test (d): emitted question_pending for own task qid, not other task's
+
+[TEST] === Results: PASS=10 FAIL=0 ===
+[TEST] All tests passed.
+
+[CORE-OFFLINE] e2e gate lane root + suite family
+[TEST] PASS: (a) green lane: e2e-root names worktree, pass with scope=lane_writes
+[TEST] PASS: (b) own regression: dead/e2e_regression (real failures still die)
+[TEST] PASS: (c) foreign failure: parked not dead, fail_foreign + foreign_failures listed
+[TEST] PASS: (d.1) non-toplevel subdir: blocked with reason=e2e_root_not_toplevel
+[TEST] PASS: (d.2) foreign repo: blocked with e2e_root_foreign_repo
+[TEST] PASS: (d.3) missing dir: blocked with e2e_root_missing
+[TEST] PASS: (d.4) valid worktree: validation passes
+[TEST] PASS: (e.1) C2 root_escape guard present in run-all.sh
+[TEST] PASS: (e.2) C2 out_of_tree containment check present
+[TEST] PASS: (e.3) C3 plugins/ preferred always-on path present in run-all.sh
+[TEST] PASS: (e.4) C4 machine-readable failure block present in run-all.sh
+[TEST] PASS: (f) ownership parse: own populated, no harness_unparsed (C4+C5 contract)
+[TEST] PASS: (g) other-repo fixture: no plugins/leadv2/ → .claude/ path is the fallback (C3 no-op guard)
+
+[TEST] 13 passed, 0 failed, 0 not run
+
+[CORE-OFFLINE] core-offline root arithmetic (git-derived REPO_ROOT)
+[ROOT-ARITH] case (a): symlink entry from fixture repo
+[ROOT-ARITH]   (a) REPO_ROOT = fixture repo ✓
+[ROOT-ARITH]   (a) PLUGIN_ROOT = canonical ✓
+[ROOT-ARITH]   (a) REPO_ROOT is not the shared parent ✓
+[ROOT-ARITH] case (b): canonical invocation
+[ROOT-ARITH]   (b) REPO_ROOT = invoking checkout ✓
+[ROOT-ARITH]   (b) TEST_DIR = canonical scripts/tests ✓
+[ROOT-ARITH] case (b'): worktree entry
+[ROOT-ARITH]   (b') REPO_ROOT = worktree lane toplevel ✓
+[ROOT-ARITH] case (c): non-git location
+[ROOT-ARITH]   (c) stderr contains repo_root_unresolvable ✓
+[ROOT-ARITH]   (c) exit code = 2 ✓
+[ROOT-ARITH]   (c) zero suite lines printed ✓
+[ROOT-ARITH] cases passed=4 failed=0
+
+[CORE-OFFLINE] phase record round-trip
+test: record basic round-trip
+  FAIL: build.yaml not created
+grep: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.vR5e3qp0bx/docs/handoff/dispatch-abc12345/phases.d/build.yaml: No such file or directory
+  FAIL: build.yaml missing expected fields
+test: mkdir -p on missing dir
+  FAIL: classify.yaml not created in fresh dir
+test: no tmp files left behind
+test: concurrent record of two phases
+  FAIL: concurrent record produced incomplete files
+test: n/a requires reason
+  FAIL: n/a with reason should succeed (got 4)
+test: waived requires reason
+test: running requires handle
+test: show output
+  FAIL: show should list build phase
+test: plan-for Standard
+
+[PORE-RECORD] pass=6 fail=6
+[CORE-OFFLINE] FAILED: phase record round-trip
+
+[CORE-OFFLINE] founder lane view
+[TEST] PASS: lane with live process and zero artifacts prints
+[TEST] PASS: no dead: rows in the live view
+[TEST] PASS: 19-day-old artifact with no process does not print
+[TEST] PASS: a command that merely mentions an id creates no lane
+[TEST] PASS: child id folds into parent (one aaaaaaaa row)
+[TEST] PASS: context.yaml title renders
+[TEST] PASS: review-gate verdict renders
+[TEST] PASS: journal phase= token renders
+[TEST] PASS: rows ordered newest-artifact-first, artifactless last
+[TEST] PASS: json count_live counts folded lanes only
+[TEST] PASS: pgid closure + fold collect all three aaaaaaaa pids
+[TEST] PASS: artifactless lane reports last_artifact null
+[TEST] PASS: zero live lanes prints no live lanes, exit 0
+[TEST] PASS: --all output identical to leadv2-lane-liveness.sh --all
+[TEST] PASS: unknown arg exits 2 with usage on stderr
+[TEST] founder lane view: 15 checks passed
+
+[CORE-OFFLINE] e2e gate arch-01 (lane-tree testing)
+[TEST] PASS: (a) lane-tree testing: worktree fix passes gate (rc=0, e2e-root=worktree)
+
+[TEST] 1 passed, 0 failed
+
+[CORE-OFFLINE] review round cap (REVIEW-ROUNDCAP-01)
+PASS: shellcheck clean: leadv2-review-run.sh
+PASS: shellcheck clean: test-review-roundcap.sh
+PASS: T1 round1 -> attempts=1
+PASS: T2 round2 -> attempts=2
+PASS: T3 round3 -> rc8/blocked/review_roundcap, no arm launched
+PASS: T4 dedup does not increment attempts
+PASS: T5 LEADV2_REVIEW_MAX_ROUNDS=0 disables cap
+PASS: T6 corrupt attempts fails open
+PASS: T7 legacy round=3-only state caps immediately
+PASS: T8 exit 9 leaves attempts unchanged
+PASS: T9 re-invoke after cap is idempotent
+PASS: T10 spawn backstop fires when dedup keeps attempts frozen
+PASS: T11 state lock taken during increment, fails open under contention
+PASS: T-red: baseline 85ae886 does not enforce round cap (rc=7)
+
+================================================
+  review-roundcap: PASS=14 FAIL=0
+================================================
+
+[CORE-OFFLINE] pump junk stays out of lane worktrees (V3-ENV-GUARDS-01)
+[PUMP-JUNK-IN-LANE] case: liveness cache must not land inside the lane worktree
+[PUMP-JUNK-IN-LANE]   worktree stayed clean (0 cache files) ✓
+[PUMP-JUNK-IN-LANE] case: liveness cache lands under the main checkout
+[PUMP-JUNK-IN-LANE]   found liveness.json under the main checkout ✓
+[PUMP-JUNK-IN-LANE] pass=2 fail=0
+
+[CORE-OFFLINE] core-offline cross-run exclusive lock (SUITE-SPEED-01)
+[LOCK-01] case (a)/(b): held lock -> bounded wait times out
+[LOCK-01]   (a)/(b) FAILED rc=0 out=<<<[CORE-OFFLINE] lock-probe acquired file=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.ogdG0x/lv2-lock-test.MEGHCQ>>>
+[LOCK-01] case (c): wait long enough to outlast the holder
+[LOCK-01]   (c) FAILED rc=0 out=<<<[CORE-OFFLINE] lock-probe acquired file=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.ogdG0x/lv2-lock-test.MEGHCQ>>>
+[LOCK-01] case (d): kill-switch bypasses a held lock
+[LOCK-01]   (d) kill-switch bypassed the held lock ✓
+[LOCK-01] pass=1 fail=2
+[CORE-OFFLINE] FAILED: core-offline cross-run exclusive lock (SUITE-SPEED-01)
+
+[CORE-OFFLINE] silent-arm commits-ahead + live-worker guard (GATE-FALSE-SILENT-01)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+[TEST] PASS: Case A: a committed lane (clean worktree) is NOT classified arm_produced_nothing
+[TEST] PASS: Case A: no arm_advance decision for a committed lane
+[TEST] PASS: Case B: absent stream is NOT classified arm_produced_nothing
+[TEST] PASS: Case C: fresh stream is NOT classified arm_produced_nothing
+[TEST] PASS: Case D: genuinely silent arm still classified arm_produced_nothing
+[TEST] PASS: Case D: ledger row is no_work/arm_produced_nothing
+[TEST] PASS: Case D: exactly one arm_advance decision line
+[TEST] PASS: Case D: .arm-advanced-glm marker present
+[TEST] PASS: Case E: unresolvable-base lane is NOT classified arm_produced_nothing
+[TEST] PASS: Case E: degradation line emitted for unresolvable base
+[TEST] PASS: Case F: prove-zero linked worktree with unmoved HEAD IS classified arm_produced_nothing
+[TEST] PASS: Case F: no silent_probe_base_unresolved line for a provably-zero lane
+[TEST] PASS: Case G: linked worktree that committed is NOT classified arm_produced_nothing
+[TEST] PASS: Case G: degradation line emitted once prove-zero refuses (reflog shows a commit)
+
+[TEST] 15 passed, 0 failed
+
+[CORE-OFFLINE] codex-dead review reroute (QUOTA-GATE-PARITY-01)
+[TEST] PASS: bash -n clean (lib/leadv2-review-reroute-note.sh)
+[TEST] PASS: py_compile clean (lib/leadv2-glm-policy-resolve.py)
+[TEST] PASS: resolver: codex limit_reached (null pct) -> codex:blocked:100 in pool
+[TEST] PASS: resolver: reviewer rerouted away from dead codex (reviewer=glm)
+[TEST] PASS: reroute-note: emits codex_dead_reroute naming dead codex + new reviewer
+[TEST] PASS: reroute-note: exactly one line
+[TEST] PASS: reroute-note: silent when codex is the (healthy) reviewer
+[TEST] PASS: leadv2-review-run.sh: sources + calls the shared reroute-note helper
+[TEST] PASS: leadv2-dispatch-product-close.sh: sources + calls the shared reroute-note helper
+[TEST] PASS: bash -n clean (leadv2-review-run.sh)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+
+=== 11 passed, 0 failed ===
+
+[CORE-OFFLINE] broad-status foreign-repo lanes (LANE-OBSERVABILITY-02)
+[TEST] PASS: S1: foreign live lane in the table with repo=foreignrepo
+[TEST] PASS: S4: own-repo mirror slug skipped by the -ef filter, foreign repo still read
+[TEST] PASS: S2: single-repo output byte-identical with --all-repos on (consumer safety)
+[TEST] PASS: S3: broken foreign repo's lane degrades to status=unknown (named, not hidden); healthy repo's lane still in table
+[TEST] PASS: R1: foreign lane rendered with slug prefix, no false empty board
+[TEST] PASS: R1b: foreign row carries its stream age
+[TEST] PASS: R2: foreign read failure -> named degraded line, table not zeroed
+[TEST] PASS: R3: own-repo row unprefixed (single-repo founder-status shape unchanged)
+
+[broad-status-foreign-lanes] PASS=8 FAIL=0
+[CORE-OFFLINE] SHARD_RESULT idx=0 pass=17 fail=2 missing=0

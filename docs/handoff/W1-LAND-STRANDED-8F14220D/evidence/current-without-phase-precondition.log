@@ -1,0 +1,70 @@
+test: Standard missing plan/gate1
+test: waiver review refused
+test: waiver close refused
+test: waiver empty reason
+test: phases.yaml version 2 rejected
+test: phases.yaml removal key rejected
+test: phases.yaml union adds e2e to Light
+test: waiver plan accepted
+  FAIL: accepted waiver should not exit 4 (got 4)
+  FAIL: waived plan.yaml not written
+test: waiver plan not allowed
+test: no phases.yaml → base table
+
+test: G1 REQUIRE_PHASES unset warns and spawns
+test: G2 REQUIRE_PHASES=1 refuses and does not spawn
+test: G3 REQUIRE_PHASES=0 no warn and spawns
+  FAIL: G3: dispatch should exit 0 (got 4)
+test: G4 phase-waiver review refused in modes unset/1 (0 proceeds, see G8)
+test: G5 forged review diff_hash rejected
+test: G6 artifact integrity rejected
+test: G7 review provenance — de-self-attestation
+  FAIL: G7g: sidecar deleted after adoption should be rejected as tamper (got: missing=classify,plan,gate1,build,test,review,live_verify,close
+required=classify,plan,gate1,build,test,review,live_verify,close
+unmet=classify,plan,gate1,build,test,review,live_verify,close)
+test: G8 REQUIRE_PHASES=0 proceeds despite broken phases.yaml + refused waiver
+test: G9 deploy descendant-of-lane-base
+test: G10 PROOF column — self-attested vs verified vs unverified
+test: G11 unexpected assert exit code (B4)
+test: F1 record refuses an unprovable artifact, and still stamps unverified when the evidence merely has not landed yet
+test: F2 plan-for --writes makes deploy mandatory
+test: F3 plan-for rejects invalid class
+MANDATORY classify
+MANDATORY build
+NA test docs_only
+MANDATORY review
+NA deploy no_runtime_surface
+MANDATORY close
+MANDATORY classify
+OPTIONAL plan
+MANDATORY build
+MANDATORY test
+MANDATORY review
+NA deploy no_runtime_surface
+NA live_verify no_deploy
+MANDATORY close
+MANDATORY classify
+OPTIONAL diverge
+MANDATORY plan
+MANDATORY gate1
+MANDATORY build
+MANDATORY test
+MANDATORY review
+NA deploy no_runtime_surface
+MANDATORY live_verify
+NA e2e no_deploy
+MANDATORY close
+MANDATORY classify
+MANDATORY diverge
+MANDATORY plan
+MANDATORY gate1
+MANDATORY build
+MANDATORY test
+MANDATORY review
+NA deploy no_runtime_surface
+MANDATORY live_verify
+MANDATORY e2e
+MANDATORY close
+
+[PHASE-PRECONDITION] pass=78 fail=4
+process_rc=1

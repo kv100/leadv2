@@ -1,0 +1,37 @@
+[TEST] PASS: bash -n scripts/glm-coder.sh (incl. 3.2)
+[TEST] PASS: bash -n scripts/claude-subsession.sh (incl. 3.2)
+[TEST] PASS: bash -n scripts/lib/leadv2-worker-mcp.sh (incl. 3.2)
+[TEST] T14-01: default (gate unset=1, role unset=developer) attaches --mcp-config
+[TEST] PASS: spawn line carries --strict-mcp-config --mcp-config <developer resolved file> (rc=0)
+[TEST] PASS: journal line worker_mcp_attached config=...developer... on stderr
+[TEST] PASS: resolved config is valid JSON carrying both allowlisted servers
+[TEST] T14-02: LEADV2_WORKER_ROLE=critic resolves mcp-role-critic
+[TEST] PASS: critic role picks mcp-role-critic.json + journals it
+[TEST] T14-03: LEADV2_WORKER_MCP=0 -> full pre-T14 baseline argv, rc=0, skip journaled
+[TEST] PASS: kill-switch=0 restores the pre-T14 spawn line (no MCP flags, rc=0)
+[TEST] FAIL: kill-switch=0 argv drifted from the pre-T14 baseline: -p | <PROMPT> | --dangerously-skip-permissions | --disallowedTools | Agent | --model | sonnet | --output-format | json | --effort | low | 
+[TEST] PASS: kill-switch=0 journals worker_mcp_skipped reason=disabled
+[TEST] T14-04: CLAUDE_PLUGIN_ROOT with no config/ -> spawn proceeds WITHOUT flag
+[TEST] PASS: missing config file => spawn proceeds WITHOUT the flag (fail-open, rc=0)
+[TEST] PASS: missing config journals worker_mcp_skipped reason=resolve_rc_11
+[TEST] T14-05: bg path attaches flags + journals into <run>/progress.log
+[TEST] FAIL: bg spawn missing --mcp-config (value=none)
+[TEST] PASS: bg path journals worker_mcp_attached into progress.log
+[TEST] T14-06: leadv2-review-run.sh glm arm sets LEADV2_WORKER_ROLE=critic
+[TEST] PASS: glm review spawn is prefixed with LEADV2_WORKER_ROLE=critic (498)
+[TEST] T14-07: symlinked glm-coder.sh from a foreign dir (no local lib/) still attaches MCP
+[TEST] PASS: symlinked invocation resolves the lib via the canonical repo (flag attached)
+[TEST] PASS: no worker_mcp_skipped reason=lib_missing on the symlinked path
+[TEST] T14-08: no glm-worker-mcp.* scratch dir left in TMPDIR after a run
+[TEST] PASS: zero glm-worker-mcp.* scratch dirs after run (rc=0)
+[TEST] T14-09: dispatch-code/product-close/session-runner pin LEADV2_WORKER_ROLE
+[TEST] PASS: dispatch-code glm arm pins LEADV2_WORKER_ROLE=developer
+[TEST] PASS: dispatch-product-close glm reviewer arm pins LEADV2_WORKER_ROLE=critic
+[TEST] PASS: glm-session-runner pins LEADV2_WORKER_ROLE=architect
+[TEST] T14-NC: mutation 'return 1' inside worker_mcp_resolve body -> T14-01 must fail
+[TEST] PASS: mutant suppresses the flag -> T14-01 assertions would be RED (control kills)
+
+=== Results: 20 passed, 2 failed ===
+FAIL: kill-switch=0 argv drifted from the pre-T14 baseline: -p | <PROMPT> | --dangerously-skip-permissions | --disallowedTools | Agent | --model | sonnet | --output-format | json | --effort | low | 
+FAIL: bg spawn missing --mcp-config (value=none)
+process_rc=1

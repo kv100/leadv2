@@ -1,0 +1,26 @@
+=== pass 1/2: post-fix (live tree: /tmp/w1-stranded-proof-20260906/before/plugins/leadv2/scripts) ===
+[TEST][post-fix] PASS C1-tracked-mod
+[TEST][post-fix] PASS C2-untracked-new
+[TEST][post-fix] PASS C3-clean-anti-rescue
+[TEST][post-fix] PASS C4-handoff-only-dirt
+[TEST][post-fix] PASS C5-registered-arm-silent
+
+=== pass 2/2: red-first pre-fix (git archive HEAD) — reds here are EVIDENCE ===
+[TEST][pre-fix] PASS C1-tracked-mod
+[TEST][pre-fix] PASS C2-untracked-new
+[TEST][pre-fix] PASS C3-clean-anti-rescue
+[TEST][pre-fix] PASS C4-handoff-only-dirt
+[TEST][pre-fix] PASS C5-registered-arm-silent
+
+Results (post-fix, live tree): 5 passed, 0 failed
+red-first: 0/5 post-fix-passing cases RED against pre-fix
+GREEN-PRE-FIX (not evidence): C1-tracked-mod
+GREEN-PRE-FIX (not evidence): C2-untracked-new
+GREEN-PRE-FIX (not evidence): C3-clean-anti-rescue
+GREEN-PRE-FIX (not evidence): C4-handoff-only-dirt
+GREEN-PRE-FIX (not evidence): C5-registered-arm-silent
+pre-fix-could-not-run: 0
+TRIPWIRE: paths changed under ${LEADV2_REPO}/plugins or ~/.claude during the run (attribution required in report):
+/Users/kostiantyn.vlasenko/.claude/burn
+/Users/kostiantyn.vlasenko/.claude/leadv2-state/persona-engine
+process_rc=0

@@ -1,0 +1,14 @@
+Historical baseline: git clone --shared --no-checkout ~/Projects/leadv2 /tmp/w1-stranded-proof-20260906/before
+Checkout: git -C /tmp/w1-stranded-proof-20260906/before checkout --detach 50148393
+Conflict reproduction: git cherry-pick -n d2971b7e (scratch only); restored the five explicitly named test paths afterward.
+Rebase reproduction: git rebase --onto 50148393 d2971b7e^ (separate scratch checkout at d2971b7e).
+Resolution: retained main retirement rationale, visible stderr, and absence assertion; added lane promise-guard/arm/disarm assertions. git add plugins/leadv2/scripts/tests/test-idle-lead-guard.sh; GIT_EDITOR=true git rebase --continue.
+Each before/after suite: cd <historical-main-scratch OR canonical-main>; timeout -k 5s 240s bash plugins/leadv2/scripts/tests/test-<suite>.sh
+Suites, sequentially: idle-lead-guard injector-dedup lane-diff-single-repo phase-precondition t14-worker-mcp.
+Current-without: scratch checkout 29545513; git restore --source=50148393 --worktree -- <the five explicitly named suites>; same 240s command for phase-precondition and t14-worker-mcp.
+Rebased phase-precondition: same command in successfully rebased scratch checkout.
+Controlled effort: GLM_EFFORT=low timeout -k 5s 120s bash plugins/leadv2/scripts/tests/test-t14-worker-mcp.sh
+After controlled-effort diagnostic used landed T14 bytes in rebase scratch, with one cleanup-only copy of RUNS_DIR to retain child.log before fixture deletion. Assertions unchanged.
+Syntax: timeout -k 2s 10s bash -n <each of the five suites>.
+Changed scope: timeout -k 10s 900s bash tests/run-all.sh --scope changed (pinned lane, 29545513 plus pre-existing dirty state).
+Every recorded process_rc follows a completed command; summaries, not those codes, determine verdicts.

@@ -1,0 +1,14 @@
+Rebasing (1/1)Auto-merging plugins/leadv2/scripts/tests/test-idle-lead-guard.sh
+CONFLICT (content): Merge conflict in plugins/leadv2/scripts/tests/test-idle-lead-guard.sh
+Auto-merging plugins/leadv2/scripts/tests/test-phase-precondition.sh
+error: could not apply d2971b7e... wip: suite fixes from prior run (idle-lead-guard registration, injector-dedup anchor guard, lane-diff pycache, phase-precondition bare handle, t14 effort baseline)
+hint: Resolve all conflicts manually, mark them as resolved with
+hint: "git add/rm <conflicted_files>", then run "git rebase --continue".
+hint: You can instead skip this commit: run "git rebase --skip".
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply d2971b7e... # wip: suite fixes from prior run (idle-lead-guard registration, injector-dedup anchor guard, lane-diff pycache, phase-precondition bare handle, t14 effort baseline)
+[detached HEAD 9aceaeae] wip: suite fixes from prior run (idle-lead-guard registration, injector-dedup anchor guard, lane-diff pycache, phase-precondition bare handle, t14 effort baseline)
+ Author: t <t@t.example>
+ 4 files changed, 33 insertions(+), 5 deletions(-)
+Successfully rebased and updated detached HEAD.

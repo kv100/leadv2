@@ -1,0 +1,24 @@
+[TEST] PASS: case 1: queued+0live blocks with reason naming task id
+[TEST] PASS: case 2: queued+1live allows stop (empty stdout)
+[TEST] PASS: case 3: no queued work allows stop
+[TEST] PASS: case 4: pending question allows stop
+[TEST] PASS: case 5: 8 blocks then 9th allows with cap warning
+[TEST] PASS: case 6: kill switch allows stop silently
+[TEST] PASS: case 7a: malformed stdin allows stop
+[TEST] PASS: case 7b: deleted tasks.yaml allows stop
+[TEST] PASS: case 7c: absent liveness probe allows stop
+[TEST] PASS: case 7d: unavailable liveness allows stop
+[TEST] PASS: case 8: no docs/leadv2/ allows stop
+[TEST] PASS: case 9: counter resets on allow, re-blocks from 1
+ok: 6 Stop hooks registered, none is idle-lead-guard
+[TEST] PASS: case 10: idle-lead-guard stays UNREGISTERED (retired by ONE-LANE-WATCH-01)
+[TEST] PASS: case 11: unwritable state dir allows stop on all 10 calls (call2=empty call5=empty call10=empty )
+[TEST] PASS: case 12: unresolvable questions dir allows stop, stderr names it
+[TEST] PASS: case 13: pending question allows stop, stderr names id
+[TEST] PASS: case 14: writable state dir still reaches cap at 8/8
+[TEST] PASS: case 15: unsatisfied goal does not suppress a legitimate block
+[TEST] PASS: case 16: satisfied file_exists goal allows stop
+
+[TEST] idle-lead-guard: PASS=19 FAIL=0
+[TEST] 
+process_rc=0

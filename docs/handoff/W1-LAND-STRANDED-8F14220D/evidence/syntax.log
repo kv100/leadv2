@@ -1,0 +1,5 @@
+bash -n plugins/leadv2/scripts/tests/test-idle-lead-guard.sh: rc=0
+bash -n plugins/leadv2/scripts/tests/test-injector-dedup.sh: rc=0
+bash -n plugins/leadv2/scripts/tests/test-lane-diff-single-repo.sh: rc=0
+bash -n plugins/leadv2/scripts/tests/test-phase-precondition.sh: rc=0
+bash -n plugins/leadv2/scripts/tests/test-t14-worker-mcp.sh: rc=0

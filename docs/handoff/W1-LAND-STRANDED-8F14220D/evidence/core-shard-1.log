@@ -1,0 +1,495 @@
+
+[CORE-OFFLINE] portable temp helper stress
+[TEMP-STRESS] PASS: 100 invocations, 0 collisions
+
+[CORE-OFFLINE] shared-sink test guard (TESTS-POLLUTE-REAL-JOURNAL-01)
+PASS: bash -n leadv2-event.sh OK
+PASS: bash -n leadv2-freepool-gate.sh OK
+PASS: bash -n leadv2-journal-fixture-purge.sh OK
+PASS: bash -n leadv2-test-context.sh OK
+PASS: case1: unredirected test emit refused rc=3
+PASS: case1: refusal is loud (stderr carries REFUSED)
+PASS: case1: no marker journal file created in the real events dir
+PASS: case2: redirected test emit rc=0
+PASS: case2: worker_terminal row landed in the fixture journal
+PASS: case3: production emit rc=0 (fail-open preserved)
+PASS: case3: production emit wrote the (fake-home) real journal
+FAIL: case4: ancestor-walk detection fires with LEADV2_TEST_CONTEXT unset (rc=3) (rc=0 want=3)
+PASS: case5: redirect TO the real dir from a test refused rc=3
+FAIL: case6: real journal not found at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.CB9pEt/home/.claude/cache/leadv2-events/leadv2.jsonl (cannot byte-guard)
+FAIL: case8: real arm-state file not found at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.CB9pEt/home/.claude/leadv2-state/freepool-arm-state.json
+PASS: case10: redirected record rc=0
+PASS: case10: record landed in the fixture state dir
+PASS: case-prodfp: production record rc=0 (writes fake-home real path)
+PASS: case-prodfp: production record wrote the (fake-home) real state file
+PASS: case11: purge dry-run rc=0
+PASS: case11: dry-run counts 3 fixture rows (ffff9999 x2 + bbbb2222)
+PASS: case11: dry-run explicitly reports not-modified
+PASS: case11: dry-run left the journal byte-identical
+PASS: case12: purge --apply rc=0
+PASS: case12: exactly the fixture rows removed; real + taskless rows kept
+PASS: case12b: missing journal refused rc=3
+PASS: case12c: missing ledger refused rc=4 (no ground truth, no guessing)
+FAIL: case13: real journal/ledger pair not found for the copy check
+PASS: case14: stub /health server up on :64600
+PASS: case15: rate 0.25 (5/20) below 0.3 -> check passes
+PASS: case16: rate 0.55 (11/20) above 0.3 -> refused rc=1
+PASS: case16: breach line reports the computed rate (error_rate=0.55)
+
+================================================
+  shared-sink test guard: PASS=28 FAIL=4
+================================================
+[CORE-OFFLINE] FAILED: shared-sink test guard (TESTS-POLLUTE-REAL-JOURNAL-01)
+
+[CORE-OFFLINE] Codex child-session recursion boundary
+[TEST] PASS: skill forbids launcher self-invocation
+[TEST] PASS: fresh and resume prompts forbids launcher self-invocation
+[TEST] Results: PASS=2 FAIL=0
+
+[CORE-OFFLINE] cross-injector dedup, active-task path (T15)
+[TEST] PASS: hook scripts parse
+[TEST] PASS: (a) first turn: task-anchor emits a full injection (active-task path confirmed)
+[TEST] PASS: (b) second turn unchanged: stub, 4 line(s) <=5, active-task path confirmed
+[TEST] PASS: (c) changed state: full re-inject reflects the new goal, active-task path confirmed
+[TEST] PASS: (c.delta) turn after a full re-inject collapses back to the stub
+[TEST] PASS: (d) unwritable state sidecar: fail-open to full injection
+[TEST] PASS: (e) default handoff: true duplicate suppressed, unique content preserved
+[TEST] PASS: (e control) LEADV2_ANCHOR_OWNS_CONTEXT=0 legacy path byte-identical to the checked-in 9e9677b golden
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/hooks/leadv2-user-prompt-context.sh: line 167: phase: command not found
+[TEST] PASS: multisession: 4th session (note+blocked_by) reaches output
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.ZChxUY/suite.pdmrsC/leadv2-injector-dedup.GNaPfD/hooks-mut/leadv2-user-prompt-context.sh: line 167: phase: command not found
+[TEST] PASS: multisession negative-control red (cap reintroduced => 4th session lost)
+[TEST] Results: PASS=10 FAIL=0
+
+[CORE-OFFLINE] lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)
+[TEST] PASS: bash -n sweep hook + cleanup + lib
+[TEST] GREEN-PRE-FIX: P1-registered-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P2-arm-open-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P3-arm-terminal-lane-swept(hook) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P4-live-pid-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P5-young-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P6-orphan-swept-and-journaled(hook) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P7-unreadable-registry-sweeps-nothing(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P8-malformed-env-degrades(hook) (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: P11-age-from-gitdir-not-dirmtime(hook) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P12-min-age-s-precedence(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P1-registered-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P2-arm-open-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P3-arm-terminal-lane-swept(dead) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P4-live-pid-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P5-young-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P6-orphan-swept-and-journaled(dead) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P7-unreadable-registry-sweeps-nothing(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P8-malformed-env-degrades(dead) (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: P11-age-from-gitdir-not-dirmtime(dead) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P12-min-age-s-precedence(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P9-failed-removal-never-guts(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh: line 109: /bin/ps: Operation not permitted
+[TEST] FAIL: P13-pid-reuse-is-not-live
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh: line 140: /bin/ps: Operation not permitted
+[TEST] FAIL: P14-pid-birth-lib-absent-degrades
+[TEST] RED-then-GREEN: P10-twin-regex-unchanged
+
+Results: 9 passed(red->green), 2 failed, 13 green-pre-fix
+FAIL: P13-pid-reuse-is-not-live
+FAIL: P14-pid-birth-lib-absent-degrades
+[CORE-OFFLINE] FAILED: lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)
+
+[CORE-OFFLINE] T13 slice2 (arbiter bench-fallback + abandon dedup)
+[TEST] PASS: allowed_arms excludes glm/freepool from pick and chain
+[TEST] PASS: NEGATIVE CONTROL 1: mutated arbiter (no allowed_arms filter) correctly fails case1
+[TEST] PASS: bench-fallback re-arbitrates and emits route_headroom_chosen when primary arm benched
+[TEST] PASS: NEGATIVE CONTROL 2: mutated dispatch (bench-fallback block removed) correctly fails case2
+[TEST] PASS: exit76_receipt continuation re-arbitrates over remaining candidates and sets _reenter
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/W1-LAND-STRANDED-8F14220D-01/plugins/leadv2/scripts/tests/test-t13-slice2.sh: line 211: _arb_fault_detail: command not found
+[TEST] PASS: NEGATIVE CONTROL 2b: mutated dispatch (exit76 route_arbiter call broken) correctly fails case2b
+[TEST] PASS: answered abandon decision deregisters the active.yaml row
+[TEST] PASS: second reconcile does not re-ask the abandoned task
+[TEST] PASS: NEGATIVE CONTROL 3: mutated lanes-snapshot (abandon consume removed) correctly fails case3
+[TEST] PASS: NEGATIVE CONTROL 3b: mutated lanes-snapshot (abandon tombstone writer removed) correctly fails case3
+[TEST] PASS: CLI dispatch table has no bypass subcommand beyond the documented phased-path set
+[TEST] PASS: NEGATIVE CONTROL 4a: mutated dispatch (bogus bypass subcommand injected) correctly fails the CLI-surface scan
+[TEST] PASS: every spawn_worker call site is preceded by a build-phase record AND a route_arbiter worker call
+UNGATED_SPAWN line=9108
+[TEST] PASS: NEGATIVE CONTROL 4b: mutated dispatch (cmd_advance_arm precondition guard stripped) correctly fails the spawn-gating scan
+UNGATED_SPAWN line=9109
+[TEST] PASS: NEGATIVE CONTROL 4c: mutated dispatch (F1 reverted: advance-arm arbiter call broken) correctly fails the spawn-gating scan
+
+[SUMMARY] PASS=15 FAIL=0
+
+[CORE-OFFLINE] subsession context diet (WORKER-CONTEXT-DIET-01)
+[TEST] Test 1: role=developer resolves --strict-mcp-config + --mcp-config
+[TEST] PASS: developer role appends --strict-mcp-config
+[TEST] Test 2: role=hack-detect (no dedicated file) falls back to default
+[TEST] PASS: hack-detect falls back to mcp-role-default.json
+[TEST] Test 3: no allowlist anywhere -> fail open, WARN logged, no flags
+[TEST] PASS: missing allowlist fails open with expected WARN, no flags appended
+[TEST] Test 4: malformed allowlist JSON -> fail open, WARN logged
+[TEST] PASS: malformed allowlist fails open with expected WARN
+[TEST] Test 5: explicit {"servers":[]} still appends flags (deliberate no-MCP)
+[TEST] PASS: explicit empty servers list still appends flags
+[TEST] Test 6: allowlist names a server absent from every config source -> fail open
+[TEST] PASS: unresolvable server fails open with expected WARN
+[TEST] Test 7: LEADV2_SUBSESSION_SLIM_MCP=0 -> no flags, no WARN (deliberate operator choice)
+[TEST] PASS: kill-switch=0 suppresses flags with no WARN
+[TEST] Test 8: LEADV2_SUBSESSION_EXCLUDE_DYNAMIC=0 -> --exclude-dynamic-system-prompt-sections absent
+[TEST] PASS: EXCLUDE_DYNAMIC=0 suppresses --exclude-dynamic-system-prompt-sections
+[TEST] Test CD-08b: LEADV2_SUBSESSION_EXCLUDE_DYNAMIC=2 -> flag absent (strict opt-in, only literal 1 enables)
+[TEST] PASS: EXCLUDE_DYNAMIC=2 suppresses --exclude-dynamic-system-prompt-sections
+[TEST] Test 9: default (unset) -> flag absent; =1 opts in
+[TEST] PASS: default omits --exclude-dynamic-system-prompt-sections
+[TEST] PASS: EXCLUDE_DYNAMIC=1 opts in the flag
+[TEST] Test 10: resolve_role_mcp_config('../../evil', ...) coerces to default, no traversal
+[TEST] PASS: unsafe role coerced to 'default', resolved config written under expected safe path
+[TEST] Test 11: both SLIM_MCP and EXCLUDE_DYNAMIC unset -> no diet flags, no context-diet WARN
+[TEST] PASS: defaults-off: no diet flags, no context-diet WARN
+
+=== Results: 13 passed, 0 failed ===
+
+[CORE-OFFLINE] skill proof gate unit tests
+[TEST] PASS: bash -n: leadv2-skill-proof.sh
+[TEST] PASS: bash -n: leadv2-proof-lib.sh
+[TEST] PASS: shellcheck: leadv2-skill-proof.sh
+[TEST] PASS: shellcheck: leadv2-proof-lib.sh
+[TEST] PASS: (a) valid+passing → GREEN, exit 0
+[TEST] PASS: (b) valid+failing → RED-FAILED, exit 1
+[TEST] PASS: (c) validate → exit 3 (refused)
+[TEST] PASS: (c) full run → RED-INVALID
+[TEST] PASS: (c) validate prints refusal message
+[TEST] PASS: (d) no-proof → RED-NO-PROOF, exit 1
+[TEST] PASS: (e) mixed tree → exit 1
+[TEST] PASS: (e) mixed tree → green=1
+[TEST] PASS: (e) mixed tree → red=2
+[TEST] PASS: (f) step 1: GREEN recorded in state
+[TEST] PASS: (f) step 3: hash mismatch → RED-NEVER-RUN
+[TEST] PASS: list subcommand → correct matrix
+[TEST] ----
+[TEST] PASS=16 FAIL=0
+
+[CORE-OFFLINE] landed-at-spawn (no terminal=landed at spawn; target repo keying)
+[TEST] FAIL: T-a: dispatch exited 3 (expected 0)
+[TEST] PASS: T-a: no terminal=landed in TARGET terminal ledger
+[TEST] PASS: T-a: no terminal=landed in DECOY terminal ledger
+[TEST] FAIL: T-a: reservation ledger has no row for sig ff7cfeec
+[TEST] FAIL: T-a: reservation row is NOT confirmed (or missing)
+[TEST] PASS: T-b: dispatch exited 4 (pre-spawn refusal)
+[TEST] PASS: T-b: terminal row landed in TARGET state dir for sig b195e743
+[TEST] PASS: T-d: NO terminal row in DECOY state dir for sig b195e743
+[TEST] PASS: T-c: terminal ledger is non-empty (pre-spawn refusal still writes)
+[TEST] PASS: T-c: terminal row has terminal=refused
+[TEST] PASS: T-c: terminal row has cause=all_arms_excluded
+[TEST] PASS: T-static: no _dl_note landed/spawned_ call in dispatch-code.sh
+
+[LANDED-AT-SPAWN-01] passed=9 failed=3
+[CORE-OFFLINE] FAILED: landed-at-spawn (no terminal=landed at spawn; target repo keying)
+
+[CORE-OFFLINE] review body persist (opus/sonnet materialisation + body_lost guard)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+[TEST] PASS: /bin/bash 3.2 -n clean (leadv2-dispatch-product-close.sh)
+[TEST] PASS: Test (a) deliverable: exit 0
+[TEST] PASS: Test (a): review-sonnet.md has both contract lines
+[TEST] PASS: Test (a): review-sonnet.md is 688 bytes (full body materialised, not 97)
+[TEST] PASS: Test (a): review-sonnet.md contains the numbered findings prose
+[TEST] PASS: Test (a2) stream-fallback: exit 0
+[TEST] PASS: Test (a2): review-sonnet.md has REVIEW_VERDICT from stream transcript
+[TEST] PASS: Test (a2): review-sonnet.md is 413 bytes (stream body recovered)
+[TEST] PASS: Test (b) body_lost: exit 6
+[TEST] PASS: Test (b): review-gate.md status=blocked reason=review_body_lost
+[TEST] PASS: Test (c) glm-regression: exit 0
+[TEST] PASS: Test (c): review-gate.md status=pass — guard did not trip on healthy glm arm
+
+[TEST] 13 passed, 0 failed
+
+[CORE-OFFLINE] dispatch arm vocabulary (kimi retirement)
+PASS: case1: resolver returns kimi → dispatch survives on sonnet with mismatch line
+FAIL: case2: glm chain from ladder (excludes kimi, includes glm-flash + freepool) (expected: 'glm glm-flash codex sonnet freepool', got: 'glm codex sonnet', mismatch_emitted=0)
+FAIL: case3: codex chain includes trailing freepool (T19) (expected: 'codex sonnet freepool', got: 'codex sonnet', mismatch_emitted=0)
+FAIL: case4: sonnet chain includes trailing freepool (T19) (expected: 'sonnet freepool', got: 'sonnet', mismatch_emitted=0)
+PASS: case4b: kimi unknown arm -> sonnet + mismatch (got: sonnet)
+PASS: case8: heavy-classified chain excludes freepool (got: sonnet)
+PASS: case9: --task-class Heavy flows into DC_TASK_CLASS and excludes freepool
+PASS: case10: both fanout call sites forward --task-class to dispatch-code.sh
+PASS: case5: resolver spill with kimi in tenant yaml → arm=glm (not kimi)
+PASS: case6: router_v2.arms has 7 entries, kimi absent (glm glm-flash freepool codex claude-haiku claude-sonnet claude-opus)
+
+================================================
+  arm-vocabulary suite: PASS=7 FAIL=3
+================================================
+[CORE-OFFLINE] FAILED: dispatch arm vocabulary (kimi retirement)
+
+[CORE-OFFLINE] phase precondition guard matrix
+test: Standard missing plan/gate1
+test: waiver review refused
+test: waiver close refused
+test: waiver empty reason
+test: phases.yaml version 2 rejected
+test: phases.yaml removal key rejected
+test: phases.yaml union adds e2e to Light
+test: waiver plan accepted
+  FAIL: accepted waiver should not exit 4 (got 4)
+  FAIL: waived plan.yaml not written
+test: waiver plan not allowed
+test: no phases.yaml → base table
+
+test: G1 REQUIRE_PHASES unset warns and spawns
+test: G2 REQUIRE_PHASES=1 refuses and does not spawn
+test: G3 REQUIRE_PHASES=0 no warn and spawns
+test: G4 phase-waiver review refused in modes unset/1 (0 proceeds, see G8)
+test: G5 forged review diff_hash rejected
+test: G6 artifact integrity rejected
+test: G7 review provenance — de-self-attestation
+test: G8 REQUIRE_PHASES=0 proceeds despite broken phases.yaml + refused waiver
+test: G9 deploy descendant-of-lane-base
+test: G10 PROOF column — self-attested vs verified vs unverified
+test: G11 unexpected assert exit code (B4)
+test: F1 record refuses an unprovable artifact, and still stamps unverified when the evidence merely has not landed yet
+test: F2 plan-for --writes makes deploy mandatory
+test: F3 plan-for rejects invalid class
+MANDATORY classify
+MANDATORY build
+NA test docs_only
+MANDATORY review
+NA deploy no_runtime_surface
+MANDATORY close
+MANDATORY classify
+OPTIONAL plan
+MANDATORY build
+MANDATORY test
+MANDATORY review
+NA deploy no_runtime_surface
+NA live_verify no_deploy
+MANDATORY close
+MANDATORY classify
+OPTIONAL diverge
+MANDATORY plan
+MANDATORY gate1
+MANDATORY build
+MANDATORY test
+MANDATORY review
+NA deploy no_runtime_surface
+MANDATORY live_verify
+NA e2e no_deploy
+MANDATORY close
+MANDATORY classify
+MANDATORY diverge
+MANDATORY plan
+MANDATORY gate1
+MANDATORY build
+MANDATORY test
+MANDATORY review
+NA deploy no_runtime_surface
+MANDATORY live_verify
+MANDATORY e2e
+MANDATORY close
+
+[PHASE-PRECONDITION] pass=80 fail=2
+[CORE-OFFLINE] FAILED: phase precondition guard matrix
+
+[CORE-OFFLINE] plugin reliability (process liveness + role fallback + prepass/reorder signals)
+
+[D1] _pc_process_alive — pid-file liveness (behavioral)
+  ok: live meta pid detected as alive
+  ok: dead meta pid detected as dead
+  ok: live child pid in pgid file detected as alive
+  ok: live supervisor pid in lock_dir/pid detected as alive
+  ok: self pid (86978) excluded — no self-match
+  ok: parent pid (16626) excluded
+  ok: no live processes detected as dead
+
+[D1] _pc_reap_worker — kills exact pids (behavioral)
+  ok: victim process group from pgid file was reaped (killed)
+  ok: reap did not kill self (86978) or parent (16626)
+  ok: victim process from lock_dir/pid was reaped
+  ok: reap with no live processes is a no-op (rc=0)
+
+[D2] claude-subsession agents_worktree_fallback frontmatter strip
+  ok: agents source: frontmatter stripped, body preserved
+  ok: source accepts agents_worktree_fallback in frontmatter-strip branch
+  ok: worktree fallback derives ROLE_SOURCE=agents_worktree_fallback
+  ok: agents_worktree_fallback: frontmatter stripped correctly
+
+[D3] prepass-park uses --no-block (fire-and-forget)
+  ok: prepass-park uses --no-block, not blocking --timeout
+  ok: prepass_parked journal line present
+
+[D4] empty-status→dead grace guard (behavioral)
+  ok: source has meta-existence grace guard before empty-status dead
+  ok: old meta (>30s) + empty status → dead-eligible
+  ok: fresh meta (<30s) → grace (not dead)
+
+[D5] router_v2 reorder failure journal
+  ok: router_v2_reorder_failed journal line present
+
+[PLUGIN-RELIABILITY-01] passed=21 failed=0
+
+[CORE-OFFLINE] claim-evidence gate (CLAIM-EVIDENCE-GATE-01 preamble + round-1 lens)
+[TEST] PASS: bash -n claude-subsession.sh
+[TEST] PASS: /bin/bash -n claude-subsession.sh (bash 3.2 syntax)
+[TEST] PASS: bash -n leadv2-review-run.sh
+[TEST] PASS: /bin/bash -n leadv2-review-run.sh (bash 3.2 syntax)
+[TEST] PASS: bash -n leadv2-helpers.sh
+[TEST] PASS: /bin/bash -n leadv2-helpers.sh (bash 3.2 syntax)
+[TEST] PASS: bash -n leadv2-dispatch-code.sh
+[TEST] PASS: /bin/bash -n leadv2-dispatch-code.sh (bash 3.2 syntax)
+[TEST] PASS: bash -n glm-coder.sh
+[TEST] PASS: /bin/bash -n glm-coder.sh (bash 3.2 syntax)
+[TEST] RED-then-GREEN: preamble-evidence-contract (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: exhaustive-five-lenses (pre_rc=1 -> post_rc=0)
+[TEST] PASS: verify_only branch does not contain claims-without-evidence
+[TEST] PASS: exhaustive branch new text has no quote/backtick
+[TEST] PASS: preamble evidence bullets have no quote/backtick
+[TEST] PASS: leadv2-helpers.sh mission contract has no backtick
+[TEST] PASS: glm-coder.sh evidence preamble has no quote/backtick
+[TEST] PASS: leadv2-dispatch-code.sh injection lines have no backtick
+[TEST] PASS: C9 canonical marker sentence identical (count=1) in all three sites
+[TEST] PASS: C9 marker absent from baseline (red-first confirmed)
+[TEST] PASS: rendered round-1 mission contains claims-without-evidence lens
+[TEST] RED-then-GREEN: rendered-prefix-h1 (pre_rc=1 -> post_rc=0)
+[TEST] PASS: C7 companion -- DRY_RUN marker present, no real claude CLI launched
+[TEST] RED-then-GREEN: dispatch-mission-glm-h2 (pre_rc=1 -> post_rc=0)
+[TEST] PASS: C8 codex structural -- injection precedes arm case, codex consumes the same ${mission}
+
+Results: 25 passed(red->green), 0 failed, 0 green-pre-fix, 0 could-not-run
+
+[CORE-OFFLINE] codex instant-complete dead-arm spill (V3-ENV-GUARDS-01)
+[CODEX-INSTANT-COMPLETE] case 1: dead shape (task_complete + last_agent_message=null)
+[CODEX-INSTANT-COMPLETE]   detected dead shape (rc=0) ✓
+[CODEX-INSTANT-COMPLETE] case 2: healthy terminal completion (real last_agent_message)
+[CODEX-INSTANT-COMPLETE]   correctly NOT flagged dead (rc=2) ✓
+[CODEX-INSTANT-COMPLETE] case 3: still-running job (no task_complete yet)
+[CODEX-INSTANT-COMPLETE]   correctly reported unknown/still-running (rc=1) ✓
+[CODEX-INSTANT-COMPLETE] case 4: newest-rollout-since picks the right file, ignores older-than-since
+[CODEX-INSTANT-COMPLETE]   picked c4_new, ignored c4_old (mtime < since), count=1 ✓
+[CODEX-INSTANT-COMPLETE] case 4b: cwd match preferred over a newer sibling rollout, ambiguity count=2
+[CODEX-INSTANT-COMPLETE]   picked cwd-matched rollout despite sibling being newer, count=2 ✓
+[CODEX-INSTANT-COMPLETE] case 4c: sibling is newest+dead-shaped but own cwd absent -- no candidate picked
+[CODEX-INSTANT-COMPLETE]   correctly returned no candidate (not the sibling), count=2 ✓
+[CODEX-INSTANT-COMPLETE] case 4d: end-to-end deadline-check must not terminal-decide off the sibling's dead shape
+[CODEX-INSTANT-COMPLETE]   correctly proceeded (rc=0) in 2s, sibling's dead shape ignored ✓
+[CODEX-INSTANT-COMPLETE] case 5: deadline-check returns 7 on the dead shape AND records the strike
+[CODEX-INSTANT-COMPLETE]   deadline-check returned 7 (spill) AND wrote /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.bqkcr1Wl7y/quota-lockout-codex.json ✓
+[CODEX-INSTANT-COMPLETE] case 6: non-terminal activity since spawn returns 0 early, not at the 30s window
+[CODEX-INSTANT-COMPLETE]   returned 0 in 0s, well under the 30s window ✓
+[CODEX-INSTANT-COMPLETE] pass=9 fail=0
+
+[CORE-OFFLINE] core-offline shard partition (SUITE-SPEED-01)
+[SHARDS-01] total suites in SUITE_DEFS = 87
+[SHARDS-01]   shards=1: 87 lines, 87 unique indices, no out-of-range shard ✓
+[SHARDS-01]   shards=2: 87 lines, 87 unique indices, no out-of-range shard ✓
+[SHARDS-01]   shards=3: 87 lines, 87 unique indices, no out-of-range shard ✓
+[SHARDS-01]   shards=4: 87 lines, 87 unique indices, no out-of-range shard ✓
+[SHARDS-01]   shards=5: 87 lines, 87 unique indices, no out-of-range shard ✓
+[SHARDS-01]   shards=7: 87 lines, 87 unique indices, no out-of-range shard ✓
+[SHARDS-01] case: default shard count is sane (1..4)
+[SHARDS-01]   default resolves to 4 shards ✓
+[SHARDS-01] case: every sharded failure prints its FAILED marker
+[SHARDS-01]   sharded failure marker present ✓
+[SHARDS-01] case: SERIAL fixture runs after parallel phase
+[SHARDS-01]   SERIAL tail order preserved ✓
+[SHARDS-01] pass=10 fail=0
+
+[CORE-OFFLINE] plugin sync .claude/scripts link classification
+[TEST] PASS: Case 1 LINK: a.sh created as symlink
+[TEST] PASS: Case 1 LINK: symlink resolves to canonical a.sh
+[TEST] PASS: Case 1 LINK: run reports LINK for a.sh
+[TEST] PASS: Case 2 CONVERT: b.sh converted to symlink
+[TEST] PASS: Case 2 CONVERT: content still resolves to canonical
+[TEST] PASS: Case 2 CONVERT: run reports CONVERT for b.sh
+[TEST] PASS: Case 3 DRIFT: c.sh is still a real file
+[TEST] PASS: Case 3 DRIFT: divergent content survives byte-for-byte
+[TEST] PASS: Case 3 DRIFT: run reports DRIFT for c.sh
+[TEST] PASS: Case 3 DRIFT: run emits ACTION REQUIRED summary line
+[TEST] PASS: Case 3 DRIFT: run exits rc=4
+[TEST] PASS: Case 5 EXCEPTION: d.sh left as a real file (not converted)
+[TEST] PASS: Case 5 EXCEPTION: run reports the declared override
+[TEST] PASS: Case 4 Idempotence: second run has no LINK/CONVERT churn for a.sh/b.sh
+[TEST] PASS: Case 4 Idempotence: a.sh symlink inode/target unchanged
+[TEST] PASS: Case 4 Idempotence: b.sh symlink inode/target unchanged
+[TEST] PASS: Case 4 Idempotence: second run still exits rc=4 (c.sh drift persists)
+
+[TEST] plugin sync .claude/scripts link classification: 17 passed, 0 failed
+
+[CORE-OFFLINE] provider quota gate (QUOTA-GATE-PARITY-01)
+[TEST] PASS: bash -n clean (leadv2-provider-quota-gate.sh)
+[TEST] PASS: bash -n clean (leadv2-glm-quota-gate.sh)
+[TEST] PASS: bash -n clean (lib/leadv2-codex-quota-gate.sh)
+[TEST] PASS: bash -n clean (config/leadv2-quota-ceilings.sh)
+[TEST] PASS: S1: bad provider -> rc 3
+[TEST] PASS: S1: bad purpose -> rc 3
+[TEST] PASS: S2: kill switch -> rc 0, WARN
+[TEST] PASS: S3: missing live helper -> fail-open
+[TEST] PASS: S4: live exits non-zero -> fail-open
+[TEST] PASS: S5: malformed JSON -> fail-open
+[TEST] PASS: S6: status!=ok -> fail-open
+[TEST] PASS: S7: stale cache -> fail-open even though live pct would refuse
+[TEST] PASS: S8: pct < ceiling -> allow
+[TEST] PASS: S9: pct >= ceiling -> refuse rc 1
+[TEST] PASS: S10: limit_reached forces pct=100 -> refuse
+[TEST] PASS: boundary: ceiling=0 refuses even a 0% read
+[TEST] PASS: boundary: ceiling>100 never trips, WARN inert
+[TEST] PASS: boundary: non-numeric ceiling -> fail-open
+[TEST] PASS: boundary: ceilings file missing names expected path -> fail-open
+[TEST] PASS: F4a: timeout=abc -> rc 0, warn names the 8s fallback
+[TEST] PASS: F4b: timeout=99999 -> clamped to 60s, completed in 0s
+[TEST] PASS: F4c: timeout=0 -> clamped to 1s, gate still evaluates
+[TEST] PASS: §4a: limit_reached refuses even with inert ceiling 150 (rc 1)
+[TEST] PASS: F3a: GLM_QUOTA_THRESHOLD=abc -> warn + fallback 80, never rc 2 (rc=0)
+[TEST] PASS: F3b: LEADV2_CEIL_GLM_WORK=abc + 85% read -> reroute by fallback 80 (rc 1)
+[TEST] PASS: F3c: five_hour.pct absent -> non-numeric fail-open, no abort
+[TEST] PASS: F1: top-level limit_reached ORs ahead of binding-window pct (100.0)
+[TEST] PASS: claude review under ceiling -> allow
+[TEST] PASS: drift: yaml/py/ceilings.sh agree on all 6 values (codex-build exception retired 2026-09-06)
+[TEST] PASS: missing provider gate refuses gate_broken with its exact path, never threshold
+
+=== 30 passed, 0 failed ===
+
+[CORE-OFFLINE] worker_reason on no_work/dead terminals (LANE-OBSERVABILITY-02)
+[TEST] PASS: A1: last result line wins over older assistant text
+[TEST] PASS: A2: assistant-text fallback when no result line
+[TEST] PASS: A3: 120-char clamp
+[TEST] PASS: A4: quote/backslash/newline sanitised (got: He said no and fellnpath C:xy)
+[TEST] PASS: A5: codex rollout cwd filter — sibling rollout never wins
+[TEST] PASS: A6: glm .out last non-blank line
+[TEST] PASS: A7: empty sources -> empty string
+[TEST] PASS: A7: empty sources -> rc 0
+[TEST] PASS: A9: rollout naming a DIFFERENT dispatch sig8 never wins (no mis-attribution)
+[TEST] PASS: A8: LEADV2_WORKER_REASON=0 kill switch
+[TEST] PASS: B1a: JSON row carries worker_reason
+[TEST] PASS: B1b: journal line gains worker_reason token
+[TEST] PASS: B2a: empty worker_reason still an always-present JSON key
+[TEST] PASS: B2b: journal line has no worker_reason token when empty
+[TEST] PASS: B3: cause readback
+[TEST] PASS: C1a: no_work terminal journal line carries worker_reason
+[TEST] PASS: C1b: review-gate.md gains worker_reason line
+[TEST] PASS: C2: no stream source -> no worker_reason token
+
+[worker-reason-terminal] PASS=18 FAIL=0
+
+[CORE-OFFLINE] freepool model selector + gate stale-window TTL (FREEPOOL-MODEL-SELECTOR-01)
+[TEST] PASS: bash syntax: selector + gate
+[TEST] PASS: rank order: primary chosen when all routes live
+[TEST] PASS: rank order: config order drives the pick, not a hardcoded default (negative control)
+[TEST] PASS: probe-fail advances rank: primary dead -> secondary chosen
+[TEST] PASS: probe-fail advances rank: two dead ranks -> tertiary chosen (negative control)
+[TEST] PASS: selector rc!=0 on missing config, prints nothing to stdout
+[TEST] PASS: freepool_select_model() falls open to "sonnet" on selector failure
+[TEST] PASS: FREEPOOL_SKIP_MODEL_SELECT=1 short-circuits to "sonnet" (negative control)
+[TEST] PASS: P0: freepool_select_model() falls open to "sonnet" under set -e (selector failure does not kill the caller)
+[TEST] PASS: mutation applied: P0 if/else fallback reverted to bare `chosen=...; rc=$?` (scratch copy)
+[TEST] PASS: MUTATION KILLED: reverting the P0 fix makes set -e kill the script before the sonnet fallback
+[TEST] PASS: P1a: checked-in freepool-arm.yaml matches a real-shaped /v1/models payload (primary chosen)
+[TEST] PASS: MUTATION KILLED: bare pre-fix prefixes still match via the with/without-anthropic/ tolerant fallback (P1a fix also makes stale configs recoverable)
+[TEST] PASS: FP-01/02: role=bulk selects a different roster model than role=implement
+[TEST] PASS: FP-01: unset FREEPOOL_ROLE defaults to implement
+[TEST] PASS: FP-02 negative control: commented role_rank falls back to flat model_rank
+[TEST] PASS: gate TTL: all-stale window + healthy live probe -> gate passes
+[TEST] PASS: gate TTL negative control: all-stale window + dead live probe -> refused arm_down
+[TEST] PASS: gate TTL: genuinely empty window + healthy live probe -> gate passes
+[TEST] PASS: gate TTL: fresh breach still refuses gate_broken (fresh data not swallowed by TTL filter)
+[TEST] PASS: gate P1b: all-stale window issues exactly ONE live /health probe
+[TEST] PASS: mutation applied: second live /health probe reintroduced on the rc==4 branch
+[TEST] PASS: MUTATION KILLED: reintroducing the second probe reproduces the pre-fix double-probe (count=2)
+[TEST] PASS: mutation applied: TTL filter predicate replaced with True (always-fresh)
+[TEST] PASS: MUTATION KILLED: reverting the TTL filter reproduces the stale-window bug (gate wrongly refuses gate_broken)
+[TEST] === 25 passed, 0 failed ===
+[CORE-OFFLINE] SHARD_RESULT idx=1 pass=15 fail=5 missing=0
