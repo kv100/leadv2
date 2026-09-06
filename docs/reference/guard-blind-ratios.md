@@ -96,7 +96,7 @@ says UNMEASURABLE and why.
 - CMD: `grep -rlE 'writes=[^ <0]' <both roots>/*/journal.md | wc -l`  → 9 of 38
 - RATIO: **29/38 lanes = 76%** never name a non-empty write set, so the precheck (and with it the
   undiffable/scope-writes computation it exists to perform) is skipped for them. Corroborated from
-  the other end: `undiffable` appears twice in 202 closes.
+  the other end: `undiffable` appears twice in all 289 closes.
 - Unlike `protection_derived`, which resolves an empty write set to `writes_protected=1` and errs
   toward protection, this one resolves it to "return 0, compute nothing", silently.
 
