@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-codex-lead-intake.sh
+file=plugins/leadv2/scripts/leadv2-codex-lead.sh
+anchor=381s/not permitted/xxnomatchxx/g
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: EPERM runner pid did not refuse: rc=0 out=ADVISORY: this session needs no Opus brain; use /model sonnet — the thinking runs on Codex.
+diff_hash=c6ffaf0d4168e85a4e69d9ccf69f47728927add65d5a02ad9de43bf64c8a8a8e
+lane_diff_hash=eb0b995527cd03d7078cb801c1bd2649406a380af318bb0367d3acb6c71629c1
