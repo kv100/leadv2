@@ -132,6 +132,50 @@ mkdir -p "${HANDOFF}" 2>/dev/null || true
 # never called from this file.
 emit() { printf '[leadv2-review-run] %s %s\n' "${1:-}" "${2:-}" >&2; }
 
+# ── REVIEW-GATE-SILENCE-READS-AS-PASS-01: terminal gate-artifact guarantee ────
+# Every normal exit of this engine writes review-gate.md inline at its own
+# decision point (twelve such writers below, each .tmp + `mv -f`, so "the file
+# exists" means "a decision was persisted"). An engine that dies BETWEEN those
+# points — an unset-variable exit under `set -u` in this parent scope, a signal,
+# an early `wait` path — left NO gate artifact and NO review_gate line at all,
+# and a missing gate reads downstream as "nothing blocked it". Silence in the
+# PERMISSIVE direction is the whole defect: an unreviewed lane looked reviewed.
+#
+# Measured before this was written (2026-09-06): neither `gate_engine_aborted`
+# nor any `trap ... EXIT` existed anywhere in plugins/leadv2.
+#
+# Fallback-only by construction: the absent-file check means it can never
+# overwrite a decision the engine already persisted. Arm subshells never fire
+# it — bash 3.2 resets caught traps in ( ), $( ) and background subshells
+# (verified empirically on 3.2.57 for this change, not assumed). The exit
+# status is captured first and re-exited explicitly, so the trap can never
+# change the engine's exit code.
+#
+# This is the L3 half of the original REVIEW-ARM-FAILCLOSED-01. The L1/L2
+# halves — the unconditional per-arm .rc and the rc classification — landed
+# separately as REVIEW-ARM-FAILCLOSED-02 and are deliberately untouched.
+# shellcheck disable=SC2329 # invoked only from the EXIT-trap string below
+_review_gate_terminal_fallback() { # <exit-status>
+  local _st="$1"
+  [[ -n "${HANDOFF}" && -d "${HANDOFF}" ]] || return 0
+  if [[ ! -f "${HANDOFF}/review-gate.md" ]]; then
+    printf 'status: blocked\nreason: gate_engine_aborted\nrc: %s\n' "${_st}" \
+      > "${HANDOFF}/review-gate.md.tmp"
+    mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=gate_engine_aborted rc=${_st}"
+  fi
+  return 0
+}
+_REVIEW_GATE_ST=0
+trap '_REVIEW_GATE_ST=$?; _review_gate_terminal_fallback "${_REVIEW_GATE_ST}"; exit "${_REVIEW_GATE_ST}"' EXIT
+# An EXIT trap alone never runs when the process is killed by an untrapped
+# signal — the kernel's default disposition is instant death with no trap. Route
+# the realistic lane-kill signals through exit so the terminal gate is still
+# written (exit codes are the conventional 128+signo).
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
+
 WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
 
 # Risk selection happens in this shell. resolve_review_pool_call runs in a
