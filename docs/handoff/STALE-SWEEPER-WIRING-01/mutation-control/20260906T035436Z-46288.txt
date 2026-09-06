@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-stale-sweeper-wiring.sh
+file=plugins/leadv2/hooks/leadv2-stale-pid-sweep.sh
+anchor=/^SWEEPER=/,/^# end STALE-SWEEPER-WIRING-01$/d
+baseline_rc=0
+mutated_rc=1
+red_line=  FAIL: faithful mirror failed to sweep — mirror layout is broken, mutation leg proves nothing
+diff_hash=8184bd9f086d1e852d5c3a08c3057c756c66923f9c82102cecd44cb1d30caf15
+lane_diff_hash=901d9b1c5e9deb21a063d880a2ad1bf86674e82aa042d0305d9c63e826892f05
