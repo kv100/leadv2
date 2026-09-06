@@ -12,7 +12,7 @@
 # Invalidation: age > 5s OR active.yaml newer than cache file.
 # Thread-safe for concurrent hooks: atomic write via mktemp+mv.
 
-LEADV2_STATE_DIR="${HOME}/.claude/state/leadv2"
+LEADV2_STATE_DIR="${LEADV2_ACTIVE_CACHE_STATE_DIR:-${HOME}/.claude/state/leadv2}"
 LEADV2_ACTIVE_CACHE="${LEADV2_STATE_DIR}/active.cache"
 LEADV2_ACTIVE_CACHE_TTL=5   # seconds
 
@@ -51,23 +51,55 @@ leadv2_read_active_yaml() {
   fi
 
   # ── Cache miss: parse and re-cache ─────────────────────────────────────────
+  # D2-M4: bare `os.kill(pid, 0)` has three answers, not two -- ESRCH is dead,
+  # but EPERM means the pid EXISTS (owned by someone else, e.g. a leadv2
+  # watcher reparented to ppid=1) and a bare kill(0)==0 also does not prove
+  # the pid is THIS session's own worker (a recycled pid onto an interactive
+  # claude session reads as alive for hours -- brief #9/#14). Route through
+  # leadv2-lane-liveness.sh's --all --json (single batched call, same active
+  # .yaml this function already reads) instead of a raw per-session kill(0)
+  # loop: its pid_alive field already carries the ESRCH/EPERM split and the
+  # process-kind check.
+  local liveness_bin="${LEADV2_LANE_LIVENESS_BIN:-${LEADV2_PLUGIN_SCRIPTS_DIR:-}}"
+  local liveness_json=""
+  if [[ -z "${liveness_bin}" ]]; then
+    # Resolve relative to this hook's own location: hooks/ sits beside
+    # scripts/ under the plugin root.
+    local _hook_dir; _hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    liveness_bin="${_hook_dir}/../scripts/leadv2-lane-liveness.sh"
+  fi
+  if [[ -x "${liveness_bin}" ]]; then
+    local _proj_root; _proj_root="$(dirname "$(dirname "${active_yaml}")")"
+    liveness_json="$(LEADV2_PROJECT_ROOT="${_proj_root}" bash "${liveness_bin}" \
+      --project-root "${_proj_root}" --all --json 2>/dev/null || true)"
+  fi
   local parse_out
   parse_out="$(python3 -c "
-import yaml, sys, os
+import yaml, sys, json
 try:
     d = yaml.safe_load(open(sys.argv[1])) or {}
     s = d.get('sessions') or []
+    alive_by_lane = {}
+    liveness_raw = sys.argv[2]
+    if liveness_raw:
+        try:
+            for row in (json.loads(liveness_raw).get('lanes') or []):
+                if isinstance(row, dict) and row.get('lane'):
+                    alive_by_lane[row['lane']] = bool(row.get('pid_alive'))
+        except Exception:
+            alive_by_lane = {}
     live = []
     for sess in s:
         pid = sess.get('pid')
+        tid = sess.get('task_id')
         if not pid:
             live.append(sess)
             continue
-        try:
-            os.kill(int(pid), 0)
+        # No liveness answer for this lane (empty map, or lane not covered by
+        # --all's enumeration) degrades to the OLD fail-open behavior --
+        # never silently drop a session this function cannot verify.
+        if tid not in alive_by_lane or alive_by_lane.get(tid):
             live.append(sess)
-        except (OSError, ValueError):
-            pass
     if live:
         print(live[0].get('task_id', ''))
         print(live[0].get('phase', ''))
@@ -77,7 +109,7 @@ try:
 except Exception:
     print('')
     print('')
-" "$active_yaml" 2>/dev/null || printf '\n')"
+" "$active_yaml" "$liveness_json" 2>/dev/null || printf '\n')"
 
   ACTIVE_TASK_ID="$(printf '%s' "$parse_out" | sed -n '1p')"
   ACTIVE_PHASE="$(printf '%s' "$parse_out" | sed -n '2p')"
