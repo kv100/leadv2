@@ -1,0 +1,10 @@
+plugins/leadv2/scripts/docs/leadv2/.bus-offsets -> /tmp/leadv2-pc-e2e-tPnsnK/state/leadv2/.bus-offsets; dangling=true
+plugins/leadv2/scripts/docs/leadv2/.bus.lock -> /tmp/leadv2-pc-e2e-tPnsnK/state/leadv2/.bus.lock; dangling=true
+plugins/leadv2/scripts/docs/leadv2/.merge.lock -> /tmp/leadv2-pc-e2e-tPnsnK/state/leadv2/.merge.lock; dangling=true
+plugins/leadv2/scripts/docs/leadv2/active.yaml -> /tmp/leadv2-pc-e2e-tPnsnK/state/leadv2/active.yaml; dangling=true
+plugins/leadv2/scripts/docs/leadv2/active.yaml.lock -> /tmp/leadv2-pc-e2e-tPnsnK/state/leadv2/active.yaml.lock; dangling=true
+plugins/leadv2/scripts/docs/leadv2/bus.jsonl -> /tmp/leadv2-pc-e2e-tPnsnK/state/leadv2/bus.jsonl; dangling=true
+plugins/leadv2/scripts/docs/leadv2/merge-queue.jsonl -> /tmp/leadv2-pc-e2e-tPnsnK/state/leadv2/merge-queue.jsonl; dangling=true
+plugins/leadv2/scripts/docs/leadv2/open-threads.md -> /tmp/leadv2-pc-e2e-tPnsnK/state/leadv2/open-threads.md; dangling=true
+plugins/leadv2/scripts/docs/leadv2/questions -> /tmp/leadv2-pc-e2e-tPnsnK/state/leadv2/questions; dangling=true
+Paired registry control before removal: fix-round/green.txt PASS=15 FAIL=0

@@ -1,0 +1,13 @@
+lane_dirs=224 nested_dirs=44
+active_lstat={'symlink': 44, 'regular': 0, 'missing': 0}
+scandir_nested=44 isfile_nonlink_active=0
+tracked_nested=9
+120000 bc48fda40b31fd3efaa19c2cba7a18b66ddab8a6 0	plugins/leadv2/scripts/docs/leadv2/.bus-offsets
+120000 1c95aa6e9d566424b8002c5cecd674be60d2ade6 0	plugins/leadv2/scripts/docs/leadv2/.bus.lock
+120000 86d00ee2565d75fe261431e67669fbc941977cde 0	plugins/leadv2/scripts/docs/leadv2/.merge.lock
+120000 6b2093a9cc3895a6fce173064dcf9d8fcf12262d 0	plugins/leadv2/scripts/docs/leadv2/active.yaml
+120000 d1092fa94b93170f619b0ca2b73703c77d8e9a22 0	plugins/leadv2/scripts/docs/leadv2/active.yaml.lock
+120000 f520ce9c5681bffe1acafe786b57cf5aeacdc320 0	plugins/leadv2/scripts/docs/leadv2/bus.jsonl
+120000 64549bd0b5e4a65f0d38f2f4a3d3274e543d1a06 0	plugins/leadv2/scripts/docs/leadv2/merge-queue.jsonl
+120000 818fbcfb29d7cea511b18a1e56806775e1b199f1 0	plugins/leadv2/scripts/docs/leadv2/open-threads.md
+120000 bc40955fe500ea2dd5f0372214c35acf3306f280 0	plugins/leadv2/scripts/docs/leadv2/questions

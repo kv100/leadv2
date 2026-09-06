@@ -47,6 +47,7 @@
 #     dated name through this script).
 #
 # Usage:
+#   leadv2-state-path.sh --project-root  # owning worktree root only; no writes
 #   leadv2-state-path.sh                  # -> control-plane root, ensures it
 #                                            exists + repairs the standard
 #                                            docs/leadv2/<name> symlink set
@@ -101,6 +102,16 @@ NAME="${1:-root}"
 # happened to be the current shell's cwd, which is wrong for any caller that
 # passes an explicit PROJECT_ROOT belonging to a different tree.
 LINK_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+# SHADOW-CONTROL-PLANE-01: callers such as status-collector pass their cwd
+# as PROJECT_ROOT. Resolve that location to its owning worktree before
+# migration creates docs/leadv2; git-common-dir alone fixes STATE_ROOT but
+# leaves the compatibility links under scripts/. Keep explicit non-git
+# sandbox roots intact, and never switch to the plugin's own repository.
+LINK_ROOT="$(git -C "$LINK_ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$LINK_ROOT")"
+if [[ "$NAME" == "--project-root" ]]; then
+  printf '%s\n' "$LINK_ROOT"
+  exit 0
+fi
 
 # ── Resolve control-plane root ──────────────────────────────────────────────
 if [[ -n "${LEADV2_STATE_ROOT:-}" ]]; then

@@ -29,6 +29,8 @@ docs/leadv2/*.lock
 # PROJECT_ROOT-leak residue from an unisolated dispatch run under tests/ (L5 fix,
 # V3-GLM-LADDER-01 R3) -- must never be tracked, or the leak becomes invisible.
 plugins/leadv2/scripts/tests/docs/
+# Control-plane state must never be committed below the plugin's scripts cwd.
+/plugins/leadv2/scripts/docs/
 plugins/leadv2/scripts/tests/.claude/
 
 # HANDOFF-AND-STATE-NOISE-01 (2026-08-21): mirror persona-engine's convention.
