@@ -287,9 +287,10 @@ C3_RC=0
 LEADV2_CODEX_CIRCUIT_FILE="$C3_CIRCUIT" LEADV2_ARM_COOLDOWN_DIR="$C3_COOLDOWN" \
   bash -c "source '$QUOTA_GATE_LIB'; codex_spawn_gate exec" 2>/tmp/c3.err || C3_RC=$?
 if [[ $C3_RC -eq 2 ]] \
-   && grep -q 'LEADV2_DISPATCH_REFUSED: quota_gate' /tmp/c3.err \
+   && grep -q 'LEADV2_DISPATCH_REFUSED: quota_circuit_open' /tmp/c3.err \
+   && ! grep -q 'LEADV2_DISPATCH_REFUSED: quota_gate' /tmp/c3.err \
    && grep -q 'reason=circuit' /tmp/c3.err; then
-  pass "c3 gate refuses while circuit open (rc 2, marker)"
+  pass "c3 gate refuses while circuit open (rc 2, cause marker)"
 else
   fail "c3 gate refuses while circuit open (rc=$C3_RC, err=$(cat /tmp/c3.err 2>/dev/null))"
 fi

@@ -2958,9 +2958,17 @@ _default_quota_lockout_iso() {
 # improves on the flat default; when absent (back-compat: older/direct callers that only
 # ever passed 2 args) this degrades EXACTLY to the pre-existing flat-default behavior --
 # same call sites, same rc contract, unchanged when nothing is parseable.
+# CODEX-REFUSAL-MARKER-CARRIES-ITS-CAUSE-01: `quota_circuit_open` (the circuit
+# breaker's usage-limit refusal) is quota-shaped too, and when the provider
+# states no reset time the lockout now inherits the CAUSE's own stated expiry
+# (the gate's `CODEX_REFUSED_QUOTA ... until=<ISO>` line) before any flat
+# default -- a cooldown that ends at T can no longer produce a lockout that
+# ends at T+22min. Non-quota causes (transport_cooldown, circuit_unknown,
+# gate_broken, ...) never reach the record: they case out below, so the quota
+# strike counter stops absorbing other failure classes' refusals.
 _maybe_record_quota_lockout() {  # <arm> <refusal_reason> [<raw_text>]
   case "${2}" in
-    quota|quota_gate|quota_exhausted|rate_limit*) ;;
+    quota|quota_gate|quota_exhausted|quota_circuit_open|rate_limit*) ;;
     *) return 0 ;;
   esac
   # PROVIDER-LOCKOUT-FALSE-BLOCK-01: classify for the additive class/strikes
@@ -2971,12 +2979,31 @@ _maybe_record_quota_lockout() {  # <arm> <refusal_reason> [<raw_text>]
   _cls_line="$(_classify_arm_failure launcher_refusal "${1}" "${3:-}" "" "${2}")"
   IFS='|' read -r _cls _cls_min _ev <<<"${_cls_line}"
   [[ "${_cls}" == "provider_refusal" ]] || _cls="provider_refusal"
-  local _prov _iso_src _iso _source _strikes
+  local _prov _iso_src _iso _source _strikes _until_iso _clamped
   _prov="$(_arm_provider "${1}")"
   _strikes=$(( $(_lockout_prior_strikes "${_prov}") + 1 ))
-  _iso_src="$(_quota_return_time "${3:-}")"
-  _iso="${_iso_src%%|*}"
-  _source="${_iso_src##*|}"
+  # CODEX-REFUSAL-MARKER-CARRIES-ITS-CAUSE-01: the CAUSE's own stated expiry
+  # wins FIRST — the gate prints `CODEX_REFUSED_QUOTA ... until=<ISO>` for
+  # cooldown/circuit refusals, and a lockout must end exactly there, never at
+  # a parser guess or the flat default. Only when the raw text states no cause
+  # expiry do we fall back to the provider-stated reset time (_quota_return_time,
+  # real provider refusal texts carry "try again at ...", never ` until=`),
+  # then to the flat default — so non-codex arms are byte-identical to before.
+  _until_iso="$(printf '%s' "${3:-}" | sed -nE 's/.* until=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z).*/\1/p' | head -1)"
+  _iso=""; _source=""
+  if [[ -n "${_until_iso}" ]]; then
+    _clamped="$(_lockout_iso_clamped "${_until_iso}" "$(_lockout_class_cap provider_refusal launcher_refusal)")"
+    if [[ -n "${_clamped}" ]]; then
+      _iso="${_clamped}"
+      _source="cause_stated_until"
+      [[ "${_clamped}" != "${_until_iso}" ]] && _source="cause_stated_until_clamped"
+    fi
+  fi
+  if [[ -z "${_iso}" ]]; then
+    _iso_src="$(_quota_return_time "${3:-}")"
+    _iso="${_iso_src%%|*}"
+    _source="${_iso_src##*|}"
+  fi
   if [[ -z "${_iso}" ]]; then
     _iso="$(_default_quota_lockout_iso)"
     _source="default"
