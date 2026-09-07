@@ -333,7 +333,7 @@ router_v2:
   # heuristic estimator; revisit at <=0.2 once the judge is live. Rollback from
   # any state is the single env flip `LEADV2_ARBITER_CAPABILITY_FIT=off`.
   capability_fit:
-    enabled: false
+    enabled: true
     prior: 3.0
     slack: 0.5
     cap_default: 3.0
