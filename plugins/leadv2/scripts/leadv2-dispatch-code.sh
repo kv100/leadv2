@@ -7324,6 +7324,14 @@ cmd_resolve() {
   # daily counter files even if it runs across a UTC-midnight boundary.
   local _LEADV2_EXC_DAY; _LEADV2_EXC_DAY="$(date -u +%Y%m%d)"
   local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard" task_class_flagged=0
+  # EXPLICIT-ARM-REQUEST-01 (founder, via Leadmain, 2026-09-07): the arbiter
+  # already honours `requested_arm` in its own descriptor (route-arbiter.sh
+  # commit 9de02b18) but nothing here ever set it -- the same "written and
+  # never read" shape the false-green corpus is cataloguing. `--requested-arm
+  # <id>` lets a caller (a lead, or a future dispatch wrapper) name a specific
+  # arm out-of-band from the auction; empty (the default) is byte-identical
+  # to today's behaviour.
+  local requested_arm=""
   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0 lane_deliverable=""
   local -a phase_waivers=()
   # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional founder task id
@@ -7342,6 +7350,8 @@ cmd_resolve() {
     case "$1" in
       --protected)    protected=1;   shift ;;
       --safety)       safety=1;      shift ;;
+      --requested-arm) [[ $# -ge 2 ]] || { log_err "--requested-arm requires a value"; usage; }
+                      requested_arm="$2"; shift 2 ;;
       # R1 FIX (Finding 5): guard arg-count BEFORE shift 2 -- a valued flag with no
       # value left `shift 2` failing silently (no -e) and the SAME flag re-matching
       # next iteration = infinite loop (verified: timeout exit 124 on the old stub).
@@ -8251,7 +8261,7 @@ exit is treated as an incident."
     # rule) can see them, not just kind/size/protected.
     local _arb_allowed_csv
     _arb_allowed_csv="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
-    _arb_desc="$(python3 -c 'import json,sys; allowed=[a for a in sys.argv[6].split(",") if a]; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[7],"allowed_arms":allowed,"complexity":sys.argv[8],"duration_class":sys.argv[9],"test_only":sys.argv[10]=="1"}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${_arb_allowed_csv}" "${sig8}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}" "${_test_only}")"
+    _arb_desc="$(python3 -c 'import json,sys; allowed=[a for a in sys.argv[6].split(",") if a]; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[7],"allowed_arms":allowed,"complexity":sys.argv[8],"duration_class":sys.argv[9],"test_only":sys.argv[10]=="1","requested_arm":sys.argv[11]}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${_arb_allowed_csv}" "${sig8}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}" "${_test_only}" "${requested_arm}")"
     _arb_out="$(route_arbiter worker "${_arb_desc}")"; _arb_rc=$?
     _arb_arm="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _arb_chain="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
@@ -8323,6 +8333,18 @@ exit is treated as an incident."
       emit decision "route_resolved by=arbiter role=worker arm=refuse task=${sig8} reason=all_arms_capped ${_arb_util}"
       _model_select_telemetry fail all_arms_capped refuse
       _dl_note "${sig8}" refused all_arms_capped "${_arb_util}" "${founder_task_id}"
+      exit 4
+    elif [[ -n "${requested_arm}" && ( ${_arb_rc} -eq 69 || ${_arb_rc} -eq 70 ) ]]; then
+      # EXPLICIT-ARM-REQUEST-01: a named-arm request that the arbiter refused
+      # (incapable of this kind/size, or every matching cell capped) must be
+      # a HARD refusal here too -- the generic `else` below fail-opens to the
+      # auction on any other non-zero rc, which for an explicit request would
+      # silently substitute a DIFFERENT arm than the caller named. That is
+      # exactly the false-green shape this whole effort exists to kill: a
+      # request for X quietly answered by Y, reported as success.
+      emit decision "route_resolved by=arbiter role=worker arm=refuse task=${sig8} reason=${_arb_reason} requested_arm=${requested_arm} ${_arb_util}"
+      _model_select_telemetry fail "${_arb_reason}" refuse
+      _dl_note "${sig8}" refused "${_arb_reason}" "${_arb_util}" "${founder_task_id}"
       exit 4
     else
       # rc=68 (no_capable_cell, a config-vocabulary gap -- T17 C1) falls
