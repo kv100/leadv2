@@ -126,6 +126,55 @@ if [[ "$NAME" == "--project-root" ]]; then
   exit 0
 fi
 
+# ── TEST-FIXTURE-WRITES-INTO-THE-LIVE-STATE-TREE-01: reverse-direction guard ─
+# The B1 SAFETY NET below covers one direction only: LEADV2_STATE_ROOT (a
+# sandbox-only signal) is set while LINK_ROOT resolved to a REAL checkout ->
+# abort before its symlinks are touched. The reverse direction had no guard at
+# all: a dispatcher test fixture points its env root at a throwaway mktemp
+# repo but never cd's into it, so leadv2-dispatch-code.sh's FOREIGN-ROOT-GUARD
+# correctly discards the env root and roots PROJECT_ROOT at the CALLER's cwd
+# -- a real repo. Every journal append then resolved through here into
+# <base>/<real-slug>: the LIVE control plane. Measured 2026-09-06/07: 8 test
+# journals under ~/.claude/leadv2-state/leadv2/tasks/, each carrying the
+# `project_root_guard ... status=foreign_env_overridden env_root=/var/folders/...`
+# line that names this exact shape.
+#
+# Signal: a throwaway path (/tmp, /private/tmp, /var/folders,
+# /private/var/folders) is never a real checkout. If the ambient env still
+# carries one in a root-override var (CLAUDE_PROJECT_ROOT / CLAUDE_PROJECT_DIR
+# / LEADV2_PROJECT_ROOT -- emit() re-points CLAUDE_PROJECT_ROOT per call, but
+# the test's own LEADV2_PROJECT_ROOT survives in every child) while LINK_ROOT
+# is a REAL repo, this call belongs to a fixture whose root was discarded:
+# resolve state under the THROWAWAY root's own layout instead (no-git ->
+# <root>/docs/leadv2; git-init scratch -> the EPHEMERAL redirect below),
+# never the live tree. Explicit sandbox signals keep absolute precedence and
+# disable this guard, exactly as they do for EPHEMERAL-REDIRECT.
+if [[ -z "${LEADV2_STATE_ROOT:-}" && -z "${LEADV2_STATE_BASE:-}" ]] \
+   && ! [[ "${LINK_ROOT}" =~ ^(/private)?/(tmp|var/folders)/ ]] \
+   && { git -C "$LINK_ROOT" remote 2>/dev/null | grep -q . \
+        || [[ -f "$LINK_ROOT/REAL-REPO" || -f "$LINK_ROOT/.git/leadv2-real-repo-marker" ]]; }; then
+  _LV2_THROWAWAY_ROOT=""
+  _lv2_throwaway_probe() {  # <env value> -> sets _LV2_THROWAWAY_ROOT on a hit
+    local v="$1" phys=""
+    [[ -n "$v" ]] || return 0
+    phys="$(cd "$v" 2>/dev/null && pwd -P || true)"
+    if [[ -n "$phys" && "$phys" =~ ^(/private)?/(tmp|var/folders)/ ]] \
+       && [[ "$phys" != "$LINK_ROOT" && "$LINK_ROOT" != "$phys"/* ]]; then
+      _LV2_THROWAWAY_ROOT="$phys"
+    fi
+    return 0
+  }
+  _lv2_throwaway_probe "${CLAUDE_PROJECT_ROOT:-}"
+  _lv2_throwaway_probe "${CLAUDE_PROJECT_DIR:-}"
+  _lv2_throwaway_probe "${LEADV2_PROJECT_ROOT:-}"
+  if [[ -n "${_LV2_THROWAWAY_ROOT}" ]]; then
+    printf -- '[leadv2-state-path] WARN: ambient root var points at a throwaway path (%s) while LINK_ROOT (%s) is a real repo -- test-fixture shape (TEST-FIXTURE-WRITES-INTO-THE-LIVE-STATE-TREE-01). Resolving state under the throwaway root, NOT the live control plane.\n' "${_LV2_THROWAWAY_ROOT}" "${LINK_ROOT}" >&2
+    LINK_ROOT="${_LV2_THROWAWAY_ROOT}"
+  fi
+  unset -f _lv2_throwaway_probe 2>/dev/null || true
+  unset _LV2_THROWAWAY_ROOT
+fi
+
 # ── Resolve control-plane root ──────────────────────────────────────────────
 if [[ -n "${LEADV2_STATE_ROOT:-}" ]]; then
   STATE_ROOT="$LEADV2_STATE_ROOT"

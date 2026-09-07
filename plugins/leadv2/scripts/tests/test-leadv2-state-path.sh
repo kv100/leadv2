@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-state-path
 # tests/test-leadv2-state-path.sh — REGISTRY-MUST-LEAVE-GIT-01
 #
 # The live-lane registry (docs/leadv2/active.yaml) was git-tracked, so every
@@ -275,11 +276,82 @@ test_4_lane_state_survives_eval_sourcing() {
 # ── Test 5: bash -n syntax check on both changed files ──────────────────────
 test_5_syntax() {
   log "Test 5: bash -n on changed files"
-  if bash -n "$REGISTRY_SH" && bash -n "$LANE_STATE_SH"; then
-    pass "bash -n clean on both changed files"
+  if bash -n "$REGISTRY_SH" && bash -n "$LANE_STATE_SH" && bash -n "${SCRIPT_DIR}/../leadv2-state-path.sh"; then
+    pass "bash -n clean on all changed files"
   else
     fail "bash -n failed on a changed file"
   fi
+}
+
+# ── Test 6: TEST-FIXTURE-WRITES-INTO-THE-LIVE-STATE-TREE-01 ────────────────
+# Measured defect: a dispatcher test fixture points its env root at a throwaway
+# mktemp repo but never cd's into it, so dispatch-code.sh's FOREIGN-ROOT-GUARD
+# roots PROJECT_ROOT at the REAL cwd repo; every journal append then resolved
+# through leadv2-state-path.sh into <base>/<real-slug> -- the LIVE control
+# plane (8 journals under ~/.claude/leadv2-state/leadv2/tasks/, 2026-09-06/07).
+# The reverse-direction guard in the resolver must redirect such a call under
+# the throwaway root's own layout. Live base derives from $HOME, so a scratch
+# HOME yields a structurally identical "live" tree with zero real-world writes.
+test_6_test_fixture_does_not_resolve_into_live_tree() {
+  log "Test 6: throwaway env root + real-repo PROJECT_ROOT must resolve under the throwaway root, never a live control plane"
+  local d dphys resolver journal_bin out
+  d="$(lv2_mktemp_dir "state-path-p91")"
+  dphys="$(cd "${d}" && pwd -P)"
+  resolver="${SCRIPT_DIR}/../leadv2-state-path.sh"
+  journal_bin="${SCRIPT_DIR}/../leadv2-journal.sh"
+  mkdir -p "${d}/repo" "${d}/fakehome"
+  out="$(PROJECT_ROOT="$ROOT" LEADV2_PROJECT_ROOT="${d}/repo" HOME="${d}/fakehome" \
+    bash "$resolver" --no-link tasks/dispatch-P91T6 2>/dev/null)" || out=""
+  case "$out" in
+    "${dphys}/repo/"*) pass "resolver redirected under the throwaway root: ${out}" ;;
+    *) fail "resolver resolved outside the throwaway root: ${out}" ;;
+  esac
+  # End-to-end through the real journal writer, emit()'s exact call shape:
+  # CLAUDE_PROJECT_ROOT=<real winner> + the fixture's LEADV2_PROJECT_ROOT ambient.
+  if CLAUDE_PROJECT_ROOT="$ROOT" LEADV2_PROJECT_ROOT="${d}/repo" HOME="${d}/fakehome" \
+     bash "$journal_bin" append dispatch-P91T6 decision 'p91 t6 probe' >/dev/null 2>&1 \
+     && [[ -f "${d}/repo/docs/leadv2/tasks/dispatch-P91T6/journal.md" ]] \
+     && [[ ! -e "${d}/fakehome/.claude/leadv2-state/leadv2/tasks/dispatch-P91T6" ]]; then
+    pass "journal append landed under the throwaway root; live tree untouched"
+  else
+    fail "journal append leaked or landed wrong (expected ${d}/repo/docs/leadv2/tasks/dispatch-P91T6/journal.md)"
+  fi
+  rm -rf "$d"
+
+  log "Test 6 negative control: kill the throwaway-shape regex INSIDE the guard -> the same append must land in the live layout"
+  # Mutate the detection condition inside _lv2_throwaway_probe (a scratch COPY
+  # of the real scripts -- the canonical files are never mutated), run the
+  # same append, and require the leak to REAPPEAR under the scratch HOME: that
+  # is what proves the green assertions above test THIS guard, not a fixture
+  # coincidence. cp keeps the exec bit journal.sh's [[ -x ]] requires.
+  local d2
+  d2="$(lv2_mktemp_dir "state-path-p91nc")"
+  mkdir -p "${d2}/scratch" "${d2}/repo" "${d2}/fakehome"
+  cp "${resolver}" "${d2}/scratch/leadv2-state-path.sh"
+  cp "${SCRIPT_DIR}/../leadv2-portable-lock.sh" "${d2}/scratch/"
+  cp "${journal_bin}" "${d2}/scratch/leadv2-journal.sh"
+  if ! python3 -c '
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = "if [[ -n \"$phys\" && \"$phys\" =~ ^(/private)?/(tmp|var/folders)/ ]]"
+new = "if [[ -n \"$phys\" && \"$phys\" =~ ^(/nonexistent-p91-control)/ ]]"
+assert s.count(old) == 1, "guard shape changed: pattern not found exactly once"
+open(p, "w").write(s.replace(old, new))
+' "${d2}/scratch/leadv2-state-path.sh"; then
+    fail "negative control could not APPLY its mutation (guard pattern not found in the scratch copy)"
+    rm -rf "${d2}"
+    return
+  fi
+  if CLAUDE_PROJECT_ROOT="$ROOT" LEADV2_PROJECT_ROOT="${d2}/repo" HOME="${d2}/fakehome" \
+     bash "${d2}/scratch/leadv2-journal.sh" append dispatch-P91T6NC decision 'p91 t6 control' >/dev/null 2>&1 \
+     && [[ -f "${d2}/fakehome/.claude/leadv2-state/leadv2/tasks/dispatch-P91T6NC/journal.md" ]] \
+     && grep -q 'p91 t6 control' "${d2}/fakehome/.claude/leadv2-state/leadv2/tasks/dispatch-P91T6NC/journal.md"; then
+    pass "negative control confirmed: mutated guard leaks the journal into the live layout (scratch HOME)"
+  else
+    fail "negative control did NOT flip: mutated resolver still refused the live layout -- the green assertions may be testing something else"
+  fi
+  rm -rf "${d2}"
 }
 
 test_1_active_yaml_untracked
@@ -287,6 +359,7 @@ test_2_gitignore_covers_path
 test_3_registry_survives_eval_sourcing
 test_4_lane_state_survives_eval_sourcing
 test_5_syntax
+test_6_test_fixture_does_not_resolve_into_live_tree
 
 log "----------------------------------------"
 log "RESULTS: ${PASS} passed, ${FAIL} failed"
