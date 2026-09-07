@@ -97,9 +97,9 @@ def check(ok,label,actual=None):
     global failed
     print(('PASS: ' if ok else 'FAIL: ')+label+((' actual='+json.dumps(actual)) if not ok else ''))
     failed+=not ok
-for name,mode in [('killed','task-worker'),('recover','task-worker'),('normal','task-worker'),
+for name,mode in [('missing-connect','task'),('killed','task-worker'),('recover','task-worker'),('normal','task-worker'),
                   ('normal','task'),('normal','review'),('ordinary-error','task'),
-                  ('connect-error','task'),('missing-exit','task'),('missing-connect','task')]:
+                  ('connect-error','task'),('missing-exit','task')]:
     jid=name+'-'+mode
     env={**os.environ,'FIXTURE':name,'FIXTURE_ID':jid,'FIXTURE_DIR':str(p),
          'ADAPTER_SCRIPT_DIR':root,'LEADV2_EVENT_LOG_DIR':str(p/'journal')}
