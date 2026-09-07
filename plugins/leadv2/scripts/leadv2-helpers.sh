@@ -2517,10 +2517,12 @@ _leadv2_claude_agents_json() {
 # N1-EMPTY-LANE-IS-NOT-A-PASS: a standalone predicate (NOT the full cross-repo /
 # start-sha never-smaller machinery in leadv2-dispatch-product-close.sh) that
 # answers the narrower question the e2e gate needs: "did this lane's own declared
-# writes produce ANY diff at all?" Used by leadv2-phase8-e2e-gate.sh (the second
-# writer of e2e-gate-passed.flag) to refuse to stamp the passed sentinel for a
-# lane that wrote nothing.
-#   rc0 = empty (no diff on any declared write / whole tree)
+# writes produce ANY diff at all?" -- where "any diff" includes work the lane
+# already COMMITTED (diff merge-base main..HEAD), not just the working tree.
+# Used by leadv2-phase8-e2e-gate.sh (the second writer of e2e-gate-passed.flag)
+# to refuse to stamp the passed sentinel for a lane that wrote nothing.
+#   rc0 = empty (no committed / uncommitted / untracked diff on any declared
+#         write / whole tree)
 #   rc1 = non-empty (at least one declared write has a diff)
 #   rc2 = undeterminable (no repo / not a git tree) -- caller treats as non-empty,
 #         never block a real lane on a guess.
@@ -2529,9 +2531,24 @@ lv2_lane_diff_is_empty() {  # <repo_abs> [writes_csv]
   local repo="$1" writes_csv="${2:-}" w _any=""
   [[ -n "${repo}" && -d "${repo}" ]] || return 2
   git -C "${repo}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 2
+  # CLOSE-GATE-CALLS-A-COMMITTED-LANE-no_work-01: committed work counts. The
+  # lane's own range is the diff from its merge-base with main to HEAD. Base
+  # resolution is deliberately defensive: no `main` / failed merge-base ->
+  # fall back to the HEAD-only comparison below (fail open -- an unresolvable
+  # base never itself means 'empty'; a lane wrongly allowed to run its suites
+  # loses minutes, a lane wrongly called no_work loses the lane).
+  local _base=""
+  _base="$(git -C "${repo}" merge-base main HEAD 2>/dev/null)" || _base=""
   if [[ -z "${writes_csv}" ]]; then
-    # no declared writes -> whole-tree check (tracked diff + untracked), excluding
-    # the docs noise lanes never own.
+    # no declared writes -> whole-tree check (committed lane range + tracked
+    # diff + untracked), excluding the docs noise lanes never own.
+    # --quiet (not `| grep -q`): a whole lane's committed diff can exceed the
+    # pipe buffer, and under the caller's pipefail an early-exiting grep
+    # turns git's SIGPIPE (141) into a false "no diff" -- the exact lane this
+    # predicate must never call empty.
+    if [[ -n "${_base}" ]] && ! git -C "${repo}" diff --quiet "${_base}" HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; then
+      return 1
+    fi
     _any="$(git -C "${repo}" diff HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null)"
     _any="${_any}$(git -C "${repo}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null)"
     [[ -z "${_any}" ]] && return 0
@@ -2544,6 +2561,7 @@ lv2_lane_diff_is_empty() {  # <repo_abs> [writes_csv]
   for w in "${_writes[@]}"; do
     w="${w#"${w%%[![:space:]]*}"}"; w="${w%"${w##*[![:space:]]}"}"
     [[ -z "${w}" ]] && continue
+    if [[ -n "${_base}" ]] && ! git -C "${repo}" diff --quiet "${_base}" HEAD -- "${w}" 2>/dev/null; then return 1; fi
     if git -C "${repo}" diff HEAD -- "${w}" 2>/dev/null | grep -q '.'; then return 1; fi
     if git -C "${repo}" ls-files --others --exclude-standard -- "${w}" 2>/dev/null | grep -q '.'; then return 1; fi
   done
