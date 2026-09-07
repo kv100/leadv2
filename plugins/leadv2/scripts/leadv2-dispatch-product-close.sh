@@ -1490,7 +1490,7 @@ pc_await_worker_exit() {
 # _pc_diff_base or they will drift.
 #
 # round-2 fix: "0" is indistinguishable from "could not resolve a base at all" (unresolvable
-# LEADV2_LANE_START_SHA, missing cache file, no origin/main) -- a lossy channel that let a
+# LEADV2_LANE_START_SHA, missing cache file, no local main) -- a lossy channel that let a
 # lane which genuinely committed work read as arm_produced_nothing. Widen the channel:
 # print "unknown" whenever no base could be resolved, and an integer ONLY when a base was
 # actually resolved (including the genuine "0 commits ahead" case). rc is always 0 -- this
@@ -1511,8 +1511,8 @@ _pc_lane_commits_ahead() {  # <root> -> stdout "N" | "unknown"; always rc0
         base="$(git -C "${root}" merge-base "${sha}" HEAD 2>/dev/null || true)"
       fi
     fi
-    if [[ -z "${base}" ]] && git -C "${root}" cat-file -e "origin/main^{commit}" 2>/dev/null; then
-      base="$(git -C "${root}" merge-base origin/main HEAD 2>/dev/null || true)"
+    if [[ -z "${base}" ]] && git -C "${root}" cat-file -e "main^{commit}" 2>/dev/null; then
+      base="$(git -C "${root}" merge-base main HEAD 2>/dev/null || true)"
     fi
     if [[ -n "${base}" ]]; then
       count="$(git -C "${root}" rev-list --count "${base}..HEAD" 2>/dev/null || true)"
@@ -2263,7 +2263,10 @@ _pc_git_diff_names() {  # <repo_abs> <base_rev> -> name-only list on stdout, who
 # already COMMITTED its own work -- the normal end state of a finished lane -- and can also
 # lose part of an uncommitted lane's changes once another lane's commit moves HEAD forward
 # in the shared tree. Resolve the merge-base with the dispatcher's recorded start commit;
-# if no usable recorded base belongs to this repo, fall back to origin/main. A multi-repo
+# if no usable recorded base belongs to this repo, fall back to local `main` (STALE-DIFF-BASE-01,
+# 2026-09-07: was `origin/main`, 676 commits / 2321 files behind local main under the standing
+# no-push-to-origin freeze -- push stays blocked, this fallback now tracks the branch that's
+# actually current). A multi-repo
 # lane can legitimately carry a start SHA from a different repo, and manual close-gate runs
 # may have no cache file, so each candidate is independently best-effort. Empty output means
 # neither candidate had a merge-base with HEAD and the caller preserves the HEAD-only path.
@@ -2276,8 +2279,8 @@ _pc_diff_base() {  # <repo_abs> -> a rev to diff FROM on stdout; empty stdout =>
     base="$(git -C "${repo}" merge-base "${sha}" HEAD 2>/dev/null || true)"
     [[ -n "${base}" ]] && { printf '%s' "${base}"; return 0; }
   fi
-  if git -C "${repo}" cat-file -e "origin/main^{commit}" 2>/dev/null; then
-    base="$(git -C "${repo}" merge-base origin/main HEAD 2>/dev/null || true)"
+  if git -C "${repo}" cat-file -e "main^{commit}" 2>/dev/null; then
+    base="$(git -C "${repo}" merge-base main HEAD 2>/dev/null || true)"
     [[ -n "${base}" ]] && printf '%s' "${base}"
   fi
 }
@@ -2288,14 +2291,34 @@ _pc_diff_base() {  # <repo_abs> -> a rev to diff FROM on stdout; empty stdout =>
 # committed work (worker exits without touching the tree this round),
 # merge-base(sha, HEAD) degenerates to HEAD itself and _pc_diff_base above
 # returns a base whose diff is empty by construction, even though the branch
-# carries real commits main has never seen (the origin/main fallback inside
+# carries real commits main has never seen (the local-main fallback inside
 # _pc_diff_base never fires here because the start-sha candidate resolved
-# fine -- it just resolved to the wrong fact). origin/main is truth-independent
+# fine -- it just resolved to the wrong fact). Local `main` is truth-independent
 # of any recorded start-sha and must be consulted UNCONDITIONALLY, not only
 # when the start-sha candidate fails outright. Reproduced in
 # test-close-gate-nowork-abandoned.sh Case A; the 2026-09-04 lane
 # (DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01) matches this shape exactly.
-_pc_diff_base_main() {  # <repo_abs> -> merge-base(origin/main, HEAD) if resolvable, else empty
+# STALE-DIFF-BASE-01 (2026-09-07): this candidate used to anchor on `origin/main`, which had
+# drifted 676 commits / 2321 files behind local main (push to origin stays frozen) -- since
+# this candidate's diff string was fed into a "widest wins" picker downstream, the stale
+# anchor made it win by construction on every close. Now anchors on local `main`.
+_pc_diff_base_main() {  # <repo_abs> -> merge-base(local main, HEAD) if resolvable, else empty
+  local repo="$1" base
+  git -C "${repo}" cat-file -e "main^{commit}" 2>/dev/null || return 0
+  base="$(git -C "${repo}" merge-base main HEAD 2>/dev/null || true)"
+  [[ -n "${base}" ]] && printf '%s' "${base}"
+}
+# STALE-DIFF-BASE-01 round 2 (2026-09-07): last-resort fourth candidate, called
+# ONLY by _pc_repo_diff when {HEAD, base, main} all come back empty. Neither
+# `main` nor `origin/main` alone survives every topology a lane can be in --
+# `main` degenerates to HEAD itself (structural zero) exactly when a lane
+# commits directly onto the local `main` branch with no separate feature
+# branch (test-close-gate-nowork-abandoned.sh Case A's fixture is this shape);
+# `origin/main`, frozen under the standing no-push freeze, is a real distinct
+# ancestor in THAT topology precisely because it never moved. So origin/main
+# is not "the wrong anchor" -- it is the stale-but-last-standing one, worth
+# consulting only after the other three have already shown nothing.
+_pc_diff_base_origin() {  # <repo_abs> -> merge-base(origin/main, HEAD) if resolvable, else empty
   local repo="$1" base
   git -C "${repo}" cat-file -e "origin/main^{commit}" 2>/dev/null || return 0
   base="$(git -C "${repo}" merge-base origin/main HEAD 2>/dev/null || true)"
@@ -2315,7 +2338,7 @@ _pc_last_diff_base() { cat "${_PC_LAST_BASE_FILE}" 2>/dev/null || printf 'HEAD';
 # -- it cannot regress any arm below today's HEAD-diff baseline by construction.
 _pc_repo_diff() { # <repo_abs> <path...> -> diff on stdout (tracked + untracked + deletions)
   local repo="$1"; shift
-  local base mbase head_out base_out main_out chosen winner
+  local base mbase obase head_out base_out main_out origin_out chosen winner
   head_out="$(_pc_git_diff "${repo}" HEAD "$@")"
   base="$(_pc_diff_base "${repo}")"
   if [[ -n "${base}" ]]; then
@@ -2324,7 +2347,8 @@ _pc_repo_diff() { # <repo_abs> <path...> -> diff on stdout (tracked + untracked 
     base_out=""
   fi
   # Third, independent candidate (CLOSE-GATE-CALLS-A-FINISHED-LANE-no_work-01):
-  # origin/main, consulted unconditionally -- not only when ${base} failed to
+  # local main (was origin/main until STALE-DIFF-BASE-01, 2026-09-07), consulted
+  # unconditionally -- not only when ${base} failed to
   # resolve -- because a start-sha that resolves fine can still resolve to a
   # tip that already contains the branch's own prior work (re-dispatch), which
   # makes ${base_out} empty for the wrong reason. Skip the recompute when it's
@@ -2345,6 +2369,25 @@ _pc_repo_diff() { # <repo_abs> <path...> -> diff on stdout (tracked + untracked 
   fi
   if [[ ${#main_out} -gt ${#winner} ]]; then
     chosen="${mbase:0:8}"; winner="${main_out}"
+  fi
+  # Fourth, LAST-RESORT candidate (STALE-DIFF-BASE-01, 2026-09-07): origin/main,
+  # consulted ONLY when the winner among {HEAD, base, main} is empty. Neither
+  # ref alone survives every topology -- a live lane on its own branch needs
+  # local `main` (origin/main there is 676 commits / 2321 files stale under the
+  # standing no-push freeze); a fixture/manual run that commits straight onto
+  # local `main` degenerates local-main's merge-base to HEAD itself (structural
+  # zero), and origin/main -- frozen, but still a real distinct ancestor in
+  # THAT topology -- is the only survivor. So origin/main is not "the wrong
+  # anchor", it is "the stale-but-last-standing anchor": try it only after the
+  # other three have already failed to show any work.
+  if [[ -z "${winner}" ]]; then
+    obase="$(_pc_diff_base_origin "${repo}")"
+    if [[ -n "${obase}" ]]; then
+      origin_out="$(_pc_git_diff "${repo}" "${obase}" "$@")"
+      if [[ -n "${origin_out}" ]]; then
+        chosen="${obase:0:8}"; winner="${origin_out}"
+      fi
+    fi
   fi
   printf '%s' "${winner}"
   printf '%s' "${chosen}" > "${_PC_LAST_BASE_FILE}" 2>/dev/null || true
