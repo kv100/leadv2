@@ -30,7 +30,7 @@ pass() { printf 'PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
 fail() { printf 'FAIL: %s -- %s\n' "$1" "${2:-}"; FAIL=$((FAIL + 1)); }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/judge-path.XXXXXX")"
-trap '[[ "${JUDGEPATH_KEEP_LOGS:-0}" == "1" ]] || rm -rf "$TMP"' EXIT
+trap '[[ "${JUDGEPATH_KEEP_LOGS:-0}" == "1" ]] || rm -rf "$TMP"; rm -f "${SCRIPTS_ROOT}/.judge-mutant-timeout-old.sh"' EXIT
 
 bash -n "$JUDGE_BIN" || { fail "bash syntax: judge"; exit 1; }
 pass "bash syntax: judge"
@@ -66,6 +66,7 @@ mkstub rc1      <<< 'exit 1'
 mkstub empty    <<< 'exit 0'
 mkstub badenv   <<< 'printf "not json at all"'
 mkstub timeout  <<< 'sleep 30'
+mkstub timeout_with_answer < <(printf 'cat "%s"\nsleep 30\n' "$STUBS/ok.payload")
 mkstub offschem < <(printf 'cat "%s"\n' "$STUBS/offschem.payload")
 
 run_judge() { # <case-name> <stub-path|-> [extra env KEY=VAL ...] [--class <c>]
@@ -127,6 +128,73 @@ last_line_has 'judge_path=cache_hit$' && last_line_has 'estimate_source=judge' \
 line="$(run_judge timeout "$STUBS/timeout" KEY=LEADV2_JUDGE_TIMEOUT_SEC=1)"
 last_line_has 'judge_path=judge_fail ' && last_line_has 'judge_fail_reason=timeout' \
   && pass "timeout -> judge_fail_reason=timeout" || fail "timeout reason" "$line"
+
+# ── 3b. SHARED-TREE-PERMISSION-09: a non-empty answer must survive a ────────
+# timeout-kill (real bug found 2026-09-07: median 46.31s against a 45s
+# budget, 2 of 3 "timeouts" had already produced a complete answer that got
+# discarded). timeout_with_answer prints the full envelope THEN sleeps 30s,
+# reproducing the exact production race -- the process is killed only after
+# its answer is already flushed to the pipe.
+line="$(run_judge timeout_with_answer "$STUBS/timeout_with_answer" KEY=LEADV2_JUDGE_TIMEOUT_SEC=1)"
+last_line_has 'judge_path=judge$' && ! last_line_has 'judge_fail_reason=' \
+  && pass "timeout-with-answer: non-empty body survives the kill -> judge_path=judge (fix)" \
+  || fail "timeout-with-answer fix" "$line"
+grep -q '"estimate_source": "judge"' "$TMP/out-timeout_with_answer.json" \
+  && pass "timeout-with-answer: harvested answer still parses to estimate_source=judge" \
+  || fail "timeout-with-answer parse" "$(cat "$TMP/out-timeout_with_answer.json" 2>/dev/null)"
+
+# negative control (execution-proven, real behavior delta): a mutant that
+# restores the OLD unconditional discard-on-timeout must lose the exact same
+# answer this base binary just kept -- proving the fix, not the stub, is what
+# changed the outcome. Mutation inside the function body (F1-HARD-WORK
+# discipline): a top-level line-number insert would paint the suite red for
+# an unrelated reason and read as a false pass (2026-08-25 incident).
+# Must live NEXT TO the real script, not in $TMP: PROMPT_TMPL is resolved
+# from the running script's own SCRIPT_DIR, so a copy anywhere else fails
+# with template_missing before it ever reaches the mutated branch (caught by
+# this suite's own first run).
+MUTANT_TO="${SCRIPTS_ROOT}/.judge-mutant-timeout-old.sh"
+python3 - "$JUDGE_BIN" "$MUTANT_TO" <<'PY'
+import sys
+p, dst = sys.argv[1], sys.argv[2]
+s = open(p).read()
+anchor = '''  if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
+    if [[ -z "${raw}" ]]; then
+      _fail "timeout"
+      return 1
+    fi
+  elif [[ ${rc} -ne 0 ]]; then
+    _fail "nonzero_rc"
+    return 1
+  fi'''
+n = s.count(anchor)
+if n != 1:
+    sys.exit('mutation anchor found %d times (expected 1) -- timeout/rc branch moved or was reworded; re-anchor this control, do not silence it' % n)
+old_behavior = '''  if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
+    _fail "MUTANT_DISCARD_ON_TIMEOUT"
+    return 1
+  fi
+  [[ ${rc} -eq 0 ]] || { _fail "nonzero_rc"; return 1; }'''
+open(dst, 'w').write(s.replace(anchor, old_behavior))
+PY
+chmod +x "$MUTANT_TO"
+if grep -q 'MUTANT_DISCARD_ON_TIMEOUT' "$MUTANT_TO"; then
+  : > "$JOURNAL_LOG"
+  rm -f "$STUBS/timeout_with_answer.called"
+  env LEADV2_JUDGE_TIMEOUT_SEC=1 LEADV2_JUDGE_CLAUDE_BIN="$STUBS/timeout_with_answer" \
+    LEADV2_JUDGE_JOURNAL_BIN="$TMP/journal-stub.sh" LEADV2_JUDGE_CACHE_DIR="$TMP/cache-mutant-to" \
+    PROJECT_ROOT="$TMP" \
+    bash "$MUTANT_TO" --mission-file "$MISSION" --task-id t-mutant-to --class Heavy \
+    > "$TMP/out-mutant-to.json" 2>/dev/null
+  if last_line_has 'judge_fail_reason=MUTANT_DISCARD_ON_TIMEOUT'; then
+    pass "NC: pre-fix behavior (restored in a mutant) discards the SAME non-empty answer the base binary just kept"
+  else
+    fail "NC pre-fix discard" "mutant token absent: $(tail -1 "$JOURNAL_LOG")"
+  fi
+else
+  fail "NC pre-fix discard setup" "mutation anchor not found in ${JUDGE_BIN}"
+fi
+rm -f "$MUTANT_TO"
 line="$(run_judge rc1 "$STUBS/rc1")"
 last_line_has 'judge_fail_reason=nonzero_rc' && pass "rc!=0 -> nonzero_rc" \
   || fail "nonzero_rc reason" "$line"

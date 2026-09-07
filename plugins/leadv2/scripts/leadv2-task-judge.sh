@@ -58,7 +58,15 @@ PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(git
 JOURNAL_BIN="${LEADV2_JUDGE_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 CLAUDE_BIN="${LEADV2_JUDGE_CLAUDE_BIN:-claude}"
 JUDGE_MODEL="${LEADV2_JUDGE_MODEL:-haiku}"
-TIMEOUT_SEC="${LEADV2_JUDGE_TIMEOUT_SEC:-45}"
+# SHARED-TREE-PERMISSION-09 (2026-09-07): 45 was set before any live-shaped
+# measurement existed. 8 real invokes (5 at a 45s budget, 3 at 120s) measured
+# 36.36-46.89s wall-clock -- the CALL ITSELF takes this long regardless of
+# budget (the 120s runs finished in the same 36-45s range, not faster), so
+# the tail (46.89s), not the median, is what a timeout must clear. 90 gives
+# ~43s of margin over the worst observed call -- roughly 2x the max, chosen
+# to absorb further gateway slowdowns (judge-revival-diagnosis.md's own E4
+# finding) without being an arbitrary round number.
+TIMEOUT_SEC="${LEADV2_JUDGE_TIMEOUT_SEC:-90}"
 PROMPT_TMPL="${SCRIPT_DIR}/leadv2-task-judge-prompt.tmpl"
 
 die() { printf -- '[leadv2-task-judge] %s\n' "$*" >&2; exit 2; }
@@ -338,13 +346,25 @@ print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
   else
     raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
   fi
-  # GNU timeout exits 124 on TERM-timeout, 137 after a -k KILL. Both are
-  # "the call did not finish in budget" — the mode Part 0 E4 reproduced live.
+  # GNU timeout exits 124 on TERM-timeout, 137 after a -k KILL. Both used to
+  # be an unconditional _fail "timeout" — SHARED-TREE-PERMISSION-09
+  # (2026-09-07): a live measurement found the model had ALREADY produced a
+  # complete answer in 2 of 3 "timeouts" (the process was killed after
+  # writing its output, not before) — we were discarding finished work and
+  # mislabelling it a failure. Only a genuinely EMPTY body on a timeout-kill
+  # is a real failure now; a non-empty body falls through to the same
+  # envelope/schema parsing every other path uses, so a truncated-mid-write
+  # answer is still caught (and correctly labelled envelope_parse/
+  # schema_invalid) rather than silently miscounted as "timeout".
   if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
-    _fail "timeout"
+    if [[ -z "${raw}" ]]; then
+      _fail "timeout"
+      return 1
+    fi
+  elif [[ ${rc} -ne 0 ]]; then
+    _fail "nonzero_rc"
     return 1
   fi
-  [[ ${rc} -eq 0 ]] || { _fail "nonzero_rc"; return 1; }
   [[ -n "${raw}" ]] || { _fail "empty_output"; return 1; }
 
   # `claude -p --output-format json` wraps the assistant's answer in an
