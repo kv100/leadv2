@@ -115,6 +115,20 @@ untouched either way (nothing in this change touches push/fetch).
 checked=3 sites, 2 acceptance test cases (5/5), 3 topologies, 1 negative control, all with real
 command output above — no candidate accepted on "looks right."
 
+## Side note — registry-reader tally (LANE-REGISTRY-GHOSTS-20260907, unrelated defect, same day)
+
+Not part of this task's scope, recorded here per Leadmain's request so the next session doesn't
+re-derive it: **three different readers of `active.yaml` hit the identical blindness in one day**
+(each treats a lane as live unless `terminal_status` is set, but the second registry writer,
+`lib/leadv2-lane-state.sh`, marks death via `dead_at` and never writes `terminal_status`):
+`hooks/leadv2-user-prompt-context.sh` (`4daf60a5`), `hooks/leadv2-continuation-guard.sh`
+(`e177a56d`, caught live — it blocked Leadmain's own turn on a lane dead 15 hours), and pulse
+(per Leadmain's report, not independently fixed in this session). Each got the same reader-side
+patch (`terminal_status` OR `dead_at`, additive, not a replacement). This is exactly why item #1
+of eight (single writer, single vocabulary) is not cosmetic: with two writers and N readers, each
+reader gets bitten and patched individually as it happens to be exercised, and there is no reason
+to believe these three are the last.
+
 ## Round 3 (2026-09-07, later) — `_pc_lane_commits_ahead` had the same defect, live in the tree
 
 Round 2's picker fix shipped in f2f3c001a without running `test-silent-arm-commits-ahead.sh` --
