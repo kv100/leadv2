@@ -291,6 +291,91 @@ else
   fi
 fi
 
+# ── R11-R15: MKTEMP-GUARD-BARE-FORM-01 — arg-skipping for -p/--tmpdir/-S/--suffix ──
+# The bare-form scan (detection 2) now recognizes that -p, --tmpdir, -S and
+# --suffix each consume the NEXT token as their own value, not as the
+# template -- without this, `mktemp -p /some/dir foo-XXXXXX.json` would
+# either wrongly flag "/some/dir" as a malformed template, or (before this
+# fix existed at all) never separate the flag's own value from the real
+# template in the first place. Each positive case below proves the flag's
+# argument is skipped and the REAL template is still inspected; R11 is the
+# negative control Leadmain required: a flag that takes NO argument (-d)
+# must not eat the token after it, or a badly-shaped template sitting right
+# after a no-arg flag would silently pass.
+
+# R11 (negative control): a no-arg flag (-d) must not swallow the next
+# token. The real template right after it is malformed and MUST be flagged.
+FIX_NOARG_FLAG="$WORK/fix-noarg-flag.sh"
+write_fixture "$FIX_NOARG_FLAG" "$GUARD" '_a=$(mktemp -d /tmp/foo-XXXXXX.json); echo "reached-end"'
+out=$(bash "$FIX_NOARG_FLAG" 2>&1); rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q "X-run is not final" <<< "$out"; then
+  pass "R11: guard fires on 'mktemp -d /tmp/foo-XXXXXX.json' -- a no-arg flag (-d) does not swallow the template"
+else
+  fail "R11: guard fires on 'mktemp -d /tmp/foo-XXXXXX.json' (rc=$rc, out='$out')"
+fi
+
+# R12: --tmpdir's value is skipped; the real (bad) template after it is caught.
+FIX_TMPDIR_BAD="$WORK/fix-tmpdir-bad.sh"
+write_fixture "$FIX_TMPDIR_BAD" "$GUARD" '_a=$(mktemp --tmpdir /tmp foo-XXXXXX.json); echo "reached-end"'
+out=$(bash "$FIX_TMPDIR_BAD" 2>&1); rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q "X-run is not final" <<< "$out"; then
+  pass "R12: guard fires on 'mktemp --tmpdir /tmp foo-XXXXXX.json' (flag's own arg skipped, real template caught)"
+else
+  fail "R12: guard fires on 'mktemp --tmpdir /tmp foo-XXXXXX.json' (rc=$rc, out='$out')"
+fi
+
+# R13: --tmpdir with a portable (good) template stays silent -- proves the
+# flag's arg is skipped without also silencing legitimate bad templates
+# elsewhere (paired with R12) or flagging a legitimate good one.
+FIX_TMPDIR_GOOD="$WORK/fix-tmpdir-good.sh"
+write_fixture "$FIX_TMPDIR_GOOD" "$GUARD" '_a=$(mktemp --tmpdir /tmp foo-XXXXXX); echo "reached-end"; rm -f "$_a"'
+out=$(bash "$FIX_TMPDIR_GOOD" 2>&1); rc=$?
+if [[ "$rc" -eq 0 ]] && grep -q "reached-end" <<< "$out"; then
+  pass "R13: guard is silent on 'mktemp --tmpdir /tmp foo-XXXXXX' (portable template)"
+else
+  fail "R13: guard is silent on 'mktemp --tmpdir /tmp foo-XXXXXX' (rc=$rc, out='$out')"
+fi
+
+# R14: -p's value is skipped; the real (bad) template after it is caught.
+FIX_P_BAD="$WORK/fix-p-bad.sh"
+write_fixture "$FIX_P_BAD" "$GUARD" '_a=$(mktemp -p /tmp foo-XXXXXX.json); echo "reached-end"'
+out=$(bash "$FIX_P_BAD" 2>&1); rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q "X-run is not final" <<< "$out"; then
+  pass "R14: guard fires on 'mktemp -p /tmp foo-XXXXXX.json' (flag's own arg skipped, real template caught)"
+else
+  fail "R14: guard fires on 'mktemp -p /tmp foo-XXXXXX.json' (rc=$rc, out='$out')"
+fi
+
+# R15: -S's separate suffix value is skipped; a portable bare template
+# before it stays silent (the suffix is appended externally by mktemp, not
+# embedded in the template word the guard scans).
+FIX_S_GOOD="$WORK/fix-s-good.sh"
+write_fixture "$FIX_S_GOOD" "$GUARD" '_a=$(mktemp -S .json foo-XXXXXX); echo "reached-end"; rm -f "$_a"'
+out=$(bash "$FIX_S_GOOD" 2>&1); rc=$?
+if [[ "$rc" -eq 0 ]] && grep -q "reached-end" <<< "$out"; then
+  pass "R15: guard is silent on 'mktemp -S .json foo-XXXXXX' (suffix flag's arg skipped)"
+else
+  fail "R15: guard is silent on 'mktemp -S .json foo-XXXXXX' (rc=$rc, out='$out')"
+fi
+
+# R16 (the false-positive this fix actually exists for): --tmpdir's OWN
+# value has a non-final X-run (it is just a directory name, not a mktemp
+# template), while the REAL template right after it is a legitimate
+# portable form. The pre-fix guard inspected every token blindly and
+# flagged the tmpdir argument itself -- a false positive on a perfectly
+# safe call. Confirmed on a copy of the pre-fix guard (git show main --
+# not reimplemented) before writing this case: pre-fix rc=1, "not final:
+# /tmp/dir-XXXXXX.bad"; post-fix rc=0, silent. This is the defect class
+# the skip_arg logic exists to close, not just a shape it happens to allow.
+FIX_TMPDIR_FALSEPOS="$WORK/fix-tmpdir-falsepos.sh"
+write_fixture "$FIX_TMPDIR_FALSEPOS" "$GUARD" '_a=$(mktemp --tmpdir /tmp/dir-XXXXXX.bad foo-XXXXXX); echo "reached-end"; rm -f "$_a"'
+out=$(bash "$FIX_TMPDIR_FALSEPOS" 2>&1); rc=$?
+if [[ "$rc" -eq 0 ]] && grep -q "reached-end" <<< "$out"; then
+  pass "R16: guard does not false-positive on --tmpdir's own badly-shaped directory argument (real template is fine)"
+else
+  fail "R16: guard does not false-positive on --tmpdir's own directory argument (rc=$rc, out='$out')"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────
 log "----"
 log "PASS=$PASS FAIL=$FAIL"
