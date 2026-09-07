@@ -24,9 +24,12 @@
 # full managed set, grouped by migration class:
 #   STANDARD — opaque single-writer state: active.yaml, active.yaml.lock,
 #     bus.jsonl, .bus.lock, .bus-offsets/, merge-queue.jsonl, .merge.lock,
-#     open-threads.md, questions/, .codex-credits-empty.stamp. On a
-#     first-worktree-wins collision the local copy is preserved as
-#     <name>.pre-controlplane-backup (S7).
+#     questions/, .codex-credits-empty.stamp. On a first-worktree-wins
+#     collision the local copy is preserved as <name>.pre-controlplane-backup
+#     (S7). open-threads.md was REMOVED from this set
+#     (OPEN-THREADS-IS-NOT-CONTROL-PLANE-STATE-01, 2026-09-07) -- it is
+#     authored content with irrecoverable history, not regenerable runtime
+#     state; see the comment on the STANDARD dict itself below.
 #   RENDER — regenerable, no history worth keeping: founder-status.md,
 #     founder-status-full.md, .board-empty-since, .founder-status-epoch. On
 #     collision the local copy is DELETED, no backup (S6) — the next beat
@@ -351,6 +354,21 @@ MERGE_SIZE_CAP = 8 * 1024 * 1024  # §3.4: never load an unbounded ladder into m
 
 # name -> is_dir. Opaque single-writer state: first-worktree-wins, collision
 # preserved as <name>.pre-controlplane-backup.
+#
+# open-threads.md is DELIBERATELY ABSENT (OPEN-THREADS-IS-NOT-CONTROL-PLANE-
+# STATE-01, 2026-09-07, supersedes its earlier membership here): it is a
+# document, not runtime state -- authored by people, its history has value,
+# and the founder's verbatim permissions live only in it. Empirically
+# decisive over a night of incidents: git recovered its content NINE TIMES
+# OUT OF NINE; the control-plane copy was a 15-line stale snapshot that
+# preserved nothing. The general rule this sets: control-plane is for
+# regenerable, shared runtime state; git is for authored, irrecoverable
+# content. A file whose loss has nowhere to be recovered FROM lives in git.
+# This is the root fix -- with the name out of STANDARD, no resolver
+# (including any not-yet-updated copy) considers it at all. The
+# is_git_tracked() check below remains as a second belt for any OTHER name
+# that ends up git-tracked by mistake (see docs/leadv2/active.yaml), not as
+# the only thing keeping this one safe.
 STANDARD = {
     "active.yaml": False,
     "active.yaml.lock": False,
@@ -359,7 +377,6 @@ STANDARD = {
     ".bus-offsets": True,
     "merge-queue.jsonl": False,
     ".merge.lock": False,
-    "open-threads.md": False,
     "questions": True,
     ".codex-credits-empty.stamp": False,
 }

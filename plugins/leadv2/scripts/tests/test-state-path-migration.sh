@@ -117,14 +117,18 @@ else
   fail "S6" "is_link=$( [[ -L "${WT_C}/docs/leadv2/founder-status.md" ]] && echo yes || echo no ) backup_exists=$( [[ -f "${WT_C}/docs/leadv2/founder-status.md.pre-controlplane-backup" ]] && echo yes || echo no )"
 fi
 
-# ── S7: git-tracked STANDARD name is never migrated/symlinked, even when a
-# stale control-plane snapshot + backup already exist and the resolver is
-# called for a DIFFERENT, unrelated name — the exact incident shape of
-# OPEN-THREADS-TRUNCATED-SIX-TIMES-IN-ONE-NIGHT-01: a session in a real repo
-# calling leadv2-state-path.sh for its own journal path silently converted a
-# healthy, git-restored docs/leadv2/open-threads.md into a symlink pointing
-# at a 9-hour-stale control-plane copy, because the STANDARD migration loop
-# runs over EVERY name on EVERY call, not just the one requested. ─────────
+# ── S7 (ROOT FIX; OPEN-THREADS-IS-NOT-CONTROL-PLANE-STATE-01, 2026-09-07):
+# open-threads.md is not merely git-tracked-and-skipped any more -- it is
+# ABSENT from the STANDARD dict entirely, because it is authored content
+# with irrecoverable history (the founder's verbatim permissions live only
+# in it), not regenerable runtime state. Empirical tie-breaker over the
+# is_git_tracked() heuristic alone: git recovered this file's content NINE
+# TIMES OUT OF NINE over one incident night; the control-plane copy was a
+# stale 15-line snapshot that preserved nothing. This test proves the root
+# fix: even with NO stale target and NO backup pre-seeded (there is nothing
+# to collide with -- the name is never considered at all), a resolver call
+# for a completely unrelated name leaves a healthy, git-tracked
+# open-threads.md untouched. ───────────────────────────────────────────────
 WT_GIT="${TMP_ROOT}/wt-git"
 STATE_GIT="${TMP_ROOT}/state-git"
 mkdir -p "${WT_GIT}/docs/leadv2" "${STATE_GIT}"
@@ -135,50 +139,111 @@ printf '# healthy, git-restored open threads\nreal content, 3 lines\n' > "${WT_G
 git -C "${WT_GIT}" add docs/leadv2/open-threads.md
 git -C "${WT_GIT}" commit -q -m "tracked open-threads.md"
 HEALTHY_CONTENT="$(cat "${WT_GIT}/docs/leadv2/open-threads.md")"
-# Pre-seed ONLY a STALE control-plane target, no backup yet -- the exact
-# collision shape that corrupts the file under the pre-fix code: target
-# exists (an earlier migration from elsewhere), backup does not (this local
-# copy was never previously the subject of one), so the pre-fix branch does
-# `move(local, backup)` then falls through to `symlink(target, local)`. A
-# pre-existing backup on top would make even the PRE-fix code a no-op here
-# (its `else: continue` on backup-already-exists) -- that is not the
-# incident shape, so the test must not seed one.
-printf 'STALE 9-hour-old snapshot\n' > "${STATE_GIT}/open-threads.md"
 # Call the resolver for an UNRELATED name -- reproducing "action at a
 # distance": nobody asked about open-threads.md this call.
 LEADV2_STATE_ROOT="${STATE_GIT}" PROJECT_ROOT="${WT_GIT}" bash "${STATE_PATH_SH}" active.yaml >/dev/null 2>&1
 if [[ ! -L "${WT_GIT}/docs/leadv2/open-threads.md" ]] \
    && [[ "$(cat "${WT_GIT}/docs/leadv2/open-threads.md" 2>/dev/null)" == "${HEALTHY_CONTENT}" ]] \
-   && [[ "$(cat "${STATE_GIT}/open-threads.md" 2>/dev/null)" == "STALE 9-hour-old snapshot" ]]; then
-  pass "S7: git-tracked open-threads.md untouched by an unrelated resolver call, stale target left alone"
+   && [[ ! -e "${STATE_GIT}/open-threads.md" ]]; then
+  pass "S7: open-threads.md untouched by an unrelated resolver call -- not even considered, no control-plane copy created"
 else
-  fail "S7" "is_link=$( [[ -L "${WT_GIT}/docs/leadv2/open-threads.md" ]] && echo yes || echo no ) content=$(cat "${WT_GIT}/docs/leadv2/open-threads.md" 2>/dev/null)"
+  fail "S7" "is_link=$( [[ -L "${WT_GIT}/docs/leadv2/open-threads.md" ]] && echo yes || echo no ) content=$(cat "${WT_GIT}/docs/leadv2/open-threads.md" 2>/dev/null) state_copy_exists=$( [[ -e "${STATE_GIT}/open-threads.md" ]] && echo yes || echo no )"
 fi
 
-# ── S7b (LOUD-SKIP follow-up): the skip above is not silent -- a session
-# with a control-plane name tracked BY MISTAKE (this repo's own
+# ── S7-defense-in-depth: open-threads.md survives even if the is_git_tracked()
+# second-layer guard were entirely removed -- proving the ROOT fix (removal
+# from STANDARD) is what actually protects it, not merely the guard this
+# task landed first. If this test ever needs the guard to pass, the removal
+# from STANDARD has regressed. ─────────────────────────────────────────────
+PATCH_NOGUARD_PY="${TMP_ROOT}/patch-noguard-mutant.py"
+cat > "${PATCH_NOGUARD_PY}" <<'PYEOF'
+import re
+import sys
+src_path, dst_path = sys.argv[1], sys.argv[2]
+src = open(src_path, encoding="utf-8").read()
+pattern = re.compile(
+    r"    if is_git_tracked\(name\):\n(?:.*\n)*?        continue\n"
+)
+if not pattern.search(src):
+    sys.stderr.write("ERROR: defense-in-depth anchor not found -- source drifted from patcher\n")
+    sys.exit(1)
+mutated = pattern.sub("", src, count=1)
+open(dst_path, "w", encoding="utf-8").write(mutated)
+PYEOF
+MUTANT_NOGUARD_SH="${TMP_ROOT}/leadv2-state-path.noguard-mutant.sh"
+if ! python3 "${PATCH_NOGUARD_PY}" "${STATE_PATH_SH}" "${MUTANT_NOGUARD_SH}"; then
+  echo "ERROR: defense-in-depth mutant patch failed to apply"; exit 1
+fi
+chmod +x "${MUTANT_NOGUARD_SH}"
+
+# Positive control on this mutant too (same lesson as below): prove it can
+# still do an ordinary migration before trusting its "survives" result.
+NOGUARD_POSCTRL_WT="${TMP_ROOT}/s7-noguard-posctrl-wt"
+NOGUARD_POSCTRL_STATE="${TMP_ROOT}/s7-noguard-posctrl-state"
+mkdir -p "${NOGUARD_POSCTRL_WT}/docs/leadv2" "${NOGUARD_POSCTRL_STATE}"
+printf 'ordinary content\n' > "${NOGUARD_POSCTRL_WT}/docs/leadv2/active.yaml"
+LEADV2_STATE_ROOT="${NOGUARD_POSCTRL_STATE}" PROJECT_ROOT="${NOGUARD_POSCTRL_WT}" bash "${MUTANT_NOGUARD_SH}" active.yaml >/dev/null 2>&1
+if [[ "$(cat "${NOGUARD_POSCTRL_STATE}/active.yaml" 2>/dev/null)" != "ordinary content" ]]; then
+  fail "S7-defense-in-depth-positive-control" "no-guard mutant appears dead on arrival"
+fi
+
+WT_NOGUARD="${TMP_ROOT}/wt-noguard"
+mkdir -p "${WT_NOGUARD}/docs/leadv2"
+git -C "${WT_NOGUARD}" init -q
+git -C "${WT_NOGUARD}" config user.email test@example.com
+git -C "${WT_NOGUARD}" config user.name test
+printf 'healthy tracked content\n' > "${WT_NOGUARD}/docs/leadv2/open-threads.md"
+git -C "${WT_NOGUARD}" add docs/leadv2/open-threads.md
+git -C "${WT_NOGUARD}" commit -q -m tracked
+LEADV2_STATE_ROOT="${TMP_ROOT}/state-noguard" PROJECT_ROOT="${WT_NOGUARD}" bash "${MUTANT_NOGUARD_SH}" active.yaml >/dev/null 2>&1
+if [[ ! -L "${WT_NOGUARD}/docs/leadv2/open-threads.md" ]] \
+   && [[ "$(cat "${WT_NOGUARD}/docs/leadv2/open-threads.md" 2>/dev/null)" == "healthy tracked content" ]]; then
+  pass "S7-defense-in-depth: open-threads.md survives even with the is_git_tracked() guard removed -- STANDARD-removal is the real protection"
+else
+  fail "S7-defense-in-depth" "open-threads.md was touched even without the guard in play -- STANDARD-removal may have regressed"
+fi
+
+# ── S8 (the git-tracked-skip guard's remaining job): a STANDARD name that IS
+# still in the dict (active.yaml) but tracked BY MISTAKE (this repo's own
 # docs/leadv2/active.yaml, found tracked when it should be gitignored) must
-# be able to find out why the control plane stopped managing it, without
-# repeating tonight's ~20-minute misdiagnosis loop. ────────────────────────
-SKIP_LOG="${STATE_GIT}/.git-tracked-skips.log"
+# still be protected by is_git_tracked(), loudly. ──────────────────────────
+WT_S8="${TMP_ROOT}/wt-s8"
+STATE_S8="${TMP_ROOT}/state-s8"
+mkdir -p "${WT_S8}/docs/leadv2" "${STATE_S8}"
+git -C "${WT_S8}" init -q
+git -C "${WT_S8}" config user.email test@example.com
+git -C "${WT_S8}" config user.name test
+printf 'tracked-by-mistake registry\n' > "${WT_S8}/docs/leadv2/active.yaml"
+git -C "${WT_S8}" add docs/leadv2/active.yaml
+git -C "${WT_S8}" commit -q -m "active.yaml tracked by mistake"
+S8_HEALTHY="$(cat "${WT_S8}/docs/leadv2/active.yaml")"
+printf 'stale control-plane snapshot\n' > "${STATE_S8}/active.yaml"
+# Call the resolver for a DIFFERENT unrelated name.
+LEADV2_STATE_ROOT="${STATE_S8}" PROJECT_ROOT="${WT_S8}" bash "${STATE_PATH_SH}" bus.jsonl >/dev/null 2>&1
+if [[ ! -L "${WT_S8}/docs/leadv2/active.yaml" ]] \
+   && [[ "$(cat "${WT_S8}/docs/leadv2/active.yaml" 2>/dev/null)" == "${S8_HEALTHY}" ]]; then
+  pass "S8: a STANDARD name tracked by mistake (active.yaml) is still protected by is_git_tracked()"
+else
+  fail "S8" "is_link=$( [[ -L "${WT_S8}/docs/leadv2/active.yaml" ]] && echo yes || echo no ) content=$(cat "${WT_S8}/docs/leadv2/active.yaml" 2>/dev/null)"
+fi
+
+SKIP_LOG="${STATE_S8}/.git-tracked-skips.log"
 # Match on the tmp dir's basename, not the full path: macOS resolves /tmp
 # via a /private/tmp symlink, so git's own absolute-path resolution and this
-# script's un-resolved ${WT_GIT} can legitimately differ by that prefix --
+# script's un-resolved ${WT_S8} can legitimately differ by that prefix --
 # not a defect, just two correct spellings of the same directory.
 if [[ -f "${SKIP_LOG}" ]] \
-   && grep -q "state-path: skipping open-threads.md -- tracked in git at .*$(basename "${WT_GIT}")\$" "${SKIP_LOG}"; then
-  pass "S7b: git-tracked skip is logged, names the skipped name and the repo"
+   && grep -q "state-path: skipping active.yaml -- tracked in git at .*$(basename "${WT_S8}")\$" "${SKIP_LOG}"; then
+  pass "S8b: git-tracked skip is logged, names the skipped name and the repo"
 else
-  fail "S7b" "log_exists=$( [[ -f "${SKIP_LOG}" ]] && echo yes || echo no ) content=$(cat "${SKIP_LOG}" 2>/dev/null || echo '<missing>')"
+  fail "S8b" "log_exists=$( [[ -f "${SKIP_LOG}" ]] && echo yes || echo no ) content=$(cat "${SKIP_LOG}" 2>/dev/null || echo '<missing>')"
 fi
 
-# ── falsification for S7: prove the git-tracked guard actually matters ─────
-# Mutant: production code with the `if is_git_tracked(name): continue` guard
-# removed -- i.e. exactly this file's behaviour before the fix. Same
-# git-tracked scenario as S7 through the mutant must corrupt the file;
-# through the real (patched) resolver it must not.
-PATCH_S7_PY="${TMP_ROOT}/patch-s7-mutant.py"
-cat > "${PATCH_S7_PY}" <<'PYEOF'
+# ── falsification for S8: prove the git-tracked guard actually matters for a
+# name still IN the STANDARD dict. Mutant: production code with the
+# `if is_git_tracked(name): continue` guard removed. ───────────────────────
+PATCH_S8_PY="${TMP_ROOT}/patch-s8-mutant.py"
+cat > "${PATCH_S8_PY}" <<'PYEOF'
 import re
 import sys
 src_path, dst_path = sys.argv[1], sys.argv[2]
@@ -192,16 +257,16 @@ pattern = re.compile(
     r"    if is_git_tracked\(name\):\n(?:.*\n)*?        continue\n"
 )
 if not pattern.search(src):
-    sys.stderr.write("ERROR: S7 falsification anchor not found -- source drifted from patcher\n")
+    sys.stderr.write("ERROR: S8 falsification anchor not found -- source drifted from patcher\n")
     sys.exit(1)
 mutated = pattern.sub("", src, count=1)
 open(dst_path, "w", encoding="utf-8").write(mutated)
 PYEOF
-MUTANT_S7_SH="${TMP_ROOT}/leadv2-state-path.s7-mutant.sh"
-if ! python3 "${PATCH_S7_PY}" "${STATE_PATH_SH}" "${MUTANT_S7_SH}"; then
-  echo "ERROR: S7 falsification mutant patch failed to apply"; exit 1
+MUTANT_S8_SH="${TMP_ROOT}/leadv2-state-path.s8-mutant.sh"
+if ! python3 "${PATCH_S8_PY}" "${STATE_PATH_SH}" "${MUTANT_S8_SH}"; then
+  echo "ERROR: S8 falsification mutant patch failed to apply"; exit 1
 fi
-chmod +x "${MUTANT_S7_SH}"
+chmod +x "${MUTANT_S8_SH}"
 
 # ── POSITIVE CONTROL on the mutant itself (the most valuable finding of this
 # whole round, per Leadmain: a mutant that dies BEFORE reaching the mutated
@@ -214,43 +279,43 @@ chmod +x "${MUTANT_S7_SH}"
 # copying leadv2-portable-lock.sh into TMP_ROOT (see near the top of this
 # file) -- this check proves that fix, and any future one, actually holds:
 # the mutant must still be ABLE to do a completely ordinary, unrelated
-# migration (a non-tracked name, not open-threads.md) before its result on
-# the git-tracked scenario below is trusted at all. ────────────────────────
-POSCTRL_WT="${TMP_ROOT}/s7-posctrl-wt"
-POSCTRL_STATE="${TMP_ROOT}/s7-posctrl-state"
+# migration before its result on the git-tracked scenario below is trusted
+# at all. ───────────────────────────────────────────────────────────────
+POSCTRL_WT="${TMP_ROOT}/s8-posctrl-wt"
+POSCTRL_STATE="${TMP_ROOT}/s8-posctrl-state"
 mkdir -p "${POSCTRL_WT}/docs/leadv2" "${POSCTRL_STATE}"
-printf 'ordinary content\n' > "${POSCTRL_WT}/docs/leadv2/active.yaml"
-LEADV2_STATE_ROOT="${POSCTRL_STATE}" PROJECT_ROOT="${POSCTRL_WT}" bash "${MUTANT_S7_SH}" active.yaml >/dev/null 2>&1
-if [[ "$(cat "${POSCTRL_STATE}/active.yaml" 2>/dev/null)" == "ordinary content" ]] \
-   && [[ -L "${POSCTRL_WT}/docs/leadv2/active.yaml" ]]; then
-  pass "S7-positive-control: the mutant still executes ordinary migration logic (it did not merely crash silently)"
+printf 'ordinary content\n' > "${POSCTRL_WT}/docs/leadv2/bus.jsonl"
+LEADV2_STATE_ROOT="${POSCTRL_STATE}" PROJECT_ROOT="${POSCTRL_WT}" bash "${MUTANT_S8_SH}" bus.jsonl >/dev/null 2>&1
+if [[ "$(cat "${POSCTRL_STATE}/bus.jsonl" 2>/dev/null)" == "ordinary content" ]] \
+   && [[ -L "${POSCTRL_WT}/docs/leadv2/bus.jsonl" ]]; then
+  pass "S8-positive-control: the mutant still executes ordinary migration logic (it did not merely crash silently)"
 else
-  fail "S7-positive-control" "mutant appears dead on arrival -- its 'survives' result below cannot be trusted. migrated=$(cat "${POSCTRL_STATE}/active.yaml" 2>/dev/null || echo '<missing>') is_link=$( [[ -L "${POSCTRL_WT}/docs/leadv2/active.yaml" ]] && echo yes || echo no )"
+  fail "S8-positive-control" "mutant appears dead on arrival -- its 'survives' result below cannot be trusted. migrated=$(cat "${POSCTRL_STATE}/bus.jsonl" 2>/dev/null || echo '<missing>') is_link=$( [[ -L "${POSCTRL_WT}/docs/leadv2/bus.jsonl" ]] && echo yes || echo no )"
 fi
 
-git_tracked_survives() {  # <state-path-bin> -> 0 if open-threads.md stays a real healthy file
+git_tracked_survives() {  # <state-path-bin> -> 0 if active.yaml stays a real healthy file
   local bin="$1"
-  local wt="${TMP_ROOT}/s7-falsify-wt-$$-${RANDOM}"
-  local state="${TMP_ROOT}/s7-falsify-state-$$-${RANDOM}"
+  local wt="${TMP_ROOT}/s8-falsify-wt-$$-${RANDOM}"
+  local state="${TMP_ROOT}/s8-falsify-state-$$-${RANDOM}"
   mkdir -p "${wt}/docs/leadv2" "${state}"
   git -C "${wt}" init -q
   git -C "${wt}" config user.email test@example.com
   git -C "${wt}" config user.name test
-  printf 'healthy tracked content\n' > "${wt}/docs/leadv2/open-threads.md"
-  git -C "${wt}" add docs/leadv2/open-threads.md
+  printf 'healthy tracked content\n' > "${wt}/docs/leadv2/active.yaml"
+  git -C "${wt}" add docs/leadv2/active.yaml
   git -C "${wt}" commit -q -m tracked
-  printf 'STALE\n' > "${state}/open-threads.md"
-  LEADV2_STATE_ROOT="${state}" PROJECT_ROOT="${wt}" bash "${bin}" active.yaml >/dev/null 2>&1
-  [[ ! -L "${wt}/docs/leadv2/open-threads.md" ]] && [[ "$(cat "${wt}/docs/leadv2/open-threads.md" 2>/dev/null)" == "healthy tracked content" ]]
+  printf 'STALE\n' > "${state}/active.yaml"
+  LEADV2_STATE_ROOT="${state}" PROJECT_ROOT="${wt}" bash "${bin}" bus.jsonl >/dev/null 2>&1
+  [[ ! -L "${wt}/docs/leadv2/active.yaml" ]] && [[ "$(cat "${wt}/docs/leadv2/active.yaml" 2>/dev/null)" == "healthy tracked content" ]]
 }
 
-git_tracked_survives "${MUTANT_S7_SH}"; s7_pre_rc=$?
-git_tracked_survives "${STATE_PATH_SH}"; s7_post_rc=$?
-if [[ ${s7_pre_rc} -ne 0 && ${s7_post_rc} -eq 0 ]]; then
-  pass "falsification: pre-fix mutant corrupts the tracked file, real resolver leaves it alone"
-  echo "RED-then-GREEN: state-path-git-tracked (pre_rc=${s7_pre_rc} -> post_rc=${s7_post_rc})"
+git_tracked_survives "${MUTANT_S8_SH}"; s8_pre_rc=$?
+git_tracked_survives "${STATE_PATH_SH}"; s8_post_rc=$?
+if [[ ${s8_pre_rc} -ne 0 && ${s8_post_rc} -eq 0 ]]; then
+  pass "falsification: pre-fix mutant corrupts a git-tracked-by-mistake active.yaml, real resolver leaves it alone"
+  echo "RED-then-GREEN: state-path-git-tracked (pre_rc=${s8_pre_rc} -> post_rc=${s8_post_rc})"
 else
-  fail "S7-falsification" "mutant pre_rc=${s7_pre_rc} (want !=0) real post_rc=${s7_post_rc} (want 0)"
+  fail "S8-falsification" "mutant pre_rc=${s8_pre_rc} (want !=0) real post_rc=${s8_post_rc} (want 0)"
 fi
 
 # ── falsification: prove S4's line-union assertion can actually FAIL ───────
