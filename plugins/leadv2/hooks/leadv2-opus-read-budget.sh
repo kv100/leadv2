@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # PreToolUse gate: cap raw code-file reads before forcing delegation.
 # OFF / CLAUDE        → off (no budget)
 # CLAUDE_PLUS_CODEX   → 12 reads (generous)

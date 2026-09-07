@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # leadv2-deliverable-routing-check.sh — block Phase 5 if any group deliverable
 # self-flags work for "Group B" or "follow-up" without explicit routing in groups-contract.md.
 #

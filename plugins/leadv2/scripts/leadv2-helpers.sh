@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # leadv2-helpers.sh — shared helper functions for /leadv2 orchestrator.
 # Source this file, don't exec. Functions: validate yaml, rotate history, lockfile,
 # archive old handoff, cost check, dry-run gate, status summary.

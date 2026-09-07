@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # leadv2-preflight-gitlog.sh — Phase 0 pre-flight: detect already-shipped task before EnterWorktree.
 # Saves entire setup cycle when founder picks a task whose code already landed.
 #

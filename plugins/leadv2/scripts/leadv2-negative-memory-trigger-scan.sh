@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # leadv2-negative-memory-trigger-scan.sh — Phase-4 pre-commit regex scan against negative memory.
 # Inspired by jcode `Negative Memories trigger_patterns`: when a memory entry has a regex trigger,
 # auto-surface it whenever the diff matches — independent of keyword-overlap heuristic.

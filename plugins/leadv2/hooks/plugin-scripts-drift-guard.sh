@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # .claude/hooks/plugin-scripts-drift-guard.sh — PreToolUse(Bash) hook.
 #
 # Single-source distribution. The plugin tree is canonical; projects retain

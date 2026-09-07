@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # PreToolUse(Workflow) — model-pinning lint (founder directive 2026-06-09).
 # Workflow agents inherit the SESSION model unless the script pins model: on each agent().
 # With an Opus lead, an unpinned agent() = Opus, and a workflow spawns DOZENS of them =

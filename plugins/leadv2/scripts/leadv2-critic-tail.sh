@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # critic-tail.sh — token-efficient view of critic / codex / security-auditor deliverable.
 # Mirrors ~/.claude/scripts/cx-tail.sh pattern.
 #

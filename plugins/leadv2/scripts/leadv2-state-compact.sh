@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # leadv2-state-compact.sh — produce Phase-0 startup briefing in <40 lines.
 #
 # Replaces the 3-file startup read sequence (git status / LEAD_V2_STATE / QUEUE top).

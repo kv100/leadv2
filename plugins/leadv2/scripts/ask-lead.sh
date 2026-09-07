@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 # ask-lead.sh — subagent-side question proxy. Writes question to mailbox, polls for answer.
 # Called from inside a claude-subsession when subagent needs founder input.

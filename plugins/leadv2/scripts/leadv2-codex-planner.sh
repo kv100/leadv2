@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 # leadv2-codex-planner.sh — wrapper around codex-task.sh for /leadv2 Plan phase.
 

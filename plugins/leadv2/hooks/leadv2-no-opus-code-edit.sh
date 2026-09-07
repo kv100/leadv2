@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # PreToolUse gate: discourage/block Opus from editing code files directly.
 # CLAUDE_PLUS_CODEX → warn-and-allow (orchestrator should delegate but small edits OK)
 # FULL              → block (force delegation to GLM or Sonnet agent)

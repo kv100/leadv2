@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # leadv2-collision-check.sh — Phase 0 parallel-session collision detector.
 # Surfaces overlap warnings BEFORE EnterWorktree so lead can pre-plan rebase vs ff-merge.
 #

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # leadv2-mission-lint.sh — reject mission files >100 lines or that duplicate context.yaml.
 # Mission must orient + delegate, not re-spec. Source-of-truth lives in context.yaml.
 #

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # leadv2-prompt-lint.sh — enforce ≤300-word lead-side spawn prompts.
 # Lead's job: orient (path, branch, project hint) + name files + name deliverable + cap word count.
 # Subagent reads context.yaml + mission.md itself. Don't duplicate spec into the prompt.

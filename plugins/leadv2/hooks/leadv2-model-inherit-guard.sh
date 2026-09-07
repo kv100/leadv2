@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # PreToolUse(Agent) model guard (founder directive 2026-06-09, updated 2026-06-18).
 #
 # PRINCIPLE: expensive model (opus) ONLY for high-judgment agents; cheap operations

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # leadv2-known-quirks-inject.sh — Phase 6 helper.
 # Reads docs/leadv2/known-quirks.yaml, filters by scope tags relevant to the task,
 # and prints `instruction:` lines for lead to paste into devops mission file.
