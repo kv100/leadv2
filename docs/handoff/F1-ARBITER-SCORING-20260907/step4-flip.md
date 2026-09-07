@@ -104,12 +104,29 @@ if [[ "$(tok "$out" fit_pick)" == "glm" && "$(tok "$out" fit_differs)" == "1" &&
 Verified both ways: yaml `enabled: false` → `SUMMARY: pass=12 fail=0`; `enabled: true` →
 `SUMMARY: pass=12 fail=0` (both runs quoted in the lane report). No production code touched.
 
+Re-verified 2026-09-07 (resumed session): the auto-commit 9bd9c66c had captured only the yaml
+and this report; the row1/row2 fix above was on disk but never committed and was subsequently
+lost from the worktree (start-of-session snapshot showed the file modified, then clean). The
+fix was re-applied byte-identically, and all five suites re-run post-re-apply:
+
+```
+test-router-v2-capability-fit.sh  SUMMARY: pass=12 fail=0   (on, from yaml)
+                                  SUMMARY: pass=12 fail=0   (LEADV2_ARBITER_CAPABILITY_FIT=off)
+test-router-v2-headroom-order.sh  PASS test-router-v2-headroom-order
+test-complexity-source-provenance.sh  PASS=18 FAIL=0
+test-router-v2-shadow-mode.sh     SUMMARY: pass=10 fail=0 skip=0 (46 descriptors, 0 mismatch)
+test-judge-complexity-path.sh     judge-complexity-path: 18 passed, 0 failed
+```
+
+First-run red, re-reproduced before the re-apply: `SUMMARY: pass=10 fail=2` (rows 9.2/1, 9.2/2
+failed on the hardcoded `arm=glm-flash` expectation under the now-on yaml).
+
 | suite | result |
 |---|---|
 | test-router-v2-capability-fit.sh | `SUMMARY: pass=12 fail=0` (was fail=2 pre-fix) |
 | test-router-v2-headroom-order.sh | `PASS test-router-v2-headroom-order` |
 | test-complexity-source-provenance.sh | `PASS=18 FAIL=0` |
-| test-router-v2-shadow-mode.sh | `pass=10 fail=0 skip=0` (41 real descriptors replayed, 0 mismatch) |
+| test-router-v2-shadow-mode.sh | `pass=10 fail=0 skip=0` (46 real reconstructed descriptors replayed, 0 mismatch) |
 | test-judge-complexity-path.sh | `judge-complexity-path: 18 passed, 0 failed` |
 
 ## 5. Demo residue

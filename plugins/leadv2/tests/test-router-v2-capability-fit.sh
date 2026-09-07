@@ -81,15 +81,17 @@ YML
 
 # ── §9.2 row 1: heuristic, simple, glm-flash cost-pick -> glm, differs=1 ────────
 out="$(run "$ROUTING" '{"kind":"code","size":"standard","complexity":"simple","complexity_source":"heuristic","task":"r1"}')"
-if [[ "$(tok "$out" fit_pick)" == "glm" && "$(tok "$out" fit_differs)" == "1" && "$out" == *'arm=glm-flash '* ]]; then
-  pass '9.2 row1: heuristic/simple demotes glm-flash, fit_pick=glm fit_differs=1 (pick unchanged, enabled:false)'
+exp_arm=glm; [[ "$(tok "$out" fit_mode)" != "on" ]] && exp_arm=glm-flash
+if [[ "$(tok "$out" fit_pick)" == "glm" && "$(tok "$out" fit_differs)" == "1" && "$(tok "$out" arm)" == "$exp_arm" ]]; then
+  pass '9.2 row1: heuristic/simple demotes glm-flash, fit_pick=glm fit_differs=1 (arm follows configured fit_mode)'
 else
   fail "9.2 row1 out=$out"
 fi
 
 # ── §9.2 row 2: any(judge)/standard, glm-flash cost-pick -> glm, differs=1 ──────
 out="$(run "$ROUTING" '{"kind":"code","size":"standard","complexity":"standard","complexity_source":"judge","task":"r2"}')"
-if [[ "$(tok "$out" fit_pick)" == "glm" && "$(tok "$out" fit_differs)" == "1" && "$out" == *'arm=glm-flash '* ]]; then
+exp_arm=glm; [[ "$(tok "$out" fit_mode)" != "on" ]] && exp_arm=glm-flash
+if [[ "$(tok "$out" fit_pick)" == "glm" && "$(tok "$out" fit_differs)" == "1" && "$(tok "$out" arm)" == "$exp_arm" ]]; then
   pass '9.2 row2: standard complexity (req_eff=3.0) demotes glm-flash, fit_pick=glm fit_differs=1'
 else
   fail "9.2 row2 out=$out"
