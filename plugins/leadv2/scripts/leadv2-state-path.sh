@@ -316,7 +316,7 @@ if [[ "$NO_LINK" -eq 0 ]]; then
 
   if [[ "${_migrate_locked}" -eq 1 ]]; then
     python3 - "$STATE_ROOT" "$LINK_ROOT" <<'PYEOF' 2>/dev/null || true
-import os, re, shutil, subprocess, sys
+import datetime, os, re, shutil, subprocess, sys
 
 state_root, link_root = sys.argv[1], sys.argv[2]
 leadv2_dir = os.path.join(link_root, "docs", "leadv2")
@@ -401,6 +401,25 @@ for name, is_dir in STANDARD.items():
     local = os.path.join(leadv2_dir, name)
 
     if is_git_tracked(name):
+        # LOUD-SKIP (OPEN-THREADS-TRUNCATED-SIX-TIMES-IN-ONE-NIGHT-01 follow-up,
+        # 2026-09-07): this whole heredoc runs under `2>/dev/null` at the bash
+        # call site (existing sys.stderr.write warnings elsewhere in this loop
+        # rely on that silence for routine noise), so a plain stderr print here
+        # would vanish too -- and a silent skip is exactly the shape of every
+        # defect this task fixed tonight: correct behaviour nobody said aloud.
+        # If a STANDARD name is tracked by MISTAKE (see docs/leadv2/active.yaml
+        # in this same repo, found tracked when it should be gitignored), this
+        # guard would now silently protect that mistake forever with no way to
+        # notice. Append-only, one line per skip, to a file any session can
+        # grep -- never overwritten, so history survives across invocations.
+        try:
+            with open(os.path.join(state_root, ".git-tracked-skips.log"), "a", encoding="utf-8") as _sf:
+                _sf.write(
+                    "%s state-path: skipping %s -- tracked in git at %s\n"
+                    % (datetime.datetime.now(datetime.timezone.utc).isoformat(), name, link_root)
+                )
+        except OSError:
+            pass
         continue
 
     if os.path.islink(local):

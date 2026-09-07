@@ -155,6 +155,23 @@ else
   fail "S7" "is_link=$( [[ -L "${WT_GIT}/docs/leadv2/open-threads.md" ]] && echo yes || echo no ) content=$(cat "${WT_GIT}/docs/leadv2/open-threads.md" 2>/dev/null)"
 fi
 
+# ── S7b (LOUD-SKIP follow-up): the skip above is not silent -- a session
+# with a control-plane name tracked BY MISTAKE (this repo's own
+# docs/leadv2/active.yaml, found tracked when it should be gitignored) must
+# be able to find out why the control plane stopped managing it, without
+# repeating tonight's ~20-minute misdiagnosis loop. ────────────────────────
+SKIP_LOG="${STATE_GIT}/.git-tracked-skips.log"
+# Match on the tmp dir's basename, not the full path: macOS resolves /tmp
+# via a /private/tmp symlink, so git's own absolute-path resolution and this
+# script's un-resolved ${WT_GIT} can legitimately differ by that prefix --
+# not a defect, just two correct spellings of the same directory.
+if [[ -f "${SKIP_LOG}" ]] \
+   && grep -q "state-path: skipping open-threads.md -- tracked in git at .*$(basename "${WT_GIT}")\$" "${SKIP_LOG}"; then
+  pass "S7b: git-tracked skip is logged, names the skipped name and the repo"
+else
+  fail "S7b" "log_exists=$( [[ -f "${SKIP_LOG}" ]] && echo yes || echo no ) content=$(cat "${SKIP_LOG}" 2>/dev/null || echo '<missing>')"
+fi
+
 # ── falsification for S7: prove the git-tracked guard actually matters ─────
 # Mutant: production code with the `if is_git_tracked(name): continue` guard
 # removed -- i.e. exactly this file's behaviour before the fix. Same
@@ -162,21 +179,54 @@ fi
 # through the real (patched) resolver it must not.
 PATCH_S7_PY="${TMP_ROOT}/patch-s7-mutant.py"
 cat > "${PATCH_S7_PY}" <<'PYEOF'
+import re
 import sys
 src_path, dst_path = sys.argv[1], sys.argv[2]
 src = open(src_path, encoding="utf-8").read()
-anchor = "    if is_git_tracked(name):\n        continue\n\n    if os.path.islink(local):"
-replacement = "    if os.path.islink(local):"
-if anchor not in src:
+# Regex, not a literal block match: the git-tracked guard's body (including
+# the loud-skip logging added as a follow-up) is prose that will keep
+# changing wording -- pin only its structural start/end, `if is_git_tracked
+# (name):` through the FIRST bare `continue` at the same 8-space indent that
+# directly follows it, whatever sits between.
+pattern = re.compile(
+    r"    if is_git_tracked\(name\):\n(?:.*\n)*?        continue\n"
+)
+if not pattern.search(src):
     sys.stderr.write("ERROR: S7 falsification anchor not found -- source drifted from patcher\n")
     sys.exit(1)
-open(dst_path, "w", encoding="utf-8").write(src.replace(anchor, replacement, 1))
+mutated = pattern.sub("", src, count=1)
+open(dst_path, "w", encoding="utf-8").write(mutated)
 PYEOF
 MUTANT_S7_SH="${TMP_ROOT}/leadv2-state-path.s7-mutant.sh"
 if ! python3 "${PATCH_S7_PY}" "${STATE_PATH_SH}" "${MUTANT_S7_SH}"; then
   echo "ERROR: S7 falsification mutant patch failed to apply"; exit 1
 fi
 chmod +x "${MUTANT_S7_SH}"
+
+# ── POSITIVE CONTROL on the mutant itself (the most valuable finding of this
+# whole round, per Leadmain: a mutant that dies BEFORE reaching the mutated
+# line reads as "nothing bad happened" for the exact same reason every
+# defect tonight did -- a verdict from a path that never reached the logic
+# it claims to test. This bit us for real: the mutant copy landed in
+# TMP_ROOT and its own SCRIPT_DIR-relative `source leadv2-portable-lock.sh`
+# failed to find a sibling there, so it crashed on line 1 of real work and
+# "survived untouched" looked identical to "the guard held". Fixed by
+# copying leadv2-portable-lock.sh into TMP_ROOT (see near the top of this
+# file) -- this check proves that fix, and any future one, actually holds:
+# the mutant must still be ABLE to do a completely ordinary, unrelated
+# migration (a non-tracked name, not open-threads.md) before its result on
+# the git-tracked scenario below is trusted at all. ────────────────────────
+POSCTRL_WT="${TMP_ROOT}/s7-posctrl-wt"
+POSCTRL_STATE="${TMP_ROOT}/s7-posctrl-state"
+mkdir -p "${POSCTRL_WT}/docs/leadv2" "${POSCTRL_STATE}"
+printf 'ordinary content\n' > "${POSCTRL_WT}/docs/leadv2/active.yaml"
+LEADV2_STATE_ROOT="${POSCTRL_STATE}" PROJECT_ROOT="${POSCTRL_WT}" bash "${MUTANT_S7_SH}" active.yaml >/dev/null 2>&1
+if [[ "$(cat "${POSCTRL_STATE}/active.yaml" 2>/dev/null)" == "ordinary content" ]] \
+   && [[ -L "${POSCTRL_WT}/docs/leadv2/active.yaml" ]]; then
+  pass "S7-positive-control: the mutant still executes ordinary migration logic (it did not merely crash silently)"
+else
+  fail "S7-positive-control" "mutant appears dead on arrival -- its 'survives' result below cannot be trusted. migrated=$(cat "${POSCTRL_STATE}/active.yaml" 2>/dev/null || echo '<missing>') is_link=$( [[ -L "${POSCTRL_WT}/docs/leadv2/active.yaml" ]] && echo yes || echo no )"
+fi
 
 git_tracked_survives() {  # <state-path-bin> -> 0 if open-threads.md stays a real healthy file
   local bin="$1"
