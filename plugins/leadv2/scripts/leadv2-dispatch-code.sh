@@ -4217,6 +4217,96 @@ _acceptance_guard() {
   return 1
 }
 
+# _gate_depth_apply <estimate-json> <admission-class> <flagged 0|1> <admission-source>
+# GATE-DEPTH-MUST-SCALE-WITH-COMPLEXITY-01 (founder order 2026-09-07, shared-tree
+# permission #7; docs/handoff/GATE-DEPTH-20260907/design.md §2/§3): gate depth
+# keys on complexity, NOT on task_class. Reuses ARBITER-SCORING-DESIGN-01's
+# field and provenance schema VERBATIM (F1-ARBITER-SCORING-20260907/design.md
+# §5.1/§7.1): complexity ∈ trivial|simple|standard|complex; complexity_source ∈
+# judge (conf 0.9) | flag (0.7) | heuristic (0.4) | unknown (0.0). The value is
+# NEVER recomputed here — it reads the same task-judge estimate JSON the arbiter
+# descriptor (DC_COMPLEXITY, :8286) reads; the one addition is F1 §5's
+# dispatcher-owned flag floor ("raises complexity to the flag-implied level when
+# the declared class implies more than the estimate and marks
+# complexity_source=flag. It never lowers it"), which this dispatcher owns.
+#
+#   pipeline_route = plan_first   for standard|complex  (plan+gate1 before build)
+#                  = brief_direct for trivial|simple    (no forced plan/gate1)
+#   review_rounds  = 1 (trivial|simple) | 2 (standard) | 3 (complex) -- a
+#                    ceiling consumed only on a non-clean verdict, never a
+#                    mandate for extra rounds (design §2).
+#
+# §3 deeper-never-shallower: ONLY judge (0.9) and flag (0.7) may pick a
+# complexity at face value; heuristic (0.4) and unknown (0.0) provenance are
+# treated as standard for BOTH settings. Design §3, verbatim: "This defaults
+# the ENTIRE population to standard depth until complexity confidence improves"
+# -- with heuristic at 100% of live traffic today (F1 M3) that population-wide
+# cost is accepted, named, and already tracked.
+#
+# Sets globals (no emit -- the caller journals the decision):
+#   GATE_DEPTH_COMPLEXITY  effective complexity actually used (post §3 rule)
+#   GATE_DEPTH_SOURCE      judge|flag|heuristic|unknown
+#   GATE_DEPTH_ROUTE       plan_first|brief_direct
+#   GATE_DEPTH_REVIEW_ROUNDS  1|2|3
+#   GATE_DEPTH_FORCED_PLAN    0|1 -- 1 only when the caller's class raise below
+#                            added plan/gate1 task_class alone would not include
+_gate_depth_apply() {
+  local estimate_json="$1" cls="$2" flagged="$3" adm_src="$4"
+  local cx esrc src eff
+  cx="$(printf '%s' "${estimate_json}" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("complexity",""))
+except Exception: print("")' 2>/dev/null)"
+  esrc="$(printf '%s' "${estimate_json}" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("estimate_source",""))
+except Exception: print("")' 2>/dev/null)"
+  # F1 §5.1 provenance mapping: judge <- estimate_source=judge (task-judge:328);
+  # heuristic <- estimate_source=fallback (the line-count branch, task-judge:136-143
+  # -- the admission call at :4298 passes no --class, so a fallback here is
+  # line_count, never class_hint); unknown <- absent/unparseable estimate.
+  case "${esrc}" in
+    judge)    src="judge" ;;
+    fallback) src="heuristic" ;;
+    *)        src="unknown" ;;
+  esac
+  # F1 §5 dispatcher-owned flag floor: an explicit --task-class or a
+  # task_record/flag admission source implies a minimum complexity
+  # (Light->simple, Standard->standard, Heavy/Strategic->complex). Raises only,
+  # never lowers, and the raise marks complexity_source=flag.
+  if [[ "${flagged}" == "1" || "${adm_src}" == "flag" || "${adm_src}" == "task_record" ]]; then
+    local implied cx_rank implied_rank
+    case "$(_lv2_class_canonical "${cls}")" in
+      Trivial|Light) implied="simple" ;;
+      Standard)      implied="standard" ;;
+      *)             implied="complex" ;;
+    esac
+    cx_rank=0;      case "${cx}" in trivial) cx_rank=1 ;; simple) cx_rank=2 ;; standard) cx_rank=3 ;; complex) cx_rank=4 ;; esac
+    implied_rank=0; case "${implied}" in trivial) implied_rank=1 ;; simple) implied_rank=2 ;; standard) implied_rank=3 ;; complex) implied_rank=4 ;; esac
+    # raise only: an empty/off-vocab estimate (rank 0) takes the implied value too
+    if (( implied_rank > cx_rank )); then cx="${implied}"; src="flag"; fi
+  fi
+  # §3: off-vocabulary complexity can never license depth -- unknown provenance.
+  case "${cx}" in
+    trivial|simple|standard|complex) ;;
+    *) cx="unknown"; src="unknown" ;;
+  esac
+  if [[ "${src}" == "judge" || "${src}" == "flag" ]]; then
+    eff="${cx}"
+  else
+    eff="standard"   # heuristic|unknown: treated as standard for BOTH settings (§3)
+  fi
+  GATE_DEPTH_COMPLEXITY="${eff}"; GATE_DEPTH_SOURCE="${src}"
+  case "${eff}" in
+    standard|complex) GATE_DEPTH_ROUTE="plan_first" ;;
+    *)                GATE_DEPTH_ROUTE="brief_direct" ;;
+  esac
+  case "${eff}" in
+    trivial|simple) GATE_DEPTH_REVIEW_ROUNDS=1 ;;
+    standard)       GATE_DEPTH_REVIEW_ROUNDS=2 ;;
+    *)              GATE_DEPTH_REVIEW_ROUNDS=3 ;;
+  esac
+  GATE_DEPTH_FORCED_PLAN=0
+}
+
 # _admission_classify <mission> <sig> <sig8> <explicit-class> <flagged 0|1>
 # PHASE-DISCIPLINE-01 D1/D2 (steps 1-2). Deterministic TaskEstimate->class map
 # over the ALREADY-AVAILABLE judge (leadv2-task-judge.sh, haiku + code-only
@@ -4360,6 +4450,23 @@ else:
     ADMISSION_CLASS="${task_floor}"; ADMISSION_SOURCE="task_record"
     class_override_reason="task_record_floor"
   fi
+  # GATE-DEPTH-MUST-SCALE-WITH-COMPLEXITY-01 §2 pipeline_route: complexity-keyed,
+  # ADDITIVE ONLY. A plan_first verdict is a floor on the phase route, exactly
+  # like the task-record floor above it: it may raise a Light admission to the
+  # Standard-shaped path (ADMISSION_ROUTE=phases, where leadv2-brain-record's
+  # plan-for table makes plan+gate1 MANDATORY pre-build and _phase_precondition_guard
+  # enforces them), but it never lowers a class the admission map already put at
+  # Standard+ (design: "this setting only ever ADDS depth for complex work").
+  # brief_direct adds nothing -- a Standard+ class keeps the phases route its own
+  # class already implies, so the two settings can only diverge in the review-round
+  # ceiling, never by REMOVING a phase.
+  _gate_depth_apply "${estimate:-}" "${ADMISSION_CLASS}" "${flagged}" "${ADMISSION_SOURCE}"
+  if [[ "${GATE_DEPTH_ROUTE}" == "plan_first" ]] \
+     && (( $(_lv2_class_rank "${ADMISSION_CLASS}") < $(_lv2_class_rank "Standard") )); then
+    GATE_DEPTH_FORCED_PLAN=1
+    ADMISSION_CLASS="Standard"
+    class_override_reason="complexity_gate"
+  fi
   case "${ADMISSION_CLASS}" in
     Standard|Heavy|Strategic) ADMISSION_ROUTE="phases" ;;
     *)                        ADMISSION_CLASS="Light"; ADMISSION_ROUTE="dispatch" ;;
@@ -4370,6 +4477,11 @@ else:
     "${ADMISSION_WORK_KIND:-unknown}" "${ADMISSION_RISK_CLASS:-}" 2>/dev/null \
     || emit decision "admission_receipt_write_failed task=${sig8}"
   emit decision "task_class=${ADMISSION_CLASS} route=${ADMISSION_ROUTE} source=${ADMISSION_SOURCE} task=${sig8}"
+  # GATE-DEPTH §4 reproduction anchor: ONE line per fresh intake recording what
+  # the complexity gate decided. review_rounds rides along so leadv2-dispatch-
+  # product-close.sh can resolve its retry ceiling from the journal even when
+  # spawned by an older/advance-arm path that did not thread the env var.
+  emit decision "complexity_gate_applied task=${sig8} complexity=${GATE_DEPTH_COMPLEXITY} complexity_source=${GATE_DEPTH_SOURCE} pipeline_route=${GATE_DEPTH_ROUTE} forced_plan=${GATE_DEPTH_FORCED_PLAN} review_rounds=${GATE_DEPTH_REVIEW_ROUNDS}"
   if [[ -n "${requested_class}" && "${requested_class}" != "${ADMISSION_CLASS}" ]]; then
     emit decision "task_class_override by=admission task=${sig8} requested=${requested_class} resolved=${ADMISSION_CLASS} reason=${class_override_reason} source=${ADMISSION_SOURCE}"
   fi
@@ -5596,6 +5708,7 @@ spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligibl
     LEADV2_DISPATCH_LANE_MISSION="${lane_mission_path}" \
     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
     LEADV2_DISPATCH_LANE_DELIVERABLE="${lane_deliverable_decl}" \
+    LEADV2_DISPATCH_REVIEW_ROUNDS="${GATE_DEPTH_REVIEW_ROUNDS:-}" \
     LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" LEADV2_WRITE_ROOT="${WORK_ROOT}" \
     LEADV2_LANE_START_SHA="${LANE_START_SHA:-}" \
     "${BASH:-bash}" "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" "${DISPATCH_LANE_NAME:-}" \

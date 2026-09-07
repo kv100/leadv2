@@ -1883,6 +1883,87 @@ _pc_arm_advance() {
   return 1
 }
 
+# GATE-DEPTH-MUST-SCALE-WITH-COMPLEXITY-01 §2 review_rounds (founder order
+# 2026-09-07, shared-tree permission #7; docs/handoff/GATE-DEPTH-20260907/
+# design.md §2 + review-gate-death-intersection.md): a `selfcheck_failed`
+# verdict is a CONTENT verdict (a named test actually failed), not an infra one
+# -- 4/13 of the census's died lanes terminated on exactly this verdict with no
+# retry offered, which is the population this budget exists for. The infra/
+# process reasons (`dod_suite_unregistered`, `worker_timeout`,
+# `arm_produced_nothing`, `no_verdict_marker`) stay single-pass BY DESIGN: a
+# retry cannot fix a suite that never ran or a worker that never produced.
+#
+# Ceiling: review_rounds(complexity) per design §2 -- 1 trivial/simple, 2
+# standard, 3 complex. Resolved, in order: the dispatcher-threaded
+# LEADV2_DISPATCH_REVIEW_ROUNDS env; the intake's `complexity_gate_applied
+# task=... review_rounds=N` journal line (same journal-fallback idiom as
+# _pc_arm_advance's candidate_chain read -- covers close gates spawned by an
+# older dispatcher or via advance-arm, where the env var was never set); else
+# the §3 unknown default 2 (deeper, never shallower -- design §3: "This
+# defaults the ENTIRE population to standard depth until complexity confidence
+# improves").
+_pc_review_round_ceiling() { # -> stdout: 1|2|3
+  local ceiling="${LEADV2_DISPATCH_REVIEW_ROUNDS:-}"
+  if [[ ! "${ceiling}" =~ ^[1-3]$ ]]; then
+    ceiling="$(bash "${JOURNAL_BIN}" tail "dispatch-${TASK}" 100000 2>/dev/null | \
+      grep -F "complexity_gate_applied task=${TASK} " | tail -1 | \
+      sed -n 's/.*review_rounds=\([1-3]\).*/\1/p')"
+  fi
+  [[ "${ceiling}" =~ ^[1-3]$ ]] || ceiling=2
+  printf '%s' "${ceiling}"
+}
+
+# Rounds-consumed persistence: .review-round in the task's own HANDOFF dir, the
+# same per-task marker discipline as .arm-advanced-<arm> above (write-once per
+# successful handoff -- a respawn that dies before its close gate never
+# consumes budget). LEADV2_REVIEW_ROUND_RETRY=0 restores the pre-gate
+# single-pass refusal byte-for-byte (same kill-switch contract as
+# LEADV2_ARM_ADVANCE / LEADV2_BUILDER_SELFCHECK).
+# <failed-csv> -> rc0: a rebuild round was handed off (caller sets
+# _PC_CONTINUATION_HANDED_OFF and exits 5 -- no terminal, no unclaim, the
+# successor close owner now owns the lane); rc1: budget spent, kill switch, or
+# the respawn itself refused -- caller falls through to today's terminal path.
+_pc_review_round_retry() {
+  if [[ "${LEADV2_REVIEW_ROUND_RETRY:-1}" != "1" ]]; then
+    emit decision "review_round_retry_skipped task=${TASK} reason=kill_switch"
+    return 1
+  fi
+  local ceiling round marker="${HANDOFF}/.review-round"
+  ceiling="$(_pc_review_round_ceiling)"
+  round=1
+  if [[ -f "${marker}" ]]; then
+    round="$(cat "${marker}" 2>/dev/null | tr -dc '0-9')"
+    [[ -n "${round}" ]] || round=0
+    round=$(( round + 1 ))
+  fi
+  if (( round >= ceiling )); then
+    emit decision "review_round_exhausted task=${TASK} round=${round} ceiling=${ceiling} reason=selfcheck_failed"
+    return 1
+  fi
+  local mission_file="${LEADV2_DISPATCH_LANE_MISSION:-}"
+  if [[ -z "${mission_file}" || ! -f "${mission_file}" ]]; then
+    mission_file="${ROOT}/docs/handoff/dispatch-${TASK}/lane-mission.md"
+  fi
+  if [[ ! -f "${mission_file}" ]]; then
+    emit decision "review_round_retry_skipped task=${TASK} round=${round} reason=no_mission_file"
+    return 1
+  fi
+  emit decision "review_round_retry task=${TASK} round=${round} ceiling=${ceiling} reason=selfcheck_failed failed=${1:-}"
+  # Same re-dispatch shape as _pc_arm_advance -- but anchored on the CURRENT arm
+  # (advance-arm's chain suffix starts at the anchor, so the content-failed arm
+  # is re-offered to the arbiter rather than skipped past): the verdict was
+  # about the diff, not the arm.
+  local rr_args=(--sig8 "${TASK}" --arm "${AUTHOR}" --mission-file "${mission_file}" --task-id "${FOUNDER_TASK_ID}")
+  [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && rr_args+=(--worktree "${_lane_root}")
+  [[ -n "${WRITES_CSV:-}" ]] && rr_args+=(--writes "${WRITES_CSV}")
+  if bash "${DISPATCH_BIN}" advance-arm "${rr_args[@]}" >/dev/null 2>&1; then
+    printf '%s\n' "${round}" > "${marker}" 2>/dev/null || true
+    return 0
+  fi
+  emit decision "review_round_retry_failed task=${TASK} round=${round} ceiling=${ceiling} reason=advance_arm_refused"
+  return 1
+}
+
 # REVIEW-GATE-INFRA-01 D-A(i): a declared write under docs/leadv2/ or docs/handoff/
 # makes an empty scoped diff MECHANICALLY INEVITABLE, independent of anything the
 # worker actually did -- both are hard-excluded by _pc_git_diff / _pc_lane_dirty's
@@ -3036,6 +3117,15 @@ elif [[ "${LEADV2_BUILDER_SELFCHECK:-1}" != 0 ]] && command -v lv2_selfcheck_run
     printf 'status: blocked\nreason: selfcheck_failed\nkind: %s\nbase: %s\nfailed: %s\nchecks: %s\nskipped: %s\nselfcheck: docs/handoff/dispatch-%s/selfcheck.md\n' \
       "${_pc_kind}" "${_pc_base_used:-HEAD}" "$(_pc_join_capped "${_selfcheck_failed_arr[@]}")" \
       "${LV2_SELFCHECK_CHECKS:-0}" "${LV2_SELFCHECK_SKIPPED:-0}" "${TASK}" > "${HANDOFF}/review-gate.md"
+    # GATE-DEPTH §2 review_rounds: a content verdict gets its retry budget
+    # BEFORE the terminal refusal. The review-gate.md written above stays as
+    # the round-N evidence either way; a handed-off retry writes NO terminal
+    # (the ledger is write-once) and does not unclaim the lane the successor
+    # close owner now owns -- the exact _pc_arm_advance continuation contract.
+    if _pc_review_round_retry "${_selfcheck_failed}"; then
+      _PC_CONTINUATION_HANDED_OFF=1
+      exit 5
+    fi
     emit decision "review_gate task=${TASK} status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed=${_selfcheck_failed} ${_selfcheck_fields}"
     _dl_note refused selfcheck_failed "failed=${_selfcheck_failed} ${_selfcheck_fields}"
     _stamp_review_terminal blocked
