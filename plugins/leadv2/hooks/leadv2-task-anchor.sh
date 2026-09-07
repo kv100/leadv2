@@ -664,22 +664,27 @@ def capture_ask(root, leadv2_dir, prompt, session_id=""):
             sep = "\n" if existing and not existing.endswith("\n") else ""
             new_content = existing + sep + ("\n" if existing else "") + heading + "\n" + new_entry + "\n"
 
-        # PROMPT-CAPTURE-HOOK-DESTROYS-THE-SHARED-JOURNAL-01: in every checkout
-        # docs/leadv2/open-threads.md is a SYMLINK into the shared live control
-        # plane (~/.claude/leadv2-state/<repo>/). os.replace() does not follow a
-        # symlink -- it replaces the LINK with the temp file, so this checkout
-        # silently forks: other sessions keep writing the shared file, this one
-        # writes a private copy, and both see a self-consistent picture. Writing
-        # in place would fix the fork and lose the partial-write protection the
-        # temp+rename exists for, so resolve the link first and rename onto the
-        # TARGET. The temp must sit beside the target, not beside the link: a
-        # rename across a filesystem boundary raises OSError, and the two are not
-        # on the same device here.
-        target = os.path.realpath(ot_path)
-        tmp_path = f"{target}.tmp.{os.getpid()}"
+        # OPEN-THREADS-IS-NOT-CONTROL-PLANE-STATE-01: open-threads.md is
+        # authored, git-tracked content now (removed from leadv2-state-path.sh's
+        # STANDARD set) -- never a symlink into the control plane by design, so
+        # this write goes to the REPO PATH directly, never through
+        # os.path.realpath(). The prior PROMPT-CAPTURE-HOOK-DESTROYS-THE-SHARED-
+        # JOURNAL-01 fix resolved the link and wrote onto the control-plane
+        # TARGET instead -- correct under the old (every-checkout-is-a-symlink)
+        # architecture, but it is exactly the assumption that broke: this
+        # function does not create the symlink, but writing through one it finds
+        # is what let capture_ask() go on subverting the git-tracked file for
+        # ~90 minutes after the resolver itself was fixed. If a stale symlink is
+        # still present at ot_path (leftover from before this fix, or any other
+        # future path that creates one despite the guards), os.replace() below
+        # does not follow it -- it replaces the LINK itself with a real file,
+        # which is exactly what we want: the question lands in the repository,
+        # the stale link is gone. The temp file sits beside ot_path so the
+        # rename stays on one filesystem.
+        tmp_path = f"{ot_path}.tmp.{os.getpid()}"
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(new_content)
-        os.replace(tmp_path, target)  # atomic-ish rename, never a partial write
+        os.replace(tmp_path, ot_path)  # atomic-ish rename, never a partial write
     finally:
         if lockf is not None:
             try:
