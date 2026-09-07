@@ -1,0 +1,39 @@
+# direct-spawn-gate.yaml — policy for the direct write-capable spawn gate
+# (leadv2-codex-first-nudge.sh, ROUTING-HAS-NO-ENFORCING-LAYER-01, 2026-09-04).
+#
+# The gate's DENY side is capability-only: it fires on a direct Agent() spawn
+# whose effective tool set carries Write/Edit (explicit tool_input.tools, the
+# agent definition's frontmatter tools:, or an unprovable read-onlyness) and
+# that carries no recorded LEADV2-DIRECT-REASON line. No model name, provider
+# name, or subtype name decides a denial — a write-capable spawn on sonnet,
+# opus, glm, kimi or freepool is denied by the same predicate.
+#
+# This file only holds GRANTS under that default-deny posture: anything not
+# granted here and not provably read-only is denied and pointed at
+# leadv2-dispatch-code.sh (or at the LEADV2-DIRECT-REASON escape hatch).
+#
+#   read_only_builtins      — platform builtins with no definition file that are
+#                             read-only by platform truth (recon passes
+#                             untouched at any model). Also the in-hook fallback
+#                             when this file itself is missing (broken install):
+#                             explore passes, everything else write-capable.
+#   sanctioned_bypass_roles — write-capable roles that bypass the dispatcher BY
+#                             DESIGN (plan synthesis / review panels). Their
+#                             passes are journaled as sanctioned_bypass so the
+#                             quota spend stays auditable. Known gaps recorded
+#                             in the lane report: devops-engineer, critic,
+#                             security-auditor (v1 scope decision).
+#
+# Per-repo override (wins ENTIRELY, same rule as nested-spawn-policy.yaml —
+# copy the grant lists you want, not just the enabled flag):
+#   <repo>/.claude/leadv2-overrides/direct-spawn-gate.yaml
+# Repo-local kill switch: that file with `enabled: false`.
+# Session kill switch: LEADV2_DIRECT_SPAWN_GATE=0.
+enabled: true
+read_only_builtins:
+  - explore
+sanctioned_bypass_roles:
+  - architect
+  - critic
+  - security-auditor
+  - devops-engineer
