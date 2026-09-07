@@ -35,6 +35,13 @@ fail() { printf 'FAIL: %s -- %s\n' "$1" "$2"; FAIL=1; }
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "${TMP_ROOT}"' EXIT
 
+# A mutant copy of leadv2-state-path.sh lands in TMP_ROOT and resolves its
+# own SCRIPT_DIR to there, so it must find leadv2-portable-lock.sh as a
+# sibling or it dies on `source` before reaching any migration logic --
+# which looks identical to "did nothing harmful" and silently defeats any
+# falsification whose assertion is "the file survived untouched" (S7).
+cp "${SCRIPT_DIR}/../leadv2-portable-lock.sh" "${TMP_ROOT}/leadv2-portable-lock.sh"
+
 STATE="${TMP_ROOT}/state-root"
 WT_A="${TMP_ROOT}/wt-a"
 WT_B="${TMP_ROOT}/wt-b"
@@ -108,6 +115,92 @@ if [[ -L "${WT_C}/docs/leadv2/founder-status.md" ]] \
   pass "S6: RENDER collision symlinked the local copy away with NO backup file"
 else
   fail "S6" "is_link=$( [[ -L "${WT_C}/docs/leadv2/founder-status.md" ]] && echo yes || echo no ) backup_exists=$( [[ -f "${WT_C}/docs/leadv2/founder-status.md.pre-controlplane-backup" ]] && echo yes || echo no )"
+fi
+
+# ── S7: git-tracked STANDARD name is never migrated/symlinked, even when a
+# stale control-plane snapshot + backup already exist and the resolver is
+# called for a DIFFERENT, unrelated name — the exact incident shape of
+# OPEN-THREADS-TRUNCATED-SIX-TIMES-IN-ONE-NIGHT-01: a session in a real repo
+# calling leadv2-state-path.sh for its own journal path silently converted a
+# healthy, git-restored docs/leadv2/open-threads.md into a symlink pointing
+# at a 9-hour-stale control-plane copy, because the STANDARD migration loop
+# runs over EVERY name on EVERY call, not just the one requested. ─────────
+WT_GIT="${TMP_ROOT}/wt-git"
+STATE_GIT="${TMP_ROOT}/state-git"
+mkdir -p "${WT_GIT}/docs/leadv2" "${STATE_GIT}"
+git -C "${WT_GIT}" init -q
+git -C "${WT_GIT}" config user.email test@example.com
+git -C "${WT_GIT}" config user.name test
+printf '# healthy, git-restored open threads\nreal content, 3 lines\n' > "${WT_GIT}/docs/leadv2/open-threads.md"
+git -C "${WT_GIT}" add docs/leadv2/open-threads.md
+git -C "${WT_GIT}" commit -q -m "tracked open-threads.md"
+HEALTHY_CONTENT="$(cat "${WT_GIT}/docs/leadv2/open-threads.md")"
+# Pre-seed ONLY a STALE control-plane target, no backup yet -- the exact
+# collision shape that corrupts the file under the pre-fix code: target
+# exists (an earlier migration from elsewhere), backup does not (this local
+# copy was never previously the subject of one), so the pre-fix branch does
+# `move(local, backup)` then falls through to `symlink(target, local)`. A
+# pre-existing backup on top would make even the PRE-fix code a no-op here
+# (its `else: continue` on backup-already-exists) -- that is not the
+# incident shape, so the test must not seed one.
+printf 'STALE 9-hour-old snapshot\n' > "${STATE_GIT}/open-threads.md"
+# Call the resolver for an UNRELATED name -- reproducing "action at a
+# distance": nobody asked about open-threads.md this call.
+LEADV2_STATE_ROOT="${STATE_GIT}" PROJECT_ROOT="${WT_GIT}" bash "${STATE_PATH_SH}" active.yaml >/dev/null 2>&1
+if [[ ! -L "${WT_GIT}/docs/leadv2/open-threads.md" ]] \
+   && [[ "$(cat "${WT_GIT}/docs/leadv2/open-threads.md" 2>/dev/null)" == "${HEALTHY_CONTENT}" ]] \
+   && [[ "$(cat "${STATE_GIT}/open-threads.md" 2>/dev/null)" == "STALE 9-hour-old snapshot" ]]; then
+  pass "S7: git-tracked open-threads.md untouched by an unrelated resolver call, stale target left alone"
+else
+  fail "S7" "is_link=$( [[ -L "${WT_GIT}/docs/leadv2/open-threads.md" ]] && echo yes || echo no ) content=$(cat "${WT_GIT}/docs/leadv2/open-threads.md" 2>/dev/null)"
+fi
+
+# ── falsification for S7: prove the git-tracked guard actually matters ─────
+# Mutant: production code with the `if is_git_tracked(name): continue` guard
+# removed -- i.e. exactly this file's behaviour before the fix. Same
+# git-tracked scenario as S7 through the mutant must corrupt the file;
+# through the real (patched) resolver it must not.
+PATCH_S7_PY="${TMP_ROOT}/patch-s7-mutant.py"
+cat > "${PATCH_S7_PY}" <<'PYEOF'
+import sys
+src_path, dst_path = sys.argv[1], sys.argv[2]
+src = open(src_path, encoding="utf-8").read()
+anchor = "    if is_git_tracked(name):\n        continue\n\n    if os.path.islink(local):"
+replacement = "    if os.path.islink(local):"
+if anchor not in src:
+    sys.stderr.write("ERROR: S7 falsification anchor not found -- source drifted from patcher\n")
+    sys.exit(1)
+open(dst_path, "w", encoding="utf-8").write(src.replace(anchor, replacement, 1))
+PYEOF
+MUTANT_S7_SH="${TMP_ROOT}/leadv2-state-path.s7-mutant.sh"
+if ! python3 "${PATCH_S7_PY}" "${STATE_PATH_SH}" "${MUTANT_S7_SH}"; then
+  echo "ERROR: S7 falsification mutant patch failed to apply"; exit 1
+fi
+chmod +x "${MUTANT_S7_SH}"
+
+git_tracked_survives() {  # <state-path-bin> -> 0 if open-threads.md stays a real healthy file
+  local bin="$1"
+  local wt="${TMP_ROOT}/s7-falsify-wt-$$-${RANDOM}"
+  local state="${TMP_ROOT}/s7-falsify-state-$$-${RANDOM}"
+  mkdir -p "${wt}/docs/leadv2" "${state}"
+  git -C "${wt}" init -q
+  git -C "${wt}" config user.email test@example.com
+  git -C "${wt}" config user.name test
+  printf 'healthy tracked content\n' > "${wt}/docs/leadv2/open-threads.md"
+  git -C "${wt}" add docs/leadv2/open-threads.md
+  git -C "${wt}" commit -q -m tracked
+  printf 'STALE\n' > "${state}/open-threads.md"
+  LEADV2_STATE_ROOT="${state}" PROJECT_ROOT="${wt}" bash "${bin}" active.yaml >/dev/null 2>&1
+  [[ ! -L "${wt}/docs/leadv2/open-threads.md" ]] && [[ "$(cat "${wt}/docs/leadv2/open-threads.md" 2>/dev/null)" == "healthy tracked content" ]]
+}
+
+git_tracked_survives "${MUTANT_S7_SH}"; s7_pre_rc=$?
+git_tracked_survives "${STATE_PATH_SH}"; s7_post_rc=$?
+if [[ ${s7_pre_rc} -ne 0 && ${s7_post_rc} -eq 0 ]]; then
+  pass "falsification: pre-fix mutant corrupts the tracked file, real resolver leaves it alone"
+  echo "RED-then-GREEN: state-path-git-tracked (pre_rc=${s7_pre_rc} -> post_rc=${s7_post_rc})"
+else
+  fail "S7-falsification" "mutant pre_rc=${s7_pre_rc} (want !=0) real post_rc=${s7_post_rc} (want 0)"
 fi
 
 # ── falsification: prove S4's line-union assertion can actually FAIL ───────

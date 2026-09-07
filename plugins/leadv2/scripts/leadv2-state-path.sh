@@ -63,6 +63,16 @@
 #                                            the test harness to probe raw
 #                                            paths without mutating a worktree)
 #
+# GIT-TRACKED-NEVER-MIGRATES (OPEN-THREADS-TRUNCATED-SIX-TIMES-IN-ONE-NIGHT-01,
+# 2026-09-07): before touching any STANDARD name, the migration below checks
+# `git ls-files --error-unmatch docs/leadv2/<name>` in LINK_ROOT and skips the
+# name entirely if it is tracked. A path git tracks belongs to the repo, not
+# the control plane -- letting it be migrated/symlinked meant a stale
+# control-plane snapshot from hours earlier could silently replace a
+# freshly git-restored, healthy file the next time ANY of 12+ unrelated
+# call sites invoked this resolver for a completely different name. Hard
+# authority check (tracked or not), not an mtime/size heuristic.
+#
 # Migration semantics (idempotent, safe to call from every worktree, every
 # invocation): for each name in the standard set, if the control-plane copy
 # does not exist yet AND a REAL file/dir (not a symlink) is sitting at
@@ -306,11 +316,36 @@ if [[ "$NO_LINK" -eq 0 ]]; then
 
   if [[ "${_migrate_locked}" -eq 1 ]]; then
     python3 - "$STATE_ROOT" "$LINK_ROOT" <<'PYEOF' 2>/dev/null || true
-import os, re, shutil, sys
+import os, re, shutil, subprocess, sys
 
 state_root, link_root = sys.argv[1], sys.argv[2]
 leadv2_dir = os.path.join(link_root, "docs", "leadv2")
 os.makedirs(leadv2_dir, exist_ok=True)
+
+
+def is_git_tracked(name):
+    # OPEN-THREADS-TRUNCATED-SIX-TIMES-IN-ONE-NIGHT-01: a path git tracks
+    # belongs to the repo, never to the control plane. This is a hard
+    # authority check (git tracks it or it doesn't), not an mtime/size
+    # heuristic -- a heuristic still has to pick a winner when both sides
+    # look plausible, and picking wrong is exactly how a git-restored,
+    # healthy `docs/leadv2/open-threads.md` got silently backed up and
+    # replaced by a symlink to a 9-hour-stale control-plane snapshot: the
+    # STANDARD migration below ran on every unrelated resolver call (12+
+    # call sites), found the old snapshot already present, and treated that
+    # as "another worktree already migrated" instead of "this file is under
+    # version control and isn't the control plane's to move." Skipping
+    # migration/symlinking outright for anything git tracks removes the
+    # question instead of answering it.
+    rel = os.path.join("docs", "leadv2", name)
+    try:
+        r = subprocess.run(
+            ["git", "-C", link_root, "ls-files", "--error-unmatch", rel],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return r.returncode == 0
+    except OSError:
+        return False
 
 MERGE_SIZE_CAP = 8 * 1024 * 1024  # §3.4: never load an unbounded ladder into memory
 
@@ -364,6 +399,9 @@ def relink_if_needed(local, target):
 for name, is_dir in STANDARD.items():
     target = os.path.join(state_root, name)
     local = os.path.join(leadv2_dir, name)
+
+    if is_git_tracked(name):
+        continue
 
     if os.path.islink(local):
         relink_if_needed(local, target)
