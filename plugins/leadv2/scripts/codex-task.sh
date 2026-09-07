@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 # Codex convenience wrapper — finds codex-companion.mjs and forwards all args
 # Zero Claude tokens consumed. Uses OpenAI/Codex tokens.
