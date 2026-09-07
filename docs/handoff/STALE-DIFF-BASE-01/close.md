@@ -107,7 +107,7 @@ class of bug (item 3 above) is reachable independent of raw cache-miss frequency
 
 ## Commit
 
-sha: (recorded at commit time below)
+sha: f2f3c001a6ee917f9c903a957fcaf1ffc3ca4aa9
 Revert: `git revert <this commit's sha>` — one step, reintroduces the pre-fix `origin/main`
 anchors and removes the fourth-tier function; the standing no-push-to-origin freeze is
 untouched either way (nothing in this change touches push/fetch).
