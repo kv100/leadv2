@@ -149,7 +149,13 @@ if not active:
             # closed lane kept being named as the active task. The closed-flag
             # test below is the same idea via the filesystem; this is the same
             # idea via the registry's own record. Both must clear the lane.
-            if (sess.get("terminal_status") or "").strip():
+            # LANE-REGISTRY-GHOSTS-20260907: this is the third reader caught by
+            # the same blindness -- terminal_status is written only by
+            # active-registry.sh/lane-heartbeat.sh; lib/leadv2-lane-state.sh
+            # marks death via dead_at instead and never sets terminal_status.
+            # Check both; dead_at resets to None on re-registration/recovery so
+            # a revived lane still blocks a silent end-of-turn.
+            if (sess.get("terminal_status") or "").strip() or sess.get("dead_at"):
                 continue
             # Check if this session's task is closed
             h_dir = os.path.join(cwd, "docs", "handoff", sid)
