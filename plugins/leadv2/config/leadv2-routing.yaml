@@ -185,7 +185,7 @@ router_v2:
     #
     # Откат — один шаг: вернуть в этой строке protected: false, review: false и
     # исходный список kinds. Ледгер: SD-GLM-DOES-ANY-WORK-ROLLBACK-01.
-    - { arm: glm, provider: glm, model: glm-5.3, tier: standard, cost: 1, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [bulk, background], review: true, protected: true }
+    - { arm: glm, provider: glm, model: glm-5.3, tier: standard, cost: 1, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [bulk, background], review: true, protected: true, capability: 4 }
     # GLM-53-FLASH-ARM-01 (founder order 2026-08-26): glm-5.3-flash, the CHEAP
     # glm-family arm. GLM-EFFICIENCY-01 (founder ruling on ask q-bba84179,
     # 2026-09-02, option b): cost corrected 0.4 -> 0.33 against Z.AI's measured
@@ -202,20 +202,20 @@ router_v2:
     # test authoring. NOT for protected/safety/publish (protected: false here
     # plus `untrusted: true` on the ladder entry below), NOT review/audit/plan,
     # and sizes stop at standard — heavy/bulk stay on glm-5.3/codex/sonnet.
-    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.33, kinds: [code, docs, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [cheap, mechanical], review: false, protected: false }
+    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.33, kinds: [code, docs, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [cheap, mechanical], review: false, protected: false, capability: 2 }
     # recon (ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01, founder 2026-09-04):
     # recon is cheap, high-volume, READ-ONLY exploration — routing intent lives
     # here as rows, not in arbiter code branches. freepool (cost 1) is the
     # winner while its gate is healthy; haiku (cost 2) is the capable fallback
     # when the gate benches freepool. No glm/codex/sonnet/opus cell carries
     # recon — the doctrine is "the cheapest capable arm", exactly these two.
-    - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, cost: 1, kinds: [code, docs, recon, fanout-class-funnel, backlog-pump], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false }
-    - { arm: codex, provider: codex, model: gpt-6-astra, tier: volume, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true } # PLUGIN-PAPERCUTS-01 defect 2: was tier: spark — codex-task.sh rejects spark (banned, founder directive 2026-04-28; accepts top|standard|volume only), so this cell won the auction and died at spawn. volume (gpt-6-astra/low after ASTRA-BUMP-01) is the launcher cheapest valid tier for this cheap leg.
-    - { arm: codex, provider: codex, model: gpt-6-astra, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true }
-    - { arm: codex, provider: codex, model: gpt-6-astra, tier: top, cost: 7, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true }
-    - { arm: haiku, provider: claude, model: haiku, tier: standard, cost: 2, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
-    - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true }
-    - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true }
+    - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, cost: 1, kinds: [code, docs, recon, fanout-class-funnel, backlog-pump], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false, capability: 2 }
+    - { arm: codex, provider: codex, model: gpt-6-astra, tier: volume, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true, capability: 3 } # PLUGIN-PAPERCUTS-01 defect 2: was tier: spark — codex-task.sh rejects spark (banned, founder directive 2026-04-28; accepts top|standard|volume only), so this cell won the auction and died at spawn. volume (gpt-6-astra/low after ASTRA-BUMP-01) is the launcher cheapest valid tier for this cheap leg.
+    - { arm: codex, provider: codex, model: gpt-6-astra, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true, capability: 4 }
+    - { arm: codex, provider: codex, model: gpt-6-astra, tier: top, cost: 7, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 4 }
+    - { arm: haiku, provider: claude, model: haiku, tier: standard, cost: 2, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true, capability: 2 } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
+    - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true, capability: 4 }
+    - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 4 }
     # FABLE-RESTORE-01 (founder permission, 2026-09-06 open-threads.md, entry
     # [FABLE-RESTORE-01]): fable had ZERO capability_matrix cells since
     # FABLE-RETIRE-01 (2026-07-07), so the arbiter could never select it as a
@@ -230,7 +230,7 @@ router_v2:
     # (plan synthesis, judge, diagnose synth, learn proposal, PO audit, review
     # Heavy critic, architect prepass) — never `code`, fable is not a build arm.
     # Rollback: delete this row.
-    - { arm: fable, provider: claude, model: fable, tier: high, cost: 8, kinds: [plan, audit, review], sizes: [standard, heavy], tags: [architecture, adversarial], review: true, protected: true }
+    - { arm: fable, provider: claude, model: fable, tier: high, cost: 8, kinds: [plan, audit, review], sizes: [standard, heavy], tags: [architecture, adversarial], review: true, protected: true, capability: 4 }
 
   # EFFORT-IS-NOT-WIRED-01: the second routing knob (docs/model-effort-matrix.md
   # -- model = hardness, effort = marginal value of extra thinking) resolved
@@ -278,6 +278,19 @@ router_v2:
   # matches on the SAME `tags` capability_matrix cells already carry (cheap/
   # mechanical/bulk/background), so a routing-yaml-only edit (no script
   # change) is enough to retune which cells count as "too cheap" for hard work.
+  #
+  # ARBITER-SCORING-DESIGN-01 (2026-09-07): this flat +100 rule is a two-state
+  # signal (absent / total ban) against a real cost spread of 0.33..9 -- it can
+  # only ever remove glm-flash from contention, never grade a "slightly short"
+  # arm below a "wildly short" one. `capability_fit` below is the replacement:
+  # a graduated four-position lexicographic key (fit_bucket 0..3) that demotes
+  # instead of bans and reports its shadow pick on every decision line via
+  # fit_pick=/fit_differs=, regardless of mode. This block is RETAINED
+  # verbatim and stays live exactly as today -- `complexity_penalty()` is only
+  # read when `capability_fit.enabled` is false and `LEADV2_ARBITER_CAPABILITY_FIT`
+  # is not `on` (leadv2-route-arbiter.sh:759). Rollout plan, measurements and
+  # the decision function: docs/handoff/F1-ARBITER-SCORING-20260907/design.md
+  # in persona-engine (commits f88e15c3c, e678b4eb2).
   complexity_penalty:
     - complexities: [complex]
       # GLM-FIRST-IS-DEAD-BY-COMPLEXITY-PENALTY-01 (lead, 2026-09-03, founder
@@ -293,12 +306,39 @@ router_v2:
       # and a flash-tier arm on complex work is the case this rule was written
       # for. The exceptions founder policy actually names (safety / publish /
       # payments / ui_judgment) are enforced elsewhere and are untouched: they
-      # come through `_hard_flag` in leadv2-route-arbiter.sh:79, which forces
+      # come through `_hard_flag` in leadv2-route-arbiter.sh:219 (CORRECTED
+      # 2026-09-07, ARBITER-SCORING-DESIGN-01 R5 -- this comment cited a stale
+      # :79; verified against the live file the same day), which forces
       # require_trusted regardless of any cost ranking. Controls run on the live
       # tree before/after: complex+safety -> sonnet (both), complex alone ->
       # sonnet before / glm after, glm-flash never wins complex.
       penalize_tags: [cheap, mechanical]
       penalty: 100
+
+  # ARBITER-SCORING-DESIGN-01 step 1 (additive, default OFF -- no live arm pick
+  # changes while `enabled: false`). Replaces the +100 complexity_penalty ban
+  # above with a graduated lexicographic capability-fit key: every candidate
+  # cell's ordinal `capability` (1-4, per-cell below) is compared against the
+  # task's effective complexity requirement (`req_eff`, derived from
+  # `complexity` + `complexity_source` provenance) to produce a `fit_bucket`
+  # (0 = fits, 1..3 = short by that many steps, never "banned" -- a short arm
+  # is demoted, not removed). leadv2-route-arbiter.sh sorts on
+  # (fit_bucket, cost, ...) instead of (cost, ...) only when `enabled: true`
+  # (or env `LEADV2_ARBITER_CAPABILITY_FIT=on`); the shadow computation and its
+  # `fit_pick=`/`fit_differs=` decision-line tokens run in EVERY mode so the
+  # rollout can be measured before it is live (§8/§9,
+  # docs/handoff/F1-ARBITER-SCORING-20260907/design.md in persona-engine).
+  # `source_confidence.heuristic: 0.4` is Leadmain's reviewed decision (design.md
+  # §12 OQ1, e678b4eb2): glm-flash keeps <=30-line missions on today's 100%-
+  # heuristic estimator; revisit at <=0.2 once the judge is live. Rollback from
+  # any state is the single env flip `LEADV2_ARBITER_CAPABILITY_FIT=off`.
+  capability_fit:
+    enabled: true
+    prior: 3.0
+    slack: 0.5
+    cap_default: 3.0
+    complexity_ordinal: { trivial: 1, simple: 2, standard: 3, complex: 4 }
+    source_confidence:  { judge: 0.9, flag: 0.7, heuristic: 0.4, unknown: 0.0 }
 
   # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
   # Anthropic arms deliberately share the active Max x20 account bucket.

@@ -3081,7 +3081,7 @@ resolve_v2_dispatch() {
 # branch) so the arbiter descriptor built below can carry complexity/
 # duration_class, and degrade to "unknown" (never crash a dispatch) on any
 # judge failure.
-_dispatch_complexity_estimate() {  # <mission> <sig8> <task_class> -> "work_kind<TAB>complexity<TAB>duration_class"
+_dispatch_complexity_estimate() {  # <mission> <sig8> <task_class> -> "work_kind<TAB>complexity<TAB>duration_class<TAB>estimate_source<TAB>complexity_basis"
   local mission="$1" sig8="$2" class="$3" judge tmp estimate fields
   judge="${LEADV2_TASK_JUDGE_BIN:-${SCRIPT_DIR}/leadv2-task-judge.sh}"
   if [[ ! -f "${judge}" ]]; then
@@ -3102,9 +3102,14 @@ _dispatch_complexity_estimate() {  # <mission> <sig8> <task_class> -> "work_kind
 import json, sys
 try:
     e = json.loads(sys.argv[1])
-    print("%s\t%s\t%s" % (e.get("work_kind", "unknown") or "unknown",
+    # estimate_source/complexity_basis (ARBITER-SCORING-DESIGN-01 step 2,
+    # §5.1) ride out so the descriptor-build site can derive
+    # complexity_source; empty when absent (old judge binary / cache).
+    print("%s\t%s\t%s\t%s\t%s" % (e.get("work_kind", "unknown") or "unknown",
                            e.get("complexity", "unknown") or "unknown",
-                           e.get("duration_class", "unknown") or "unknown"))
+                           e.get("duration_class", "unknown") or "unknown",
+                           e.get("estimate_source", "") or "",
+                           e.get("complexity_basis", "") or ""))
 except Exception:
     print("unknown\tunknown\tunknown")
 ' "${estimate}" 2>/dev/null)"
@@ -7719,9 +7724,58 @@ cmd_resolve() {
   # COMPLEXITY-ESTIMATOR-IS-OFF-01: unconditional -- every dispatch (not only
   # LEADV2_ROUTER_V2=1) now carries a complexity estimate into the live
   # arbiter descriptor below and the arm_resolved decision line.
-  local DC_WORK_KIND DC_COMPLEXITY DC_DURATION_CLASS
-  IFS=$'\t' read -r DC_WORK_KIND DC_COMPLEXITY DC_DURATION_CLASS \
+  local DC_WORK_KIND DC_COMPLEXITY DC_DURATION_CLASS DC_ESTIMATE_SOURCE DC_COMPLEXITY_BASIS
+  IFS=$'\t' read -r DC_WORK_KIND DC_COMPLEXITY DC_DURATION_CLASS DC_ESTIMATE_SOURCE DC_COMPLEXITY_BASIS \
     <<<"$(_dispatch_complexity_estimate "${mission}" "${sig8}" "${task_class}")"
+  # ARBITER-SCORING-DESIGN-01 step 2 (design.md §5, §5.1): the declared
+  # class is a FLOOR on complexity -- Light->simple, Standard->standard,
+  # Heavy/Strategic->complex, the same map _fallback_estimate
+  # (leadv2-task-judge.sh) uses for its class hint, applied here because
+  # this site owns BOTH fields. Raises only, never lowers; the arbiter
+  # then sees ONE complexity with ONE provenance. complexity_source per
+  # §5.1's degradation table: 'flag' when an explicit --task-class or a
+  # flag/task_record admission raised the level, or the fallback
+  # estimate itself came from a class hint; 'judge' when the estimate
+  # was a judge estimate; 'heuristic' only when the fallback used the
+  # line count; 'unknown' for old callers (key absent) and failed
+  # judge calls -- conf 0, the cautious prior, never random.
+  local DC_COMPLEXITY_SOURCE _cx_implied _cx_pre _cx_raised
+  case "${task_class:-}" in
+    Light)           _cx_implied="simple" ;;
+    Standard)        _cx_implied="standard" ;;
+    Heavy|Strategic) _cx_implied="complex" ;;
+    *)               _cx_implied="" ;;
+  esac
+  _cx_pre="${DC_COMPLEXITY:-unknown}"
+  IFS=$'\t' read -r DC_COMPLEXITY DC_COMPLEXITY_SOURCE _cx_raised \
+    <<<"$(python3 - "${_cx_pre}" "${DC_ESTIMATE_SOURCE:-}" "${DC_COMPLEXITY_BASIS:-}" "${_cx_implied}" "${task_class_flagged:-0}" "${ADMISSION_SOURCE:-}" <<'PY'
+import sys
+
+cx, est_src, basis, implied, flagged, adm_src = sys.argv[1:7]
+ORD = {'trivial': 1, 'simple': 2, 'standard': 3, 'complex': 4}
+flaglike = flagged == '1' or adm_src in ('flag', 'task_record')
+o_imp = ORD.get(implied, 0)
+o_est = ORD.get(cx)
+raised = o_imp > 0 and (o_est is None or o_est < o_imp)
+eff = implied if raised else cx
+if raised and flaglike:
+    src = 'flag'
+elif est_src == 'judge':
+    src = 'judge'
+elif est_src == 'fallback' and basis == 'class_hint':
+    src = 'flag'
+elif est_src == 'fallback' and basis == 'line_count':
+    src = 'heuristic'
+else:
+    src = 'unknown'
+print('%s\t%s\t%d' % (eff, src, 1 if raised else 0))
+PY
+)"
+  [[ -n "${DC_COMPLEXITY}" ]] || DC_COMPLEXITY="unknown"
+  [[ -n "${DC_COMPLEXITY_SOURCE}" ]] || DC_COMPLEXITY_SOURCE="unknown"
+  if [[ "${_cx_raised:-0}" == "1" ]]; then
+    emit decision "complexity_floor_applied task=${sig8} from=${_cx_pre} to=${DC_COMPLEXITY} source=${DC_COMPLEXITY_SOURCE} by=$([[ "${task_class_flagged:-0}" == "1" ]] && printf 'flag' || printf 'admission')"
+  fi
   _dispatch_record_cost_estimate "${sig8}" "${founder_task_id}" "${DC_COMPLEXITY}" "${DC_DURATION_CLASS}"
   # Admission says this mission lives in the full phase cycle: its Phase-4
   # re-entries need only the pre-build phases satisfied (the cycle is mid-
@@ -8394,9 +8448,11 @@ exit is treated as an incident."
     # COMPLEXITY-ESTIMATOR-IS-OFF-01: complexity/duration_class ride into the
     # same descriptor so the capability_matrix (and any complexity_penalty
     # rule) can see them, not just kind/size/protected.
+    # complexity_source (ARBITER-SCORING-DESIGN-01 step 2, §5.1/§7.1) rides
+    # along -- post-floor provenance, read by the arbiter at :478.
     local _arb_allowed_csv
     _arb_allowed_csv="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
-    _arb_desc="$(python3 -c 'import json,sys; allowed=[a for a in sys.argv[6].split(",") if a]; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[7],"allowed_arms":allowed,"complexity":sys.argv[8],"duration_class":sys.argv[9],"test_only":sys.argv[10]=="1","requested_arm":sys.argv[11]}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${_arb_allowed_csv}" "${sig8}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}" "${_test_only}" "${requested_arm}")"
+    _arb_desc="$(python3 -c 'import json,sys; allowed=[a for a in sys.argv[6].split(",") if a]; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[7],"allowed_arms":allowed,"complexity":sys.argv[8],"duration_class":sys.argv[9],"test_only":sys.argv[10]=="1","requested_arm":sys.argv[11],"complexity_source":sys.argv[12]}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${_arb_allowed_csv}" "${sig8}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}" "${_test_only}" "${requested_arm}" "${DC_COMPLEXITY_SOURCE:-unknown}")"
     _arb_out="$(route_arbiter worker "${_arb_desc}")"; _arb_rc=$?
     _arb_arm="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _arb_chain="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"

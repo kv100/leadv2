@@ -32,6 +32,14 @@
 # line of TaskEstimate JSON. Usage errors (missing/unreadable --mission-file)
 # exit 2 — those are caller bugs, not a runtime condition the fallback covers.
 #
+# JOURNAL (JUDGE-REVIVAL-01): every route_v2_estimate line carries judge_path=
+# naming the exit path that produced it (disable | light_skip | cache_hit |
+# judge | judge_fail); judge_fail lines also carry judge_fail_reason=
+# (template_missing | prompt_build | timeout | nonzero_rc | empty_output |
+# envelope_parse | schema_invalid). A fallback that cannot say why it fell
+# back is indistinguishable from a skip — that silence is what kept the live
+# Standard/Heavy judge failures invisible (Part 0, judge-revival-diagnosis.md).
+#
 # Env:
 #   LEADV2_JUDGE_DISABLE       1 = never call the model; estimate_source=fallback always
 #   LEADV2_JUDGE_MODEL         override model id (default: haiku)
@@ -129,18 +137,25 @@ lines = mission_text.count(chr(10)) + 1
 
 if class_hint == 'Light':
     complexity, duration_class = 'simple', 'short'
+    basis = 'class_hint'
 elif class_hint == 'Standard':
     complexity, duration_class = 'standard', 'medium'
+    basis = 'class_hint'
 elif class_hint in ('Heavy', 'Strategic'):
     complexity, duration_class = 'complex', 'long'
+    basis = 'class_hint'
 elif lines <= 30:
     complexity, duration_class = 'trivial', 'short'
+    basis = 'line_count'
 elif lines <= 100:
     complexity, duration_class = 'simple', 'short'
+    basis = 'line_count'
 elif lines <= 300:
     complexity, duration_class = 'standard', 'medium'
+    basis = 'line_count'
 else:
     complexity, duration_class = 'complex', 'long'
+    basis = 'line_count'
 
 # ── structured-surface safety matcher (CLASSIFIER-CALLS-SAFETY-DOCTRINE-
 # SIMPLE-01) -- protected_path_patterns are path globs; scanning them (or any
@@ -220,6 +235,7 @@ estimate = {
     'work_kind': work_kind,
     'estimate_id': sig8,
     'estimate_source': 'fallback',
+    'complexity_basis': basis,
     'flag_source': flag_source,
 }
 print(json.dumps(estimate, sort_keys=True))
@@ -235,6 +251,11 @@ import json, sys
 
 ALLOWED = {
     'complexity': {'trivial', 'simple', 'standard', 'complex'},
+    # complexity_basis (ARBITER-SCORING-DESIGN-01 §7.2) is OPTIONAL:
+    # an estimate cached before the field existed must still validate.
+    # It must never join REQUIRED -- every cached estimate on disk
+    # would fail validation the moment this shipped.
+    'complexity_basis': {'judge', 'class_hint', 'line_count'},
     'risk_class': {'none', 'data', 'safety_publish_payments'},
     'duration_class': {'short', 'medium', 'long'},
     'work_kind': {'build', 'review', 'diagnose', 'docs'},
@@ -255,7 +276,11 @@ for k in REQUIRED:
     if k not in est:
         sys.exit(1)
 for field, allowed in ALLOWED.items():
-    if est[field] not in allowed:
+    # An absent ALLOWED key is skipped, not KeyError'd -- the old
+    # est[field] read made every ALLOWED key de-facto REQUIRED,
+    # which is exactly the cached-estimate break §7.2 forbids. Every
+    # enum field that must be present is already in REQUIRED above.
+    if field in est and est[field] not in allowed:
         sys.exit(1)
 if not isinstance(est['subsystems_touched'], int) or isinstance(est['subsystems_touched'], bool):
     sys.exit(1)
@@ -270,15 +295,28 @@ print(json.dumps(est, sort_keys=True))
 }
 
 # ── judge invocation (arm-blind LLM call) ───────────────────────────────────
+# JUDGE-REVIVAL-01: every failure below records its reason via _fail() so the
+# :500 fallback can journal it as judge_fail_reason= — a failed invoke stays
+# forever distinguishable from disable/light_skip/cache_hit (Part 0 E4/E6:
+# before this, all five exit paths journaled identically and the live
+# 0-judge census could not say WHY). _fail writes to fd 3 because the caller
+# captures this function in a $( ) command substitution — a subshell — so a
+# plain JUDGE_FAIL_REASON= assignment would die with the subshell and the
+# journal would read judge_fail_reason=unknown (caught by the first smoke run).
+_fail() {  # <reason>
+  JUDGE_FAIL_REASON="$1"
+  { printf '%s' "$1" >&3; } 2>/dev/null || true
+}
+
 _invoke_judge() {
-  [[ -f "${PROMPT_TMPL}" ]] || { printf -- '[leadv2-task-judge] prompt template missing: %s\n' "${PROMPT_TMPL}" >&2; return 1; }
+  [[ -f "${PROMPT_TMPL}" ]] || { _fail "template_missing"; printf -- '[leadv2-task-judge] prompt template missing: %s\n' "${PROMPT_TMPL}" >&2; return 1; }
 
   local prompt
   prompt="$(python3 -c "
 import sys
 tmpl = open(sys.argv[1], encoding='utf-8').read()
 print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
-" "${PROMPT_TMPL}" "${MISSION_TEXT}")" || return 1
+" "${PROMPT_TMPL}" "${MISSION_TEXT}")" || { _fail "prompt_build"; return 1; }
 
   local timeout_cmd=""
   if command -v gtimeout >/dev/null 2>&1; then
@@ -292,18 +330,32 @@ print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
   # pins LEADV2_SUBSESSION_ROLE so hooks/lib/leadv2-hook-session-kind.sh can
   # classify the child as a worker without reading its transcript (grep-gated
   # by tests/test-beat-loop-orphans.sh). Env prefix survives the timeout exec.
+  # `< /dev/null` (JUDGE-REVIVAL-01, Part 0 E5): claude -p waits 3s for piped
+  # stdin before proceeding — an unconditional 3s out of the 45s timeout
+  # budget on every call, for stdin this script never sends.
   if [[ -n "${timeout_cmd}" ]]; then
-    raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${timeout_cmd}" "${TIMEOUT_SEC}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json 2>/dev/null)" || rc=$?
+    raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${timeout_cmd}" "${TIMEOUT_SEC}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
   else
-    raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json 2>/dev/null)" || rc=$?
+    raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
   fi
-  [[ ${rc} -eq 0 ]] || return 1
-  [[ -n "${raw}" ]] || return 1
+  # GNU timeout exits 124 on TERM-timeout, 137 after a -k KILL. Both are
+  # "the call did not finish in budget" — the mode Part 0 E4 reproduced live.
+  if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
+    _fail "timeout"
+    return 1
+  fi
+  [[ ${rc} -eq 0 ]] || { _fail "nonzero_rc"; return 1; }
+  [[ -n "${raw}" ]] || { _fail "empty_output"; return 1; }
 
   # `claude -p --output-format json` wraps the assistant's answer in an
   # envelope under `.result`; the model may still fence it in ```json. Pull
   # the envelope apart, then pull the first {...} object out of the result.
-  printf '%s' "${raw}" | python3 -c "
+  # Two-stage on purpose (JUDGE-REVIVAL-01): claude already succeeded above,
+  # so a failure here is an envelope/parse problem, never an invoke problem —
+  # the old single $(claude | python) pipeline folded both into one rc and
+  # mislabelled parse failures as invoke failures.
+  local parsed=""
+  parsed="$(printf '%s' "${raw}" | python3 -c "
 import json, re, sys
 
 raw = sys.stdin.read()
@@ -330,13 +382,18 @@ est['estimate_source'] = 'judge'
 # title resolver in _fallback_estimate -- flag_source='judge' says so
 # honestly rather than borrowing a value from a resolver that never ran.
 est['flag_source'] = 'judge'
+# complexity_basis (ARBITER-SCORING-DESIGN-01 step 2, §7.2): 'judge' --
+# the wrapper's knowledge, like estimate_source, never the model's.
+est['complexity_basis'] = 'judge'
 print(json.dumps(est))
-" "${SIG8}"
+" "${SIG8}")" || { _fail "envelope_parse"; return 1; }
+  [[ -n "${parsed}" ]] || { _fail "envelope_parse"; return 1; }
+  printf '%s\n' "${parsed}"
 }
 
 # ── journal helper (best-effort, never fatal) ───────────────────────────────
 _journal() {
-  local estimate_json="$1" cache_hit="$2"
+  local estimate_json="$1" cache_hit="$2" path="${3:-fallback}"
   local src complexity work_kind duration_class risk_class subsystems live
   src="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('estimate_source',''))" <<<"${estimate_json}" 2>/dev/null)"
   complexity="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('complexity',''))" <<<"${estimate_json}" 2>/dev/null)"
@@ -352,13 +409,29 @@ _journal() {
   # FLAG_SOURCE_PRIORITY list in _fallback_estimate above.
   local flag_source
   flag_source="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('flag_source',''))" <<<"${estimate_json}" 2>/dev/null)"
+  # complexity_basis (ARBITER-SCORING-DESIGN-01 step 2, §7.2): what the
+  # complexity verdict was based on -- judge / class_hint / line_count.
+  # Empty on estimates cached before the field existed -> prints 'none'.
+  local complexity_basis
+  complexity_basis="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('complexity_basis',''))" <<<"${estimate_json}" 2>/dev/null)"
+  # judge_path / judge_fail_reason (JUDGE-REVIVAL-01, Part 0 E4/E6): which of
+  # the five exit paths produced this line — disable | light_skip | cache_hit |
+  # judge | judge_fail — and, on judge_fail, why the invoke produced nothing:
+  # template_missing | prompt_build | timeout | nonzero_rc | empty_output |
+  # envelope_parse | schema_invalid. Before this token existed, a judge call
+  # that timed out and a --class Light skip journaled identically, and the
+  # live "0 judge decisions" census could not say which it was looking at.
+  local path_suffix=" judge_path=${path}"
+  if [[ "${path}" == "judge_fail" ]]; then
+    path_suffix="${path_suffix} judge_fail_reason=${JUDGE_FAIL_REASON:-unknown}"
+  fi
   if [[ -n "${TASK_ID}" && -f "${JOURNAL_BIN}" ]]; then
     # safety_floor (CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01, blueprint §4):
     # "a rule with no reader is not a rule" -- SAFETY_FLOOR_STATUS is set by
     # _emit's call to _apply_safety_floor just before this call runs; the
     # default here only guards an unexpected empty value.
     bash "${JOURNAL_BIN}" append "${TASK_ID}" decision \
-      "route_v2_estimate estimate_id=${SIG8} estimate_source=${src} complexity=${complexity} work_kind=${work_kind} duration_class=${duration_class} risk_class=${risk_class} flag_source=${flag_source:-none} subsystems_touched=${subsystems} needs_live_verification=${live} cache_hit=${cache_hit} safety_floor=${SAFETY_FLOOR_STATUS:-none}" \
+      "route_v2_estimate estimate_id=${SIG8} estimate_source=${src} complexity=${complexity} work_kind=${work_kind} duration_class=${duration_class} risk_class=${risk_class} flag_source=${flag_source:-none} subsystems_touched=${subsystems} needs_live_verification=${live} cache_hit=${cache_hit} safety_floor=${SAFETY_FLOOR_STATUS:-none} complexity_basis=${complexity_basis:-none}${path_suffix}" \
       >/dev/null 2>&1 || true
   fi
   # T13's audit joins durable estimate records against close outcomes.  The
@@ -428,21 +501,21 @@ print(status)
 }
 
 _emit() {
-  local estimate_json="$1" cache_hit="${2:-false}"
+  local estimate_json="$1" cache_hit="${2:-false}" path="${3:-fallback}"
   estimate_json="$(_apply_safety_floor "${estimate_json}")"
   printf '%s\n' "${estimate_json}"
-  _journal "${estimate_json}" "${cache_hit}"
+  _journal "${estimate_json}" "${cache_hit}" "${path}"
   exit 0
 }
 
 # ── 1. explicit disable — never touches the model, never touches cache ─────
 if [[ "${LEADV2_JUDGE_DISABLE:-0}" == "1" ]]; then
-  _emit "$(_fallback_estimate)" "false"
+  _emit "$(_fallback_estimate)" "false" "disable"
 fi
 
 # ── 2. classifier-Light skip (R2 mitigation #3) ─────────────────────────────
 if [[ "${CLASS_HINT}" == "Light" ]]; then
-  _emit "$(_fallback_estimate)" "false"
+  _emit "$(_fallback_estimate)" "false" "light_skip"
 fi
 
 # ── 3. cache hit (R2 mitigation #2) ─────────────────────────────────────────
@@ -450,13 +523,18 @@ CACHE_FILE="${CACHE_DIR}/${SIG8}.json"
 if [[ -f "${CACHE_FILE}" ]]; then
   cached_valid="$(_validate_estimate < "${CACHE_FILE}")"
   if [[ -n "${cached_valid}" ]]; then
-    _emit "${cached_valid}" "true"
+    _emit "${cached_valid}" "true" "cache_hit"
   fi
   # cache file present but corrupt/invalid — fall through and re-judge.
 fi
 
 # ── 4. judge call, validated; on ANY failure, fall back ─────────────────────
-judge_raw="$(_invoke_judge)"
+# fd 3 carries the fail reason out of the $( ) subshell (JUDGE-REVIVAL-01;
+# see _fail above). On success the file stays empty -> reason empty.
+_judge_reason_file="$(mktemp "${TMPDIR:-/tmp}/leadv2-judge-reason.XXXXXX")"
+judge_raw="$(_invoke_judge 3>"${_judge_reason_file}")"
+JUDGE_FAIL_REASON="$(cat "${_judge_reason_file}" 2>/dev/null)"
+rm -f "${_judge_reason_file}"
 if [[ -n "${judge_raw}" ]]; then
   judge_valid="$(_validate_estimate <<<"${judge_raw}")"
   if [[ -n "${judge_valid}" ]]; then
@@ -467,9 +545,16 @@ if [[ -n "${judge_raw}" ]]; then
         mv -f "${tmp_cache}" "${CACHE_FILE}" 2>/dev/null || rm -f "${tmp_cache}" 2>/dev/null || true
       fi
     fi
-    _emit "${judge_valid}" "false"
+    _emit "${judge_valid}" "false" "judge"
   fi
+  # judge answered but the answer failed schema validation — distinguish
+  # this from the invoke-level failures below.
+  JUDGE_FAIL_REASON="schema_invalid"
 fi
 
-# ── 5. fallback (disable/Light/cache-miss all funnel here on any failure) ──
-_emit "$(_fallback_estimate)" "false"
+# ── 5. fallback — reached ONLY past disable+Light+cache with a failed or
+# unvalidated invoke (JUDGE-REVIVAL-01 Part 0: the silent-kill seam). The
+# disable/Light/cache branches all _emit'd and exited above, so the path
+# token here is judge_fail, never a bare "fallback" — a fallback journal
+# line that cannot say which path produced it was exactly the defect.
+_emit "$(_fallback_estimate)" "false" "judge_fail"

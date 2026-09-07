@@ -128,7 +128,7 @@ route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   ROUTE_ARBITER_FAILURE_LEDGER="${LEADV2_ROUTE_ARBITER_FAILURE_LEDGER:-${HOME}/.claude/leadv2-state/leadv2/dispatch-ledger.jsonl}" \
   ROUTE_ARBITER_EVENTS_JOURNAL="${LEADV2_ROUTE_ARBITER_EVENTS_JOURNAL:-${HOME}/.claude/cache/leadv2-events/leadv2.jsonl}" \
   python3 - "$routing" <<'PY'
-import json, os, sys, tempfile
+import json, os, sys, tempfile, math
 # ROUTE-ARBITER-DIES-SILENTLY-ON-LINUX-01 (2026-09-05). These four loads shared one
 # `except Exception: raise SystemExit(2)`, and a bare SystemExit(int) prints NOTHING:
 # rc=2 with zero bytes on stdout AND stderr. That is indistinguishable from a crash,
@@ -472,6 +472,10 @@ cells=((data.get('router_v2') or {}).get('capability_matrix') or [])
 # ladder, so no caller-side change is needed for the split itself.
 complexity=str(d.get('complexity','unknown')).lower()
 duration_class=str(d.get('duration_class','unknown')).lower()
+# ARBITER-SCORING-DESIGN-01 step 1: NEW descriptor key, provenance of `complexity`
+# (judge|flag|heuristic|unknown -- design.md §5.1). Absent from an
+# older/unpatched caller renders as 'unknown' -> conf 0.0, the cautious default.
+complexity_source=str(d.get('complexity_source','unknown')).lower()
 capable=[c for c in cells if mkind in c.get('kinds',[]) and size in c.get('sizes',[]) and (not require_trusted or c.get('protected',False)) and (allowed is None or c.get('arm') in allowed)]
 # GLM-NEVER-WINS-THE-ARBITER-01 (measured 2026-09-05): `reason=cheapest_capable
 # chain=sonnet` is a TRUE statement about a candidate set of ONE, and it reads
@@ -756,7 +760,46 @@ floor_reason = '%s/%s' % (size_raw, kind) if (floor_applies and any(c.get('arm')
 # behavior, byte-identical). Never a hardcoded arm name: rules match cell
 # `tags` (e.g. cheap/mechanical/bulk/background), which config already uses
 # to describe glm-flash/freepool/glm above.
-complexity_penalty_rules=((data.get('router_v2') or {}).get('complexity_penalty') or [])
+# ARBITER-SCORING-DESIGN-01 step 1 (additive, gated, default OFF): a graduated
+# lexicographic capability-fit key, replacing the flat +100 ban above with a
+# four-position demotion (0=fits, 1..3=short by that many steps -- never
+# "banned", a short arm stays in the chain). docs/handoff/
+# F1-ARBITER-SCORING-20260907/design.md §4/§6 in persona-engine
+# (f88e15c3c/e678b4eb2) is the source of every name and constant below; this
+# block is a verbatim port of §6's decision function into the arbiter's own
+# variable names. FIT_MODE off|shadow|on: 'off' (the default, matching
+# capability_fit.enabled: false) leaves every pick byte-identical to today --
+# complexity_penalty_rules below is unchanged and ok.sort() still sorts on
+# _cost_key alone -- while fit_bucket()/fit_pick=/fit_differs= are still
+# computed and printed on every decision line (the shadow comparison, so the
+# rollout can be measured before Step 4 flips it live). 'on' makes the sort
+# use _fit_key instead and zeroes out the legacy complexity_penalty_rules (one
+# mechanism live at a time, never both). Rollback from any state is the single
+# env flip LEADV2_ARBITER_CAPABILITY_FIT=off.
+_cf=((data.get('router_v2') or {}).get('capability_fit') or {})
+FIT_MODE=os.environ.get('LEADV2_ARBITER_CAPABILITY_FIT') or ('on' if _cf.get('enabled') else 'off')
+CX_ORD=_cf.get('complexity_ordinal') or {'trivial':1.0,'simple':2.0,'standard':3.0,'complex':4.0}
+SRC_CONF=_cf.get('source_confidence') or {'judge':0.9,'flag':0.7,'heuristic':0.4,'unknown':0.0}
+PRIOR=float(_cf.get('prior', 3.0)); SLACK=float(_cf.get('slack', 0.5)); CAP_DEFAULT=float(_cf.get('cap_default', 3.0))
+
+cx=CX_ORD.get(complexity)                                        # None for 'unknown' or off-vocabulary
+complexity_unmapped=None if (complexity in CX_ORD or complexity == 'unknown') else complexity
+conf=float(SRC_CONF.get(complexity_source, 0.0)) if cx is not None else 0.0
+if cx is None:            req_eff=PRIOR
+elif cx >= PRIOR:         req_eff=cx                              # confidence never discounts a demanding estimate
+else:                     req_eff=conf*cx + (1.0-conf)*PRIOR      # ...and only proportionally trusts a cheap one
+
+_cap_defaulted=[]
+def cap(c):
+    v=c.get('capability')
+    if v is None: _cap_defaulted.append(c.get('arm')); return CAP_DEFAULT
+    try: return float(v)
+    except (TypeError, ValueError): _cap_defaulted.append(c.get('arm')); return CAP_DEFAULT
+def fit_bucket(c):
+    short=req_eff - cap(c) - SLACK
+    return 0 if short <= 0 else int(math.ceil(short))
+
+complexity_penalty_rules=([] if FIT_MODE == 'on' else ((data.get('router_v2') or {}).get('complexity_penalty') or []))
 def complexity_penalty(c):
     total=0.0
     tags=set(c.get('tags') or [])
@@ -843,8 +886,27 @@ def ecost(c):
     _w=headroom_weight(c.get('provider'))
     _base=float(c.get('cost',999))/(_w if _w > 0 else 1.0)
     return _base + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + (UNKNOWN_PROBE_PENALTY if unk.get(c.get('provider')) else 0.0) + complexity_penalty(c)
-complexity_penalty_active = any(complexity_penalty(c) > 0 for c in ok)
-ok.sort(key=lambda c:(ecost(c),u[c['provider']],c['arm'],c.get('tier','')))
+# ARBITER-SCORING-DESIGN-01 step 1: _cost_order/_fit_order/fit_differs are
+# ALWAYS computed, in every FIT_MODE, so the shadow comparison exists before
+# the sort is ever flipped to use it (§9's validation plan reads this off the
+# decision line, not off a live pick change). Only which key actually SORTS
+# `ok` depends on FIT_MODE.
+_cost_key=lambda c:(ecost(c),u[c['provider']],c['arm'],c.get('tier',''))
+_fit_key=lambda c:(fit_bucket(c),) + _cost_key(c)
+_cost_order=sorted(ok, key=_cost_key)                       # today's order, always computed (shadow baseline)
+ok.sort(key=_fit_key if FIT_MODE == 'on' else _cost_key)
+_fit_order=sorted(ok, key=_fit_key)                         # the new order, always computed (shadow token)
+# design.md §6's literal pseudocode compares only ['arm'], but capability_matrix
+# gives codex three cells (volume/standard/top) sharing one arm name, and §9.2's
+# own table (rows "codex/vol (glm capped) -> codex/std" and "haiku (glm capped)
+# -> codex/vol or codex/std") requires exactly that within-arm tier swap to read
+# as differs=1. An arm-only compare silently prints differs=0 for those two rows
+# (verified red before this fix: tests/test-router-v2-capability-fit.sh rows 4/5)
+# -- so identity here is (arm, tier), matching what the decision line already
+# prints as two separate tokens.
+_id=lambda c:(c['arm'], c.get('tier',''))
+fit_differs=bool(ok) and (_id(_fit_order[0]) != _id(_cost_order[0]))
+complexity_penalty_active = any(complexity_penalty(c) > 0 for c in ok)  # :846 semantics kept for FIT_MODE != 'on'
 seen=set(); chain=[]
 for c in ok:
     if c['arm'] not in seen: chain.append(c['arm']); seen.add(c['arm'])
@@ -994,15 +1056,31 @@ _gate = (' freepool_gate=%s' % free_reason) if (free_reason and not free_ok) els
 # A complexity rule only changes the selector through effective cost.  Say so
 # when it is active: `cheapest_capable` alone would hide that cheaper tagged
 # cells were deliberately demoted for this estimate.
-reason = 'explicit_requested_capable' if requested_arm else ('complexity_penalty' if complexity_penalty_active else 'cheapest_capable')
-_complexity_policy = (' complexity_policy=penalty' if complexity_penalty_active else ' complexity_policy=none')
+# ARBITER-SCORING-DESIGN-01 step 1: 'capability_fit' only fires when the mode
+# is actually 'on' AND the fit key changed the winner vs pure cost -- same
+# discipline as complexity_penalty above (:994-997), never claimed while off.
+reason = ('explicit_requested_capable' if requested_arm else
+          'capability_fit' if (FIT_MODE == 'on' and fit_differs) else
+          'complexity_penalty' if complexity_penalty_active else 'cheapest_capable')
+_complexity_policy = (' complexity_policy=%s' % ('capability_fit' if FIT_MODE == 'on' else
+                                                  ('penalty' if complexity_penalty_active else 'none')))
 _record(w['arm'],w['model'],w.get('tier','standard'),reason)
 # ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01: the decision line names the kind
 # it routed for -- a decision that cannot be read back is not a decision.
 # UNION 2026-09-04 (RECOVER-TWELVE-CONFLICTED-BRANCHES-01), third union of this
 # print line: HEAD contributed kind=/_quota/_wait/_gate/_record, the branch
 # contributed the variable reason (complexity_penalty) and complexity_policy=.
-print('arm=%s kind=%s model=%s tier=%s effort=%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok))
+# ARBITER-SCORING-DESIGN-01 step 1 (§7.3/§9.2): the shadow comparison rides on
+# every decision line, in every FIT_MODE -- fit_pick=/fit_differs= are the
+# tokens §9's validation plan reads to prove Step 3's shadow run before Step 4
+# ever flips the sort. cap_default=/complexity_unmapped= mirror the existing
+# kind_unmapped=/size_unmapped= discipline: a loud third value, never silent.
+_fit_tok = (' complexity_source=%s conf=%.1f req_eff=%.1f fit_mode=%s fit_pick=%s fit_differs=%d fit_bucket=%s%s%s' %
+            (complexity_source, conf, req_eff, FIT_MODE, (_fit_order[0]['arm'] if ok else ''), int(fit_differs),
+             ','.join('%s:%d' % (c['arm'], fit_bucket(c)) for c in ok),
+             (' cap_default=%s' % ','.join(sorted(set(_cap_defaulted)))) if _cap_defaulted else '',
+             (' complexity_unmapped=%s' % complexity_unmapped) if complexity_unmapped else ''))
+print('arm=%s kind=%s model=%s tier=%s effort=%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok))
 PY
 }
 
