@@ -6067,9 +6067,17 @@ CONTRACT_EOF
       # empty RESOLVED_EFFORT (arbiter never ran) omits the flag, same as before.
       local -a _sonnet_effort_args=()
       [[ -n "${RESOLVED_EFFORT:-}" ]] && _sonnet_effort_args=(--effort "${RESOLVED_EFFORT}")
+      # NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-ACCOUNT-01: threaded only here --
+      # the sonnet arm is the only one that runs through claude-subsession.sh
+      # / the profile selector. claude-subsession.sh hard-refuses (exit 5) if
+      # the named account cannot be confirmed, which surfaces below as a
+      # non-zero rc through the normal spawn_failed/refused path -- no new
+      # failure branch needed here.
+      local -a _sonnet_profile_args=()
+      [[ -n "${requested_profile}" ]] && _sonnet_profile_args=(--requested-profile "${requested_profile}")
       out="$(cd "${WORK_ROOT}" && PROJECT_ROOT="${PROJECT_ROOT}" LEADV2_SUBSESSION_SLIM_MCP="${LEADV2_SUBSESSION_SLIM_MCP:-1}" bash "${SUBSESSION_BIN}" \
              --role developer --model sonnet \
-             --task-id "dispatch-${sig8}" --mission-file "${mfile}" "${_sonnet_effort_args[@]}" 2>"${errf}" 9>&-)"; rc=$?
+             --task-id "dispatch-${sig8}" --mission-file "${mfile}" "${_sonnet_effort_args[@]}" "${_sonnet_profile_args[@]}" 2>"${errf}" 9>&-)"; rc=$?
       rm -f "${mfile}"
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
@@ -7332,6 +7340,18 @@ cmd_resolve() {
   # arm out-of-band from the auction; empty (the default) is byte-identical
   # to today's behaviour.
   local requested_arm=""
+  # NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-ACCOUNT-01 (founder, via Leadmain,
+  # 2026-09-07): symmetric to --requested-arm, one layer down -- pins the
+  # sonnet arm to a specific Anthropic account LABEL (registry:
+  # ~/.claude/state/leadv2/claude-profiles.tsv) instead of letting
+  # leadv2-claude-profile-select.sh balance across all of them. The
+  # balancer is not broken (measured: it correctly follows lower
+  # utilisation); the gap is that nothing lets a caller override it for a
+  # specific dispatch. Threaded only into the sonnet arm (the only arm that
+  # runs through claude-subsession.sh / the profile selector); ignored,
+  # WARN-only, on every other arm. Empty (the default) is byte-identical to
+  # today's behaviour.
+  local requested_profile=""
   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0 lane_deliverable=""
   local -a phase_waivers=()
   # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional founder task id
@@ -7352,6 +7372,8 @@ cmd_resolve() {
       --safety)       safety=1;      shift ;;
       --requested-arm) [[ $# -ge 2 ]] || { log_err "--requested-arm requires a value"; usage; }
                       requested_arm="$2"; shift 2 ;;
+      --requested-profile) [[ $# -ge 2 ]] || { log_err "--requested-profile requires a value"; usage; }
+                      requested_profile="$2"; shift 2 ;;
       # R1 FIX (Finding 5): guard arg-count BEFORE shift 2 -- a valued flag with no
       # value left `shift 2` failing silently (no -e) and the SAME flag re-matching
       # next iteration = infinite loop (verified: timeout exit 124 on the old stub).

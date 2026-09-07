@@ -22,6 +22,18 @@
 # leaves CLAUDE_CONFIG_DIR untouched and the lane runs exactly as before.
 #
 # Env:
+#   LEADV2_CLAUDE_PROFILE_REQUESTED  pin to this ONE registry label instead of
+#                                   balancing across all of them
+#                                   (NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-
+#                                   ACCOUNT-01). HARD semantics, not a soft
+#                                   preference: unknown label, or a probe that
+#                                   cannot confirm this one profile is usable,
+#                                   is a non-zero exit + reason=requested_*
+#                                   line -- never a silent fall-through to
+#                                   `single_profile` or to the balancer. A
+#                                   request also implicitly opts into
+#                                   multi-profile mode (LEADV2_CLAUDE_
+#                                   MULTIPROFILE need not also be set).
 #   LEADV2_CLAUDE_MULTIPROFILE=1   opt-in gate (anything else = inert)
 #   LEADV2_CLAUDE_PROFILES_FILE    registry path (user-level, out of the repo)
 #   LEADV2_CLAUDE_PROFILE_PROBE    probe override (hermetic tests)
@@ -166,8 +178,15 @@ print("%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s" % (sub, email, ea, 1 if cj else 0, 1 if c
 ' 2>/dev/null
 }
 
-# Opt-in gate: unset or != 1 => print nothing, exit 0 (lane unchanged).
-[[ "${LEADV2_CLAUDE_MULTIPROFILE:-}" == "1" ]] || exit 0
+# NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-ACCOUNT-01: a caller that names a
+# specific profile (LEADV2_CLAUDE_PROFILE_REQUESTED) wants pinning, not
+# balancing -- it must not be silently inert just because the opt-in flag
+# was left unset. The balancer's own opt-in gate is unaffected: no request
+# set, no flag set, behaves exactly as before.
+REQUESTED_PROFILE="${LEADV2_CLAUDE_PROFILE_REQUESTED:-}"
+
+# Opt-in gate: unset or != 1 (and no explicit request) => print nothing, exit 0.
+[[ "${LEADV2_CLAUDE_MULTIPROFILE:-}" == "1" || -n "$REQUESTED_PROFILE" ]] || exit 0
 
 # TOTAL probe-budget clamp (QUOTA-GATE-PARITY-01 F4 pattern: the configured
 # timeout is untrusted operator input; accept a positive integer only and
@@ -291,6 +310,29 @@ while IFS=$'\t' read -r label config_dir cred expect || [[ -n "${label:-}" ]]; d
   DIGESTS+=("${id_digest:--}")
 done < "$REGISTRY"
 
+# NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-ACCOUNT-01: narrow every parallel array
+# to the ONE requested label before same-account detection or probing even
+# start. Unknown label -> hard, non-zero exit right here: the caller asked
+# for a specific account and the registry has no such thing, which is a
+# refusal, not "pick the balancer's answer instead" (single_profile's exit 0
+# would read as a completed, successful selection to a caller that never
+# inspects the reason= field, which is exactly how a named-account request
+# gets silently answered by whatever the balancer would have picked anyway).
+if [[ -n "$REQUESTED_PROFILE" ]]; then
+  _req_idx=-1
+  for _i in "${!LABELS[@]}"; do
+    if [[ "${LABELS[$_i]}" == "$REQUESTED_PROFILE" ]]; then _req_idx=$_i; break; fi
+  done
+  if (( _req_idx < 0 )); then
+    warn "WARN: requested profile label=${REQUESTED_PROFILE} not found in registry"
+    printf 'profile=- reason=requested_profile_unknown requested=%s\n' "$REQUESTED_PROFILE"
+    exit 3
+  fi
+  LABELS=("${LABELS[$_req_idx]}"); DIRS=("${DIRS[$_req_idx]}"); SOURCES=("${SOURCES[$_req_idx]}")
+  IDENTITIES=("${IDENTITIES[$_req_idx]}"); ACCOUNT_UUIDS=("${ACCOUNT_UUIDS[$_req_idx]}")
+  DIGESTS=("${DIGESTS[$_req_idx]}")
+fi
+
 # --- alarm file (2b: TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01) -----------------
 # Persistent, single well-known path -- NOT a handoff log. Written atomically
 # (mktemp + mv) on detect, rm -f on a clean run. No email, no token, no digest
@@ -363,7 +405,17 @@ fi
 # turns out to be genuinely dead still reaches the probe below and scores
 # unknown there (reason=all_unknown), never a silent pick.
 n=${#LABELS[@]}
-(( n >= 2 )) || single_profile
+# A request narrows n to exactly 1 by construction (the block above already
+# hard-exited on an unknown label) -- that single candidate is legitimate,
+# not the "multi-profile is inert" case the >=2 gate exists to catch.
+if [[ -z "$REQUESTED_PROFILE" ]]; then
+  (( n >= 2 )) || single_profile
+else
+  if [[ ! -r "$PROBE" || ! -r "$PICK" ]]; then
+    printf 'profile=- reason=requested_profile_unavailable requested=%s\n' "$REQUESTED_PROFILE"
+    exit 3
+  fi
+fi
 [[ -r "$PROBE" ]] || single_profile
 [[ -r "$PICK" ]] || single_profile
 
@@ -520,12 +572,27 @@ done
 
 # Every probe hung/crashed => no signal at all => single_profile (T8), not a
 # blind all_unknown pick that would still pin a config_dir on zero evidence.
+# A REQUESTED profile that could not even be probed is not "no signal, run
+# unpinned" -- it is "the named account could not be confirmed usable",
+# which must refuse hard, the same reasoning as the unknown-label case above.
 if (( completed == 0 )); then
   rm -f "$recs"
+  if [[ -n "$REQUESTED_PROFILE" ]]; then
+    warn "WARN: requested profile label=${REQUESTED_PROFILE} could not be probed"
+    printf 'profile=- reason=requested_profile_unavailable requested=%s\n' "$REQUESTED_PROFILE"
+    exit 3
+  fi
   single_profile
 fi
 result="$(python3 "$PICK" < "$recs" 2>/dev/null)" || result=""
 rm -f "$recs"
-if [[ -z "$result" ]]; then single_profile; fi
+if [[ -z "$result" ]]; then
+  if [[ -n "$REQUESTED_PROFILE" ]]; then
+    warn "WARN: requested profile label=${REQUESTED_PROFILE} produced no usable pick"
+    printf 'profile=- reason=requested_profile_unavailable requested=%s\n' "$REQUESTED_PROFILE"
+    exit 3
+  fi
+  single_profile
+fi
 printf '%s\n' "$result"
 exit 0

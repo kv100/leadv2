@@ -53,12 +53,17 @@ usage() {
   cat >&2 <<EOF
 Usage: claude-subsession.sh --role <architect|critic|product-owner|strategist|developer|security-auditor> \\
           --model <opus|sonnet> --task-id <id> --mission-file <path> \\
-          [--session-id <id>] [--effort <low|medium|high|xhigh|max>] [--wait]
+          [--session-id <id>] [--effort <low|medium|high|xhigh|max>] [--wait] \\
+          [--requested-profile <label>]
 EOF
   exit 1
 }
 
 ROLE=""; MODEL=""; TASK_ID=""; MISSION_FILE=""; SESSION_ID=""; EFFORT=""; WAIT=0
+# NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-ACCOUNT-01: symmetric to dispatch-code's
+# --requested-arm (EXPLICIT-ARM-REQUEST-01). Empty (the default, every
+# existing caller) is byte-identical to today's balancer behaviour.
+REQUESTED_PROFILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -69,6 +74,8 @@ while [[ $# -gt 0 ]]; do
     --session-id) SESSION_ID="$2"; shift 2 ;;
     --effort) EFFORT="$2"; shift 2 ;;
     --wait) WAIT=1; shift ;;
+    --requested-profile) [[ $# -ge 2 ]] || { echo "[claude-subsession] --requested-profile requires a value" >&2; usage; }
+                          REQUESTED_PROFILE="$2"; shift 2 ;;
     *) echo "[claude-subsession] unknown arg: $1" >&2; usage ;;
   esac
 done
@@ -487,11 +494,14 @@ MAX_TURNS="${LEADV2_SUBSESSION_MAX_TURNS:-110}"
 # ---------------------------------------------------------------------------
 _CLAUDE_PROFILE_SELECT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-claude-profile-select.sh"
 leadv2_select_claude_profile() {
-  local sel label dir score src cands cred cred_kind iso out rc pid elapsed tmo
+  local sel label dir score src cands cred cred_kind iso out rc pid elapsed tmo sel_rc=0
   # Opt-in gate mirrors the selector's own: flag unset => fully inert — no
   # stderr line, no handoff log, no subprocess. The lane runs exactly as
-  # before multi-profile existed.
-  [[ "${LEADV2_CLAUDE_MULTIPROFILE:-}" == "1" ]] || return 0
+  # before multi-profile existed. A --requested-profile pin bypasses this
+  # gate the same way the selector's own gate is bypassed for it — a named
+  # request must not be silently ignored just because the balancer's own
+  # opt-in was never flipped.
+  [[ "${LEADV2_CLAUDE_MULTIPROFILE:-}" == "1" || -n "$REQUESTED_PROFILE" ]] || return 0
   # Bound the wrapper above the selector's own total probe budget (clamped
   # the same way) + 5s of parse/startup slop, so a wedged selector can never
   # stall the spawn.
@@ -511,13 +521,15 @@ leadv2_select_claude_profile() {
       # appends its WARN lines to the handoff claude-profile.log itself
       # via LEADV2_CLAUDE_PROFILE_JOURNAL.
       env "LEADV2_CLAUDE_PROFILE_JOURNAL=${HANDOFF_DIR}/claude-profile.log" \
+          "LEADV2_CLAUDE_PROFILE_REQUESTED=${REQUESTED_PROFILE}" \
         bash "$_CLAUDE_PROFILE_SELECT" >"$out" 2>/dev/null &
       pid=$!; elapsed=0
+      sel_rc=0
       while kill -0 "$pid" 2>/dev/null && (( elapsed < tmo * 10 )); do sleep 0.1; elapsed=$((elapsed + 1)); done
       if kill -0 "$pid" 2>/dev/null; then
-        kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+        kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; sel_rc=124
       else
-        wait "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null; sel_rc=$?
       fi
       sel="$(head -1 "$out" 2>/dev/null)"
       rm -f "$out"
@@ -541,10 +553,33 @@ leadv2_select_claude_profile() {
       file:/*) cred_kind=file ;;
     esac
     line_log="[claude-profile] selected=${label} score=${score} source=${src} candidates=${cands:-?} cred_kind=${cred_kind} identity=${identity:-unknown/na}"
+    # NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-ACCOUNT-01: defense-in-depth, not
+    # the primary enforcement (the selector already refuses on a mismatch) --
+    # a request answered by a DIFFERENT label than asked for is the exact
+    # defect this whole feature exists to prevent and must never launch.
+    if [[ -n "$REQUESTED_PROFILE" && "$label" != "$REQUESTED_PROFILE" ]]; then
+      echo "[claude-subsession] FATAL: requested profile '${REQUESTED_PROFILE}' but selector returned '${label}' -- refusing to launch on a mismatched account" >&2
+      printf '%s [claude-profile] FATAL requested=%s got=%s\n' "$iso" "$REQUESTED_PROFILE" "$label" \
+        >> "$HANDOFF_DIR/claude-profile.log" 2>/dev/null || true
+      exit 5
+    fi
     export CLAUDE_CONFIG_DIR="$dir"
     printf '%s\n' "$line_log" >&2
     printf '%s %s\n' "$iso" "$line_log" >> "$HANDOFF_DIR/claude-profile.log" 2>/dev/null || true
     return 0
+  fi
+  # NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-ACCOUNT-01: a requested profile that
+  # did not parse out of the selector's output (unknown label, unavailable,
+  # selector crashed/timed out, or a garbled line) must refuse HARD -- the
+  # generic single-profile fallback below is a soft, exit-0 "ran anyway on
+  # whatever account was already active," and for a request that IS exactly
+  # the defect this whole task exists to kill: dispatch reports success,
+  # the work lands on the wrong account, and nobody finds out.
+  if [[ -n "$REQUESTED_PROFILE" ]]; then
+    echo "[claude-subsession] FATAL: requested profile '${REQUESTED_PROFILE}' could not be confirmed (selector_rc=${sel_rc:-?} sel='${sel}') -- refusing to launch rather than silently falling back to the balancer" >&2
+    printf '%s [claude-profile] FATAL requested=%s selector_rc=%s unparsed_or_unavailable\n' "$iso" "$REQUESTED_PROFILE" "${sel_rc:-?}" \
+      >> "$HANDOFF_DIR/claude-profile.log" 2>/dev/null || true
+    exit 5
   fi
   # Absent, unparseable, or the selected dir is unreadable: single-profile.
   printf '[claude-profile] single-profile fallback\n' >&2
