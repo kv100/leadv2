@@ -1885,10 +1885,44 @@ os.execvp(sys.argv[1], sys.argv[1:])
 ' "$@"
 }
 
+
+# Detached companion brokers were observed dying with SIGKILL while their
+# task-worker remained alive, then exited on EOF without finalizing the job.
+# Keep the app-server under the worker's own lifetime. The companion exposes
+# this transport via connect(..., {disableBroker:true}); preload only in its
+# task-worker, without changing the installed companion or other subcommands.
+_codex_worker_owned_app_server() {
+  local preload
+  preload="$(python3 - <<'PYLOAD'
+import base64
+source = """
+import { pathToFileURL } from 'node:url';
+import { basename } from 'node:path';
+if (basename(process.argv[1] || '') === 'codex-companion.mjs' && process.argv[2] === 'task-worker') {
+  const { CodexAppServerClient } = await import(new URL('./lib/app-server.mjs', pathToFileURL(process.argv[1])));
+  const connect = CodexAppServerClient.connect;
+  CodexAppServerClient.connect = function connectWorkerOwned(cwd, options = {}) {
+    return connect.call(this, cwd, { ...options, disableBroker: true });
+  };
+}
+"""
+print('data:text/javascript;base64,' + base64.b64encode(source.encode()).decode())
+PYLOAD
+)" || return 1
+  export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$preload"
+  echo '[codex-task] background transport=worker-owned app-server' >&2
+}
+
 _run_node() {
   local _exit_code=0
   local _bg=0 _rn_a
   for _rn_a in "$@"; do [[ "$_rn_a" == "--background" ]] && _bg=1; done
+  # Local export reaches the detached worker, but does not change the caller's
+  # Node options or the guard/reaper processes armed after this call returns.
+  local NODE_OPTIONS="${NODE_OPTIONS:-}"
+  if [[ "$_bg" -eq 1 ]]; then
+    _codex_worker_owned_app_server || return $?
+  fi
   if [[ -n "$_TIMEOUT_CMD" ]]; then
     if [[ "$_bg" -eq 1 ]]; then
       # `timeout`/`gtimeout` execve() their target directly -- they cannot

@@ -306,6 +306,48 @@ def read_codex():
             "credits": {"has_credits": cr.get("has_credits"), "balance": cr.get("balance")}}
 
 
+def _registry_keychain_services(registry_path=None):
+    """Keychain service names actually named in the Claude multi-profile
+    registry (claude-profiles.tsv).
+
+    ARMS-CANNOT-LAUNCH-THEMSELVES-01 P5: an entry never named in the registry
+    is not our account and must not enter util('claude') at all -- not as
+    unknown, not as anything. Two stale keychain entries exist today
+    (`default`, and one dir-hash suffix) that dilute the claude price this
+    way; excluding them here is the fix, and it is reversible (nothing is
+    deleted from the keychain -- see module note below).
+
+    Registry format matches leadv2-claude-account-check.sh /
+    leadv2-claude-profile-select.sh: TSV
+    `label<TAB>config_dir<TAB>credential_source(optional)<TAB>expect(optional)`,
+    blank lines and #-comments ignored. Only a `keychain:<service>` credential
+    source contributes a service name -- a `file:` source has no keychain
+    service to admit. Returns an EMPTY set (never raises) when the registry
+    is missing/unreadable/empty -- the caller fails OPEN on that (today's
+    unfiltered behaviour), never fails closed by excluding every account.
+    """
+    path = registry_path or os.environ.get(
+        "LEADV2_CLAUDE_PROFILES_FILE",
+        os.path.expanduser("~/.claude/state/leadv2/claude-profiles.tsv"))
+    services = set()
+    try:
+        with open(path) as fh:
+            for raw in fh:
+                line = raw.rstrip("\n")
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 2:
+                    continue
+                cred = parts[2] if len(parts) > 2 else ""
+                if cred.startswith("keychain:"):
+                    services.add(cred[len("keychain:"):])
+    except OSError:
+        pass
+    return services
+
+
 # ── Anthropic ───────────────────────────────────────────────────────────────
 def _keychain_services(prefix="Claude Code-credentials"):
     services = set()
@@ -319,7 +361,77 @@ def _keychain_services(prefix="Claude Code-credentials"):
                     services.add(sv)
     except Exception:
         pass
-    return services or {prefix}
+    if not services:
+        return {prefix}
+    allowed = _registry_keychain_services()
+    if not allowed:
+        # Registry missing/unreadable/empty: fail OPEN, unfiltered -- same as
+        # today's behaviour before this filter existed. A misconfigured or
+        # not-yet-populated LEADV2_CLAUDE_PROFILES_FILE must never silently
+        # drop every account to zero.
+        return services
+    # The unsuffixed service is the credential store Claude Code itself uses
+    # for the CURRENT running session (resolve_active_account's
+    # session_credential path depends on seeing it) -- always admitted
+    # regardless of the registry, which only enumerates the multi-profile
+    # SLOTS (personal/work), not the ambient session credential.
+    allowed = allowed | {prefix}
+    filtered = services & allowed
+    return filtered or {prefix}
+
+
+# CLAUDE-ACCOUNT-STATE-01 (ARMS-CANNOT-LAUNCH-THEMSELVES-01 P5): the live
+# probe conflated two different facts into one `status=unknown` value --
+# a genuinely dead credential, and a genuinely alive account whose usage
+# ENDPOINT simply does not serve that account class. Live probe evidence,
+# 2026-09-07T18:21Z: keychain entry dir-hash 5a3c2328 (registry label
+# `work`, subscriptionType `team`) -> http 401 on /api/oauth/usage, while
+# leadv2-claude-account-check.sh confirms the SAME slot's token/account/org
+# resolve fine (`slot=work dir_hash=5a3c2328 ... sub=team
+# tier=default_claude_max_5x`) -- TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01's own
+# named class. Conflating that with a truly dead credential means it eats
+# UNKNOWN_PROBE_PENALTY forever even though the account is USABLE; pricing
+# it as free headroom instead would be worse (no usage number exists to
+# price from). Both are wrong -- hence a third state.
+ACCOUNT_STATE_OK = "ok"
+ACCOUNT_STATE_UNMETERED = "unmetered"
+ACCOUNT_STATE_UNKNOWN = "unknown"
+
+# The state a caller who cannot invent a real usage number should price an
+# unmetered account at -- conservative (well under any live-measured
+# account's typical remaining headroom), never a measured value. Exposed as
+# DATA for a caller (the arbiter, part B) to consult; this module does not
+# wire it into any pricing decision itself.
+CLAUDE_ACCOUNT_STATE_PRICING = {
+    ACCOUNT_STATE_OK:        {"penalty": 0,  "priced_from": "measured"},
+    ACCOUNT_STATE_UNMETERED: {"penalty": 0,  "priced_from": "configured_allowance_conservative"},
+    ACCOUNT_STATE_UNKNOWN:   {"penalty": 50, "priced_from": "unknown_probe_penalty"},
+}
+
+
+def classify_account_state(subscription_type, http_code):
+    """(subscription_type, http_code) -> "ok" | "unmetered" | "unknown".
+
+    http_code is the /api/oauth/usage response code for an account whose
+    credential DID resolve an access token (read_anthropic only reaches this
+    classification once `accessToken` was present -- a token-less entry never
+    gets here at all, which is the "credential dead" case: it is excluded
+    upstream, not classified `unknown` by this function).
+
+    `unmetered` fires ONLY for the one class this has been measured for
+    (team-tier accounts get http 401 on the usage endpoint even though the
+    token and account resolve): subscription_type == "team" and http_code ==
+    401. Every other non-200 response -- including a 401 on a NON-team
+    account, which is the ordinary "this credential is actually dead"
+    shape -- stays `unknown` and keeps today's penalty. This is deliberately
+    narrow: a broader rule would risk quietly reclassifying a genuinely dead
+    personal/pro credential as merely unmetered.
+    """
+    if http_code == 200:
+        return ACCOUNT_STATE_OK
+    if subscription_type == "team" and http_code == 401:
+        return ACCOUNT_STATE_UNMETERED
+    return ACCOUNT_STATE_UNKNOWN
 
 
 def _read_keychain(service):
@@ -507,6 +619,7 @@ def read_anthropic(credential_file=None):
                 sd_window = with_window_truth({"pct": sd.get("utilization"),
                                                "reset_iso": sd.get("resets_at")}, "pct")
                 acct.update({"status": "ok",
+                             "account_state": ACCOUNT_STATE_OK,
                              "five_hour_pct": fh.get("utilization"),
                              "five_hour_reset_iso": fh.get("resets_at"),
                              "seven_day_pct": sd.get("utilization"),
@@ -517,12 +630,21 @@ def read_anthropic(credential_file=None):
                                                                "seven_day": sd_window}),
                              "limits": u.get("limits")})
             except Exception as ex:
-                acct.update({"status": "unknown", "error": "parse: %s" % ex})
+                acct.update({"status": "unknown", "account_state": ACCOUNT_STATE_UNKNOWN,
+                             "error": "parse: %s" % ex})
         elif code == 429:
-            acct.update({"status": "unknown",
+            acct.update({"status": "unknown", "account_state": ACCOUNT_STATE_UNKNOWN,
                          "error": "429 rate_limited (reported as unknown, NEVER 0)"})
         else:
-            acct.update({"status": "unknown", "error": err or ("http %s" % code)})
+            # ARMS-CANNOT-LAUNCH-THEMSELVES-01 P5: `status` is left untouched
+            # (still "unknown") for full backward compat -- only the ADDITIVE
+            # `account_state` field distinguishes team-401-unmetered from a
+            # genuinely dead credential. No existing consumer of `status`
+            # changes behaviour from this edit; only a consumer that reads
+            # the new field opts in (part B's arbiter wiring).
+            acct.update({"status": "unknown",
+                         "account_state": classify_account_state(o.get("subscriptionType"), code),
+                         "error": err or ("http %s" % code)})
         accounts.append(acct)
 
     if not accounts:
@@ -601,9 +723,31 @@ def normalize_payload(obj):
 
 def main():
     args = sys.argv[1:]
+    # ARMS-CANNOT-LAUNCH-THEMSELVES-01 P5: standalone classifier verb, handled
+    # BEFORE the READERS dispatch below -- it names no provider bucket, it is
+    # a pure function over two CLI-supplied values, useful to a caller (or a
+    # test) that wants classify_account_state() without a live probe.
+    if args and args[0] == "classify-account":
+        rest = args[1:]
+        if len(rest) != 2:
+            sys.stderr.write("usage: leadv2-quota-read.py classify-account "
+                             "<subscription_type|-> <http_code>\n")
+            sys.exit(2)
+        sub_raw, code_raw = rest
+        sub = None if sub_raw == "-" else sub_raw
+        try:
+            code = int(code_raw)
+        except ValueError:
+            sys.stderr.write("http_code must be an integer\n")
+            sys.exit(2)
+        state = classify_account_state(sub, code)
+        print(json.dumps({"account_state": state,
+                          "pricing": CLAUDE_ACCOUNT_STATE_PRICING[state]}))
+        return
     if not args or args[0] not in READERS:
         sys.stderr.write("usage: leadv2-quota-read.py glm|codex|anthropic [--no-cache] "
-                         "[--credential-file <path> (anthropic only)]\n")
+                         "[--credential-file <path> (anthropic only)] | classify-account "
+                         "<subscription_type|-> <http_code>\n")
         sys.exit(2)
     provider = args[0]
     # CLAUDE-MULTIPROFILE-QUOTA-02: additive flag; absent = byte-identical to
