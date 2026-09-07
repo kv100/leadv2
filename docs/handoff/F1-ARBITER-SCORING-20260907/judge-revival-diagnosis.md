@@ -126,3 +126,63 @@ only the failure-mode silence, not the skip policy.
    timeout margin at zero cost.
 4. No change to: Light-skip, disable flag, cache semantics, timeout default (45s), fallback
    behavior, exit codes. The judge still never blocks a dispatch (R2 invariant).
+
+---
+
+## Part 1–3 outcomes (same day, post-fix)
+
+### Part 1 — shipped as described above
+
+`leadv2-task-judge.sh`: `judge_path=` on every route_v2_estimate line, `judge_fail_reason=`
+on judge_fail lines (7 modes), fd-3 plumbing across the `$( )` subshell (a plain global set
+inside `_invoke_judge` dies with the subshell — the first smoke run journaled
+`judge_fail_reason=unknown` for every mode until this was caught), `stdin </dev/null` on both
+invoke arms. Suite `plugins/leadv2/tests/test-judge-complexity-path.sh` pins all five paths
+and all reachable failure modes (18 checks, green).
+
+### Part 2 — negative control, execution-proven inside the function body
+
+Mutated the exact line Part 0 named (`_fail "timeout"` → `_fail "MUTANT_TIMEOUT_9E1F"`) in
+the real committed binary, ran the timeout repro, restored. The mutation's own token in the
+journal line is the proof of execution:
+
+```
+... cache_hit=false safety_floor=none complexity_basis=class_hint judge_path=judge_fail judge_fail_reason=MUTANT_TIMEOUT_9E1F
+... cache_hit=false safety_floor=none complexity_basis=class_hint judge_path=judge_fail judge_fail_reason=timeout
+```
+
+(first line = mutated binary, second = restored wild type; `git diff` clean after restore).
+The suite's §6 runs the same control as a throwaway copy on every run.
+
+### Part 3 — live demonstration (path-excluded census, the trap avoided)
+
+Generated a genuinely live Heavy dispatch through the fixed binary:
+`leadv2-dispatch-code.sh @<real mission> --no-spawn --task-class heavy --task-id
+JUDGE-REVIVAL-DEMO-01` (resolve+journal only, no worker; exit 0; the declared-class floor
+correctly made route_resolved read `complexity_source=flag` — §5.1 precedence, not a
+discard). Census command and output, verbatim:
+
+```
+$ find ~/.claude/leadv2-state -path '*/tasks/*/journal.md' | grep -vE 'ephemeral|deadbeef' \
+    | xargs grep -h 'route_v2_estimate' 2>/dev/null | grep -c 'complexity_basis=judge'
+1
+
+$ find ~/.claude/leadv2-state -path '*/tasks/*/journal.md' | grep -vE 'ephemeral|deadbeef' \
+    | xargs grep -l 'complexity_basis=judge' 2>/dev/null
+/Users/kostiantyn.vlasenko/.claude/leadv2-state/persona-engine/tasks/2506182c/journal.md
+```
+
+The line itself (real path, judge decision journaled end-to-end, new markers live):
+
+```
+- 2026-09-07T13:19:52Z [decision] route_v2_estimate estimate_id=921e39fd estimate_source=judge complexity=simple work_kind=diagnose duration_class=short risk_class=none flag_source=judge subsystems_touched=3 needs_live_verification=True cache_hit=false safety_floor=none complexity_basis=judge judge_path=judge
+```
+
+checked=1 line: **complexity_basis=judge > 0 on real, path-excluded journal lines — the
+acceptance condition.** The judge answered `complexity=simple` for a light-shaped demo
+mission under a heavy class hint, and the declared-class floor raised it at route_resolved —
+both layers doing exactly their designed jobs. Observation, not investigated further: the
+estimate journal of this leadv2-worktree dispatch was keyed under persona-engine's state dir
+(pre-existing repo-key mapping in the state-path resolution, unchanged by this fix).
+Demo residue cleaned: lane worktree removed, registry row tombstoned by the dispatcher's own
+exit trap, judge-cache droppings deleted; only the journal line (evidence) remains.
