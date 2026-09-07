@@ -126,3 +126,13 @@ fast-path (non-product), so its terminal row is written by dispatch-code.sh
 itself immediately on success — which is why the race test (and this lane's
 own mission string, `docs-only: duplicate-caller-race <pid> <epoch>`) uses
 that exact prefix.
+
+## Audit trail
+
+- 2026-09-07 (lane `ceea1170`, mission `docs-only: duplicate-caller-race 65597 1788781088`):
+  doc-vs-script reconciliation, all green. Knob defaults in the table above match
+  `leadv2-dispatch-code.sh:725-737` verbatim (30 / 7200 / 1 / 1 / 1). The
+  explicit-mission fast-path regex (`docs?-only|documentation-only|pure diagnosis|...`,
+  `classify_product_work`) still accepts this lane's prefix, and the terminal row for a
+  non-product dispatch is still written by dispatch-code.sh itself on success. All four
+  regression suites named above exist under `plugins/leadv2/scripts/tests/`.
