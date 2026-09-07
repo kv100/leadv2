@@ -216,6 +216,21 @@ router_v2:
     - { arm: haiku, provider: claude, model: haiku, tier: standard, cost: 2, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
     - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true }
     - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true }
+    # FABLE-RESTORE-01 (founder permission, 2026-09-06 open-threads.md, entry
+    # [FABLE-RESTORE-01]): fable had ZERO capability_matrix cells since
+    # FABLE-RETIRE-01 (2026-07-07), so the arbiter could never select it as a
+    # build/review/plan arm regardless of the ladder entry below — the ladder
+    # and this matrix are separate selection mechanisms, and only this table
+    # feeds leadv2-route-arbiter.sh's cheapest_capable sort. Own bucket per
+    # model-capability.yaml (cost_class: fable-scoped-weekly, NOT proven
+    # same-bucket as opus) — cost set below opus (9) to reflect that separate
+    # quota ceiling, not a capability judgment; fable's own model-capability.yaml
+    # entry already carries coding_score 95.0 / agentic_score 80.52 (both
+    # confidence: high). kinds/tags mirror model-capability.yaml's role: think
+    # (plan synthesis, judge, diagnose synth, learn proposal, PO audit, review
+    # Heavy critic, architect prepass) — never `code`, fable is not a build arm.
+    # Rollback: delete this row.
+    - { arm: fable, provider: claude, model: fable, tier: high, cost: 8, kinds: [plan, audit, review], sizes: [standard, heavy], tags: [architecture, adversarial], review: true, protected: true }
 
   # EFFORT-IS-NOT-WIRED-01: the second routing knob (docs/model-effort-matrix.md
   # -- model = hardness, effort = marginal value of extra thinking) resolved
@@ -489,15 +504,22 @@ router:
       effort: high
       dispatch: false
       review_rank: 3
-    # Architect-path models — expressed here so the config is the single
-    # source of truth, but never dispatched by dispatch-code.sh (the plan
-    # workflow uses fable directly via workflows/leadv2-plan.js).
+    # FABLE-RESTORE-01 (founder permission, 2026-09-06 open-threads.md entry
+    # [FABLE-RESTORE-01]): this comment previously claimed fable is "never
+    # dispatched by dispatch-code.sh (the plan workflow uses fable directly via
+    # workflows/leadv2-plan.js)" — that file was deleted by 09a45cb7 (ONE-PATH
+    # plan doc-flip); no code path matching that claim exists any more.
+    # `dispatch: false` is removed below so this ladder entry agrees with the
+    # capability_matrix row added above and the arbiter can actually select
+    # fable. Independent of both: leadv2-router.sh's think_model() already
+    # routes thinking roles (plan/judge/diagnose/learn/architect-prepass) to
+    # fable directly, gated only by model-capability.yaml's fable.unavailable
+    # flag — that mechanism is unchanged by this edit.
     - id: fable
       provider: anthropic
       model: fable
       when: [architect, heavy]
       effort: high
-      dispatch: false
       review_rank: 4
   glm_policy:
     protected_path_patterns:
