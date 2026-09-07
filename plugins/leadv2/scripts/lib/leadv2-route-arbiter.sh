@@ -697,11 +697,45 @@ def _record(arm, model, tier, reason):
         with open(_jf_path,'a') as _jf: _jf.write(json.dumps(_rec)+'\n')
     except Exception:
         pass
+# EXPLICIT-ARM-REQUEST-01 (founder, via Leadmain, 2026-09-07): a caller asking
+# "run this on <arm> specifically" (the founder's own "думать должны Astra и
+# Fable" directive is the live case) had NO legal path to a decision the
+# leadv2-spawn-arbiter-gate hook would record and pass -- `model_requested`
+# was already read into _record()'s journal row above but nothing ever
+# CONSULTED it (grepped: zero other references in this file before this
+# edit). A denial with no reachable "yes" is not a check, it is a switch that
+# is always off -- the same shape as the false-green corpus this arbiter is
+# now the acceptance tool for, just inverted (there the vote never reaches
+# the deciding logic; here the deciding logic has no route to "approved" at
+# all). Fixed by making `requested_arm` a real input: if the requested arm
+# has a capability_matrix cell that fits this task's kind/size/trust/allowed
+# filter (the exact same `capable` list every other decision is drawn from --
+# no separate, softer rule for the explicit path), it wins outright and is
+# recorded with its own reason so the journal shows this was a directed pick,
+# not an auction. If the requested arm has NO such cell, or every matching
+# cell is capped, this REFUSES (does not silently fall through to the
+# auction) -- the negative-control half: asking for an arm on work it was
+# never declared capable of must fail, or "explicit choice" is actually
+# "obeys any request", which is worse than no path at all.
+requested_arm=str(d.get('requested_arm') or '').strip()
+if requested_arm:
+    _req_capable=[c for c in capable if c.get('arm')==requested_arm]
+    if not _req_capable:
+        _record('refuse','none','none','requested_arm_incapable')
+        print('arm=refuse model=none tier=none reason=requested_arm_incapable kind=%s requested_arm=%s chain= %s%s%s%s%s' % (kind,requested_arm,ufmt(),_outage,_fm_tok,_excl_tok,_rev_tok))
+        raise SystemExit(69)
+    _req_ok=[c for c in _req_capable if not capped(c.get('provider'))]
+    if not _req_ok:
+        _record('refuse','none','none','requested_arm_capped')
+        print('arm=refuse model=none tier=none reason=requested_arm_capped kind=%s requested_arm=%s chain= %s%s%s%s%s' % (kind,requested_arm,ufmt(),_outage,_fm_tok,_excl_tok,_rev_tok))
+        raise SystemExit(70)
 if not capable:
     _record('refuse','none','none','no_capable_cell')
     print('arm=refuse model=none tier=none reason=no_capable_cell kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_tok,_rev_tok))
     raise SystemExit(68)
 ok=[c for c in capable if not capped(c.get('provider'))]
+if requested_arm:
+    ok=[c for c in ok if c.get('arm')==requested_arm]
 if not ok:
     _record('refuse','none','none','all_arms_capped')
     print('arm=refuse model=none tier=none reason=all_arms_capped kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_tok,_rev_tok))
@@ -960,7 +994,7 @@ _gate = (' freepool_gate=%s' % free_reason) if (free_reason and not free_ok) els
 # A complexity rule only changes the selector through effective cost.  Say so
 # when it is active: `cheapest_capable` alone would hide that cheaper tagged
 # cells were deliberately demoted for this estimate.
-reason = 'complexity_penalty' if complexity_penalty_active else 'cheapest_capable'
+reason = 'explicit_requested_capable' if requested_arm else ('complexity_penalty' if complexity_penalty_active else 'cheapest_capable')
 _complexity_policy = (' complexity_policy=penalty' if complexity_penalty_active else ' complexity_policy=none')
 _record(w['arm'],w['model'],w.get('tier','standard'),reason)
 # ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01: the decision line names the kind
