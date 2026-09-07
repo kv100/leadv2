@@ -4041,6 +4041,39 @@ _mission_deliverable() { # <mission-text> -> declaration or empty
   printf '%s' "${line}" | sed -E 's/^[[:space:]*_]*LANE_DELIVERABLE[*_]*:[[:space:]]*//I'
 }
 
+# _mission_writes_csv <mission-text> [kept|dropped] -> CSV
+# ARCHITECT-PREPASS-PARKS-THE-TASK-01 (2026-09-07): harvest the `LANE_WRITES:`
+# declaration the MISSION TEXT itself carries. Until now only the prepass
+# ARTIFACT was ever read (_prepass_writes), so a mission that declared its own
+# write set but whose architect run produced no LANE_WRITES line parked with
+# reason=no_lane_writes -- 56% of all prepass attempts (37/66 at mission time;
+# re-derived 38 parked on 2026-09-07), each one a task the mission text had
+# already scoped. "Not declared in the artifact" is not "no scope exists": the
+# mission's own line IS the author's declaration, and the park remedy ("add a
+# 'LANE_WRITES: a,b,c' line to the mission") was advice the parser ignored --
+# exactly the founder-drawn distinction between a harvest gap (this) and a
+# mission that genuinely cannot declare writes (untouched).
+# Deliberately NOT a second copy of the tolerant matcher + L12 accept/reject
+# loop: this delegates to the REAL _prepass_writes against a temp copy of the
+# text (a function override inside a subshell never leaks to the caller), so
+# mission-text and artifact declarations can never drift apart in what they
+# accept or reject. The filter is delegated rather than factored out from
+# under _prepass_writes because test-lane-writes-rejection-is-named.sh slices
+# that body verbatim and sources it standalone.
+_mission_writes_csv() {
+  local text="$1" mode="${2:-kept}" tmp rc
+  [[ -n "${text}" ]] || return 0
+  tmp="$(mktemp "${TMPDIR:-/tmp}/leadv2-mission-writes.XXXXXX")" || return 0
+  printf '%s\n' "${text}" > "${tmp}" || { rm -f "${tmp}"; return 0; }
+  (
+    _prepass_file() { printf '%s' "${tmp}"; }
+    _prepass_writes m "${mode}"
+  )
+  rc=$?
+  rm -f "${tmp}"
+  return "${rc}"
+}
+
 # KIMI-CHANNEL-REHAB-01: only narrow, bounded implementation missions enter the
 # Kimi rung. A founder's --kimi-fit override deliberately bypasses every
 # heuristic. On the explicit non-product/no-prepass path, an absent write-set
@@ -4098,7 +4131,8 @@ _apply_kimi_admission() { # <mission> <sig8> <writes_csv> <kimi_fit>; mutates ca
 # H6 (LANDING-BLOCKER-R2): one call site per architect_prepass exit path, including the
 # ARCHITECT_GATE kill-switch and the provably_one_file early return -- neither may dispatch
 # an undeclared, unisolated lane. Fail-closed unless REQUIRE_LANE_WRITES=1: a row-declared
-# writes CSV, the prepass artifact's own LANE_WRITES: line, or an existing lane worktree
+# writes CSV, the prepass artifact's own LANE_WRITES: line, the mission text's own
+# LANE_WRITES: line (ARCHITECT-PREPASS-PARKS-THE-TASK-01), or an existing lane worktree
 # (isolation substitutes for a declaration) each independently satisfy the guard.
 _lane_writes_guard() {
   local sig8="$1" row_writes="$2" have_prepass="$3"
@@ -4121,6 +4155,19 @@ _lane_writes_guard() {
     return 0
   fi
   if [[ "${have_prepass}" == "1" ]] && [[ -n "$(_prepass_writes "${sig8}")" ]]; then return 0; fi
+  # ARCHITECT-PREPASS-PARKS-THE-TASK-01 (2026-09-07): a mission whose TEXT declares
+  # `LANE_WRITES:` must never park with no_lane_writes when the artifact carries no
+  # line -- a declarative gap in the ARTIFACT is not a missing scope. The global is
+  # set once at the top of architect_prepass (this guard's only caller) from the raw
+  # mission arg, the same single-set pattern as LANE_DELIVERABLE_DECL. Ordered AFTER
+  # the artifact check (a design narrows the mission's list; the more specific source
+  # wins) and BEFORE the worktree satisfier (an explicit scope statement is primary
+  # evidence; isolation only substitutes for one). This fixes the HARVEST gap only:
+  # a mission with no derivable writes still parks below, unchanged.
+  if [[ -n "${LANE_MISSION_WRITES:-}" ]]; then
+    emit decision "lane_writes task=${sig8} source=mission_text writes=${LANE_MISSION_WRITES}"
+    return 0
+  fi
   local _wt=""
   # R2 (W-1 lane-worktree-isolation prepass): pin LEADV2_PROJECT_ROOT to the main
   # checkout. Unpinned, `resolve_root()` falls back to `git rev-parse --show-toplevel`
@@ -5166,6 +5213,13 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
   local raw="$1" sig8="$2" writes="$3" f mfile out rc count
   ARCHITECT_PREPASS_REASON=""
   ARCHITECT_FALLBACK_ARM_USED=""
+  # ARCHITECT-PREPASS-PARKS-THE-TASK-01: harvest the mission text's own
+  # LANE_WRITES: declaration ONCE, from the raw mission this prepass was called
+  # with. _lane_writes_guard (called only from here) reads it when neither the
+  # row nor the artifact declared a write set, and the post-prepass fill in
+  # cmd_resolve copies it into lane_writes the same way the artifact's line is
+  # copied -- so the registry and product-close see a real scope either way.
+  LANE_MISSION_WRITES="$(_mission_writes_csv "${raw}")"
   if [[ "${ARCHITECT_GATE}" != "1" ]]; then
     # H6 (LANDING-BLOCKER-R2): the kill-switch used to return before any writes check ran,
     # so ARCHITECT_GATE=0 could dispatch an undeclared, unisolated lane silently. Row-
@@ -8044,6 +8098,15 @@ PY
         if [[ -n "${_lw_narrowed}" ]]; then
           emit decision "lane_writes_narrowed task=${sig8} kept=${lane_writes} dropped=${_lw_narrowed}"
         fi
+      fi
+      # ARCHITECT-PREPASS-PARKS-THE-TASK-01: neither row nor artifact declared a
+      # write set, but the mission text did -- fill lane_writes from the harvest
+      # so the registry refresh below registers the scope and product-close can
+      # diff the lane against it. Without this the guard would pass while the
+      # row still shipped empty, and the lane would land as unscopable at close.
+      if [[ -z "${lane_writes}" && -n "${LANE_MISSION_WRITES:-}" ]]; then
+        lane_writes="${LANE_MISSION_WRITES}"
+        emit decision "lane_writes task=${sig8} source=mission_text writes=${lane_writes}"
       fi
     fi
     # The developer receives the independently-produced design -- but INLINE, and only
