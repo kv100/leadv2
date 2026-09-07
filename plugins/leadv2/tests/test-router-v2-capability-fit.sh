@@ -80,21 +80,29 @@ router_v2:
 YML
 
 # ── §9.2 row 1: heuristic, simple, glm-flash cost-pick -> glm, differs=1 ────────
-out="$(run "$ROUTING" '{"kind":"code","size":"standard","complexity":"simple","complexity_source":"heuristic","task":"r1"}')"
-exp_arm=glm; [[ "$(tok "$out" fit_mode)" != "on" ]] && exp_arm=glm-flash
-if [[ "$(tok "$out" fit_pick)" == "glm" && "$(tok "$out" fit_differs)" == "1" && "$(tok "$out" arm)" == "$exp_arm" ]]; then
-  pass '9.2 row1: heuristic/simple demotes glm-flash, fit_pick=glm fit_differs=1 (arm follows configured fit_mode)'
+# Pinned EXPLICITLY both ways (LEADV2_ARBITER_CAPABILITY_FIT=off/on), never read
+# off the live yaml's own `enabled:` -- a case that adapts to whichever mode is
+# currently configured proves nothing about either branch (Leadmain correction,
+# 2026-09-07): off must still show the fit computation (fit_pick/fit_differs are
+# ALWAYS computed per design §6) but the ACTUAL pick stays cost-order (glm-flash);
+# on must show the actual pick following the fit order (glm).
+out_off="$(LEADV2_ARBITER_CAPABILITY_FIT=off run "$ROUTING" '{"kind":"code","size":"standard","complexity":"simple","complexity_source":"heuristic","task":"r1-off"}')"
+out_on="$(LEADV2_ARBITER_CAPABILITY_FIT=on run "$ROUTING" '{"kind":"code","size":"standard","complexity":"simple","complexity_source":"heuristic","task":"r1-on"}')"
+if [[ "$(tok "$out_off" fit_pick)" == "glm" && "$(tok "$out_off" fit_differs)" == "1" && "$(tok "$out_off" arm)" == "glm-flash" \
+   && "$(tok "$out_on" fit_pick)" == "glm" && "$(tok "$out_on" fit_differs)" == "1" && "$(tok "$out_on" arm)" == "glm" ]]; then
+  pass '9.2 row1: heuristic/simple demotes glm-flash in the fit computation regardless of mode; off keeps cost-pick (arm=glm-flash), on switches the actual pick to fit (arm=glm)'
 else
-  fail "9.2 row1 out=$out"
+  fail "9.2 row1 off=$out_off on=$out_on"
 fi
 
 # ── §9.2 row 2: any(judge)/standard, glm-flash cost-pick -> glm, differs=1 ──────
-out="$(run "$ROUTING" '{"kind":"code","size":"standard","complexity":"standard","complexity_source":"judge","task":"r2"}')"
-exp_arm=glm; [[ "$(tok "$out" fit_mode)" != "on" ]] && exp_arm=glm-flash
-if [[ "$(tok "$out" fit_pick)" == "glm" && "$(tok "$out" fit_differs)" == "1" && "$(tok "$out" arm)" == "$exp_arm" ]]; then
-  pass '9.2 row2: standard complexity (req_eff=3.0) demotes glm-flash, fit_pick=glm fit_differs=1'
+out_off="$(LEADV2_ARBITER_CAPABILITY_FIT=off run "$ROUTING" '{"kind":"code","size":"standard","complexity":"standard","complexity_source":"judge","task":"r2-off"}')"
+out_on="$(LEADV2_ARBITER_CAPABILITY_FIT=on run "$ROUTING" '{"kind":"code","size":"standard","complexity":"standard","complexity_source":"judge","task":"r2-on"}')"
+if [[ "$(tok "$out_off" fit_pick)" == "glm" && "$(tok "$out_off" fit_differs)" == "1" && "$(tok "$out_off" arm)" == "glm-flash" \
+   && "$(tok "$out_on" fit_pick)" == "glm" && "$(tok "$out_on" fit_differs)" == "1" && "$(tok "$out_on" arm)" == "glm" ]]; then
+  pass '9.2 row2: standard complexity (req_eff=3.0) demotes glm-flash in the fit computation regardless of mode; off keeps cost-pick (arm=glm-flash), on switches the actual pick to fit (arm=glm)'
 else
-  fail "9.2 row2 out=$out"
+  fail "9.2 row2 off=$out_off on=$out_on"
 fi
 
 # ── §9.2 row 3: unknown source, trivial complexity -> cautious req_eff=PRIOR, glm wins ──
