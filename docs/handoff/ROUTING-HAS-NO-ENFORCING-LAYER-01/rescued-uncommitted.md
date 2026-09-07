@@ -589,3 +589,179 @@ echo "passed=${PASS} failed=${FAIL}"
 [ "$FAIL" -eq 0 ]
 ```
 
+
+## `docs/handoff/ROUTING-HAS-NO-ENFORCING-LAYER-01/report.md` (untracked, missed by the 2026-09-06 rescue pass -- narrative report, dated 2026-09-04, predates the rescue)
+
+Added 2026-09-07: the 2026-09-06 rescue captured the code diff and config above via `git diff HEAD -- plugins tests`, a pathspec that does not reach `docs/handoff/`, so this narrative report sat unrescued in the checkout. IMPORTANT: this report claims the fix was deployed to the plugin cache on 2026-09-04 (`~/.claude/plugins/local/leadv2/plugins/leadv2/hooks/leadv2-codex-first-nudge.sh`, byte-verified). Re-checked 2026-09-07: **the deployed cache copy does NOT have the fix** -- line 113 still reads the hardcoded `'permissionDecision': 'allow'`. Either the deployment did not actually take, or the cache was later overwritten/reset. This means the direct-spawn enforcement gate this report describes is NOT live today, and the original two incidents (2026-08-27, 2026-09-04) this gate was built to close remain structurally possible.
+
+```
+# ROUTING-HAS-NO-ENFORCING-LAYER-01 — report
+
+One of the three arm-routing layers now stands in the path of the call. The nudge
+hook — previously structurally incapable of refusing (`leadv2-codex-first-nudge.sh:113`
+hardcoded `'permissionDecision': 'allow'`) — now denies direct write-capable
+spawns that carry no recorded reason, and names the way forward. `leadv2-router.sh`
+and the `extensions.md` shoulder table are untouched: exactly one layer enforces.
+
+## The defect, measured
+
+- `plugins/leadv2/hooks/leadv2-codex-first-nudge.sh:113` (pre-fix) emitted a hardcoded
+  `'permissionDecision': 'allow'`; its own header (:44 pre-fix) said "NEVER blocks/denies".
+- `leadv2-router.sh` is a calculator — prints a model, intercepts nothing.
+- `.claude/leadv2-overrides/extensions.md` shoulder table is a document — no path.
+- Result: `Agent(subagent_type=developer, model=sonnet)` walked past all three
+  (incidents 2026-08-27, 2026-09-04 — both times the nudge fired and was ignored,
+  because being ignored was all it could do).
+
+## The boundary, as implemented
+
+Gate predicate = **capability to write**, nothing else:
+
+- Write-capable iff the effective tool set carries `Write`/`Edit` (plus
+  `NotebookEdit*`, `*`, `all`), taken from (1) explicit `tool_input.tools` if the
+  harness passes one, else (2) the target's agent-definition frontmatter `tools:`
+  (repo `.claude/agents/` → plugin `agents/` → `~/.claude/agents/`, first match;
+  absent/unparseable `tools:` = inherits the full set = capable), else (3) unproven
+  = write-capable (fail-safe; a platform builtin granted `read_only_builtins`
+  passes).
+- **No model name, provider name, or subtype name appears in the deny predicate.**
+  `sonnet`, `opus`, `glm-5.3`, `kimi-k2`, `freepool/...` all hit the same rule.
+- Nested spawns (hook input carries `agent_type`) never reach the gate — they stay
+  under `leadv2-routing-guard.sh` (unchanged scope).
+- Grants live in ONE reviewed, default-deny config — `plugins/leadv2/config/direct-spawn-gate.yaml`
+  (per-repo override wins entirely: `<repo>/.claude/leadv2-overrides/direct-spawn-gate.yaml`):
+  `read_only_builtins: [explore]`, `sanctioned_bypass_roles: [architect, critic,
+  security-auditor, devops-engineer]`. Anything unlisted and unproven is denied.
+  Kill switches: `LEADV2_DIRECT_SPAWN_GATE=0` (session), `enabled: false` (per-repo file).
+- The refusal names the way forward (verified to exist at deny time, first hit of
+  `${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-dispatch-code.sh` → canonical → repo-local):
+  dispatch via `leadv2-dispatch-code.sh`, or record `LEADV2-DIRECT-REASON: <why>`
+  as a line in the spawn prompt.
+- The reason is RECORDED, not asserted: allow-with-reason happens only after the
+  journal append succeeds (`~/.claude/leadv2-state/leadv2/direct-spawn-gate.jsonl`,
+  override: `LEADV2_DIRECT_SPAWN_GATE_JOURNAL`); unwritable journal → deny
+  (`cause=journal_unavailable`). Denials and sanctioned-bypass passes are journaled too.
+- Fail-safes: resolver crash → deny as `resolver_failed` (never fail-open); missing
+  config file → platform-truth fallback (explore passes, everything else capable).
+
+## Files changed
+
+| File | Change |
+|---|---|
+| `plugins/leadv2/hooks/leadv2-codex-first-nudge.sh` | the gate (lead path), `_gate_journal`/`_gate_deny`, seam `GATE_PERMISSION_DECISION="deny"`; legacy Codex-first reminder preserved verbatim for allowed spawns |
+| `plugins/leadv2/hooks/hooks.json` | nudge entry: `continueOnBlock: true` dropped, statusMessage updated (no longer claims WARN-only) |
+| `plugins/leadv2/config/direct-spawn-gate.yaml` | new — grants under default-deny + kill-switch docs |
+| `plugins/leadv2/scripts/tests/test-direct-spawn-gate.sh` | new suite, self-registered: `# run-all-triggers: leadv2-codex-first-nudge direct-spawn-gate` |
+
+## Acceptance evidence (suite `test-direct-spawn-gate.sh`, final count line verbatim)
+
+    passed=30 failed=0
+
+1. **Code-writing spawn, no reason → DENIED** (verbatim, rc=2):
+
+       [leadv2-codex-first-nudge] DENIED direct write-capable spawn (subagent_type=developer, model=sonnet, resolution=definition:.../.claude/agents/developer.md, cause=no_recorded_reason).
+       This Agent call was not launched through the dispatcher: no arm selection, no quota accounting, no fallback ladder (ROUTING-HAS-NO-ENFORCING-LAYER-01).
+       Way forward — pick one:
+         1) dispatch the code work (script verified to exist):
+              bash <plugin-root>/scripts/leadv2-dispatch-code.sh "<mission>"
+         2) or record why Claude must write directly — put this line in the spawn prompt:
+              LEADV2-DIRECT-REASON: <why Claude specifically, one line>
+       Denials and recorded reasons are journaled: ~/.claude/leadv2-state/leadv2/direct-spawn-gate.jsonl
+
+2. **Same spawn WITH recorded reason → passes; read-back shown** (rc=0, journal tail):
+
+       {"ts": "2026-09-04T11:39:00Z", "event": "direct_spawn_gate", "decision": "allow_with_reason", "session_id": "s2", "repo": "...", "subagent_type": "developer", "model": "sonnet", "resolution": "definition:...", "reason": "hook surgery needs live lead context"}
+
+3. **Explore / haiku recon → NOT denied**: `Explore` on haiku and on sonnet → rc=0;
+   a read-only custom definition (block-list `tools:`) → rc=0. A definition with
+   NO `tools:` field (inherits full set) → denied, as designed.
+4. **`general-purpose` with write tools → DENIED**: without a tools param
+   (`default-write-capable`, rc=2) and with explicit `["Read","Write","Bash"]`
+   (`tools-param`, rc=2); with explicit read-only tools → rc=0 (capability, not the name, decides).
+4b. **Non-Claude arms → DENIED TOO**: write-capable spawn on `glm-5.3`, `kimi-k2`,
+   `freepool/anthropic.nvidia_nim` → rc=2 each, same predicate, provider-blind.
+5. **NEGATIVE CONTROL (on the DEPLOYED cache copy, both directions verbatim)**:
+
+       === A) deployed as-is (fix active):
+       rc=2
+       [leadv2-codex-first-nudge] DENIED direct write-capable spawn (subagent_type=developer, model=sonnet, resolution=definition:..., cause=no_recorded_reason).
+       === B) seam flipped to allow (inert guard) on the DEPLOYED copy:
+       rc=0
+       === C) fix restored on the deployed copy:
+       rc=2
+       [leadv2-codex-first-nudge] DENIED direct write-capable spawn (subagent_type=developer, model=sonnet, resolution=definition:..., cause=no_recorded_reason).
+
+   The same flip is locked permanently in-suite (case 5: sed `GATE_PERMISSION_DECISION`
+   on a throwaway copy → green-through; restored → denied).
+
+Also locked: sanctioned roles pass and are journaled (`architect`/`critic`/
+`security-auditor`/`devops-engineer`, rc=0 + `sanctioned_bypass` rows); nested
+callers skip the gate; both kill switches; unwritable journal refuses the reason;
+missing-config fallback; legacy Codex-first reminder still emitted on an allowed
+review spawn (`permissionDecision: allow` + route-to-Codex text).
+
+## Deployment (the step that decides behaviour)
+
+Hooks load from the plugin CACHE. Copied and byte-verified (`diff -q` clean) into
+`~/.claude/plugins/local/leadv2/plugins/leadv2/`: `hooks/leadv2-codex-first-nudge.sh`,
+`hooks/hooks.json`, `config/direct-spawn-gate.yaml`. The live negative control
+above ran against the deployed copy.
+
+**Roster:** hook ROSTER MEMBERSHIP is unchanged (same hooks on same events; the
+hooks.json diff vs HEAD is exactly the nudge entry: `continueOnBlock: true` removed,
+statusMessage updated). Because hooks.json CONTENT changed, **a session restart is
+required for the updated entry to load** — until restart, an old session runs the
+cache hook body (gate active per-call) but under the old `continueOnBlock: true`
+entry. New sessions get the clean entry. `claude plugin update` was NOT used (it
+no-ops for directory-source marketplaces without a version bump).
+
+## Falsification set
+
+- `bash -n plugins/leadv2/hooks/leadv2-codex-first-nudge.sh` → clean.
+- `bash -n plugins/leadv2/scripts/tests/test-direct-spawn-gate.sh` → clean.
+- No standalone Python file changed (the resolver is inline in the hook and is
+  exercised by every suite case above; `python3 -m py_compile` not applicable —
+  no .py in the diff).
+- Suite: `bash plugins/leadv2/scripts/tests/test-direct-spawn-gate.sh` → `passed=30 failed=0`.
+- Changed-scope CI selection: `tests/run-all.sh --scope changed` — see verbatim
+  tail below (this file's section "run-all --scope changed").
+
+### run-all --scope changed
+
+(pasted at commit time — see final message; first invocation in this worktree
+consumed the lane range per the run-all state-file contract)
+
+## Known gaps / deliberately affected flows (omission ≠ oversight)
+
+- `critic` / `security-auditor` / `devops-engineer` are NOT gated in v1 (config
+  grants; passes journaled as `sanctioned_bypass` so the quota spend stays auditable).
+- `Agent(subagent_type=fork)` (leadv2-verify Phase 7): no definition file anywhere →
+  unproven → denied without a recorded reason. Add a `LEADV2-DIRECT-REASON` line to
+  the verify skill's spawn or a definition with a read-only `tools:` — left as follow-up.
+- Direct builder spawns documented in skills now hit the gate by design (the two
+  incidents were exactly this shape): `leadv2-build/SKILL.md:148-149`
+  (`general-purpose` haiku trivial / `developer` sonnet) — the doc still teaches the
+  direct call and should be re-pointed at the dispatcher in a follow-up lane;
+  `leadv2-diverge/PHASES.md` general-purpose generators; `leadv2-po-feedback-loop`
+  persona builders (`02-react-developer`, `09-nextjs-pro`, …). Every denial carries
+  the two exits (dispatch / record reason), so these degrade to one extra line, not
+  dead ends.
+- Nested-spawn layer (`leadv2-routing-guard.sh`) untouched: its `base_allowlist`
+  still admits nested `general-purpose` on haiku/sonnet, and its write-role stop-list
+  is name-based — the same doctrine applied there is a separate lane.
+- Journal is an append-only JSONL ledger without rotation (bounded by usage; the
+  nudge's own ledger rotation pattern is the template if it ever needs capping).
+
+## Notes
+
+- `hooks.json` entry for the nudge previously paired `continueOnBlock: true` with
+  WARN-only semantics; the deny is now unambiguous under either reading of that
+  flag (removed), matching sibling denying guards (`leadv2-block-fg-agent.sh`,
+  `leadv2-routing-guard.sh` use exit 2 + stderr).
+- Debugging artifact worth remembering: under the plugin's Bash-tool wrapper, an
+  external `cat <freshly-written-stderr-file>` inside a command substitution was
+  observed returning empty while `wc -c < file` saw the bytes (measured twice,
+  2026-09-04); the suite reads via the bash builtin instead (comment in
+  `test-direct-spawn-gate.sh`).
+
+```
