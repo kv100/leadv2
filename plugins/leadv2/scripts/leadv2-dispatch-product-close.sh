@@ -1513,6 +1513,23 @@ _pc_lane_commits_ahead() {  # <root> -> stdout "N" | "unknown"; always rc0
     fi
     if [[ -z "${base}" ]] && git -C "${root}" cat-file -e "main^{commit}" 2>/dev/null; then
       base="$(git -C "${root}" merge-base main HEAD 2>/dev/null || true)"
+      # STALE-DIFF-BASE-01 round 3 (2026-09-07): merge-base(main, HEAD) == HEAD
+      # is ambiguous by value alone -- it's the correct answer for a lane
+      # genuinely forked from main's current tip with zero commits done, AND
+      # the degenerate answer for a lane whose checkout IS local main itself
+      # (no separate feature branch; test-close-gate-nowork-abandoned.sh
+      # Case A's fixture is this shape). A count can't tell the two apart;
+      # branch identity can. Only distrust this base when HEAD is literally
+      # ON local `main` -- a real feature-branch lane keeps its (possibly
+      # genuinely-zero) main-based count.
+      if [[ -n "${base}" ]] && [[ "${base}" == "$(git -C "${root}" rev-parse HEAD 2>/dev/null)" ]]; then
+        local _cur_branch
+        _cur_branch="$(git -C "${root}" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+        [[ "${_cur_branch}" == "main" ]] && base=""
+      fi
+    fi
+    if [[ -z "${base}" ]] && git -C "${root}" cat-file -e "origin/main^{commit}" 2>/dev/null; then
+      base="$(git -C "${root}" merge-base origin/main HEAD 2>/dev/null || true)"
     fi
     if [[ -n "${base}" ]]; then
       count="$(git -C "${root}" rev-list --count "${base}..HEAD" 2>/dev/null || true)"
@@ -1747,7 +1764,17 @@ pc_silent_arm_probe() {
     return 1
   fi
   [[ "${commits_ahead}" =~ ^[0-9]+$ ]] || commits_ahead=0
-  (( commits_ahead >= 1 )) && return 1
+  if (( commits_ahead >= 1 )); then
+    # STALE-DIFF-BASE-01 round 3: a resolved, non-zero count is a stronger signal
+    # than "unknown" (GATE-FALSE-SILENT-01's own `_pc_diff_base_main`/`main`/
+    # `origin/main` chain now resolves some cases round 2 could only call
+    # unresolvable, e.g. a linked worktree with no start-sha/cache/origin but a
+    # real local `main` in its shared ref-store). Log it so callers/tests can
+    # tell "resolved, real work" apart from "gave up, refused to guess" instead
+    # of inferring the former from the absence of the latter line.
+    emit decision "silent_probe_base_resolved task=${TASK} arm=${AUTHOR} lane=$(basename "${_lane_root}") commits_ahead=${commits_ahead}"
+    return 1
+  fi
   # PRODUCED-NOTHING-IS-REPO-SCOPED-AND-INDEX-BLIND-01: commits_ahead above is
   # SCOPED to _lane_root's own repository. A lane whose mission touches the shared
   # leadv2 plugin tree commits its CODE there, in a separate git checkout this

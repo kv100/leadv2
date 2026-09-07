@@ -332,10 +332,21 @@ else
   pass "Case G: linked worktree that committed is NOT classified arm_produced_nothing"
 fi
 
-if printf '%s\n' "$outG" | grep -q 'silent_probe_base_unresolved task='; then
-  pass "Case G: degradation line emitted once prove-zero refuses (reflog shows a commit)"
+# STALE-DIFF-BASE-01 round 3 (2026-09-07): the LOCK here is "must NOT be called
+# arm_produced_nothing" (asserted above, untouched). "silent_probe_base_unresolved"
+# was the MECHANISM available in round 2 to hold that lock when no candidate
+# resolved -- round 3 adds a legitimate fourth candidate (local `main`, same
+# object in a linked worktree's shared ref-store as the parent repo) that now
+# resolves this exact fixture to a real, non-zero count instead of "unknown".
+# A resolved count is a stronger signal than a refusal to guess, so accept
+# EITHER shape -- widened, not weakened: the unresolved path is still required
+# whenever nothing resolves (Case E covers that, unchanged, elsewhere in this
+# file). See docs/handoff/GATE-FALSE-SILENT-01/fix-round-3.md for the original
+# lock and STALE-DIFF-BASE-01/close.md for why the fourth candidate is trusted.
+if printf '%s\n' "$outG" | grep -qE 'silent_probe_base_unresolved task=|silent_probe_base_resolved task=.*commits_ahead=[1-9]'; then
+  pass "Case G: degradation line emitted (unresolved) OR a resolved non-zero count logged"
 else
-  fail "Case G: expected silent_probe_base_unresolved decision line -- out=${outG}"
+  fail "Case G: expected silent_probe_base_unresolved OR silent_probe_base_resolved (non-zero) -- out=${outG}"
 fi
 
 git -C "$LANE" worktree remove --force "$WTF" >/dev/null 2>&1 || true
