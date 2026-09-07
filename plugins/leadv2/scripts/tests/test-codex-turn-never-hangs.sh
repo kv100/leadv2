@@ -23,7 +23,7 @@ export class CodexAppServerClient {
     connections++;
     if (process.env.FIXTURE === 'connect-error') throw new Error('ordinary_connect_error');
     const client = { options, number: connections };
-    client.proc = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {stdio:'ignore'});
+    client.proc = spawn(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end",()=>process.exit(0));'], {stdio:['pipe','ignore','ignore']});
     client.exitPromise = new Promise(resolve => client.proc.once('exit', resolve));
     client.close = async () => { client.proc.kill('SIGTERM'); await client.exitPromise; };
     if (process.env.FIXTURE === 'missing-exit') delete client.exitPromise;
@@ -59,8 +59,9 @@ export async function runAppServerTurn(cwd,options) {
   try {
     if (!c.options.disableBroker) throw new Error('shared_broker_used');
     if (process.env.FIXTURE === 'ordinary-error') throw new Error('ordinary_turn_error');
-    if (process.env.FIXTURE === 'killed' || (process.env.FIXTURE === 'recover' && c.number === 1)) {
-      c.proc.kill('SIGKILL');
+    if (['killed', 'silent-exit'].includes(process.env.FIXTURE) || (process.env.FIXTURE === 'recover' && c.number === 1)) {
+      if (process.env.FIXTURE === 'silent-exit') c.proc.stdin.end();
+      else c.proc.kill('SIGKILL');
       return await new Promise(()=>{});
     }
     return {status:'completed', text:'fixture result'};
@@ -97,7 +98,7 @@ def check(ok,label,actual=None):
     global failed
     print(('PASS: ' if ok else 'FAIL: ')+label+((' actual='+json.dumps(actual)) if not ok else ''))
     failed+=not ok
-for name,mode in [('missing-connect','task'),('killed','task-worker'),('recover','task-worker'),('normal','task-worker'),
+for name,mode in [('missing-connect','task'),('killed','task-worker'),('silent-exit','task-worker'),('killed','task'),('recover','task-worker'),('normal','task-worker'),
                   ('normal','task'),('normal','review'),('ordinary-error','task'),
                   ('connect-error','task'),('missing-exit','task')]:
     jid=name+'-'+mode
@@ -110,12 +111,12 @@ for name,mode in [('missing-connect','task'),('killed','task-worker'),('recover'
     f=p/(jid+'.json'); job=json.loads(f.read_text()) if f.exists() else {}
     entries=job.get('codexAttempts',[]); starts=[e for e in entries if e['status']=='started']
     errors=[e for e in entries if e['status']=='failed']
-    if name=='killed':
-        check(job.get('errorMessage')==CAUSE,'killed app-server CAUSE LABEL',job.get('errorMessage'))
+    if name in ['killed','silent-exit']:
+        check(job.get('errorMessage')==CAUSE,name+' '+mode+' app-server CAUSE LABEL',job.get('errorMessage'))
         check(len(starts)==2 and [e['attempt'] for e in starts]==[1,2], 'exactly one retry in same record',entries)
         check(len(errors)==2 and all(e['cause']==CAUSE for e in errors),'both failed attempts carry typed cause',errors)
         check(len({e['appServerPid'] for e in starts})==2,'retry owns a fresh process',starts)
-        journal=''.join(f.read_text() for f in (p/'journal').glob('*.jsonl'))
+        journal=''.join(line for f in (p/'journal').glob('*.jsonl') for line in f.read_text().splitlines() if json.loads(line).get('handle')==jid)
         check(journal.count(CAUSE)==2 and journal.count(jid)==2,'journal attributes both exits to job',journal)
     elif name=='recover':
         check(r.returncode==0 and job.get('status')=='completed' and len(starts)==2 and len(errors)==1,
