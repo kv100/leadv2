@@ -151,7 +151,20 @@ add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 # FALLBACK: rows added here still work, and a row whose target suite file
 # does not exist on disk MUST live here, because a self-declaration can only
 # be written into a file that exists.
-EXTRA_SUITE_MAP=""
+# POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: the two new routing suites
+# must be selected by every production stem they grade. The suites also
+# self-declare the same triggers via their own '# run-all-triggers:' headers;
+# these rows are the belt-and-braces copy the mission asked for (a row whose
+# target exists on disk is also how a rename can never silently deselect).
+EXTRA_SUITE_MAP="leadv2-dispatch-code:plugins/leadv2/tests/test-arm-pool-reachability.sh
+leadv2-route-arbiter:plugins/leadv2/tests/test-arm-pool-reachability.sh
+leadv2-routing.yaml:plugins/leadv2/tests/test-arm-pool-reachability.sh
+leadv2-glm-policy-resolve:plugins/leadv2/tests/test-arm-pool-reachability.sh
+leadv2-glm-policy-resolve.py:plugins/leadv2/tests/test-arm-pool-reachability.sh
+leadv2-dispatch-code:plugins/leadv2/tests/test-exclusion-stages.sh
+leadv2-route-arbiter:plugins/leadv2/tests/test-exclusion-stages.sh
+leadv2-routing.yaml:plugins/leadv2/tests/test-exclusion-stages.sh
+"
 
 # --- self-registration discovery (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01) ----
 # A declaration line is exactly "# run-all-triggers:" followed by a
