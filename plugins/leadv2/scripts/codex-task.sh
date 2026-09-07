@@ -1905,12 +1905,16 @@ if (basename(process.argv[1] || '') === 'codex-companion.mjs' &&
   const fail = (detail) => { throw new Error('codex_companion_api_incompatible:' + detail); };
   if (typeof module.registerHooks !== 'function') fail('registerHooks_missing');
   const lib = new URL('./lib/', pathToFileURL(realpathSync(process.argv[1])));
-  const { CodexAppServerClient } = await import(new URL('app-server.mjs', lib));
+  async function importCompanion(file) {
+    try { return await import(new URL(file, lib)); }
+    catch { fail(file.split('?')[0] + '_load_failed'); }
+  }
+  const { CodexAppServerClient } = await importCompanion('app-server.mjs');
   if (typeof CodexAppServerClient?.connect !== 'function') fail('connect_missing');
   const connect = CodexAppServerClient.connect;
-  const state = await import(new URL('state.mjs', lib));
-  const turns = await import(new URL('codex.mjs?leadv2-original', lib));
-  const tracked = await import(new URL('tracked-jobs.mjs?leadv2-original', lib));
+  const state = await importCompanion('state.mjs');
+  const turns = await importCompanion('codex.mjs?leadv2-original');
+  const tracked = await importCompanion('tracked-jobs.mjs?leadv2-original');
   for (const name of ['runAppServerTurn', 'runAppServerReview']) {
     if (typeof turns[name] !== 'function') fail(name + '_missing');
   }

@@ -98,7 +98,7 @@ def check(ok,label,actual=None):
     global failed
     print(('PASS: ' if ok else 'FAIL: ')+label+((' actual='+json.dumps(actual)) if not ok else ''))
     failed+=not ok
-for name,mode in [('missing-connect','task'),('killed','task-worker'),('silent-exit','task-worker'),('killed','task'),('recover','task-worker'),('normal','task-worker'),
+for name,mode in [('missing-connect','task'),('missing-module','task'),('killed','task-worker'),('silent-exit','task-worker'),('killed','task'),('recover','task-worker'),('normal','task-worker'),
                   ('normal','task'),('normal','review'),('ordinary-error','task'),
                   ('connect-error','task'),('missing-exit','task')]:
     jid=name+'-'+mode
@@ -107,7 +107,12 @@ for name,mode in [('missing-connect','task'),('killed','task-worker'),('silent-e
     # Production _run_node injects the preload on both command paths.
     args=['bash',str(p/'run.sh'),mode]
     if mode=='task-worker': args+=['--background']
-    r=subprocess.run(args,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=15)
+    module=p/'lib/app-server.mjs'; saved=p/'lib/app-server.saved'
+    if name=='missing-module': module.rename(saved)
+    try:
+        r=subprocess.run(args,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=15)
+    finally:
+        if name=='missing-module': saved.rename(module)
     f=p/(jid+'.json'); job=json.loads(f.read_text()) if f.exists() else {}
     entries=job.get('codexAttempts',[]); starts=[e for e in entries if e['status']=='started']
     errors=[e for e in entries if e['status']=='failed']
@@ -129,6 +134,9 @@ for name,mode in [('missing-connect','task'),('killed','task-worker'),('silent-e
     elif name=='missing-connect':
         check(r.returncode!=0 and 'codex_companion_api_incompatible:connect_missing' in r.stdout and not job,
               'missing connect refuses launch',{'rc':r.returncode,'job':job,'output':r.stdout[-700:]})
+    elif name=='missing-module':
+        check(r.returncode!=0 and 'codex_companion_api_incompatible:app-server.mjs_load_failed' in r.stdout and not job,
+              'missing module refuses launch with named reason',{'rc':r.returncode,'job':job})
     elif name=='missing-exit':
         check('codex_companion_api_incompatible:exitPromise_or_close_missing'==job.get('errorMessage') and len(errors)==1,
               'missing exitPromise refuses turn without retry',job)
