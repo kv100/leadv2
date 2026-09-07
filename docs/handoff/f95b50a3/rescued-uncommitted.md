@@ -1,48 +1,27 @@
 # f95b50a3 — uncommitted work rescued from the checkout
 
-Carried out of `.claude/worktrees/f95b50a3` on 2026-09-06 by the blocking filter of
-LEADV2-WORKTREE-ADJUDICATION-01, **before** any verdict was written about the
-branch. A lane's branch can be an empty anchor while the work sits untracked or
-merely staged inside its checkout: `git log` never sees the index, and removing
-the checkout would take both with it.
+Carried out of `.claude/worktrees/f95b50a3` before worktree removal
+(LEADV2-WORKTREE-CLEANUP-20260907). The branch's own committed content is a
+stale Aug-29 snapshot (dispatch-code.sh 7192 lines vs main's 9310; active.yaml
+still a regular file, pre-dating the symlink-to-leadv2-state migration) --
+safe to discard, main strictly newer on every other touched file.
 
-Text only — nothing here is installed or made executable. Restoring any of it is
-a deliberate act by whoever owns the row.
+This one untracked file could not be classified with confidence and is
+preserved rather than deleted, per the "file name matches a real concept,
+stop and check" rule: `phase_precondition_refused` (the string this test
+asserts on) still exists in main's leadv2-dispatch-code.sh today, so the
+mechanism it tests is not dead -- but the test's CLI usage pre-dates
+significant dispatch-code.sh growth (2100+ lines added since), and its
+`--task-class ""` / `--protected 0` / `--kind code` invocation shape was not
+verified against the current CLI contract. Restoring this is a deliberate
+act by whoever owns the row, not an automatic land.
 
-## `git diff HEAD -- plugins tests` (staged and unstaged)
+## `plugins/leadv2/scripts/tests/test-phase-integrity-01.sh` (untracked, 143 lines)
 
-```diff
-diff --git a/plugins/leadv2/scripts/leadv2-dispatch-code.sh b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
-index 6d0d2c1b..45c0ed27 100755
---- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
-+++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
-@@ -3388,6 +3388,12 @@ _phase_precondition_guard() {
-     waiver_args+=("$1"); shift
-   done
- 
-+  # Refuse if task class is not provided (empty string)
-+  if [[ -z "$cls" ]]; then
-+    emit decision "phase_precondition_refused reason=missing_task_class task=${sig8}"
-+    return 1
-+  fi
-+
-   local mode="${REQUIRE_PHASES}"
-   if [[ "$mode" != "warn" && "$mode" != "1" && "$mode" != "0" ]]; then
-     emit decision "phase_precondition_badmode value=${mode}"
-@@ -5610,7 +5616,7 @@ cmd_resolve() {
-   # R6: computed once for this invocation so a single dispatch never straddles two
-   # daily counter files even if it runs across a UTC-midnight boundary.
-   local _LEADV2_EXC_DAY; _LEADV2_EXC_DAY="$(date -u +%Y%m%d)"
--  local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard"
-+  local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class=""
-   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0 lane_deliverable=""
-   local -a phase_waivers=()
-   # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional founder task id
-```
+Text only — nothing here is installed or made executable. Restoring it is a
+deliberate act by whoever owns the row.
 
-## `plugins/leadv2/scripts/tests/test-phase-integrity-01.sh` (untracked, 5123 bytes)
-
-```
+```bash
 #!/usr/bin/env bash
 # test-phase-integrity-01.sh — test for PHASE-INTEGRITY-01 requirements
 # Tests that unclassified tasks are refused and phase proofs are machine-attributable
@@ -188,4 +167,3 @@ fi
 echo "[PHASE-INTEGRITY-01] All tests passed"
 exit 0
 ```
-
