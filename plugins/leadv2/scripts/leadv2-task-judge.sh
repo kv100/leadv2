@@ -129,18 +129,25 @@ lines = mission_text.count(chr(10)) + 1
 
 if class_hint == 'Light':
     complexity, duration_class = 'simple', 'short'
+    basis = 'class_hint'
 elif class_hint == 'Standard':
     complexity, duration_class = 'standard', 'medium'
+    basis = 'class_hint'
 elif class_hint in ('Heavy', 'Strategic'):
     complexity, duration_class = 'complex', 'long'
+    basis = 'class_hint'
 elif lines <= 30:
     complexity, duration_class = 'trivial', 'short'
+    basis = 'line_count'
 elif lines <= 100:
     complexity, duration_class = 'simple', 'short'
+    basis = 'line_count'
 elif lines <= 300:
     complexity, duration_class = 'standard', 'medium'
+    basis = 'line_count'
 else:
     complexity, duration_class = 'complex', 'long'
+    basis = 'line_count'
 
 # ── structured-surface safety matcher (CLASSIFIER-CALLS-SAFETY-DOCTRINE-
 # SIMPLE-01) -- protected_path_patterns are path globs; scanning them (or any
@@ -220,6 +227,7 @@ estimate = {
     'work_kind': work_kind,
     'estimate_id': sig8,
     'estimate_source': 'fallback',
+    'complexity_basis': basis,
     'flag_source': flag_source,
 }
 print(json.dumps(estimate, sort_keys=True))
@@ -235,6 +243,11 @@ import json, sys
 
 ALLOWED = {
     'complexity': {'trivial', 'simple', 'standard', 'complex'},
+    # complexity_basis (ARBITER-SCORING-DESIGN-01 §7.2) is OPTIONAL:
+    # an estimate cached before the field existed must still validate.
+    # It must never join REQUIRED -- every cached estimate on disk
+    # would fail validation the moment this shipped.
+    'complexity_basis': {'judge', 'class_hint', 'line_count'},
     'risk_class': {'none', 'data', 'safety_publish_payments'},
     'duration_class': {'short', 'medium', 'long'},
     'work_kind': {'build', 'review', 'diagnose', 'docs'},
@@ -255,7 +268,11 @@ for k in REQUIRED:
     if k not in est:
         sys.exit(1)
 for field, allowed in ALLOWED.items():
-    if est[field] not in allowed:
+    # An absent ALLOWED key is skipped, not KeyError'd -- the old
+    # est[field] read made every ALLOWED key de-facto REQUIRED,
+    # which is exactly the cached-estimate break §7.2 forbids. Every
+    # enum field that must be present is already in REQUIRED above.
+    if field in est and est[field] not in allowed:
         sys.exit(1)
 if not isinstance(est['subsystems_touched'], int) or isinstance(est['subsystems_touched'], bool):
     sys.exit(1)
@@ -330,6 +347,9 @@ est['estimate_source'] = 'judge'
 # title resolver in _fallback_estimate -- flag_source='judge' says so
 # honestly rather than borrowing a value from a resolver that never ran.
 est['flag_source'] = 'judge'
+# complexity_basis (ARBITER-SCORING-DESIGN-01 step 2, §7.2): 'judge' --
+# the wrapper's knowledge, like estimate_source, never the model's.
+est['complexity_basis'] = 'judge'
 print(json.dumps(est))
 " "${SIG8}"
 }
@@ -352,13 +372,18 @@ _journal() {
   # FLAG_SOURCE_PRIORITY list in _fallback_estimate above.
   local flag_source
   flag_source="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('flag_source',''))" <<<"${estimate_json}" 2>/dev/null)"
+  # complexity_basis (ARBITER-SCORING-DESIGN-01 step 2, §7.2): what the
+  # complexity verdict was based on -- judge / class_hint / line_count.
+  # Empty on estimates cached before the field existed -> prints 'none'.
+  local complexity_basis
+  complexity_basis="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('complexity_basis',''))" <<<"${estimate_json}" 2>/dev/null)"
   if [[ -n "${TASK_ID}" && -f "${JOURNAL_BIN}" ]]; then
     # safety_floor (CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01, blueprint §4):
     # "a rule with no reader is not a rule" -- SAFETY_FLOOR_STATUS is set by
     # _emit's call to _apply_safety_floor just before this call runs; the
     # default here only guards an unexpected empty value.
     bash "${JOURNAL_BIN}" append "${TASK_ID}" decision \
-      "route_v2_estimate estimate_id=${SIG8} estimate_source=${src} complexity=${complexity} work_kind=${work_kind} duration_class=${duration_class} risk_class=${risk_class} flag_source=${flag_source:-none} subsystems_touched=${subsystems} needs_live_verification=${live} cache_hit=${cache_hit} safety_floor=${SAFETY_FLOOR_STATUS:-none}" \
+      "route_v2_estimate estimate_id=${SIG8} estimate_source=${src} complexity=${complexity} work_kind=${work_kind} duration_class=${duration_class} risk_class=${risk_class} flag_source=${flag_source:-none} subsystems_touched=${subsystems} needs_live_verification=${live} cache_hit=${cache_hit} safety_floor=${SAFETY_FLOOR_STATUS:-none} complexity_basis=${complexity_basis:-none}" \
       >/dev/null 2>&1 || true
   fi
   # T13's audit joins durable estimate records against close outcomes.  The
