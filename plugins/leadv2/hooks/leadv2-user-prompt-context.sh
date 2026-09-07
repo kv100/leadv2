@@ -114,7 +114,14 @@ try:
     # TERMINAL-LANES-STILL-READ-AS-LIVE-01: drop lanes that recorded a terminal
     # outcome. They keep their last phase forever, so listing them as OTHER
     # LIVE SESSIONS made a closed lane indistinguishable from a running one.
-    s = [x for x in s if not str(x.get('terminal_status') or '').strip()]
+    # LANE-REGISTRY-GHOSTS-20260907: terminal_status is written only by
+    # active-registry.sh/lane-heartbeat.sh; lib/leadv2-lane-state.sh (the
+    # second registry writer) marks death via dead_at instead and never sets
+    # terminal_status. Check both -- dead_at is the liveness convention six
+    # other readers in lane-state.sh already use, and it is reset to None on
+    # re-registration/recovery, so a revived lane won't stay hidden.
+    s = [x for x in s if not str(x.get('terminal_status') or '').strip()
+         and not x.get('dead_at')]
     if not s: print('')
     else:
         lines = []
@@ -150,9 +157,13 @@ try:
     # outcome is NOT information loss -- it is a finished lane whose `phase` is
     # frozen, and listing it under 'these are OTHER live sessions' made a closed
     # lane indistinguishable from a running one on every prompt.
+    # LANE-REGISTRY-GHOSTS-20260907: also honor dead_at (lib/leadv2-lane-state.sh's
+    # death marker -- it never writes terminal_status). See the sibling filter
+    # above for the full rationale.
     others = [sess for sess in s
               if sess.get('task_id') != mine
-              and not str(sess.get('terminal_status') or '').strip()]
+              and not str(sess.get('terminal_status') or '').strip()
+              and not sess.get('dead_at')]
     if not others: print('')
     else:
         lines = []
