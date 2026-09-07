@@ -116,7 +116,23 @@ _codex_durable_tmpdir
 #   Deliberately UNCHANGED: this branch has proof (pid_alive() returned false
 #   for a recorded pid), so it carries no false-kill risk -- raising it would
 #   only delay cleanup of a confirmed corpse, never save a live worker.
-CODEX_REAP_STATE_ROOT="${CODEX_GUARD_STATE_ROOT:-$HOME/.claude/plugins/data/codex-openai-codex/state}"
+# The companion otherwise writes under os.tmpdir()/codex-companion, while
+# cross-workspace status and guards read the plugin state store. Pin its input
+# before any companion invocation (including detached children).
+_codex_state_environment() {
+  local root="${CODEX_GUARD_STATE_ROOT:-$HOME/.claude/plugins/data/codex-openai-codex/state}"
+  root="${root%/}"
+  # Companion state.mjs appends /state; an incompatible override cannot be
+  # represented by CLAUDE_PLUGIN_DATA. Refuse instead of splitting the stores.
+  if [[ "$root" != /*/state ]]; then
+    echo "[codex-task] ERROR: CODEX_GUARD_STATE_ROOT must be an absolute path ending in /state: $root" >&2
+    return 2
+  fi
+  export CLAUDE_PLUGIN_DATA="${root%/state}"
+  export CODEX_GUARD_STATE_ROOT="$root"
+  CODEX_REAP_STATE_ROOT="$root"
+}
+_codex_state_environment
 CODEX_QUEUED_KILL_MIN="${CODEX_QUEUED_KILL_MIN:-45}"
 CODEX_RUNNING_DEAD_KILL_MIN="${CODEX_RUNNING_DEAD_KILL_MIN:-5}"
 # CODEX-QUOTA-BLIND-SPOT-01 -- queued-stall detector (__quota-watch). A job still
@@ -905,26 +921,27 @@ _APP_SERVER_PROBE = {}
 
 
 def _codex_app_server_alive():
-    """True if a `codex app-server` process exists on this machine.
+    """True=alive, False=applicable but absent, None=not applicable/unknown.
 
-    Memoized per sweep: one pgrep, not one per job — a sweep can inspect dozens of
-    jobs and they all share the same answer.
-
-    Fail-safe: any probe failure (no pgrep, permission, timeout) returns True, i.e.
-    "cannot prove the transport is gone", so this can only ever REFINE the cause of
-    a death the age logic already decided on. It never causes a reap by itself.
+    An npm-only install cannot run the managed standalone daemon. Its absence
+    is not evidence about why a worker died. Probe errors also carry no cause.
+    This probe only labels an already established dead worker; it never reaps.
     """
     if "alive" in _APP_SERVER_PROBE:
         return _APP_SERVER_PROBE["alive"]
-    alive = True
+    codex_home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+    standalone = os.path.join(codex_home, "packages", "standalone", "current", "codex")
+    if not os.path.isfile(standalone) or not os.access(standalone, os.X_OK):
+        _APP_SERVER_PROBE["alive"] = None
+        return None
+    alive = None
     try:
         r = subprocess.run(["pgrep", "-f", "codex app-server"],
                            capture_output=True, text=True, timeout=5)
-        # pgrep: 0 = matches found, 1 = none found, >1 = error (treat as unknown)
         if r.returncode == 1:
             alive = False
-        elif r.returncode == 0:
-            alive = bool(r.stdout.strip())
+        elif r.returncode == 0 and r.stdout.strip():
+            alive = True
     except Exception:
         pass
     _APP_SERVER_PROBE["alive"] = alive
@@ -996,27 +1013,10 @@ def reap_one(job_path, force=False):
             ref = parse_iso(data.get("startedAt")) or parse_iso(data.get("createdAt"))
             age_min = ((now - ref) / 60) if ref else None
             if force or (age_min is not None and age_min >= running_kill_min):
-                # CODEX-TRANSPORT-ATTRIBUTION-01: name the death correctly.
-                #
-                # This script's own header records the coupling: "a job dies the
-                # instant its launching client drops the app-server connection."
-                # `codex app-server` is a SINGLE shared process, so when it goes
-                # every in-flight job across every worktree dies together — and
-                # each one used to be stamped `worker_died_stale`, i.e. one shared
-                # cause reported as N independent worker failures.
-                #
-                # On 2026-08-21 that cost a day: three lanes in three different
-                # worktrees stopped logging within 32 seconds of each other, were
-                # filed as two different per-job diagnoses, and three separate
-                # wrong mechanisms were investigated (API credits, concurrent
-                # jobs, unregistered worktrees) before anyone checked whether the
-                # shared server was still alive. It was not.
-                #
-                # A distinct cause makes the shared failure legible and, unlike
-                # `worker_died_stale`, tells the next reader the work was almost
-                # certainly retryable rather than broken.
-                cause = "worker_died_stale"
-                if not _codex_app_server_alive():
+                # Worker death is established above; daemon absence is useful
+                # only on an install where the standalone daemon can run.
+                cause = "worker_died_stale_cause_unknown"
+                if _codex_app_server_alive() is False:
                     cause = "transport_gone_app_server_absent"
 
         if cause is None:
@@ -1555,7 +1555,7 @@ if [[ "$SUB" == "status" ]]; then
   _st_json=0
   for _a in "$@"; do [[ "$_a" == "--json" ]] && _st_json=1; done
   if [[ -n "$_st_id" ]] && command -v python3 >/dev/null 2>&1; then
-    _st_root="$HOME/.claude/plugins/data/codex-openai-codex/state"
+    _st_root="$CODEX_REAP_STATE_ROOT"
     for _f in "$_st_root"/*/jobs/"$_st_id".json; do
       [[ -f "$_f" ]] || continue
       if [[ "$_st_json" -eq 1 ]]; then
