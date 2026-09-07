@@ -110,7 +110,12 @@ _lbg_bounded_sqlite() {   # $1=db $2=sql ; stdout = query result ; rc 124 on tim
 }
 
 cmd_verdict() {
-  local governor_on="${LEADV2_BURN_GOVERNOR:-1}"
+  # BURN-GOVERNOR-OFF-BY-FOUNDER-ORDER-01 (2026-09-07): default flipped 1 -> 0 on the
+  # founder's explicit order ("убери везде burn лимит"). It was refusing real work:
+  # dispatch task=12f54b7c died rc=6 with burn24h=2579779075 over hard=1300000000 and
+  # parked the lane that was proving the codex arm fixed. The gate is not deleted, so
+  # the rollback stays one flag: LEADV2_BURN_GOVERNOR=1 restores the old behaviour.
+  local governor_on="${LEADV2_BURN_GOVERNOR:-0}"
   if [[ "${governor_on}" == "0" ]]; then
     printf 'verdict=ok burn24h=0 soft=%s hard=%s reason=disabled\n' \
       "${LEADV2_BURN_SOFT_24H:-${_LBG_DEFAULT_SOFT}}" "${LEADV2_BURN_HARD_24H:-${_LBG_DEFAULT_HARD}}"
