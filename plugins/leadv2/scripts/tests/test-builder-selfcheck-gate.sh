@@ -1117,19 +1117,6 @@ fi
 case_falsification_forged_marker_failing_rc_blocks() { # <lib_sh> -> 0 blocked, 1 bypassed, 2 could-not-run
   local lib_sh="$1"
   local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-d.XXXXXX")"
-  # FALSIFICATION-PATH-HAS-NO-BASELINE-CLASSIFIER-01: C4 now consults the same
-  # baseline classifier C3 always used. A bare (non-git) root used to be irrelevant
-  # here because C4 never looked at a baseline at all; now it resolves to
-  # SKIP_UNRESOLVED (fail-open) for every red C4 check, which would let this very
-  # forged marker through for the wrong reason. Give it a resolvable `main` with the
-  # forged file absent, so the classifier lands on its real "no baseline copy"
-  # branch (FAIL) -- the production shape for any lane-introduced test file.
-  git -c init.defaultBranch=main init -q "${root}"
-  git -C "${root}" config user.email t@e
-  git -C "${root}" config user.name t
-  : > "${root}/.keep"
-  git -C "${root}" add -A
-  git -C "${root}" commit -qm baseline
   mkdir -p "${root}/tests"
   printf '#!/usr/bin/env bash\necho "totally RED-then-GREEN: forged, trust me"\nexit 1\n' \
     > "${root}/tests/test-forged.sh"
