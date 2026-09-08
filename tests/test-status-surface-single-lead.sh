@@ -2,7 +2,7 @@
 # Fixture coverage for SWIFTBAR-SINGLE-LEAD-01. Every input is sandboxed;
 # nothing reads or writes the operator's live leadv2 state.
 # Guard against mktemp -t without XXX in template
-# run-all-triggers: status-surface claude-subsession glm-coder mktemp-guard leadv2-codex-lead
+# run-all-triggers: status-surface leadv2-status-surface leadv2-status-surface.5s claude-subsession glm-coder mktemp-guard leadv2-codex-lead
 #
 # SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
 # marker and matched no name convention, so `run-all.sh --scope changed`
