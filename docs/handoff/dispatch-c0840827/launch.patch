@@ -5,7 +5,7 @@
        emit decision "launch_model_resolved task=${sig8} task_id=dispatch-${sig8} arm=${arm} resolved_model=${_claude_model}"
        out="$(cd "${WORK_ROOT}" && PROJECT_ROOT="${PROJECT_ROOT}" LEADV2_SUBSESSION_SLIM_MCP="${LEADV2_SUBSESSION_SLIM_MCP:-1}" bash "${SUBSESSION_BIN}" \
 -             "${_claude_launch_args[@]}" \
-+             --role developer --model sonnet \
++             --role developer --model sonnet --effort "${_claude_launch_args[5]}" \
               --task-id "dispatch-${sig8}" --mission-file "${mfile}" "${_claude_profile_args[@]}" 2>"${errf}" 9>&-)"; rc=$?
        rm -f "${mfile}"
        err="$(tail -20 "${errf}" 2>/dev/null)"
