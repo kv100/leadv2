@@ -502,7 +502,15 @@ for _r in "plugins/leadv2/scripts/tests" ".claude/scripts/tests" "plugins/leadv2
   [[ -d "$ROOT/$_r" ]] || continue
   grep -lE '^# run-all-triggers:' "$ROOT/$_r"/test-*.sh >/dev/null 2>&1 || continue
   root_checked=$((root_checked + 1))
-  if ! printf '%s\n' "$MAP_OUT" | grep -qE "^[^:]+:${_r}/"; then
+  # here-string, not a pipe: with `set -o pipefail`, `printf ... | grep -q`
+  # is a SIGPIPE race — grep -q exits the instant it finds a match, and if
+  # that match sits early in a large MAP_OUT (as plugins/leadv2/scripts/tests/
+  # rows do, since scan_suite_triggers visits it first), printf gets killed
+  # writing the rest and pipefail reports ITS non-zero exit, not grep's
+  # success. Proven: 5/5 false failures via a pipe, 0/5 via a here-string,
+  # against a synthetic MAP_OUT shaped like the real one (early match, long
+  # tail). This assertion itself was wrong, not scan_suite_triggers.
+  if ! grep -qE "^[^:]+:${_r}/" <<<"$MAP_OUT"; then
     root_miss="${root_miss} ${_r}"
   fi
 done
