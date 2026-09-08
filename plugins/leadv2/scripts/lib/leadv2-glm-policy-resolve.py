@@ -52,6 +52,15 @@ DEFAULT_BUILD_SPILL = ["glm", "glm-flash", "codex", "sonnet", "freepool"]
 # primary build arms. Applied to the spill walk so a stale tenant yaml that
 # still lists a retired arm (e.g. kimi) cannot resurrect it. Must match the
 # case-rows in _candidate_chain_for_arm (leadv2-dispatch-code.sh).
+# POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01 (2026-09-07): this set is ALSO
+# the stub body of the launchability seam (_arm_launchable_arms in
+# leadv2-dispatch-code.sh) -- the arbiter's not_launchable stage reads it
+# until sibling lane ARMS-CANNOT-LAUNCH-THEMSELVES-01 lands the real
+# (kind, role, arm) launch registry. Deliberately NOT extended with
+# haiku/opus/fable here: the spawn loop's `*)` case still cannot launch
+# them, so adding the names would make the seam lie and convert honest
+# `requested_arm_not_launchable` refusals into spawn-time crashes. When the
+# registry lands, replace the seam's stub THERE (one function), not here.
 DISPATCHABLE_BUILD_ARMS = {"glm", "glm-flash", "codex", "sonnet", "freepool"}
 
 # PLANNER-MODELS-DECISION-01: glm and kimi are build-only and are never admitted

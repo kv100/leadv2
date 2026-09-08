@@ -2585,6 +2585,159 @@ print(" ".join(sorted(m.DISPATCHABLE_BUILD_ARMS)))
   printf '%s' "${_dispatchable}"
 }
 
+# ── POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01 (2026-09-07) ───────────────
+# THE one named seam to the launch-capability registry (sibling lane
+# ARMS-CANNOT-LAUNCH-THEMSELVES-01, plan P1: "(kind, role, arm, model, tier)
+# -> adapter arguments"). Until that registry lands, this predicate is
+# STUBBED to the current DISPATCHABLE_*_ARMS sets -- exactly the arms the
+# _spawn_worker_body case statement can actually launch (glm|glm-flash,
+# codex, freepool, sonnet). Do NOT fork a second registry here; when the
+# sibling lands, it replaces the stub body in THIS one function.
+_arm_launchable_arms() {  # <sig8> <kind> -> stdout: csv of launchable arm ids
+  local _sig8="$1" _stub
+  # _dispatchable_arms is space-separated; normalize to csv here so the
+  # descriptor build's comma split sees the real members (a seam that fed
+  # "codex glm sonnet" as ONE comma-field marked every arm not_launchable
+  # and drained the default pool -- caught by the lane's own probe).
+  _stub="$(_dispatchable_arms "${_sig8}" | tr '[:space:]' ',' | sed 's/,+/,/g; s/^,//; s/,$//')"
+  if [[ -f "${SCRIPT_DIR}/lib/leadv2-launch-registry.sh" ]]; then
+    local _reg
+    _reg="$(bash -c 'source "$1" 2>/dev/null; declare -F leadv2_launchable_arms >/dev/null 2>&1 && leadv2_launchable_arms "$2" worker' _ "${SCRIPT_DIR}/lib/leadv2-launch-registry.sh" "$2" 2>/dev/null || true)"
+    if [[ -n "${_reg}" ]]; then
+      if [[ ",${_SEAM_JOURNALED:-}," != *",${_sig8}:$2,"* ]]; then
+        emit decision "launchable_seam task=${_sig8} source=registry kind=$2"
+        _SEAM_JOURNALED="${_SEAM_JOURNALED:+${_SEAM_JOURNALED},}${_sig8}:$2"
+      fi
+      printf '%s' "${_reg}"
+      return 0
+    fi
+  fi
+  if [[ ",${_SEAM_JOURNALED:-}," != *",${_sig8}:$2,"* ]]; then
+    emit decision "launchable_seam task=${_sig8} source=stub_dispatchable kind=$2 note=ARMS-CANNOT-LAUNCH-THEMSELVES-01_registry_not_landed"
+    _SEAM_JOURNALED="${_SEAM_JOURNALED:+${_SEAM_JOURNALED},}${_sig8}:$2"
+  fi
+  printf '%s' "${_stub}"
+}
+
+# The when:-class eligible ladder arms, ORDER-FREE (every entry, never the
+# positional suffix after some already-resolved arm). This is the POLICY
+# bound handed to the arbiter as allowed_arms on the DEFAULT path -- class
+# policy (cost gating like fable's when: [architect, heavy]) stays a bound on
+# the default auction; an explicit --arm-pool or --pin-arm replaces it
+# wholesale. Trust and launchability are deliberately NOT applied here: the
+# arbiter owns the untrusted stage, the seam owns not_launchable, and each
+# stage must stay separately attributable on the decision line.
+_ladder_policy_arms() {  # <sig8> <class> -> stdout: csv
+  local _sig8="$1" _cls="$2" _out
+  _out="$(python3 -c '
+import sys, yaml
+def rows(p):
+    try:
+        d = yaml.safe_load(open(p)) or {}
+    except Exception:
+        return []
+    return [e for e in ((d.get("router") or {}).get("dispatch_ladder") or []) if e.get("id")]
+ents = rows(sys.argv[1])
+if not ents:
+    plug = sys.argv[2]
+    if plug and plug != sys.argv[1]:
+        ents = rows(plug)
+cls = sys.argv[3].lower()
+out = []
+for e in ents:
+    if e.get("dispatch", True) is False:
+        continue
+    when = e.get("when") or ["all"]
+    if isinstance(when, str):
+        when = [when]
+    if not when or "all" in when or cls in [str(w).lower() for w in when]:
+        out.append(e.get("id"))
+print(",".join(out))
+' "${ROUTING_YAML}" "${LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE:-${SCRIPT_DIR}/../config/leadv2-routing.yaml}" "${_cls}" 2>/dev/null)" || _out=""
+  if [[ -z "${_out}" ]]; then
+    # Degraded mode (no yaml at all): fail open to the hardcoded fallback
+    # ladder vocabulary -- same posture as _load_dispatch_ladder.
+    _out="glm,glm-flash,codex,sonnet,freepool"
+    emit decision "ladder_policy_arms_degraded task=${_sig8} reason=no_routing_yaml fallback=glm,glm-flash,codex,sonnet,freepool"
+  fi
+  printf '%s' "${_out}"
+}
+
+# Every arm id the config can name (matrix arms + ladder ids) -- the
+# validation vocabulary for --arm-pool/--pin-arm. An unknown name is a usage
+# error at the door, never a silent sonnet fallback later
+# (arm_vocabulary_mismatch's positional path stays for resolver output only).
+_routing_arm_vocabulary() {  # -> stdout: csv
+  python3 -c '
+import sys, yaml
+def load(p):
+    try:
+        return yaml.safe_load(open(p)) or {}
+    except Exception:
+        return {}
+d = load(sys.argv[1])
+if not ((d.get("router") or {}).get("dispatch_ladder")):
+    plug = load(sys.argv[2])
+    if (plug.get("router") or {}).get("dispatch_ladder"):
+        d = plug
+ids = set()
+for c in ((d.get("router_v2") or {}).get("capability_matrix") or []):
+    if c.get("arm"): ids.add(str(c["arm"]))
+for e in ((d.get("router") or {}).get("dispatch_ladder") or []):
+    if e.get("id"): ids.add(str(e["id"]))
+print(",".join(sorted(ids)))
+' "${ROUTING_YAML}" "${LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE:-${SCRIPT_DIR}/../config/leadv2-routing.yaml}" 2>/dev/null || printf ''
+}
+
+# After the arbiter has chosen: the ladder contributes only its FALLBACK
+# ORDER -- append the when:-eligible, dispatchable, trust-stripped arms that
+# are not already in candidate_arms, so a worker death mid-flight still has
+# somewhere to advance. Same three filters _build_candidate_chain applies to
+# its SUFFIX (when:, untrusted-on-protected, DISPATCHABLE), applied to the
+# WHOLE ladder. Only ever called on the DEFAULT path: an explicit --arm-pool
+# is a hard set and a pin is never silently substituted.
+_append_ladder_fallback_tail() {  # <sig8> <class> ; mutates candidate_arms
+  local _sig8="$1" _policy _dispatchable _id _cand _keep _writes_prod=1
+  _policy="$(_ladder_policy_arms "${_sig8}" "$2")"
+  [[ -n "${_policy}" ]] || return 0
+  _dispatchable="$(_arm_launchable_arms "${_sig8}" "${kind:-code}" | tr ',' ' ')"
+  case "${kind:-code}" in review|audit|plan) _writes_prod=0 ;; esac
+  (( ${#_LADDER_IDS[@]} > 0 )) || _load_dispatch_ladder
+  local -a _tail=()
+  IFS=',' read -r -a _pol_arr <<< "${_policy}"
+  for _id in ${_pol_arr[@]+"${_pol_arr[@]}"}; do
+    [[ -n "${_id}" ]] || continue
+    _keep=0
+    for _cand in ${_dispatchable}; do
+      [[ "${_cand}" == "${_id}" ]] && { _keep=1; break; }
+    done
+    [[ "${_keep}" == "1" ]] || continue
+    _keep=1
+    for _cand in ${candidate_arms[@]+"${candidate_arms[@]}"}; do
+      [[ "${_cand}" == "${_id}" ]] && { _keep=0; break; }
+    done
+    [[ "${_keep}" == "1" ]] || continue
+    # protected/safety lanes never fall back to an untrusted ladder arm --
+    # the same rule _build_candidate_chain applies to its suffix (freepool
+    # and glm-flash carry untrusted: true), applied to the whole ladder.
+    if [[ ( "${safety:-0}" == "1" || "${protected:-0}" == "1" ) && "${_writes_prod}" == "1" ]]; then
+      local _ti _untrusted=0
+      for _ti in "${!_LADDER_IDS[@]}"; do
+        if [[ "${_LADDER_IDS[${_ti}]}" == "${_id}" ]]; then
+          _untrusted="${_LADDER_UNTRUSTED[${_ti}]:-0}"
+          break
+        fi
+      done
+      [[ "${_untrusted}" == "1" ]] && continue
+    fi
+    _tail+=("${_id}")
+  done
+  if [[ ${#_tail[@]} -gt 0 ]]; then
+    candidate_arms+=("${_tail[@]}")
+    emit decision "ladder_fallback_appended task=${_sig8} tail=$(IFS=,; printf '%s' "${_tail[*]}")"
+  fi
+}
+
 # Map a router_v2 arm id to the launcher's spawn-case vocabulary. Table-free
 # prefix strip: claude-<model> -> <model>. Everything else is identity, so a
 # future claude-fable needs no edit here.
@@ -2607,7 +2760,13 @@ _normalize_v2_arm() {  # <v2_arm_id> -> stdout: launcher arm id
 # `arm_dropped_not_dispatchable ... router=v2` keep matching.
 _filter_arms_to_dispatchable() {  # <sig8> <router_label:v1|v2> [site]
   local _sig8="$1" _router="$2" _site="${3:-}" _dispatchable _id _keep _d
-  _dispatchable="$(_dispatchable_arms "${_sig8}")"
+  # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: this filter asks "can the
+  # launcher spawn this arm" -- that is the launchability seam's question,
+  # not the resolver vocabulary's. Routed through _arm_launchable_arms so a
+  # registry (ARMS-CANNOT-LAUNCH-THEMSELVES-01) is honoured at adoption too;
+  # with the stub the set is byte-identical to _dispatchable_arms for every
+  # kind, so v1 build chains are unchanged.
+  _dispatchable="$(_arm_launchable_arms "${_sig8}" "${kind:-code}" | tr ',' ' ')"
   local -a _kept=()
   for _id in "${candidate_arms[@]}"; do
     _keep=0
@@ -7512,6 +7671,12 @@ cmd_resolve() {
   # arm out-of-band from the auction; empty (the default) is byte-identical
   # to today's behaviour.
   local requested_arm=""
+  # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01 (2026-09-07): --arm-pool a,b,c
+  # is the HARD candidate set for the whole dispatch -- unknown names, an
+  # empty pool, or a pin+pool conflict are errors before anything launches.
+  # Empty (the default) = every enabled, launchable matrix cell for this
+  # kind/role competes.
+  local arm_pool_cli=""
   # NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-ACCOUNT-01 (founder, via Leadmain,
   # 2026-09-07): symmetric to --requested-arm, one layer down -- pins the
   # sonnet arm to a specific Anthropic account LABEL (registry:
@@ -7544,6 +7709,10 @@ cmd_resolve() {
       --safety)       safety=1;      shift ;;
       --requested-arm) [[ $# -ge 2 ]] || { log_err "--requested-arm requires a value"; usage; }
                       requested_arm="$2"; shift 2 ;;
+      --pin-arm)     [[ $# -ge 2 ]] || { log_err "--pin-arm requires a value"; usage; }
+                      requested_arm="$2"; shift 2 ;; # alias: a pin IS a singleton pool
+      --arm-pool)    [[ $# -ge 2 ]] || { log_err "--arm-pool requires a value"; usage; }
+                      arm_pool_cli="$2"; shift 2 ;;
       --requested-profile) [[ $# -ge 2 ]] || { log_err "--requested-profile requires a value"; usage; }
                       requested_profile="$2"; shift 2 ;;
       # R1 FIX (Finding 5): guard arg-count BEFORE shift 2 -- a valued flag with no
@@ -7638,6 +7807,45 @@ cmd_resolve() {
   JOURNAL_TASK="dispatch-${sig8}"
   if [[ -z "${sig}" ]] || ! sig_is_hex "${sig}"; then
     log_err "signature computation failed"; exit 1
+  fi
+  # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: two words, not three.
+  #   --arm-pool a,b,c  hard candidate set (the auction runs INSIDE it)
+  #   --pin-arm x       hard filter, singleton pool (alias: --requested-arm)
+  # Unknown names, an empty pool, or a CLI conflict die HERE -- before any
+  # reservation/lock/spawn, never as a mid-chain sonnet fallback at
+  # _build_candidate_chain time. The canonical set is journaled
+  # (arm_pool_persisted) so resume and arm-advance keep honouring it.
+  if [[ -n "${arm_pool_cli}" || -n "${requested_arm}" ]]; then
+    local _arm_vocab _bad=""
+    _arm_vocab="$(_routing_arm_vocabulary)"
+    [[ -n "${_arm_vocab}" ]] || _arm_vocab="glm,glm-flash,freepool,codex,sonnet,haiku,opus,fable"
+    if [[ -n "${arm_pool_cli}" && -n "${requested_arm}" ]]; then
+      emit decision "dispatch_refused reason=pin_and_pool_conflict task=${sig8} pin=${requested_arm} pool=${arm_pool_cli}"
+      log_err "--pin-arm/--requested-arm and --arm-pool are mutually exclusive: a pin IS a singleton pool"
+      exit 2
+    fi
+    if [[ -n "${arm_pool_cli}" ]]; then
+      local _p _p1
+      IFS=',' read -r -a _pool_arr <<< "${arm_pool_cli}"
+      for _p in ${_pool_arr[@]+"${_pool_arr[@]}"}; do
+        if [[ -z "${_p}" ]]; then _bad="<empty member>"; break; fi
+        [[ ",${_arm_vocab}," == *",${_p},"* ]] || { _bad="${_p}"; break; }
+      done
+      if [[ ${#_pool_arr[@]} -eq 0 ]]; then _bad="<empty>"; fi
+      if [[ -n "${_bad}" ]]; then
+        emit decision "dispatch_refused reason=arm_pool_unknown_arm task=${sig8} pool=${arm_pool_cli} bad=${_bad} vocab=${_arm_vocab}"
+        log_err "--arm-pool: unknown or empty member '${_bad}' (vocabulary: ${_arm_vocab})"
+        exit 2
+      fi
+    fi
+    if [[ -n "${requested_arm}" ]]; then
+      if [[ ",${_arm_vocab}," != *",${requested_arm},"* ]]; then
+        emit decision "dispatch_refused reason=pin_arm_unknown task=${sig8} pin=${requested_arm} vocab=${_arm_vocab}"
+        log_err "--pin-arm: unknown arm '${requested_arm}' (vocabulary: ${_arm_vocab})"
+        exit 2
+      fi
+    fi
+    emit decision "arm_pool_persisted task=${sig8} pool=${arm_pool_cli:--} pin=${requested_arm:--} src=cli"
   fi
   # PLUGIN-REVIEW-ARMS-01 §3.2: provenance self-check. The 4c9ddb05 incident ran a
   # whole dispatch out of a STALE real-copy tree (.claude/scripts/, pre-07-30 writers),
@@ -8383,7 +8591,12 @@ exit is treated as an incident."
   # opus arms are lead judgment (design/safety/arch) — resolved but NOT auto-dispatched,
   # so there is nothing to spawn or roll back. Keep the simpler reserve-only atomic (no
   # race is possible here: nothing ever needs to be undone for this arm).
-  if [[ "${arm}" == "opus" ]]; then
+  # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: the pre-arbiter opus park
+  # only guards the DEFAULT path (opus shares the lead's own account window;
+  # its matrix cell is pool_default: false). An explicit --pin-arm opus or an
+  # --arm-pool containing opus is an operator decision: it goes through the
+  # arbiter and either runs or refuses with a typed stage.
+  if [[ "${arm}" == "opus" && -z "${requested_arm}" && -z "${arm_pool_cli}" ]]; then
     local orc
     atomic_dispatch_reserve_confirm_opus "${sig}" "${arm}" "${rule}"
     orc=$?
@@ -8513,9 +8726,31 @@ exit is treated as an incident."
     # rule) can see them, not just kind/size/protected.
     # complexity_source (ARBITER-SCORING-DESIGN-01 step 2, §5.1/§7.1) rides
     # along -- post-floor provenance, read by the arbiter at :478.
-    local _arb_allowed_csv
-    _arb_allowed_csv="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
-    _arb_desc="$(python3 -c 'import json,sys; allowed=[a for a in sys.argv[6].split(",") if a]; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[7],"allowed_arms":allowed,"complexity":sys.argv[8],"duration_class":sys.argv[9],"test_only":sys.argv[10]=="1","requested_arm":sys.argv[11],"complexity_source":sys.argv[12]}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${_arb_allowed_csv}" "${sig8}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}" "${_test_only}" "${requested_arm}" "${DC_COMPLEXITY_SOURCE:-unknown}")"
+    local _arb_allowed_csv _arb_launchable_csv _arb_pool_flag=0
+    # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: the pool the arbiter sees
+    # is NO LONGER candidate_arms -- that array is the ladder SUFFIX from an
+    # already-resolved arm (the mechanism that let a pinned fable be refused
+    # as "incapable" while never being in the room). It is now:
+    #   pin        -> no policy bound; the pin IS the pool. Matrix,
+    #                 launchability, trust and budget still bind, each as its
+    #                 own typed stage in the arbiter's refusal line.
+    #   --arm-pool -> the validated CLI set, verbatim.
+    #   default    -> every when:-class eligible ladder arm, order-free
+    #                 (_ladder_policy_arms): class policy stays a bound on
+    #                 the DEFAULT auction only, never on an explicit pool.
+    # candidate_arms survives as the CRASH-FALLBACK chain when the arbiter
+    # itself faults, and gains the ladder tail after adoption (fallback
+    # ORDER, never a bound -- see _append_ladder_fallback_tail).
+    _arb_launchable_csv="$(_arm_launchable_arms "${sig8}" "${kind:-code}")"
+    [[ -n "${arm_pool_cli}" ]] && _arb_pool_flag=1
+    if [[ -n "${requested_arm}" ]]; then
+      _arb_allowed_csv=""
+    elif [[ "${_arb_pool_flag}" == "1" ]]; then
+      _arb_allowed_csv="${arm_pool_cli}"
+    else
+      _arb_allowed_csv="$(_ladder_policy_arms "${sig8}" "${task_class:-standard}")"
+    fi
+    _arb_desc="$(python3 -c 'import json,sys; allowed=[a for a in sys.argv[6].split(",") if a] or None; launch=[a for a in sys.argv[13].split(",") if a]; pool=[a for a in sys.argv[14].split(",") if a] if sys.argv[15]=="1" else None; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[7],"allowed_arms":allowed,"launchable_arms":launch,"arm_pool":pool,"complexity":sys.argv[8],"duration_class":sys.argv[9],"test_only":sys.argv[10]=="1","requested_arm":sys.argv[11],"complexity_source":sys.argv[12]}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${_arb_allowed_csv}" "${sig8}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}" "${_test_only}" "${requested_arm}" "${DC_COMPLEXITY_SOURCE:-unknown}" "${_arb_launchable_csv}" "${arm_pool_cli}" "${_arb_pool_flag}")"
     _arb_out="$(route_arbiter worker "${_arb_desc}")"; _arb_rc=$?
     _arb_arm="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _arb_chain="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
@@ -8527,6 +8762,11 @@ exit is treated as an incident."
   # alone, the record a lead audits.
   _arb_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*[[:space:]]reason=\([^ ]*\).*/\1/p')"
     _arb_util="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
+    # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: the arbiter's typed
+    # arm_excluded token (not_in_pool, not_launchable, untrusted, capped,
+    # failure_memory, price_ratio) is already part of the util_glm.. capture
+    # above (the arbiter prints it after the util tokens) -- it rides the
+    # route_resolved lines below for free, no second injection.
     _arb_tier="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*tier=\([^ ]*\).*/\1/p')"
     _arb_model="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*model=\([^ ]*\).*/\1/p')"
     # EFFORT-IS-NOT-WIRED-01: effort comes out of this SAME arbiter call, same
@@ -8567,6 +8807,15 @@ exit is treated as an incident."
       # auto-spawn, and the pre-fix wiring set candidate_arms directly from
       # _arb_chain with no filter at all.
       if _adopt_v2_chain "${sig8}" arbiter "${_arb_chain}"; then
+        # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: candidate_arms :=
+        # arbiter chain (price-ranked) ++ ladder arms not already present.
+        # The ladder is the FALLBACK ORDER after the winner, never a bound on
+        # the pool that chose it. Default path only: an explicit --arm-pool
+        # is a hard set, and a pin is never silently substituted, so neither
+        # gets a ladder tail.
+        if [[ -z "${requested_arm}" && -z "${arm_pool_cli}" ]]; then
+          _append_ladder_fallback_tail "${sig8}" "${task_class:-standard}"
+        fi
         # T17 fix-round (H1): journal the arm that will ACTUALLY spawn first
         # (candidate_arms[0], post-filter/post-rotation), not the raw
         # arbiter pick -- the spawn loop below iterates candidate_arms from
@@ -8588,7 +8837,7 @@ exit is treated as an incident."
       _model_select_telemetry fail all_arms_capped refuse
       _dl_note "${sig8}" refused all_arms_capped "${_arb_util}" "${founder_task_id}"
       exit 4
-    elif [[ -n "${requested_arm}" && ( ${_arb_rc} -eq 69 || ${_arb_rc} -eq 70 ) ]]; then
+    elif [[ ( -n "${requested_arm}" && ( ${_arb_rc} -eq 69 || ${_arb_rc} -eq 70 ) ) || ( -n "${arm_pool_cli}" && ${_arb_rc} -eq 68 ) ]]; then
       # EXPLICIT-ARM-REQUEST-01: a named-arm request that the arbiter refused
       # (incapable of this kind/size, or every matching cell capped) must be
       # a HARD refusal here too -- the generic `else` below fail-opens to the
@@ -8667,7 +8916,11 @@ exit is treated as an incident."
   if [[ "${_primary_arm_benched}" == "1" && ${#candidate_arms[@]} -gt 0 ]] && declare -F route_arbiter >/dev/null 2>&1; then
     local _bf_desc _bf_out _bf_rc _bf_chain _bf_arm _bf_util _bf_allowed
     _bf_allowed="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
-    _bf_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"allowed_arms":[x for x in sys.argv[3].split(",") if x]}))' "${kind:-code}" "${task_class:-standard}" "${_bf_allowed}")"
+    # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: bench re-arbitration uses
+    # arm_pool (the HARD set of still-viable arms), not allowed_arms (the
+    # policy bound), and threads requested_arm: a benched PIN is refused as
+    # requested_arm_not_in_pool rather than silently re-run on another arm.
+    _bf_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"arm_pool":[x for x in sys.argv[3].split(",") if x],"launchable_arms":[x for x in sys.argv[4].split(",") if x],"requested_arm":sys.argv[5],"task":sys.argv[6]}))' "${kind:-code}" "${task_class:-standard}" "${_bf_allowed}" "$(_arm_launchable_arms "${sig8}" "${kind:-code}")" "${requested_arm}" "${sig8}")"
     _bf_out="$(route_arbiter worker "${_bf_desc}")"; _bf_rc=$?
     _bf_arm="$(printf '%s\n' "${_bf_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _bf_chain="$(printf '%s\n' "${_bf_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
@@ -9330,12 +9583,49 @@ cmd_advance_arm() {
     _adv_chain="$(bash "${JOURNAL_BIN}" tail "${sig8}" 100000 2>/dev/null | \
       grep -F "candidate_chain task=${sig8} arms=" | tail -1 | sed -n 's/.*arms=//p')"
   fi
+  # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: the canonical pool/pin was
+  # journaled at validation time (arm_pool_persisted); advance-arm re-reads
+  # it so an arm-advance keeps honouring it -- a pinned dispatch never
+  # advances to a different arm, and an explicit pool is intersected down,
+  # never widened by the ladder tail.
+  local _adv_pin="" _adv_pool=""
+  local _adv_pool_line
+  _adv_pool_line="$(bash "${JOURNAL_BIN}" tail "${sig8}" 100000 2>/dev/null | \
+    grep -F "arm_pool_persisted task=${sig8} pool=" | tail -1)"
+  if [[ -n "${_adv_pool_line}" ]]; then
+    _adv_pin="$(printf '%s' "${_adv_pool_line}" | sed -n 's/.* pin=\([^ ]*\).*//p')"
+    _adv_pool="$(printf '%s' "${_adv_pool_line}" | sed -n 's/.* pool=\([^ ]*\).*//p')"
+  fi
+  if [[ "${_adv_pin}" == "-" ]]; then _adv_pin=""; fi
+  if [[ "${_adv_pool}" == "-" ]]; then _adv_pool=""; fi
+  if [[ -n "${_adv_pin}" && "${arm}" != "${_adv_pin}" ]]; then
+    emit decision "advance_pin_restored task=${sig8} static=${arm} pin=${_adv_pin}"
+    arm="${_adv_pin}"
+  fi
   local _adv_remaining
   if _adv_remaining="$(_advance_remaining_chain "${_adv_chain}" "${arm}")" && [[ -n "${_adv_remaining}" ]] \
      && declare -F route_arbiter >/dev/null 2>&1; then
     local _adv_desc _adv_out _adv_rc _adv_arm _adv_chainout _adv_util
-    _adv_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":"code","size":sys.argv[1],"allowed_arms":[x for x in sys.argv[2].split(",") if x]}))' \
-      "$(printf '%s' "${_adv_class:-standard}" | tr '[:upper:]' '[:lower:]')" "${_adv_remaining}")"
+    # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: arm_pool (HARD set --
+    # the remaining arms), not allowed_arms (policy); the persisted pin
+    # rides along so a pin is honoured or refused, never substituted.
+    if [[ -n "${_adv_pool}" ]]; then
+      local _adv_m
+      local -a _adv_flt=()
+      IFS=',' read -r -a _adv_arr <<< "${_adv_remaining}"
+      for _adv_m in ${_adv_arr[@]+"${_adv_arr[@]}"}; do
+        [[ -n "${_adv_m}" ]] || continue
+        [[ ",${_adv_pool}," == *",${_adv_m},"* ]] && _adv_flt+=("${_adv_m}")
+      done
+      if [[ ${#_adv_flt[@]} -gt 0 ]]; then
+        _adv_remaining="$(IFS=,; printf '%s' "${_adv_flt[*]}")"
+      else
+        _adv_remaining="${arm}"
+        emit decision "advance_pool_exhausted task=${sig8} pool=${_adv_pool} static=${arm}"
+      fi
+    fi
+    _adv_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":"code","size":sys.argv[1],"arm_pool":[x for x in sys.argv[2].split(",") if x],"launchable_arms":[x for x in sys.argv[3].split(",") if x],"requested_arm":sys.argv[4],"task":sys.argv[5]}))' \
+      "$(printf '%s' "${_adv_class:-standard}" | tr '[:upper:]' '[:lower:]')" "${_adv_remaining}" "$(_arm_launchable_arms "${sig8}" code)" "${_adv_pin}" "${sig8}")"
     _adv_out="$(route_arbiter worker "${_adv_desc}")"; _adv_rc=$?
     _adv_arm="$(printf '%s\n' "${_adv_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _adv_chainout="$(printf '%s\n' "${_adv_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"

@@ -267,18 +267,54 @@ if ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${_p8_e2e_root}")
   exit 1
 fi
 E2E_TIMEOUT_S="${LEADV2_PHASE8_E2E_TIMEOUT_S:-900}"
+# GATE-BUDGET-TOO-SMALL-FOR-run-all-OWN-SUITES-01 (2026-09-08): the measured
+# answer is "scoped, and not slow" — on parked lane fb9df7f1 (worktree
+# d2823c51e670, base main@3cb4c49f, 4 changed plugin files) `--scope changed`
+# selects 6 suites on a first run / 4 in steady state and finishes in ~165s
+# wall against a 900s budget, so neither run-all's own selection nor the
+# ceiling was the binding constraint (the historical rc=124s were the
+# pre-scope-forwarding core-offline sweep and a dirty-worktree selection).
+# What a timeout verdict could not do was say how much of its budget it
+# consumed — diagnosing one took a 510-line log. So every verdict — pass,
+# fail, foreign, timeout — now carries elapsed_s and budget_s in the journal
+# decision, in $LOG, and on stderr. DECLARED NEGATIVE CONTROLS
+# (E2E-KILLRATE-01), applied by leadv2-mutation-control.sh to marker lines
+# INSIDE the two function bodies below (never at top level):
+#   M1 elapsed-mut-1: force the span to 0 (stop-minus-start becomes
+#      start-minus-start inside _p8_e2e_elapsed_s) -> every verdict line
+#      lies elapsed_s=0; test-gate-reaches-a-verdict.sh reddens on the
+#      ELAPSED VALUE (a stub that sleeps 2s must report >=2).
+#   M2 skip-mut-1: replace the sweep-invocation line in _p8_run_e2e_sweep
+#      with `true` -> the gate reaches verdict=pass having executed ZERO
+#      suites; the suite reddens on the EXECUTED-SUITE COUNT (0 != 1) — a
+#      gate that passes by running less than it should is the defect this
+#      lane's family has already removed three times.
+_p8_e2e_start_s=0
+_p8_e2e_stop_s=0
+_p8_e2e_elapsed_s() { # -> whole seconds the e2e sweep actually ran
+  # elapsed-mut-1 marker: the true span start->stop
+  printf '%s\n' "$(( _p8_e2e_stop_s - _p8_e2e_start_s ))"
+}
 # Keep the timeout helper's output in a temporary file and replay it into the
 # gate log. `/dev/stdout` is not portable on macOS (and can fail under a
 # sandbox), while the helper needs a real writable logfile to preserve rc=124.
+# The sweep is a FUNCTION (skip-mut-1 marker lives in this body): errexit
+# stays suppressed for it exactly as it was for the old subshell, because the
+# call site below keeps its `|| rc=$?` context.
 _p8_e2e_run_log="$(mktemp "${TMPDIR:-/tmp}/e2e-gate-run.XXXXXX")"
-(
+_p8_run_e2e_sweep() { # -> rc of the sweep; transcript replayed to stdout
   printf 'e2e-root: %s\n' "${_p8_e2e_root}"
+  # skip-mut-1 marker: this invocation is the entire suite run
   ( cd "${_p8_e2e_root}" && _lv2_selfcheck_timeout_run "${E2E_TIMEOUT_S}" "${_p8_e2e_run_log}" -- bash -c "${e2e_cmd} --scope changed" )
-  _p8_e2e_rc=$?
+  local _p8_sweep_rc=$?
   cat "${_p8_e2e_run_log}" 2>/dev/null
-  exit "${_p8_e2e_rc}"
-) > "$LOG" 2>&1 || rc=$?
+  return "${_p8_sweep_rc}"
+}
+_p8_e2e_start_s="$(date +%s)"
+_p8_run_e2e_sweep > "$LOG" 2>&1 || rc=$?
+_p8_e2e_stop_s="$(date +%s)"
 rm -f "${_p8_e2e_run_log}"
+_p8_elapsed_s="$(_p8_e2e_elapsed_s)"
 if [[ $rc -eq 124 ]]; then
   echo "leadv2-phase8-e2e-gate: e2e suite TIMED OUT after ${E2E_TIMEOUT_S}s" >> "$LOG"
 fi
@@ -321,8 +357,10 @@ if [[ ${rc} -eq 124 ]]; then
   _p8_e2e_commit="$(git -C "${_p8_e2e_root}" rev-parse HEAD 2>/dev/null || echo unknown)"
   printf 'status: unknown\nreason: e2e_timeout\nrc: %s\ntimeout_s: %s\ncommit: %s\ngate: phase8_close\n' \
     "${rc}" "${E2E_TIMEOUT_S}" "${_p8_e2e_commit}" > "${OUT_DIR}/e2e-gate.md" 2>/dev/null || true
-  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=timeout rc=${rc} timeout_s=${E2E_TIMEOUT_S}"
-  echo "leadv2-phase8-e2e-gate: TIMEOUT (tests/run-all.sh --scope changed exceeded ${E2E_TIMEOUT_S}s) — see ${LOG}" >&2
+  printf 'elapsed_s: %s\nbudget_s: %s\n' "${_p8_elapsed_s}" "${E2E_TIMEOUT_S}" >> "${OUT_DIR}/e2e-gate.md" 2>/dev/null || true
+  printf 'e2e_gate task=%s verdict=timeout elapsed_s=%s budget_s=%s\n' "${TASK_ID}" "${_p8_elapsed_s}" "${E2E_TIMEOUT_S}" >> "$LOG"
+  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=timeout rc=${rc} timeout_s=${E2E_TIMEOUT_S} elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}"
+  echo "leadv2-phase8-e2e-gate: TIMEOUT (tests/run-all.sh --scope changed exceeded ${E2E_TIMEOUT_S}s; elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}) — see ${LOG}" >&2
   tail -40 "$LOG" >&2 || true
   exit 5
 fi
@@ -330,7 +368,9 @@ fi
 if [[ $rc -eq 0 ]]; then
   printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: %s\nbypassed: false\nbypass_reason: \ndeploy_verified: %s\ndeploy_verify_bypassed: %s\ndeploy_verify_bypass_reason: %s\n' \
     "$TASK_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${PASS_SCOPE}" "$DEPLOY_VERIFIED" "$DEPLOY_VERIFY_BYPASSED" "$DEPLOY_VERIFY_BYPASS_REASON" > "$SENTINEL"
-  echo "leadv2-phase8-e2e-gate: PASS — sentinel written: ${SENTINEL}" >&2
+  printf 'e2e_gate task=%s verdict=pass elapsed_s=%s budget_s=%s\n' "${TASK_ID}" "${_p8_elapsed_s}" "${E2E_TIMEOUT_S}" >> "$LOG"
+  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=pass scope=${PASS_SCOPE} elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}"
+  echo "leadv2-phase8-e2e-gate: PASS — sentinel written: ${SENTINEL} (elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S})" >&2
   exit 0
 fi
 
@@ -381,7 +421,8 @@ if [[ ( -n "${FOREIGN_CSV}" || -n "${PRE_EXISTING_CSV}" ) && -z "${OWN_CSV}" && 
     "$TASK_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${FOREIGN_CSV}" "$DEPLOY_VERIFIED" "$DEPLOY_VERIFY_BYPASSED" "$DEPLOY_VERIFY_BYPASS_REASON" > "$SENTINEL"
   _P8_VERDICT="foreign_failure"
   [[ -z "${FOREIGN_CSV}" ]] && _P8_VERDICT="pre_existing_red"
-  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=${_P8_VERDICT} scope=lane_writes foreign_suites=${FOREIGN_CSV} pre_existing_suites=${PRE_EXISTING_CSV} foreign_files=${FOREIGN_FILES_CSV} owner_lane=${OWNER_LANE} own_failures=0"
+  printf 'e2e_gate task=%s verdict=%s elapsed_s=%s budget_s=%s\n' "${TASK_ID}" "${_P8_VERDICT}" "${_p8_elapsed_s}" "${E2E_TIMEOUT_S}" >> "$LOG"
+  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=${_P8_VERDICT} scope=lane_writes foreign_suites=${FOREIGN_CSV} pre_existing_suites=${PRE_EXISTING_CSV} foreign_files=${FOREIGN_FILES_CSV} owner_lane=${OWNER_LANE} own_failures=0 elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}"
   IFS=',' read -r -a _foreign_suite_arr <<< "${FOREIGN_CSV}"
   for _s in "${_foreign_suite_arr[@]}"; do
     [[ -z "${_s}" ]] && continue
@@ -392,15 +433,16 @@ if [[ ( -n "${FOREIGN_CSV}" || -n "${PRE_EXISTING_CSV}" ) && -z "${OWN_CSV}" && 
     [[ -z "${_s}" ]] && continue
     _p8_emit decision "pre_existing_red task=${TASK_ID} suite=${_s} baseline=merge_base note=already_red_before_this_lane"
   done
-  echo "leadv2-phase8-e2e-gate: FOREIGN_FAILURE — ${FOREIGN_CSV} not reproducible against lane's own writes (owner_lane=${OWNER_LANE}); sentinel written — see ${LOG}" >&2
+  echo "leadv2-phase8-e2e-gate: FOREIGN_FAILURE — ${FOREIGN_CSV} not reproducible against lane's own writes (owner_lane=${OWNER_LANE}; elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}); sentinel written — see ${LOG}" >&2
   exit 0
 fi
 
+printf 'e2e_gate task=%s verdict=fail elapsed_s=%s budget_s=%s\n' "${TASK_ID}" "${_p8_elapsed_s}" "${E2E_TIMEOUT_S}" >> "$LOG"
 if [[ -z "${WRITES_CSV}" ]]; then
-  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=fail rc=${rc} scope=whole_tree_fallback"
+  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=fail rc=${rc} scope=whole_tree_fallback elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}"
 else
-  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=fail rc=${rc}"
+  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=fail rc=${rc} elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}"
 fi
-echo "leadv2-phase8-e2e-gate: FAIL (tests/run-all.sh --scope changed exit ${rc}) — see ${LOG}" >&2
+echo "leadv2-phase8-e2e-gate: FAIL (tests/run-all.sh --scope changed exit ${rc}; elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}) — see ${LOG}" >&2
 tail -40 "$LOG" >&2 || true
 exit 1
