@@ -3,12 +3,36 @@
 # from the canonical plugin source tree to all runtime locations.
 #
 # Syncs to:
-#   (a) ~/.claude/plugins/cache/leadv2-local/leadv2/0.1.0/  (full plugin cache)
+#   (a) RETIRED (C1-RETIRE-RSYNC, 2026-09-08): the hardcoded
+#       ~/.claude/plugins/cache/leadv2-local/leadv2/0.1.0/ leg is gone — that
+#       version dir is ORPHANED by the runtime (installed_plugins.json
+#       installPath = .../0.5.7 is authoritative; 0.1.0 carries a runtime
+#       .orphaned_at marker; hook/command BODIES are live-from-repo via the
+#       plugins/local symlink). The ACTIVE cache dir has its own dedicated
+#       producer: leadv2-plugin-cache-sync.sh. Nothing is written to the
+#       cache from this script anymore — deliberately stopped, not linked.
 #   (b) ~/.claude/leadv2-shared/                            (scripts + contracts + hooks)
+#       LINK-ONLY producer (C1-RETIRE-RSYNC): a plugin-owned canonical file
+#       with no destination counterpart enters as a symlink into
+#       plugins/leadv2/, never a real copy. The gated rsync leg remains ONLY
+#       as shadow refresh for pre-existing real copies (never creates files:
+#       absent plugin-owned files are already links and excluded).
 #   (c) <project>/.claude/scripts/                          (per-repo runtimes from cross-repo-paths.yaml)
+#       already link-mode — _link_project_scripts, unchanged.
 #   (d) <project>/.claude/contracts/                        (schema files per-repo)
+#       LINK-ONLY (C1-RETIRE-RSYNC): same _link_one_file pass as (c). An
+#       existing real copy is structurally never written anymore, so the
+#       cp-era backward-refusal machinery is deleted (see _sync_project_root).
 #   (e) ~/.claude/scripts/                                  (user-global leadv2-* scripts; ADDITIVE, no --delete)
-#   (f) ~/.codex/skills/source-command-leadv2/              (Codex leadv2 skill; enables provider=codex lead sessions)
+#       LINK-ONLY producer for the leadv2-* + explicit-name set; rsync leg
+#       stays as shadow refresh, same as (b).
+#   (f) ~/Projects/leadv2/.claude/scripts/                  (this repo's own vendored copy)
+#       still rsync --delete, unchanged this lane (header doc previously
+#       mis-numbered this leg out of the list).
+#   (g) ~/.codex/skills/source-command-leadv2/              (Codex leadv2 skill; enables provider=codex lead sessions)
+#       still an additive copy, unchanged: ~/.codex is not ours and Codex-side
+#       symlink acceptance is UNVERIFIED — converting it is deferred, not
+#       assumed either way.
 #
 # (c)/(d): reads project roots from ~/.claude/leadv2-shared/cross-repo-paths.yaml.
 # Missing root on disk → WARN + skip (never silent).
@@ -39,9 +63,10 @@
 # files diverged from canonical and were left untouched — promote or discard
 # before the next sync (D1, PLUGIN-SYNC-CLAUDE-SCRIPTS-01).
 #
-# Write gates (DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01), applied per file a real
-# run would overwrite, in order — a dirty destination is refused regardless of
-# direction tags:
+# Write gates (DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01), applied by the remaining
+# rsync legs — the shadow-refresh transfers on (b)/(e) and the vendored (f)
+# leg — per file a real run would overwrite, in order — a dirty destination is
+# refused regardless of direction tags:
 #   1. Uncommitted destination: if the destination file is TRACKED and MODIFIED
 #      (or staged) in the destination repo's git, hard-refuse that file. No
 #      flag overrides this; the only path forward is commit-or-promote.
@@ -54,6 +79,11 @@
 #      leadv2-drift-guard.sh decide_direction, 2s buffer), refuse without
 #      --allow-backward — exclude + print the promote command. With
 #      --allow-backward, the pre-existing quarantine-then-reconcile applies.
+# (d) project contracts are link-only since C1-RETIRE-RSYNC: an existing real
+# copy is structurally never written (a divergent copy is DRIFT, left
+# untouched), so the cp-era _contract_write_gate is deleted; only the
+# uncommitted-destination hard-refuse survives, checked inline before
+# _link_one_file.
 #
 # Idempotent: safe to re-run after any plugin edit.
 
@@ -127,7 +157,6 @@ log "Mode: $([[ "${DRY_RUN}" == "true" ]] && printf -- 'DRY_RUN (default; pass -
 _REFUSED_COUNT=0
 
 # ── Target directories ────────────────────────────────────────────────────────
-CACHE_TARGET="${HOME}/.claude/plugins/cache/leadv2-local/leadv2/0.1.0"
 SHARED_TARGET="${HOME}/.claude/leadv2-shared"
 CROSS_REPO_CONFIG="${HOME}/.claude/leadv2-shared/cross-repo-paths.yaml"
 
@@ -162,6 +191,36 @@ _is_plugin_sync_exception() {
     [[ "${e}" == "${key}" ]] && return 0
   done
   return 1
+}
+
+# ── Plugin-owned gate (C1-RETIRE-RSYNC, 2026-09-08) ───────────────────────────
+# Founder's definition, verbatim: a file is plugin-owned IFF its relative path
+# exists in canonical git — `git -C <canonical> ls-files plugins/leadv2/<rel>`.
+# Name prefixes decide nothing. The link-only destinations (b)/(d)/(e) create
+# symlinks ONLY for plugin-owned files: an untracked canonical file (mid-flight,
+# not yet committed) is not plugin-owned, is never linked, and is logged
+# SKIP-UNTRACKED — the legacy rsync legs still deliver it as before until it is
+# committed, after which the next run converts the delivered copy to a link.
+# Fail-closed: if the index cannot be read, NOTHING is plugin-owned (no links
+# created that run; rsync behavior unchanged) and one WARN is logged.
+_PLUGIN_OWNED_LIST=""
+_PLUGIN_OWNED_LOADED=false
+_load_plugin_owned_index() {
+  if [[ "${_PLUGIN_OWNED_LOADED}" == "true" ]]; then return 0; fi
+  _PLUGIN_OWNED_LOADED=true
+  if ! command -v git >/dev/null 2>&1; then
+    log_warn "plugin-owned index unavailable: git not on PATH — link-only destinations create NO links this run (fail-closed)"
+    return 0
+  fi
+  _PLUGIN_OWNED_LIST="$(git -C "${PLUGIN_GIT_ROOT}" ls-files -- 'plugins/leadv2/' 2>/dev/null || true)"
+  if [[ -z "${_PLUGIN_OWNED_LIST}" ]]; then
+    log_warn "plugin-owned index empty for ${PLUGIN_GIT_ROOT} — link-only destinations create NO links this run (fail-closed)"
+  fi
+}
+_is_plugin_owned() { # $1 = repo-relative path, e.g. plugins/leadv2/scripts/foo.sh
+  _load_plugin_owned_index
+  [[ -z "${_PLUGIN_OWNED_LIST}" ]] && return 1
+  printf '%s\n' "${_PLUGIN_OWNED_LIST}" | grep -Fxq -- "$1"
 }
 
 # --checksum only (no -u): mtime skew must never cause silent content divergence.
@@ -310,6 +369,171 @@ _link_diff_detail() {
   fi
   lines="$(diff "${canonical_file}" "${dst_file}" 2>/dev/null | grep -cE '^[<>]' || true)"
   printf '%s lines differ\n' "${lines:-unknown}"
+}
+
+# ── Link-only producer pass (C1-RETIRE-RSYNC, 2026-09-08) ─────────────────────
+# The (b) shared tree and (e) user-global scripts used to be pure rsync
+# targets — an rsync target drifts between --write runs by construction, which
+# is how the shadow census arose. This pass makes those destinations behave
+# the way (c) already does: a plugin-owned canonical file with no destination
+# counterpart enters as a SYMLINK into plugins/leadv2/, never a real copy; an
+# identical real copy converts losslessly (CONVERT); a divergent real copy is
+# DRIFT — left untouched, never converted here (bulk conversion of drifted
+# shadows is step 3, SD-SYMLINK-FARM-CONVERT-01, condition-bound on no live
+# worktrees) — and remains the gated rsync leg's job.
+#
+# Two producer duties unique to this pass:
+#   * syntax-gate at creation: never LINK a canonical .sh that fails bash -n
+#     (HOOK-EDIT-SPAWN-POISON-01 — a link is live-from-repo, so a mid-edit
+#     source would ship the moment the link lands). Only the LINK branch is
+#     gated: OK/DRIFT ship nothing, and CONVERT swaps in bytes the
+#     destination already holds;
+#   * UNLINK: producer-owned links (resolving into PLUGIN_ROOT) whose
+#     canonical source vanished are removed — the producer cleans up only its
+#     own links; foreign links are counted and never touched.
+#
+# Performance: plugin-owned membership is decided in ONE comm(1) over the
+# whole candidate set (a per-file grep fork storm measured 3x slower than
+# the pre-change script on the live tree), and bash -n runs only for
+# candidates whose destination is absent.
+#
+# Every decision is logged; the pass ends with a grep-able tally line. A run
+# that cannot link says so — never silently nothing.
+#
+# $1 label    tally label, e.g. shared/scripts or user-scripts
+# $2 src_dir  canonical subdir (no trailing slash)
+# $3 dst_dir  destination subdir
+# $4 kind     relpath kind under plugins/leadv2/ (scripts|contracts|hooks)
+# $5 scope    "all" (recursive) or "user-scripts" (top level only, leadv2-* +
+#             USER_SCRIPTS_EXPLICIT_NAMES)
+# Also records _LO_WOULD_LINK_RELS (newline-separated rels that got LINK):
+# in DRY_RUN no links exist on disk yet, so the caller's rsync dry-run must
+# exclude those rels too or it reports copies a real run would never make.
+_LO_WOULD_LINK_RELS=""
+_LO_TMPDIR=""
+_lo_tmp() {
+  if [[ -z "${_LO_TMPDIR}" || ! -d "${_LO_TMPDIR}" ]]; then
+    _LO_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-plugin-sync-owned.XXXXXX")"
+  fi
+  printf '%s' "${_LO_TMPDIR}"
+}
+trap 'if [[ -n "${_LO_TMPDIR:-}" && -d "${_LO_TMPDIR}" ]]; then rm -rf "${_LO_TMPDIR}"; fi' EXIT
+_link_only_pass() {
+  local label="$1" src="$2" dst="$3" kind="$4" scope="$5"
+  local linked=0 converted=0 ok=0 drift=0 badlink=0 dangling=0 typeclash=0 error=0 skip=0 untracked=0 unlinked=0 foreign_links=0 held=0 total=0
+  local canonical_file rel dst_file token target lrel n in_scope explicit lo_tmp
+  _LO_WOULD_LINK_RELS=""
+  [[ -d "${src}" ]] || { log_warn "link-only[${label}]: source missing: ${src}"; return 0; }
+  lo_tmp="$(_lo_tmp)"
+  local cand="${lo_tmp}/cand.$$" pref="${lo_tmp}/pref.$$" idx="${lo_tmp}/index" owned="${lo_tmp}/owned.$$" untr="${lo_tmp}/untr.$$"
+  : > "${cand}"
+  if [[ "${scope}" == "user-scripts" ]]; then
+    for canonical_file in "${src}"/*; do
+      [[ -f "${canonical_file}" ]] || continue
+      n="${canonical_file##*/}"
+      in_scope=0
+      case "${n}" in leadv2-*) in_scope=1 ;; esac
+      if [[ "${in_scope}" -eq 0 ]]; then
+        for explicit in "${USER_SCRIPTS_EXPLICIT_NAMES[@]}"; do
+          [[ "${n}" == "${explicit}" ]] && in_scope=1 && break
+        done
+      fi
+      [[ "${in_scope}" -eq 1 ]] && printf '%s\n' "${n}" >> "${cand}"
+    done
+  else
+    while IFS= read -r canonical_file; do
+      [[ -n "${canonical_file}" ]] && printf '%s\n' "${canonical_file#${src}/}" >> "${cand}"
+    done < <(find "${src}" -type f ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name '.DS_Store' 2>/dev/null)
+  fi
+  LC_ALL=C sort -o "${cand}" "${cand}"
+  total="$(wc -l < "${cand}" | tr -d '[:space:]')"
+  # One-index-per-run + one comm per pass decides plugin-owned membership for
+  # the whole candidate set (fail-closed: empty index ⇒ everything untracked).
+  _load_plugin_owned_index
+  if [[ ! -f "${idx}" ]]; then
+    if [[ -n "${_PLUGIN_OWNED_LIST}" ]]; then
+      printf '%s\n' "${_PLUGIN_OWNED_LIST}" | LC_ALL=C sort -o "${idx}" -
+    else
+      : > "${idx}"
+    fi
+  fi
+  sed "s|^|plugins/leadv2/${kind}/|" "${cand}" | LC_ALL=C sort -o "${pref}" -
+  comm -12 "${pref}" "${idx}" | sed "s|^plugins/leadv2/${kind}/||" > "${owned}"
+  comm -23 "${pref}" "${idx}" | sed "s|^plugins/leadv2/${kind}/||" > "${untr}"
+  while IFS= read -r rel; do
+    [[ -z "${rel}" ]] && continue
+    untracked=$((untracked + 1))
+    log "SKIP-UNTRACKED: ${dst}/${rel} (canonical plugins/leadv2/${kind}/${rel} not in git ls-files — not plugin-owned; left to the rsync legs until committed)"
+  done < "${untr}"
+  while IFS= read -r rel; do
+    [[ -z "${rel}" ]] && continue
+    canonical_file="${src}/${rel}"
+    dst_file="${dst}/${rel}"
+    if [[ "${dst_file}" == *.sh ]] && [[ ! -e "${dst_file}" ]] && ! bash -n "${canonical_file}" 2>/dev/null; then
+      held=$((held + 1))
+      log_warn "[syntax-gate] holding ${rel}: bash -n failed — not linking a mid-edit source (a link is live-from-repo)"
+      continue
+    fi
+    token="$(_link_one_file "${canonical_file}" "${dst_file}")"
+    case "${token}" in
+      LINK) linked=$((linked + 1)); log "$([[ "${DRY_RUN}" == true ]] && printf 'WOULD LINK' || printf 'LINK'): ${dst_file}"; _LO_WOULD_LINK_RELS+="${rel}\n" ;;
+      CONVERT) converted=$((converted + 1)); log "$([[ "${DRY_RUN}" == true ]] && printf 'WOULD CONVERT' || printf 'CONVERT'): ${dst_file}" ;;
+      OK) ok=$((ok + 1)) ;;
+      DRIFT) drift=$((drift + 1)); log_warn "DRIFT: ${dst_file} — left untouched (reconciled only by the gated rsync leg; bulk conversion is SD-SYMLINK-FARM-CONVERT-01)" ;;
+      BADLINK) badlink=$((badlink + 1)); log_warn "BADLINK: ${dst_file} -> $(readlink "${dst_file}" 2>/dev/null || printf '?') (left untouched)" ;;
+      DANGLING) dangling=$((dangling + 1)); log_warn "DANGLING: ${dst_file} -> $(readlink "${dst_file}" 2>/dev/null || printf '?') (left untouched)" ;;
+      TYPECLASH) typeclash=$((typeclash + 1)); log_warn "TYPECLASH: ${dst_file} is a directory (left untouched)" ;;
+      ERROR) error=$((error + 1)); log_warn "ERROR: ${dst_file} could not be linked (left untouched)" ;;
+      SKIP) skip=$((skip + 1)); log_warn "SKIP: canonical file vanished: ${canonical_file}" ;;
+      *) error=$((error + 1)); log_warn "ERROR: unknown link classification ${token} for ${dst_file}" ;;
+    esac
+  done < "${owned}"
+  # Producer-owned link cleanup: a link we created whose canonical source is
+  # gone is ours to remove. Foreign links (targets outside PLUGIN_ROOT) are
+  # counted and never touched.
+  if [[ -d "${dst}" ]]; then
+    while IFS= read -r lrel; do
+      [[ -z "${lrel}" ]] && continue
+      target="$(readlink "${dst}/${lrel}" 2>/dev/null || true)"
+      case "${target}" in
+        "${PLUGIN_ROOT}"/*) ;;
+        *) foreign_links=$((foreign_links + 1)); continue ;;
+      esac
+      [[ -e "${src}/${lrel}" ]] && continue
+      if [[ "${DRY_RUN}" == "true" ]]; then
+        log "WOULD UNLINK: ${dst}/${lrel} (canonical source gone)"
+      else
+        if rm -f "${dst}/${lrel}" 2>/dev/null; then
+          log "UNLINK: ${dst}/${lrel} (canonical source gone)"
+        else
+          log_warn "ERROR: could not remove dead producer link ${dst}/${lrel}"
+        fi
+      fi
+      unlinked=$((unlinked + 1))
+    done < <(cd "${dst}" 2>/dev/null && find . -type l 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort)
+  fi
+  log "link-only[${label}]: linked=${linked} converted=${converted} ok=${ok} drift=${drift} badlink=${badlink} dangling=${dangling} typeclash=${typeclash} error=${error} skip=${skip} untracked=${untracked} held=${held} unlinked=${unlinked} foreign_links=${foreign_links} total=${total}"
+}
+
+# _dst_link_exclude_args <dst> — rsync exclude args (anchored, leading "/")
+# for every symlink currently under a destination, plus in DRY_RUN the rels
+# the link pass WOULD create. rsync must never clobber a destination link back
+# into a real file (a type change IS a transfer) — that would re-produce the
+# exact copy production this task retires — and --delete must not reap links
+# either (excluded paths are delete-protected, the same property the syntax
+# gate relies on). The leading "/" anchors each pattern to the transfer root
+# so a top-level name cannot over-exclude same-named files in subdirectories.
+_dst_link_exclude_args() { # $1 = dst dir; prints --exclude=/<rel> lines
+  local dst="$1" lrel
+  [[ -d "${dst}" ]] || return 0
+  while IFS= read -r lrel; do
+    [[ -n "${lrel}" ]] && printf -- '--exclude=/%s\n' "${lrel}"
+  done < <(cd "${dst}" 2>/dev/null && find . -type l 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort)
+  if [[ "${DRY_RUN}" == "true" && -n "${_LO_WOULD_LINK_RELS}" ]]; then
+    printf '%b' "${_LO_WOULD_LINK_RELS}" | while IFS= read -r lrel; do
+      [[ -n "${lrel}" ]] && printf -- '--exclude=/%s\n' "${lrel}"
+    done
+  fi
 }
 
 # Enumerate only canonical top-level files and the deliberate lib/tests trees.
@@ -529,59 +753,14 @@ _dst_file_dirty() {
   return 0
 }
 
-# _contract_write_gate <root> <schema_file> — write gates for the (d)
-# contracts copies (DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01 residual gap 2):
-# this was the ONLY overwrite path in the script with no dirty-check and no
-# backward-refusal — _sync_project_root cp -p'd schema files into
-# <repo>/.claude/contracts/ unconditionally. Reuses (does not duplicate) the
-# same gate-1/gate-2 pair _direction_safety_excludes applies to scripts, so
-# contracts get identical protection:
-#   gate 1 — uncommitted destination (tracked-and-modified/staged): hard
-#            refuse, no flag overrides;
-#   gate 2 — destination NEWER than canonical's last commit for
-#            plugins/leadv2/contracts/<file> (same evidence rule as
-#            _sync_direction_of): refuse without --allow-backward,
-#            quarantine first + print the promote command.
-# Dry-run never writes (callers print the plan only when the gate passes).
-# Returns 0 = proceed with the copy, 1 = refuse (skip it).
-_contract_write_gate() {
-  local root="$1" schema_file="$2"
-  local dst_file="${root}/.claude/contracts/${schema_file}"
-  local canonical_relpath="plugins/leadv2/contracts/${schema_file}"
-  local schema_src="${PLUGIN_ROOT}/contracts/${schema_file}"
-  # Nothing on disk yet — nothing to clobber, safe.
-  [[ -f "${dst_file}" ]] || return 0
-  # Write gate 1: uncommitted destination — runs FIRST so a dirty destination
-  # is refused regardless of direction tags or --allow-backward.
-  if _dst_file_dirty "${root}" "${dst_file}"; then
-    _REFUSED_COUNT=$((_REFUSED_COUNT + 1))
-    if [[ "${DRY_RUN}" == "true" ]]; then
-      log_warn "DRY_RUN REFUSED (uncommitted destination): would not write ${dst_file} — tracked-and-modified/uncommitted in the destination repo. Commit it, or promote it into canonical; no flag overrides this."
-    else
-      log_warn "REFUSED: ${dst_file} is tracked-and-modified/uncommitted in the destination repo — refusing to overwrite (no flag overrides). Commit it, or promote it into canonical (cp ${dst_file} ${CANONICAL_ROOT}/${canonical_relpath}) and re-run."
-    fi
-    return 1
-  fi
-  # Write gate 2: backward move — refuse without --allow-backward.
-  local _direction
-  _direction="$(_sync_direction_of "${schema_src}" "${canonical_relpath}" "${dst_file}")" || _direction="UNKNOWN"
-  if [[ "${_direction}" == "VENDORED_NEWER" && "${ALLOW_BACKWARD}" != "true" ]]; then
-    _REFUSED_COUNT=$((_REFUSED_COUNT + 1))
-    if [[ "${DRY_RUN}" == "true" ]]; then
-      log_warn "WOULD MOVE BACKWARDS (refusing without --allow-backward): ${dst_file} is NEWER than canonical for ${canonical_relpath} — a real run will NOT overwrite it. Promote instead: cp ${dst_file} ${CANONICAL_ROOT}/${canonical_relpath} + commit in canonical."
-    else
-      # Refuse = leave untouched, but STILL preserve a quarantine copy first
-      # (protection without preservation loses the fix — same as gate 2 in
-      # _direction_safety_excludes). _quarantine_copy is non-destructive and
-      # content-hash deduplicated.
-      local qpath
-      qpath="$(_quarantine_copy "${dst_file}" "project/${root##*/}/contracts" "${schema_file}")" || qpath=""
-      log_warn "REFUSED (backward): ${dst_file} is NEWER than canonical for ${canonical_relpath} — NOT overwriting. Promote instead: cp ${dst_file} ${CANONICAL_ROOT}/${canonical_relpath} then commit in canonical. (Content also preserved at: ${qpath:-<quarantine-unavailable>}; override with --allow-backward.)"
-    fi
-    return 1
-  fi
-  return 0
-}
+# _contract_write_gate — DELETED (C1-RETIRE-RSYNC, 2026-09-08): project
+# contracts (d) are link-only now, and a link is structurally never written,
+# so the cp-era gate-1/gate-2 overwrite machinery had nothing left to guard.
+# The uncommitted-destination hard-refuse survives inline in
+# _sync_project_root (swapping a tracked-and-modified project file for a link
+# mid-edit is still not ours to do); the VENDORED_NEWER refusal is moot — a
+# divergent real contract copy is DRIFT and is left untouched, never
+# overwritten, so nothing newer can be lost.
 
 _direction_safety_excludes() {
   local mode="$1" copy_name="$2" subdir="$3" src="$4" dst="$5"
@@ -829,24 +1008,35 @@ _sync_project_root() {
     log_ok "[project/scripts-toplevel[${root##*/}]] synced curated set -> ${proj_scripts_toplevel}"
   fi
 
-  log "Syncing -> project contracts (d): ${proj_contracts}"
+  log "Syncing -> project contracts (d): ${proj_contracts} [link-only]"
   for schema_file in leadv2-scorecard.schema.json leadv2-shadow-proposal.schema.json; do
     local schema_src="${PLUGIN_ROOT}/contracts/${schema_file}"
     if [[ -f "${schema_src}" ]]; then
-      # Gated copy (DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01 residual gap 2):
-      # _contract_write_gate refuses an uncommitted destination (hard) and a
-      # VENDORED_NEWER one (without --allow-backward) BEFORE the cp — the plan
-      # line / copy only happens when the gate passes.
-      if ! _contract_write_gate "${root}" "${schema_file}"; then
+      # C1-RETIRE-RSYNC: contracts enter projects the way scripts enter (c) —
+      # as symlinks into canonical. A link is never overwritten, so only one
+      # cp-era protection survives, inline: an uncommitted (tracked-and-
+      # modified/staged) destination file is hard-refused. A divergent but
+      # committed copy is DRIFT and left untouched (promote or discard);
+      # identical content converts losslessly.
+      local dst_schema="${proj_contracts}/${schema_file}"
+      if _dst_file_dirty "${root}" "${dst_schema}"; then
+        _REFUSED_COUNT=$((_REFUSED_COUNT + 1))
+        log_warn "REFUSED (uncommitted destination): ${dst_schema} is tracked-and-modified/uncommitted in the destination repo — refusing to touch it (no flag overrides). Commit it, or promote it into canonical (cp ${dst_schema} ${CANONICAL_ROOT}/plugins/leadv2/contracts/${schema_file}) and re-run."
         continue
       fi
-      if [[ "${DRY_RUN}" == "true" ]]; then
-        log "DRY_RUN [project/contracts]: cp ${schema_src} ${proj_contracts}/${schema_file}"
-      else
-        mkdir -p "${proj_contracts}"
-        cp -p "${schema_src}" "${proj_contracts}/${schema_file}"
-        log_ok "[project/contracts] copied ${schema_file} -> ${root##*/}"
+      if ! _is_plugin_owned "plugins/leadv2/contracts/${schema_file}"; then
+        log "SKIP-UNTRACKED: ${dst_schema} (canonical plugins/leadv2/contracts/${schema_file} not in git ls-files — not plugin-owned; not delivered)"
+        continue
       fi
+      local d_token
+      d_token="$(_link_one_file "${schema_src}" "${dst_schema}")"
+      case "${d_token}" in
+        LINK|CONVERT) log "$([[ "${DRY_RUN}" == true ]] && printf 'WOULD %s' "${d_token}" || printf '%s' "${d_token}"): ${dst_schema}" ;;
+        OK) : ;;
+        DRIFT) log_warn "DRIFT: ${dst_schema} — left untouched (promote into canonical or discard; bulk conversion is SD-SYMLINK-FARM-CONVERT-01)" ;;
+        BADLINK|DANGLING|TYPECLASH|ERROR|SKIP) log_warn "${d_token}: ${dst_schema} (left untouched)" ;;
+        *) log_warn "ERROR: unknown link classification ${d_token} for ${dst_schema}" ;;
+      esac
     else
       log_warn "source not found, skipping: ${schema_src}"
     fi
@@ -859,21 +1049,26 @@ project_link_tallies=()
 project_drift_files=0
 project_drift_repos=0
 
-# ── (a) Plugin cache ──────────────────────────────────────────────────────────
-log "Syncing -> plugin cache (a): ${CACHE_TARGET}"
-for subdir in scripts contracts workflows hooks config skills commands agents docs; do
-  src="${PLUGIN_ROOT}/${subdir}/"
-  dst="${CACHE_TARGET}/${subdir}"
-  if [[ -d "${src}" ]]; then
-    _unsafe_excludes=()
-    while IFS= read -r _u; do
-      [[ -z "${_u}" ]] && continue
-      _unsafe_excludes+=(--exclude="${_u}")
-    done < <(_direction_safety_excludes "warn" "cache/${subdir}" "${subdir}" "${src}" "${dst}" "${SYNC_HYGIENE_FILTERS[@]}")
-    _rsync_or_dry "cache/${subdir}" "${src}" "${dst}" --recursive --delete "${SYNC_HYGIENE_FILTERS[@]}" "${_unsafe_excludes[@]}"
-    changed_summary+=("cache/${subdir}")
-  fi
-done
+# ── (a) Plugin cache — RETIRED (C1-RETIRE-RSYNC, 2026-09-08) ──────────────────
+# This leg rsynced into ~/.claude/plugins/cache/leadv2-local/leadv2/0.1.0/ — a
+# version dir the runtime has ORPHANED. Measured live 2026-09-08:
+#   * installed_plugins.json leadv2@leadv2-local installPath =
+#     .../cache/leadv2-local/leadv2/0.5.7 — the path Claude Code actually
+#     loads; 0.1.0 is not referenced by the registry;
+#   * 0.1.0/.orphaned_at exists (runtime-written 2026-09-08 21:06:43 +0300,
+#     epoch-ms content 1788890803187);
+#   * hook/command BODIES are live-from-repo regardless: settings.json pins
+#     CLAUDE_PLUGIN_ROOT to ~/.claude/plugins/local/leadv2/plugins/leadv2, a
+#     directory symlink to this repo (probe evidence in
+#     leadv2-plugin-cache-sync.sh's header, LEADV2-HOOK-CACHE-DEPLOY-01);
+#   * the ACTIVE cache dir already has a dedicated producer:
+#     leadv2-plugin-cache-sync.sh (whole-tree rsync --delete + .synced-from=
+#     <repo HEAD>, its own suite test-plugin-cache-sync.sh).
+# Writing 0.1.0 was pure copy-production into a tree nothing reads. Stopped
+# entirely — deliberately NOT converted to links. Residual readers of the
+# frozen 0.1.0 (follow-up, out of this lane's writes): leadv2-drift-guard.sh
+# (COPY_PATHS entry) and leadv2-outcome-watch.sh (soak-class-delays.yaml).
+log "SKIP plugin cache (a): RETIRED (C1-RETIRE-RSYNC) — 0.1.0 is an orphaned version dir (runtime installPath=0.5.7); the active cache is owned by leadv2-plugin-cache-sync.sh"
 
 # ── (b) leadv2-shared (scripts + contracts + hooks) ──────────────────────────
 # hooks added COMPACT-DEDUP-01 FU1 (2026-07-23): leadv2-shared/hooks/ held a
@@ -882,17 +1077,30 @@ done
 # ~/.claude/settings.json points PreCompact directly at this shared copy
 # (the repo-agnostic bootstrap, works without the plugin loaded), so it must
 # be kept byte-identical to canonical the same way scripts/contracts already are.
-log "Syncing -> leadv2-shared (b): ${SHARED_TARGET}"
+log "Syncing -> leadv2-shared (b): ${SHARED_TARGET} [link-only producer + gated shadow refresh]"
 for subdir in scripts contracts hooks; do
   src="${PLUGIN_ROOT}/${subdir}/"
   dst="${SHARED_TARGET}/${subdir}"
   if [[ -d "${src}" ]]; then
+    # Link-only producer first (C1-RETIRE-RSYNC): every plugin-owned canonical
+    # file either is a link, becomes one, or is a real copy this pass refuses
+    # to touch (DRIFT / dirty). Only then the rsync leg runs, scoped by the
+    # link excludes to the REAL copies — shadow refresh only, never creation:
+    # absent plugin-owned files are already links and excluded.
+    _link_only_pass "shared/${subdir}" "${PLUGIN_ROOT}/${subdir}" "${dst}" "${subdir}" all
+    _link_excludes=()
+    while IFS= read -r _le; do
+      [[ -n "${_le}" ]] && _link_excludes+=("${_le}")
+    done < <(_dst_link_exclude_args "${dst}")
     _unsafe_excludes=()
     while IFS= read -r _u; do
       [[ -z "${_u}" ]] && continue
       _unsafe_excludes+=(--exclude="${_u}")
-    done < <(_direction_safety_excludes "warn" "shared/${subdir}" "${subdir}" "${src}" "${dst}" "${SYNC_HYGIENE_FILTERS[@]}")
-    _rsync_or_dry "shared/${subdir}" "${src}" "${dst}" --recursive --delete "${SYNC_HYGIENE_FILTERS[@]}" "${_unsafe_excludes[@]}"
+    done < <(_direction_safety_excludes "warn" "shared/${subdir}" "${subdir}" "${src}" "${dst}" ${_link_excludes[@]+"${_link_excludes[@]}"} "${SYNC_HYGIENE_FILTERS[@]}")
+    # Link excludes FIRST: rsync filter rules are first-match-wins and a
+    # destination symlink must never be reclaimed as a transfer (type change)
+    # or deleted — that would re-produce the copy this pass just retired.
+    _rsync_or_dry "shared/${subdir}" "${src}" "${dst}" --recursive --delete ${_link_excludes[@]+"${_link_excludes[@]}"} "${SYNC_HYGIENE_FILTERS[@]}" "${_unsafe_excludes[@]}"
     changed_summary+=("shared/${subdir}")
   fi
 done
@@ -930,17 +1138,28 @@ for _explicit in "${USER_SCRIPTS_EXPLICIT_NAMES[@]}"; do
 done
 USER_SCRIPTS_FILTERS+=(--exclude='*')
 
+# Link-only producer (C1-RETIRE-RSYNC): in-scope plugin-owned canonical
+# scripts enter ~/.claude/scripts as symlinks; existing real copies are
+# classified (CONVERT when identical, DRIFT when divergent) and the rsync leg
+# below remains as gated shadow refresh only.
+_link_only_pass "user-scripts" "${PLUGIN_ROOT}/scripts" "${USER_SCRIPTS_TARGET}" "scripts" user-scripts
+_link_excludes=()
+while IFS= read -r _le; do
+  [[ -n "${_le}" ]] && _link_excludes+=("${_le}")
+done < <(_dst_link_exclude_args "${USER_SCRIPTS_TARGET}")
+
 _unsafe_excludes=()
 while IFS= read -r _u; do
   [[ -z "${_u}" ]] && continue
   _unsafe_excludes+=(--exclude="${_u}")
-done < <(_direction_safety_excludes "exclude" "user-scripts" "scripts" "${PLUGIN_ROOT}/scripts/" "${USER_SCRIPTS_TARGET}" "${USER_SCRIPTS_FILTERS[@]}")
-# rsync filter rules are first-match-wins: unsafe excludes MUST precede the
-# generic USER_SCRIPTS_FILTERS wildcard block, or that wildcard would already
-# have claimed (and included) the unsafe filename before its specific
-# --exclude is ever reached.
+done < <(_direction_safety_excludes "exclude" "user-scripts" "scripts" "${PLUGIN_ROOT}/scripts/" "${USER_SCRIPTS_TARGET}" ${_link_excludes[@]+"${_link_excludes[@]}"} "${USER_SCRIPTS_FILTERS[@]}")
+# rsync filter rules are first-match-wins: link excludes and unsafe excludes
+# MUST precede the generic USER_SCRIPTS_FILTERS wildcard block, or that
+# wildcard would already have claimed (and included) the filename before its
+# specific --exclude is ever reached. Link excludes also keep rsync from
+# reclaiming a destination symlink as a real-file transfer.
 _rsync_or_dry "user-scripts" "${PLUGIN_ROOT}/scripts/" "${USER_SCRIPTS_TARGET}" \
-  "${_unsafe_excludes[@]}" "${USER_SCRIPTS_FILTERS[@]}" -d
+  ${_link_excludes[@]+"${_link_excludes[@]}"} "${_unsafe_excludes[@]}" "${USER_SCRIPTS_FILTERS[@]}" -d
 changed_summary+=("user-scripts")
 
 # ── (e.1) Skip report (PLUGIN-TOOLING-FIX-01 C.2) ───────────────────────────

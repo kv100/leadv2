@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # test-plugin-sync-contracts-gate.sh — DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01
-# residual gap 2: the (d) project-contracts copies must be gated exactly like
-# scripts — gate 1 (uncommitted destination: hard refuse, no override) and
-# gate 2 (VENDORED_NEWER destination: refuse without --allow-backward,
-# quarantine + promote command) — and a bare invocation must be a dry run
-# that writes nothing (incl. contracts).
+# residual gap 2, REBASED for link-mode (C1-RETIRE-RSYNC, 2026-09-08).
+#
+# (d) project contracts used to be a gated `cp -p` — gate 1 (uncommitted
+# destination: hard refuse, no override) and gate 2 (VENDORED_NEWER
+# destination: refuse without --allow-backward, quarantine + promote
+# command). Since C1-RETIRE-RSYNC contracts are LINK-ONLY: an absent
+# contract enters as a symlink into canonical, and an EXISTING real copy is
+# structurally never written — so gate 2 is gone (a link overwrites nothing
+# and a divergent copy is DRIFT, left untouched), while gate 1 survives
+# inline: a tracked-and-modified project contract is still hard-refused,
+# because swapping an uncommitted project file for a link mid-edit is not
+# the sync's to do. This suite pins exactly that contract.
 #
 # Runs the REAL leadv2-plugin-sync.sh against real filesystem fixtures under
 # an isolated HOME / LEADV2_CANONICAL_ROOT (test-plugin-sync-claude-scripts.sh
@@ -60,8 +67,8 @@ printf '{"schema": "shadow-proposal", "v": 1}\n' > "$canon/plugins/leadv2/contra
 home="$tmp/home"
 mkdir -p "$home"
 
-# proj starts as a NON-git directory (gate 1 cannot fire; untracked/unversioned
-# destinations keep only gate-2 protection — mirrors the real vendored repos).
+# proj starts as a NON-git directory (the dirty-refuse cannot fire; mirrors
+# the real vendored repos whose .claude trees are untracked by design).
 proj="$tmp/proj"
 mkdir -p "$proj"
 
@@ -77,59 +84,55 @@ run_sync() {
 }
 
 scorecard_dst="$proj/.claude/contracts/leadv2-scorecard.schema.json"
+shadow_dst="$proj/.claude/contracts/leadv2-shadow-proposal.schema.json"
 
-# ── Case 1: bare invocation = DRY_RUN, writes nothing (incl. contracts) ────
+# ── Case 1: bare invocation = DRY_RUN, writes nothing (no links, no copies) ─
 run_sync "$tmp/run1.log"
 run1_log="$(cat "$tmp/run1.log")"
 check "$(head -1 "$tmp/run1.log")" "Mode: DRY_RUN" "Case 1: first logged line is Mode: DRY_RUN"
-if [[ ! -e "$scorecard_dst" ]]; then
+if [[ ! -e "$scorecard_dst" && ! -L "$scorecard_dst" ]]; then
   printf '[TEST] PASS: Case 1: bare run wrote no contracts file\n'; pass=$((pass+1))
 else
   printf '[TEST] FAIL: Case 1: bare run created %s\n' "$scorecard_dst" >&2; fail=$((fail+1))
 fi
+check "$run1_log" "WOULD LINK: ${scorecard_dst}" "Case 1: dry run plans the contract as a LINK"
 
-# ── Case 2: VENDORED_NEWER contract refused under --write ──────────────────
+# ── Case 2: absent contract enters as a symlink under --write ───────────────
+run_sync "$tmp/run2.log" --write
+if [[ -L "$shadow_dst" && "$(readlink "$shadow_dst")" == "$canon/plugins/leadv2/contracts/leadv2-shadow-proposal.schema.json" ]]; then
+  printf '[TEST] PASS: Case 2: absent contract linked into canonical\n'; pass=$((pass+1))
+else
+  printf '[TEST] FAIL: Case 2: absent contract is not a link into canonical\n' >&2; fail=$((fail+1))
+fi
+
+# ── Case 3: divergent real contract is structurally never written ───────────
+# (old semantics: VENDORED_NEWER refusal + quarantine; link-mode semantics:
+# nothing overwrites a real copy — divergence is DRIFT, promote or discard.)
+# Remove Case 2's link FIRST: planting content through a resolving symlink
+# would write straight into the canonical fixture.
 mkdir -p "$proj/.claude/contracts"
+rm -f "$scorecard_dst"
 printf '{"schema": "scorecard", "v": 2, "local-edit": true}\n' > "$scorecard_dst"
 vendored_content="$(cat "$scorecard_dst")"
-# Far-future mtime ⇒ copy_evidence > canonical_commit_time + 2 ⇒ VENDORED_NEWER
 touch -t 209901010000 "$scorecard_dst"
-vendored_mtime_before="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "$scorecard_dst" 2>/dev/null || stat -c '%Y' "$scorecard_dst" 2>/dev/null)"
 
-run_sync "$tmp/run2.log" --write
-run2_log="$(cat "$tmp/run2.log")"
-check "$run2_log" "REFUSED (backward)" "Case 2: --write output contains REFUSED (backward)"
-check "$run2_log" "cp ${scorecard_dst} ${canon}/plugins/leadv2/contracts/leadv2-scorecard.schema.json" "Case 2: refusal names the exact cp promote command into canonical"
-if [[ "$(cat "$scorecard_dst")" == "$vendored_content" ]]; then
-  printf '[TEST] PASS: Case 2: vendored bytes unchanged after refused --write\n'; pass=$((pass+1))
-else
-  printf '[TEST] FAIL: Case 2: vendored bytes were clobbered\n' >&2; fail=$((fail+1))
-fi
-if [[ "$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "$scorecard_dst" 2>/dev/null || stat -c '%Y' "$scorecard_dst" 2>/dev/null)" == "$vendored_mtime_before" ]]; then
-  printf '[TEST] PASS: Case 2: vendored mtime unchanged (no quarantine-in-place rewrite)\n'; pass=$((pass+1))
-else
-  printf '[TEST] FAIL: Case 2: vendored mtime changed\n' >&2; fail=$((fail+1))
-fi
-# Quarantine copy must preserve the newer content (protection WITH preservation).
-if grep -rq 'local-edit' "$tmp/quarantine" 2>/dev/null; then
-  printf '[TEST] PASS: Case 2: refused content preserved in quarantine\n'; pass=$((pass+1))
-else
-  printf '[TEST] FAIL: Case 2: quarantine copy of vendored content missing\n' >&2; fail=$((fail+1))
-fi
-
-# ── Case 3: VENDORED_NEWER contract allowed under --write --allow-backward ─
 run_sync "$tmp/run3.log" --write --allow-backward
 run3_log="$(cat "$tmp/run3.log")"
-check "$run3_log" "[project/contracts] copied leadv2-scorecard.schema.json -> proj" "Case 3: --allow-backward copies the contract"
-if [[ "$(cat "$scorecard_dst")" == "$(cat "$canon/plugins/leadv2/contracts/leadv2-scorecard.schema.json")" ]]; then
-  printf '[TEST] PASS: Case 3: destination now matches canonical\n'; pass=$((pass+1))
+check "$run3_log" "DRIFT: ${scorecard_dst}" "Case 3: divergent contract reported as DRIFT"
+if [[ "$(cat "$scorecard_dst")" == "$vendored_content" ]]; then
+  printf '[TEST] PASS: Case 3: divergent bytes unchanged even under --allow-backward\n'; pass=$((pass+1))
 else
-  printf '[TEST] FAIL: Case 3: destination does not match canonical\n' >&2; fail=$((fail+1))
+  printf '[TEST] FAIL: Case 3: divergent bytes were clobbered\n' >&2; fail=$((fail+1))
+fi
+if [[ ! -L "$scorecard_dst" ]]; then
+  printf '[TEST] PASS: Case 3: divergent contract stays a real file (SD-SYMLINK-FARM-CONVERT-01 owns conversion)\n'; pass=$((pass+1))
+else
+  printf '[TEST] FAIL: Case 3: divergent contract was converted to a link\n' >&2; fail=$((fail+1))
 fi
 
 # ── Case 4: dirty tracked contract refused with NO override ────────────────
-# Turn proj into a git repo with the contract tracked, then modify it —
-# gate 1 must refuse even under --write --allow-backward.
+# Turn proj into a git repo with the contract tracked, then modify it — the
+# inline hard-refuse must fire even under --write --allow-backward.
 (cd "$proj" && git init -q && git config user.email test@example.invalid && git config user.name contracts-gate-test \
   && git add .claude/contracts/leadv2-scorecard.schema.json && git commit -q -m "track contract")
 printf '{"schema": "scorecard", "v": 3, "uncommitted-edit": true}\n' > "$scorecard_dst"
@@ -137,14 +140,27 @@ dirty_content="$(cat "$scorecard_dst")"
 
 run_sync "$tmp/run4.log" --write --allow-backward
 run4_log="$(cat "$tmp/run4.log")"
-check "$run4_log" "REFUSED" "Case 4: dirty contract refused even with --allow-backward"
-check "$run4_log" "uncommitted" "Case 4: refusal reason is uncommitted destination"
-check_not "$run4_log" "[project/contracts] copied leadv2-scorecard.schema.json -> proj" "Case 4: no copy happened for the dirty contract"
-if [[ "$(cat "$scorecard_dst")" == "$dirty_content" ]]; then
-  printf '[TEST] PASS: Case 4: dirty bytes unchanged\n'; pass=$((pass+1))
+check "$run4_log" "REFUSED (uncommitted destination): ${scorecard_dst}" "Case 4: dirty contract refused even with --allow-backward"
+check_not "$run4_log" "LINK: ${scorecard_dst}" "Case 4: no link was created for the dirty contract"
+check_not "$run4_log" "CONVERT: ${scorecard_dst}" "Case 4: no conversion happened for the dirty contract"
+if [[ "$(cat "$scorecard_dst")" == "$dirty_content" && ! -L "$scorecard_dst" ]]; then
+  printf '[TEST] PASS: Case 4: dirty bytes unchanged, file still real\n'; pass=$((pass+1))
 else
-  printf '[TEST] FAIL: Case 4: dirty bytes were clobbered\n' >&2; fail=$((fail+1))
+  printf '[TEST] FAIL: Case 4: dirty contract was touched\n' >&2; fail=$((fail+1))
 fi
 
-printf '\n[TEST] contracts-gate: %d passed, %d failed\n' "$pass" "$fail"
-[[ "$fail" -eq 0 ]]
+# ── Case 5: identical real contract converts to a link, losslessly ──────────
+printf '{"schema": "scorecard", "v": 1}\n' > "$scorecard_dst"
+(cd "$proj" && git add -A && git commit -q -m "realign with canonical")
+run_sync "$tmp/run5.log" --write
+if [[ -L "$scorecard_dst" && "$(cat "$scorecard_dst")" == "$(cat "$canon/plugins/leadv2/contracts/leadv2-scorecard.schema.json")" ]]; then
+  printf '[TEST] PASS: Case 5: identical contract converted to a link, content preserved\n'; pass=$((pass+1))
+else
+  printf '[TEST] FAIL: Case 5: identical contract not converted losslessly\n' >&2; ls -la "$scorecard_dst" >&2; fail=$((fail+1))
+fi
+
+printf '\n[TEST] contracts-gate: %s passed, %s failed\n' "$pass" "$fail"
+if [[ "$fail" -gt 0 ]]; then
+  exit 1
+fi
+exit 0
