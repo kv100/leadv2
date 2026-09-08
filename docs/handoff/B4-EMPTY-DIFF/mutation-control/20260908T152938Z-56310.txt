@@ -1,0 +1,10 @@
+suite=plugins/leadv2/tests/test-empty-diff-waits-for-a-live-worker.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+anchor=/^pc_worker_alive() {/a\
+  return 1 # B4 negative control inside the function body
+
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL fable_late terminal value: got=no_work expected=landed
+diff_hash=a03fa1431af6a5ced8a960dd6abc1c7c5e3d2e796eab382d7e390a35c7683bc2
+lane_diff_hash=dbcb23a8dbb1d050933703026099b3fe6836050ef85a5a19abd6d3ff95444cd1
