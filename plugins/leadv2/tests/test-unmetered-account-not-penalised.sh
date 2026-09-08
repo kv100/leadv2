@@ -16,14 +16,17 @@ printf '%s\n' "$QUOTA"
 SH
 printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP/free.sh"
 source "$ROOT/scripts/lib/leadv2-route-arbiter.sh"
-for state in unmetered unknown ok; do
+for state in unmetered max-unmetered unknown ok; do
   export QUOTA
   QUOTA="$(python3 - "$ROOT/scripts/leadv2-quota-read.py" "$state" <<'PY'
 import importlib.util,json,sys
 spec=importlib.util.spec_from_file_location('quota',sys.argv[1]); m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 state=sys.argv[2]
-a={'account_label':'work','active':True,'status':'unknown','subscription_type':'team','http':401,
-   'account_state':m.classify_account_state('team' if state=='unmetered' else 'pro',401)}
+# D1-401-LAUNCHABILITY: max joined team as a MEASURED unmetered class; pro
+# stays the guarded boundary (drives the 'unknown' iteration below).
+sub='team' if state=='unmetered' else ('max' if state=='max-unmetered' else 'pro')
+a={'account_label':'work','active':True,'status':'unknown','subscription_type':sub,'http':401,
+   'account_state':m.classify_account_state(sub,401)}
 if state=='ok': a.update(status='ok',account_state='ok',five_hour_pct=20,seven_day_pct=20)
 print(json.dumps({'anthropic':{'status':'ok' if state=='ok' else 'unknown','accounts':[a]},'codex':{'status':'unknown'},'glm':{'status':'unknown'}}))
 PY
@@ -37,11 +40,11 @@ f=dict(t.split('=',1) for t in line.split() if '=' in t)
 penalty=float(f['claude_probe_penalty'])
 print('PENALTY state=%s actual=%g expected=%g' % (state,penalty,50 if state=='unknown' else 0))
 assert penalty==(50 if state=='unknown' else 0), 'PENALTY_MISMATCH usable account charged %g' % penalty
-if state=='unmetered':
+if state in ('unmetered','max-unmetered'):
     assert f['arm'] in ('haiku','sonnet'), 'unmetered Claude must win this auction'
     assert f['util_claude']=='unmetered'
     assert f['claude_priced_from']=='configured_allowance_conservative'
     assert float(f['headroom_w'])==0.2, 'conservative configured weight must apply'
 PY
 done
-echo 'PASS unmetered penalty=0; unknown penalty=50; measured penalty=0'
+echo 'PASS unmetered(team,max) penalty=0; unknown penalty=50; measured penalty=0'

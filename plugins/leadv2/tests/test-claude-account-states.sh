@@ -148,6 +148,8 @@ assert_classify() {
 
 assert_classify "team+401 -> unmetered (TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01, priced conservatively)" \
   team 401 unmetered
+assert_classify "max+401 -> unmetered (D1-401-LAUNCHABILITY: measured max class, token resolved, usage refuses)" \
+  max 401 unmetered
 assert_classify "pro+401 -> unknown (an ordinary dead credential, keeps today's penalty)" \
   pro 401 unknown
 assert_classify "team+200 -> ok" \
@@ -217,7 +219,7 @@ cp "$QUOTA_READ" "$MUTANT_CLASSIFY"
 python3 -c '
 import sys
 src = open(sys.argv[1]).read()
-target = "    if subscription_type == \"team\" and http_code == 401:\n        return ACCOUNT_STATE_UNMETERED\n"
+target = "    if http_code == 401 and subscription_type in (\"team\", \"max\"):\n        return ACCOUNT_STATE_UNMETERED\n"
 mutated = "    if False:  # MUTATED-NEGATIVE-CONTROL: collapses unmetered back into unknown\n        return ACCOUNT_STATE_UNMETERED\n"
 if src.count(target) != 1:
     sys.stderr.write("mutation anchor not found exactly once (found %d)\n" % src.count(target))

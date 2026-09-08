@@ -418,18 +418,28 @@ def classify_account_state(subscription_type, http_code):
     gets here at all, which is the "credential dead" case: it is excluded
     upstream, not classified `unknown` by this function).
 
-    `unmetered` fires ONLY for the one class this has been measured for
-    (team-tier accounts get http 401 on the usage endpoint even though the
-    token and account resolve): subscription_type == "team" and http_code ==
-    401. Every other non-200 response -- including a 401 on a NON-team
-    account, which is the ordinary "this credential is actually dead"
-    shape -- stays `unknown` and keeps today's penalty. This is deliberately
-    narrow: a broader rule would risk quietly reclassifying a genuinely dead
-    personal/pro credential as merely unmetered.
+    `unmetered` fires for the classes this has been MEASURED on: token-
+    resolved accounts whose usage endpoint answers 401 anyway. team (measured
+    2026-09-07, registry label `work`, tier default_claude_max_5x, token and
+    org resolving fine) and max (measured 2026-09-04: the active max_20x
+    entry read http 401 while a DIFFERENT entry of the SAME account returned
+    a freshly-probed pct -- lib/leadv2-route-arbiter.sh:319-333 records it;
+    and 2026-09-08 the live probe answered 401 on every max entry -- the D1
+    mission input whose consumer half merged as fe491bff). This membership is
+    a list of measured classes, NOT a distinguishing test: no signal at
+    classification time separates a dead credential from an unmetered
+    account. The probed token is a STORED one (the DPoP refresh is not wired,
+    see the no-accounts branch below), so a 401 here measures only "this
+    token cannot read usage data", never "this credential cannot launch" --
+    a launch is the only test, and a failed launch is already parked by the
+    arbiter's failure-memory/lockout machinery. pro+401 stays `unknown` as
+    the guarded boundary (tests/test-unmetered-account-not-penalised.sh):
+    never measured live, and widening past it is the founder's ruling, not
+    this function's.
     """
     if http_code == 200:
         return ACCOUNT_STATE_OK
-    if subscription_type == "team" and http_code == 401:
+    if http_code == 401 and subscription_type in ("team", "max"):
         return ACCOUNT_STATE_UNMETERED
     return ACCOUNT_STATE_UNKNOWN
 
