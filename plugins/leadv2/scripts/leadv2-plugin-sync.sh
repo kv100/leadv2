@@ -385,10 +385,17 @@ _link_diff_detail() {
 # Two producer duties unique to this pass:
 #   * syntax-gate at creation: never LINK a canonical .sh that fails bash -n
 #     (HOOK-EDIT-SPAWN-POISON-01 — a link is live-from-repo, so a mid-edit
-#     source would ship the moment the link lands);
+#     source would ship the moment the link lands). Only the LINK branch is
+#     gated: OK/DRIFT ship nothing, and CONVERT swaps in bytes the
+#     destination already holds;
 #   * UNLINK: producer-owned links (resolving into PLUGIN_ROOT) whose
 #     canonical source vanished are removed — the producer cleans up only its
 #     own links; foreign links are counted and never touched.
+#
+# Performance: plugin-owned membership is decided in ONE comm(1) over the
+# whole candidate set (a per-file grep fork storm measured 3x slower than
+# the pre-change script on the live tree), and bash -n runs only for
+# candidates whose destination is absent.
 #
 # Every decision is logged; the pass ends with a grep-able tally line. A run
 # that cannot link says so — never silently nothing.
@@ -403,13 +410,23 @@ _link_diff_detail() {
 # in DRY_RUN no links exist on disk yet, so the caller's rsync dry-run must
 # exclude those rels too or it reports copies a real run would never make.
 _LO_WOULD_LINK_RELS=""
+_LO_TMPDIR=""
+_lo_tmp() {
+  if [[ -z "${_LO_TMPDIR}" || ! -d "${_LO_TMPDIR}" ]]; then
+    _LO_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-plugin-sync-owned.XXXXXX")"
+  fi
+  printf '%s' "${_LO_TMPDIR}"
+}
+trap 'if [[ -n "${_LO_TMPDIR:-}" && -d "${_LO_TMPDIR}" ]]; then rm -rf "${_LO_TMPDIR}"; fi' EXIT
 _link_only_pass() {
   local label="$1" src="$2" dst="$3" kind="$4" scope="$5"
   local linked=0 converted=0 ok=0 drift=0 badlink=0 dangling=0 typeclash=0 error=0 skip=0 untracked=0 unlinked=0 foreign_links=0 held=0 total=0
-  local canonical_file rel dst_file token target lrel n in_scope explicit
-  local -a files=()
+  local canonical_file rel dst_file token target lrel n in_scope explicit lo_tmp
   _LO_WOULD_LINK_RELS=""
   [[ -d "${src}" ]] || { log_warn "link-only[${label}]: source missing: ${src}"; return 0; }
+  lo_tmp="$(_lo_tmp)"
+  local cand="${lo_tmp}/cand.$$" pref="${lo_tmp}/pref.$$" idx="${lo_tmp}/index" owned="${lo_tmp}/owned.$$" untr="${lo_tmp}/untr.$$"
+  : > "${cand}"
   if [[ "${scope}" == "user-scripts" ]]; then
     for canonical_file in "${src}"/*; do
       [[ -f "${canonical_file}" ]] || continue
@@ -421,23 +438,38 @@ _link_only_pass() {
           [[ "${n}" == "${explicit}" ]] && in_scope=1 && break
         done
       fi
-      [[ "${in_scope}" -eq 1 ]] && files+=("${canonical_file}")
+      [[ "${in_scope}" -eq 1 ]] && printf '%s\n' "${n}" >> "${cand}"
     done
   else
     while IFS= read -r canonical_file; do
-      [[ -n "${canonical_file}" ]] && files+=("${canonical_file}")
-    done < <(find "${src}" -type f ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name '.DS_Store' 2>/dev/null | LC_ALL=C sort)
+      [[ -n "${canonical_file}" ]] && printf '%s\n' "${canonical_file#${src}/}" >> "${cand}"
+    done < <(find "${src}" -type f ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name '.DS_Store' 2>/dev/null)
   fi
-  for canonical_file in "${files[@]}"; do
-    rel="${canonical_file#${src}/}"
-    dst_file="${dst}/${rel}"
-    total=$((total + 1))
-    if ! _is_plugin_owned "plugins/leadv2/${kind}/${rel}"; then
-      untracked=$((untracked + 1))
-      log "SKIP-UNTRACKED: ${dst_file} (canonical plugins/leadv2/${kind}/${rel} not in git ls-files — not plugin-owned; left to the rsync legs until committed)"
-      continue
+  LC_ALL=C sort -o "${cand}" "${cand}"
+  total="$(wc -l < "${cand}" | tr -d '[:space:]')"
+  # One-index-per-run + one comm per pass decides plugin-owned membership for
+  # the whole candidate set (fail-closed: empty index ⇒ everything untracked).
+  _load_plugin_owned_index
+  if [[ ! -f "${idx}" ]]; then
+    if [[ -n "${_PLUGIN_OWNED_LIST}" ]]; then
+      printf '%s\n' "${_PLUGIN_OWNED_LIST}" | LC_ALL=C sort -o "${idx}" -
+    else
+      : > "${idx}"
     fi
-    if [[ "${dst_file}" == *.sh ]] && ! bash -n "${canonical_file}" 2>/dev/null; then
+  fi
+  sed "s|^|plugins/leadv2/${kind}/|" "${cand}" | LC_ALL=C sort -o "${pref}" -
+  comm -12 "${pref}" "${idx}" | sed "s|^plugins/leadv2/${kind}/||" > "${owned}"
+  comm -23 "${pref}" "${idx}" | sed "s|^plugins/leadv2/${kind}/||" > "${untr}"
+  while IFS= read -r rel; do
+    [[ -z "${rel}" ]] && continue
+    untracked=$((untracked + 1))
+    log "SKIP-UNTRACKED: ${dst}/${rel} (canonical plugins/leadv2/${kind}/${rel} not in git ls-files — not plugin-owned; left to the rsync legs until committed)"
+  done < "${untr}"
+  while IFS= read -r rel; do
+    [[ -z "${rel}" ]] && continue
+    canonical_file="${src}/${rel}"
+    dst_file="${dst}/${rel}"
+    if [[ "${dst_file}" == *.sh ]] && [[ ! -e "${dst_file}" ]] && ! bash -n "${canonical_file}" 2>/dev/null; then
       held=$((held + 1))
       log_warn "[syntax-gate] holding ${rel}: bash -n failed — not linking a mid-edit source (a link is live-from-repo)"
       continue
@@ -455,7 +487,7 @@ _link_only_pass() {
       SKIP) skip=$((skip + 1)); log_warn "SKIP: canonical file vanished: ${canonical_file}" ;;
       *) error=$((error + 1)); log_warn "ERROR: unknown link classification ${token} for ${dst_file}" ;;
     esac
-  done
+  done < "${owned}"
   # Producer-owned link cleanup: a link we created whose canonical source is
   # gone is ours to remove. Foreign links (targets outside PLUGIN_ROOT) are
   # counted and never touched.
