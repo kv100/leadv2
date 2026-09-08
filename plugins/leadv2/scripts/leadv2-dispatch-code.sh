@@ -807,6 +807,10 @@ PHASE_RECORD_BIN="${LEADV2_PHASE_RECORD_BIN:-${SCRIPT_DIR}/leadv2-phase-record.s
 # PHASE-DISCIPLINE-01 D1/D2: shared admission map + receipt writer (also
 # sourced by leadv2-backlog-pump.sh — one inode of class-mapping truth).
 TASK_JUDGE_BIN="${LEADV2_TASK_JUDGE_BIN:-${SCRIPT_DIR}/leadv2-task-judge.sh}"
+# A4-WIRE-ESTIMATOR (P6b, GATE-DEPTH-MUST-SCALE-WITH-COMPLEXITY-01): the
+# deterministic standalone estimator (P6a) the depth gate consults whenever
+# the task-judge did not actually judge (estimate_source != judge).
+COMPLEXITY_ESTIMATOR_BIN="${LEADV2_COMPLEXITY_ESTIMATOR_BIN:-${SCRIPT_DIR}/lib/leadv2-complexity-estimate.py}"
 _ADMISSION_CLASS_SH="${SCRIPT_DIR}/lib/leadv2-admission-class.sh"
 [[ -f "${_ADMISSION_CLASS_SH}" ]] || _ADMISSION_CLASS_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-admission-class.sh"
 if [[ -f "${_ADMISSION_CLASS_SH}" ]]; then
@@ -4424,18 +4428,21 @@ _acceptance_guard() {
   return 1
 }
 
-# _gate_depth_apply <estimate-json> <admission-class> <flagged 0|1> <admission-source>
+# _gate_depth_apply <estimate-json> <admission-class> <flagged 0|1> <admission-source> <mission> <write-set-csv>
 # GATE-DEPTH-MUST-SCALE-WITH-COMPLEXITY-01 (founder order 2026-09-07, shared-tree
 # permission #7; docs/handoff/GATE-DEPTH-20260907/design.md §2/§3): gate depth
 # keys on complexity, NOT on task_class. Reuses ARBITER-SCORING-DESIGN-01's
 # field and provenance schema VERBATIM (F1-ARBITER-SCORING-20260907/design.md
 # §5.1/§7.1): complexity ∈ trivial|simple|standard|complex; complexity_source ∈
-# judge (conf 0.9) | flag (0.7) | heuristic (0.4) | unknown (0.0). The value is
-# NEVER recomputed here — it reads the same task-judge estimate JSON the arbiter
-# descriptor (DC_COMPLEXITY, :8286) reads; the one addition is F1 §5's
-# dispatcher-owned flag floor ("raises complexity to the flag-implied level when
-# the declared class implies more than the estimate and marks
-# complexity_source=flag. It never lowers it"), which this dispatcher owns.
+# judge (conf 0.9) | flag (0.7) | heuristic (0.4) | unknown (0.0) — plus
+# estimate (A4-WIRE-ESTIMATOR, P6b): the deterministic standalone estimator
+# (lib/leadv2-complexity-estimate.py, P6a), which is the NORMAL case, not a
+# degraded one. The task-judge value is never recomputed here — it reads the
+# same task-judge estimate JSON the arbiter descriptor (DC_COMPLEXITY, :8286)
+# reads; the two additions this dispatcher owns are F1 §5's flag floor
+# ("raises complexity to the flag-implied level when the declared class implies
+# more than the estimate and marks complexity_source=flag. It never lowers
+# it") and the P6b estimator fill below.
 #
 #   pipeline_route = plan_first   for standard|complex  (plan+gate1 before build)
 #                  = brief_direct for trivial|simple    (no forced plan/gate1)
@@ -4443,22 +4450,26 @@ _acceptance_guard() {
 #                    ceiling consumed only on a non-clean verdict, never a
 #                    mandate for extra rounds (design §2).
 #
-# §3 deeper-never-shallower: ONLY judge (0.9) and flag (0.7) may pick a
-# complexity at face value; heuristic (0.4) and unknown (0.0) provenance are
-# treated as standard for BOTH settings. Design §3, verbatim: "This defaults
-# the ENTIRE population to standard depth until complexity confidence improves"
-# -- with heuristic at 100% of live traffic today (F1 M3) that population-wide
-# cost is accepted, named, and already tracked.
+# §3 deeper-never-shallower, P6b shape: judge (0.9), flag (0.7) and estimate
+# (the deterministic estimator over mission text + write-set) may pick a
+# complexity at face value. heuristic (0.4) and unknown (0.0) provenance are
+# treated as standard for BOTH settings — an estimate the gate cannot obtain
+# can never buy a shallower review. Precedence when sources disagree: judge >
+# estimate (a conf-0.9 model verdict that actually read the mission is never
+# clobbered by the keyword/score approximation; the estimator exists to fill
+# exactly the slot the judge left degraded — the fallback/unknown population);
+# the flag floor then raises over whichever of the two won, and only a raise
+# relabels complexity_source=flag.
 #
 # Sets globals (no emit -- the caller journals the decision):
 #   GATE_DEPTH_COMPLEXITY  effective complexity actually used (post §3 rule)
-#   GATE_DEPTH_SOURCE      judge|flag|heuristic|unknown
+#   GATE_DEPTH_SOURCE      judge|flag|estimate|heuristic|unknown
 #   GATE_DEPTH_ROUTE       plan_first|brief_direct
 #   GATE_DEPTH_REVIEW_ROUNDS  1|2|3
 #   GATE_DEPTH_FORCED_PLAN    0|1 -- 1 only when the caller's class raise below
 #                            added plan/gate1 task_class alone would not include
 _gate_depth_apply() {
-  local estimate_json="$1" cls="$2" flagged="$3" adm_src="$4"
+  local estimate_json="$1" cls="$2" flagged="$3" adm_src="$4" mission="$5" write_set_csv="$6"
   local cx esrc src eff
   cx="$(printf '%s' "${estimate_json}" | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("complexity",""))
@@ -4475,6 +4486,33 @@ except Exception: print("")' 2>/dev/null)"
     fallback) src="heuristic" ;;
     *)        src="unknown" ;;
   esac
+  # A4-WIRE-ESTIMATOR (P6b): when the task-judge did not actually judge — the
+  # line-count fallback (heuristic) or no estimate at all (unknown), which is
+  # ~100% of live traffic (F1 M3) — consult the deterministic estimator over
+  # the mission text and the caller-declared write-set. Its on-vocabulary
+  # verdict is taken at face value and labelled complexity_source=estimate.
+  # Any failure mode (binary missing, non-zero rc, unparseable output, no
+  # mission text AND no write-set -> the estimator's own unknown) falls
+  # through to the §3 deeper floor below: src stays heuristic/unknown, so a
+  # missing estimate can never license brief_direct or a 1-round review.
+  # A judge estimate is never clobbered: the estimator is not consulted.
+  if [[ "${src}" != "judge" ]]; then
+    local est_out est_cx est_src
+    est_out="$(python3 "${COMPLEXITY_ESTIMATOR_BIN:-${SCRIPT_DIR}/lib/leadv2-complexity-estimate.py}" \
+      --mission "${mission:-}" --write-set "${write_set_csv:-}" --json 2>/dev/null || true)"
+    IFS=$'\t' read -r est_cx est_src \
+      <<<"$(printf '%s' "${est_out}" | python3 -c 'import json,sys
+try:
+    e = json.load(sys.stdin)
+    print("%s\t%s" % (e.get("complexity",""), e.get("complexity_source","")))
+except Exception:
+    print("\t")' 2>/dev/null)"
+    if [[ "${est_src}" == "estimate" ]]; then
+      case "${est_cx}" in
+        trivial|simple|standard|complex) cx="${est_cx}"; src="estimate" ;;
+      esac
+    fi
+  fi
   # F1 §5 dispatcher-owned flag floor: an explicit --task-class or a
   # task_record/flag admission source implies a minimum complexity
   # (Light->simple, Standard->standard, Heavy/Strategic->complex). Raises only,
@@ -4496,7 +4534,7 @@ except Exception: print("")' 2>/dev/null)"
     trivial|simple|standard|complex) ;;
     *) cx="unknown"; src="unknown" ;;
   esac
-  if [[ "${src}" == "judge" || "${src}" == "flag" ]]; then
+  if [[ "${src}" == "judge" || "${src}" == "flag" || "${src}" == "estimate" ]]; then
     eff="${cx}"
   else
     eff="standard"   # heuristic|unknown: treated as standard for BOTH settings (§3)
@@ -4667,7 +4705,8 @@ else:
   # brief_direct adds nothing -- a Standard+ class keeps the phases route its own
   # class already implies, so the two settings can only diverge in the review-round
   # ceiling, never by REMOVING a phase.
-  _gate_depth_apply "${estimate:-}" "${ADMISSION_CLASS}" "${flagged}" "${ADMISSION_SOURCE}"
+  _gate_depth_apply "${estimate:-}" "${ADMISSION_CLASS}" "${flagged}" "${ADMISSION_SOURCE}" \
+    "${mission}" "${lane_writes:-}"
   if [[ "${GATE_DEPTH_ROUTE}" == "plan_first" ]] \
      && (( $(_lv2_class_rank "${ADMISSION_CLASS}") < $(_lv2_class_rank "Standard") )); then
     GATE_DEPTH_FORCED_PLAN=1
@@ -8886,7 +8925,16 @@ exit is treated as an incident."
     # arm_pool (the HARD set of still-viable arms), not allowed_arms (the
     # policy bound), and threads requested_arm: a benched PIN is refused as
     # requested_arm_not_in_pool rather than silently re-run on another arm.
-    _bf_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"arm_pool":[x for x in sys.argv[3].split(",") if x],"launchable_arms":[x for x in sys.argv[4].split(",") if x],"requested_arm":sys.argv[5],"task":sys.argv[6]}))' "${kind:-code}" "${task_class:-standard}" "${_bf_allowed}" "$(_arm_launchable_arms "${sig8}" "${kind:-code}")" "${requested_arm}" "${sig8}")"
+    # A4-WIRE-ESTIMATOR (P6b addendum, lane 1401655b): this re-resolution must
+    # inherit the SAME complexity/duration_class/complexity_source the initial
+    # descriptor (:8719) carried. Before, the bench leg rebuilt the descriptor
+    # from kind/size/arm_pool only, so the arbiter re-selected against
+    # complexity=unknown conf=0.0 req_eff=3.0 seconds after the first
+    # resolution had established complexity=complex conf=0.9 req_eff=4.0 --
+    # the arm actually spawned was chosen under a LOWER effort requirement
+    # than the one already known. Same task, same mission: one complexity, one
+    # provenance, on every resolution leg.
+    _bf_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"arm_pool":[x for x in sys.argv[3].split(",") if x],"launchable_arms":[x for x in sys.argv[4].split(",") if x],"requested_arm":sys.argv[5],"task":sys.argv[6],"complexity":sys.argv[7],"duration_class":sys.argv[8],"complexity_source":sys.argv[9]}))' "${kind:-code}" "${task_class:-standard}" "${_bf_allowed}" "$(_arm_launchable_arms "${sig8}" "${kind:-code}")" "${requested_arm}" "${sig8}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}" "${DC_COMPLEXITY_SOURCE:-unknown}")"
     _bf_out="$(route_arbiter worker "${_bf_desc}")"; _bf_rc=$?
     _bf_arm="$(printf '%s\n' "${_bf_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _bf_chain="$(printf '%s\n' "${_bf_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
@@ -9210,7 +9258,9 @@ ${mission}"
         if [[ ${#_e76_remaining[@]} -gt 0 ]]; then
           local _e76_allowed _e76_desc _e76_out _e76_rc _e76_arm _e76_chain _e76_util
           _e76_allowed="$(IFS=,; printf '%s' "${_e76_remaining[*]}")"
-          _e76_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"allowed_arms":[x for x in sys.argv[3].split(",") if x]}))' "${kind:-code}" "${task_class:-standard}" "${_e76_allowed}")"
+          # A4-WIRE-ESTIMATOR: exit76 continuation re-arbitration inherits the
+          # same complexity triple as the initial resolution (see _bf_desc).
+          _e76_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"allowed_arms":[x for x in sys.argv[3].split(",") if x],"complexity":sys.argv[4],"duration_class":sys.argv[5],"complexity_source":sys.argv[6]}))' "${kind:-code}" "${task_class:-standard}" "${_e76_allowed}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}" "${DC_COMPLEXITY_SOURCE:-unknown}")"
           _e76_out="$(route_arbiter worker "${_e76_desc}")"; _e76_rc=$?
           _e76_arm="$(printf '%s\n' "${_e76_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
           _e76_chain="$(printf '%s\n' "${_e76_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
@@ -9590,8 +9640,8 @@ cmd_advance_arm() {
         emit decision "advance_pool_exhausted task=${sig8} pool=${_adv_pool} static=${arm}"
       fi
     fi
-    _adv_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":"code","size":sys.argv[1],"arm_pool":[x for x in sys.argv[2].split(",") if x],"launchable_arms":[x for x in sys.argv[3].split(",") if x],"requested_arm":sys.argv[4],"task":sys.argv[5]}))' \
-      "$(printf '%s' "${_adv_class:-standard}" | tr '[:upper:]' '[:lower:]')" "${_adv_remaining}" "$(_arm_launchable_arms "${sig8}" code)" "${_adv_pin}" "${sig8}")"
+    _adv_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":"code","size":sys.argv[1],"arm_pool":[x for x in sys.argv[2].split(",") if x],"launchable_arms":[x for x in sys.argv[3].split(",") if x],"requested_arm":sys.argv[4],"task":sys.argv[5],"complexity":sys.argv[6],"duration_class":sys.argv[7],"complexity_source":sys.argv[8]}))' \
+      "$(printf '%s' "${_adv_class:-standard}" | tr '[:upper:]' '[:lower:]')" "${_adv_remaining}" "$(_arm_launchable_arms "${sig8}" code)" "${_adv_pin}" "${sig8}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}" "${DC_COMPLEXITY_SOURCE:-unknown}")"
     _adv_out="$(route_arbiter worker "${_adv_desc}")"; _adv_rc=$?
     _adv_arm="$(printf '%s\n' "${_adv_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _adv_chainout="$(printf '%s\n' "${_adv_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
