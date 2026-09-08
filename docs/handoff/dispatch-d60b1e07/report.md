@@ -276,6 +276,8 @@ run-all: 114 selected, scope=changed, select_only=1
 
 ## Evidence: tests/run-all.sh --scope changed execution
 
+Pasted log lines have trailing whitespace removed for the repository whitespace check. The original log bytes are preserved in [changed-scope-raw.tar.gz](mutation-control/changed-scope-raw.tar.gz).
+
 BLOCKED: the required changed-scope gate did not pass. The wrapper reached its explicit 1,200-second bound and exited 124 while its core runner was still executing. The partial shard output below contains failed assertions and sandbox-denied fixture creation. This is not a completed CI pass, and the partial output does not establish the cause of every failure.
 
 ```bash
@@ -602,7 +604,7 @@ cat: /out.log: No such file or directory
 [leadv2-dispatch-code] worker_env_assert arm=codex task=71ba32fc var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
 [leadv2-dispatch-code] code_intel_preamble arm=codex task=71ba32fc mode=none reason=arm_unwired cause=codex_no_mcp_wiring
 [leadv2-dispatch-code] spawn_failed by=router model=codex task=71ba32fc rc=1 reason=launcher_nonzero_exit detail=<launcher-stderr-empty>
-[leadv2-dispatch-code] ERROR: spawn(codex) failed rc=1:  
+[leadv2-dispatch-code] ERROR: spawn(codex) failed rc=1:
 
 [leadv2-dispatch-code] route_fallback from=codex to=sonnet task=71ba32fc reason=codex_failed_launcher
 [leadv2-dispatch-code] worker_env_assert arm=sonnet task=71ba32fc var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
@@ -684,7 +686,7 @@ dispatch_refused reason=duplicate_task_signature task=71ba32fc
 [leadv2-dispatch-code] worker_env_assert arm=codex task=71ba32fc var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
 [leadv2-dispatch-code] code_intel_preamble arm=codex task=71ba32fc mode=none reason=arm_unwired cause=codex_no_mcp_wiring
 [leadv2-dispatch-code] spawn_failed by=router model=codex task=71ba32fc rc=1 reason=launcher_nonzero_exit detail=<launcher-stderr-empty>
-[leadv2-dispatch-code] ERROR: spawn(codex) failed rc=1:  
+[leadv2-dispatch-code] ERROR: spawn(codex) failed rc=1:
 
 [leadv2-dispatch-code] route_fallback from=codex to=sonnet task=71ba32fc reason=codex_failed_launcher
 [leadv2-dispatch-code] worker_env_assert arm=sonnet task=71ba32fc var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
@@ -771,26 +773,26 @@ PASS: (b2) strategic build: freepool not selected
 PASS: (b2) strategic build: no floor token when freepool is not in the candidate set
 PASS: (c) bulk build: freepool still selectable
 PASS: (c) bulk build: no floor token for bulk
-FAIL: (c2) trivial build: freepool demoted for a simple task (arm=sonnet kind=code model=sonnet tier=standard effort=medium reason=capability_fit chain=sonnet,freepool util_glm=99 util_codex=99 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=codex:capped,freepool:price_ratio,glm:capped,glm-flash:capped arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=unknown reset_in=n/a reset_basis=n/a probe_outage=claude failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=sonnet fit_differs=1 fit_bucket=sonnet:0,freepool:1) -- 
-FAIL: (c2) light build: freepool demoted for a simple task (arm=sonnet kind=code model=sonnet tier=standard effort=medium reason=capability_fit chain=sonnet,freepool util_glm=99 util_codex=99 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=codex:capped,freepool:price_ratio,glm:capped,glm-flash:capped arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=unknown reset_in=n/a reset_basis=n/a probe_outage=claude failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=sonnet fit_differs=1 fit_bucket=sonnet:0,freepool:1) -- 
-FAIL: (c3) standard docs: freepool unexpectedly demoted (arm=codex kind=docs model=gpt-6-astra tier=volume effort=low reason=capability_fit chain=codex,sonnet,freepool,haiku util_glm=99 util_codex=20 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=no_usable_now claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=freepool:price_ratio,glm:capped,glm-flash:capped,haiku:price_ratio,sonnet:price_ratio arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=80.0 reset_in=n/a reset_basis=unknown_window probe_outage=claude failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=codex fit_differs=1 fit_bucket=codex:0,codex:0,sonnet:0,freepool:1,haiku:1) -- 
+FAIL: (c2) trivial build: freepool demoted for a simple task (arm=sonnet kind=code model=sonnet tier=standard effort=medium reason=capability_fit chain=sonnet,freepool util_glm=99 util_codex=99 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=codex:capped,freepool:price_ratio,glm:capped,glm-flash:capped arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=unknown reset_in=n/a reset_basis=n/a probe_outage=claude failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=sonnet fit_differs=1 fit_bucket=sonnet:0,freepool:1) --
+FAIL: (c2) light build: freepool demoted for a simple task (arm=sonnet kind=code model=sonnet tier=standard effort=medium reason=capability_fit chain=sonnet,freepool util_glm=99 util_codex=99 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=codex:capped,freepool:price_ratio,glm:capped,glm-flash:capped arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=unknown reset_in=n/a reset_basis=n/a probe_outage=claude failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=sonnet fit_differs=1 fit_bucket=sonnet:0,freepool:1) --
+FAIL: (c3) standard docs: freepool unexpectedly demoted (arm=codex kind=docs model=gpt-6-astra tier=volume effort=low reason=capability_fit chain=codex,sonnet,freepool,haiku util_glm=99 util_codex=20 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=no_usable_now claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=freepool:price_ratio,glm:capped,glm-flash:capped,haiku:price_ratio,sonnet:price_ratio arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=80.0 reset_in=n/a reset_basis=unknown_window probe_outage=claude failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=codex fit_differs=1 fit_bucket=codex:0,codex:0,sonnet:0,freepool:1,haiku:1) --
 PASS: (dispatch) arm_floor_applied journal line emitted from the arbiter's own output
 PASS: (dispatch) route_resolved did not pick freepool (selection outcome)
-FAIL: (a) bulk build did not resolve to freepool: [leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=medium task=4bfad34b reason=cheapest_capable arbiter_pick=sonnet util_glm=99 util_codex=99 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=codex:capped,freepool:price_ratio,glm:capped,glm-flash:capped arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_applied=1 floor_reason=standard/code floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=standard duration_class=unknown complexity_policy=capability_fit remaining=unknown reset_in=n/a reset_basis=n/a probe_outage=claude failure_memory=unavailable complexity_source=flag conf=0.7 req_eff=3.0 fit_mode=on fit_pick=sonnet fit_differs=0 fit_bucket=sonnet:0,freepool:1 -- 
+FAIL: (a) bulk build did not resolve to freepool: [leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=medium task=4bfad34b reason=cheapest_capable arbiter_pick=sonnet util_glm=99 util_codex=99 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=probe claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=codex:capped,freepool:price_ratio,glm:capped,glm-flash:capped arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_applied=1 floor_reason=standard/code floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=standard duration_class=unknown complexity_policy=capability_fit remaining=unknown reset_in=n/a reset_basis=n/a probe_outage=claude failure_memory=unavailable complexity_source=flag conf=0.7 req_eff=3.0 fit_mode=on fit_pick=sonnet fit_differs=0 fit_bucket=sonnet:0,freepool:1 --
 PASS: (a) waiter did not declare no_work early (worker finishes at t+8s, window is 3s)
 PASS: (a) freepool run finalized complete after the window
 PASS: (a) run left a REAL diff on disk (diff.patch with hunks)
 PASS: (negative-control) floor mutation applied to a throwaway arbiter copy
-FAIL: (negative-control) mutated arbiter did not flip the winner — (b) is not load-bearing (arm=codex kind=code model=gpt-6-astra tier=volume effort=medium reason=capability_fit chain=codex,sonnet,freepool util_glm=99 util_codex=20 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=no_usable_now claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=freepool:price_ratio,glm:capped,glm-flash:capped,sonnet:price_ratio arb_rev=153454840e34 matrix_rev=a7adb07b0b4e floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=80.0 reset_in=n/a reset_basis=unknown_window probe_outage=claude failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=codex fit_differs=1 fit_bucket=codex:0,codex:0,sonnet:0,freepool:1) -- 
-FAIL: (e1) env full: freepool still demoted (arm=codex kind=code model=gpt-6-astra tier=volume effort=medium reason=capability_fit chain=codex,sonnet,freepool util_glm=99 util_codex=20 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=no_usable_now claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=freepool:price_ratio,glm:capped,glm-flash:capped,sonnet:price_ratio arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_mode=full floor_mode_source=env test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=80.0 reset_in=n/a reset_basis=unknown_window probe_outage=claude failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=codex fit_differs=1 fit_bucket=codex:0,codex:0,sonnet:0,freepool:1) -- 
+FAIL: (negative-control) mutated arbiter did not flip the winner — (b) is not load-bearing (arm=codex kind=code model=gpt-6-astra tier=volume effort=medium reason=capability_fit chain=codex,sonnet,freepool util_glm=99 util_codex=20 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=no_usable_now claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=freepool:price_ratio,glm:capped,glm-flash:capped,sonnet:price_ratio arb_rev=153454840e34 matrix_rev=a7adb07b0b4e floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=80.0 reset_in=n/a reset_basis=unknown_window probe_outage=claude failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=codex fit_differs=1 fit_bucket=codex:0,codex:0,sonnet:0,freepool:1) --
+FAIL: (e1) env full: freepool still demoted (arm=codex kind=code model=gpt-6-astra tier=volume effort=medium reason=capability_fit chain=codex,sonnet,freepool util_glm=99 util_codex=20 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=no_usable_now claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=freepool:price_ratio,glm:capped,glm-flash:capped,sonnet:price_ratio arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_mode=full floor_mode_source=env test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=80.0 reset_in=n/a reset_basis=unknown_window probe_outage=claude failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=codex fit_differs=1 fit_bucket=codex:0,codex:0,sonnet:0,freepool:1) --
 PASS: (e1) env full: no floor token in full mode
 PASS: (e1) env full: floor_mode=full floor_mode_source=env tokens present
-FAIL: (e2) yaml full: freepool still demoted (arm=codex kind=code model=gpt-6-astra tier=volume effort=medium reason=capability_fit chain=codex,sonnet,freepool util_glm=99 util_codex=20 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=no_usable_now claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=freepool:price_ratio,glm:capped,glm-flash:capped,sonnet:price_ratio arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_mode=full floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=80.0 reset_in=n/a reset_basis=unknown_window probe_outage=claude failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=codex fit_differs=1 fit_bucket=codex:0,codex:0,sonnet:0,freepool:1) -- 
+FAIL: (e2) yaml full: freepool still demoted (arm=codex kind=code model=gpt-6-astra tier=volume effort=medium reason=capability_fit chain=codex,sonnet,freepool util_glm=99 util_codex=20 util_claude=unknown_capped util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=1 headroom_unknown=no_usable_now claude_account_state=unknown claude_probe_penalty=50 claude_priced_from=unknown_probe_penalty arm_excluded=freepool:price_ratio,glm:capped,glm-flash:capped,sonnet:price_ratio arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_mode=full floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=80.0 reset_in=n/a reset_basis=unknown_window probe_outage=claude failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=codex fit_differs=1 fit_bucket=codex:0,codex:0,sonnet:0,freepool:1) --
 PASS: (e2) yaml full: floor_mode=full floor_mode_source=yaml tokens present
 PASS: (e3) garbage env falls through to the yaml key (bulk_only, source=yaml)
 PASS: (e3) no env + no yaml key: default bulk_only, source=default
 PASS: (e4) freepool_floor_mode mode=full source=env journaled by the dispatcher
-FAIL: (e4) floor mode full: freepool still not picked (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.w08jBO/fp08-floor.cMAuFQ/e4-out.log) -- 
+FAIL: (e4) floor mode full: freepool still not picked (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.w08jBO/fp08-floor.cMAuFQ/e4-out.log) --
 PASS: (e4b) no override: mode=bulk_only source=yaml journaled (canonical arm.yaml key)
 
 === 25 passed, 8 failed ===
@@ -948,7 +950,7 @@ after:
 [TEST] PASS: C6: finished and died recorded as two distinct rows for the same lane
 [TEST] PASS: C7: notifier exits 0 even when the inbox directory is unwritable
 [TEST] PASS: C7b: the underlying append genuinely failed on an unwritable dir (not a vacuous pass)
-[TEST] 
+[TEST]
 [TEST] === 11 passed, 1 failed ===
 FAIL: C5: undrained row missing from beat output. file: 2026-08-31T10:00:00Z [BROAD_STATUS] dispatched=0 degraded=1
 | Линия | Что делает | Состояние |
@@ -2030,7 +2032,7 @@ mkdir: /repo: Operation not permitted
 /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/1176c725614d/plugins/leadv2/scripts/tests/test-lane-deliverable-advance-arm.sh: line 59: /dispatch-lib.sh: No such file or directory
 /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/1176c725614d/plugins/leadv2/scripts/tests/test-lane-deliverable-advance-arm.sh: line 69: /adv.err: Operation not permitted
 FAIL: T4a: unparsable decl -- 8th arg='__NO_CLOSE__'
-FAIL: T4b: journal -- capture lacks ignored line: 
+FAIL: T4b: journal -- capture lacks ignored line:
 PASS=0 FAIL=5
 [CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-lane-deliverable-advance-arm.sh (scope-selected ad-hoc)
 
@@ -2329,10 +2331,10 @@ PermissionError: [Errno 1] Operation not permitted: '/classify.sh'
 /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/1176c725614d/plugins/leadv2/scripts/tests/test-classification-names-its-hatch.sh: line 40: /classify.sh: No such file or directory
 /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/1176c725614d/plugins/leadv2/scripts/tests/test-classification-names-its-hatch.sh: line 42: classify_product_work: command not found
 /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/1176c725614d/plugins/leadv2/scripts/tests/test-classification-names-its-hatch.sh: line 52: classify_product_work: command not found
-FAIL: a: 
+FAIL: a:
 /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/1176c725614d/plugins/leadv2/scripts/tests/test-classification-names-its-hatch.sh: line 42: classify_product_work: command not found
 /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/1176c725614d/plugins/leadv2/scripts/tests/test-classification-names-its-hatch.sh: line 60: classify_product_work: command not found
-FAIL: b: 
+FAIL: b:
 /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/1176c725614d/plugins/leadv2/scripts/tests/test-classification-names-its-hatch.sh: line 67: LEADV2_NON_PRODUCT_KINDS: unbound variable
 [CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-classification-names-its-hatch.sh (scope-selected ad-hoc)
 
@@ -2959,7 +2961,7 @@ mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.g
 PASS: leadv2-event.sh: bash -n OK
 mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.KsVuaGUGum: Operation not permitted
 FAIL: emit did not create /c1/myrepo.jsonl
-FAIL: line 1 schema wrong: 
+FAIL: line 1 schema wrong:
 sed: /c1/myrepo.jsonl: No such file or directory
 FAIL: expected seq=2 on line 2, got ''
 PASS: missing --repo: fail-open (rc=0, no dir/file created)
@@ -2985,61 +2987,61 @@ FAIL: dispatch-code.sh call site 'question_asked' produced no event (dir=/site-q
 
 [CORE-OFFLINE] plugins/leadv2/scripts/tests/test-model-select-telemetry.sh (scope-selected ad-hoc)
 PASS: bash syntax: dispatch
-FAIL: (a) win: telemetry line missing/unparseable (line: ''; log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/win-out.log) -- 
-FAIL: (a) win: wrong terminal/cause () -- 
-FAIL: (a) win: probe did not dispatch via freepool (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/win-out.log) -- 
-FAIL: (a) fail: telemetry line missing/unparseable (line: ''; log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/fail-out.log) -- 
-FAIL: (a) fail: wrong terminal/cause () -- 
-FAIL: (a) fail: arm field wrong () -- 
-FAIL: (b) CSV file missing (win: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/repo1/docs/leadv2/model-select-telemetry.csv, fail: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/repo2/docs/leadv2/model-select-telemetry.csv) -- 
-FAIL: (b) CSV header count != 1 (; file: ) -- 
-FAIL: (b) fail CSV row wrong () -- 
-FAIL: (b) win CSV row wrong () -- 
+FAIL: (a) win: telemetry line missing/unparseable (line: ''; log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/win-out.log) --
+FAIL: (a) win: wrong terminal/cause () --
+FAIL: (a) win: probe did not dispatch via freepool (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/win-out.log) --
+FAIL: (a) fail: telemetry line missing/unparseable (line: ''; log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/fail-out.log) --
+FAIL: (a) fail: wrong terminal/cause () --
+FAIL: (a) fail: arm field wrong () --
+FAIL: (b) CSV file missing (win: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/repo1/docs/leadv2/model-select-telemetry.csv, fail: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/repo2/docs/leadv2/model-select-telemetry.csv) --
+FAIL: (b) CSV header count != 1 (; file: ) --
+FAIL: (b) fail CSV row wrong () --
+FAIL: (b) win CSV row wrong () --
 PASS: (negative-control) telemetry call removed from a throwaway dispatch copy
 PASS: (negative-control) copy lives in a $TMP mirror with symlinked siblings (H3)
 PASS: (negative-control) with emission removed, (a)+(b) run RED: no journal line, no CSV
-FAIL: (negative-control) mutation broke the dispatch itself, control is invalid (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/neg-out.log) -- 
-FAIL: (e) H1 fallback: expected exactly 1 telemetry row, got 0 -- 
-FAIL: (e) H1 fallback: row unparseable (line: '') -- 
-FAIL: (e) H1 fallback: row lacks 'terminal=win cause=worker_spawned' (line: '') -- 
-FAIL: (e) H1: row does not name the final arm/model (line: ''; log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/fb-out.log) -- 
+FAIL: (negative-control) mutation broke the dispatch itself, control is invalid (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/neg-out.log) --
+FAIL: (e) H1 fallback: expected exactly 1 telemetry row, got 0 --
+FAIL: (e) H1 fallback: row unparseable (line: '') --
+FAIL: (e) H1 fallback: row lacks 'terminal=win cause=worker_spawned' (line: '') --
+FAIL: (e) H1: row does not name the final arm/model (line: ''; log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/fb-out.log) --
 PASS: (e) H1: refused arm's model absent from the row
-FAIL: (e) H1: no route_fallback in probe — probe is void (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/fb-out.log) -- 
-FAIL: (e) H1: CSV row wrong () -- 
+FAIL: (e) H1: no route_fallback in probe — probe is void (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/fb-out.log) --
+FAIL: (e) H1: CSV row wrong () --
 PASS: (negative-control H1) per-candidate re-stamp mutated back to round-1 shape
-FAIL: (negative-control H1) mutation did not reproduce the lie — (e) may be tautological (line: ''; log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/negh1-out.log) -- 
-FAIL: (negative-control H1) mutated copy lost the fallback — control invalid (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/negh1-out.log) -- 
-FAIL: (g1) v2 empty chain: expected exactly 1 telemetry row, got 0 -- 
-FAIL: (g1) v2 empty chain: row unparseable (line: '') -- 
-FAIL: (g1) v2 empty chain: row lacks 'terminal=fail cause=all_arms_exhausted' (line: '') -- 
-FAIL: (g1) probe did not hit the expected terminal (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/g1-out.log) -- 
-FAIL: (g2) v2 not-dispatchable: expected exactly 1 telemetry row, got 0 -- 
-FAIL: (g2) v2 not-dispatchable: row unparseable (line: '') -- 
-FAIL: (g2) v2 not-dispatchable: row lacks 'terminal=fail cause=all_arms_not_dispatchable_v2' (line: '') -- 
-FAIL: (g2) retired-arm drop missing (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/g2-out.log) -- 
-FAIL: (g3) quota-locked: expected exactly 1 telemetry row, got 0 -- 
-FAIL: (g3) quota-locked: row unparseable (line: '') -- 
-FAIL: (g3) quota-locked: row lacks 'terminal=fail cause=all_arms_quota_locked' (line: '') -- 
-FAIL: (g3) precheck skip line missing (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/g3-out.log) -- 
-FAIL: (g4) excluded: expected exactly 1 telemetry row, got 0 -- 
-FAIL: (g4) excluded: row unparseable (line: '') -- 
-FAIL: (g4) excluded: row lacks 'terminal=fail cause=all_arms_excluded' (line: '') -- 
-FAIL: (g4) arm_excluded line missing (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/g4-out.log) -- 
-FAIL: (g5) arbiter all-capped: expected exactly 1 telemetry row, got 0 -- 
-FAIL: (g5) arbiter all-capped: row unparseable (line: '') -- 
-FAIL: (g5) arbiter all-capped: row lacks 'terminal=fail cause=all_arms_capped' (line: '') -- 
-FAIL: (g5) arbiter refusal line missing (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/g5-out.log) -- 
-FAIL: (g6) quota-filter exhaustion: expected exactly 1 telemetry row, got 0 -- 
-FAIL: (g6) quota-filter exhaustion: row unparseable (line: '') -- 
-FAIL: (g6) quota-filter exhaustion: row lacks 'terminal=fail cause=all_arms_exhausted_quota' (line: '') -- 
-FAIL: (g6) expected terminal not reached (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/g6-out.log) -- 
-FAIL: (h) M2: journal row not sanitized (line: '') -- 
-FAIL: (h) M2: CSV column count wrong (missing; row: ) -- 
-FAIL: (h) M2: comma value split the CSV row (missing; row: ) -- 
+FAIL: (negative-control H1) mutation did not reproduce the lie — (e) may be tautological (line: ''; log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/negh1-out.log) --
+FAIL: (negative-control H1) mutated copy lost the fallback — control invalid (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/negh1-out.log) --
+FAIL: (g1) v2 empty chain: expected exactly 1 telemetry row, got 0 --
+FAIL: (g1) v2 empty chain: row unparseable (line: '') --
+FAIL: (g1) v2 empty chain: row lacks 'terminal=fail cause=all_arms_exhausted' (line: '') --
+FAIL: (g1) probe did not hit the expected terminal (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/g1-out.log) --
+FAIL: (g2) v2 not-dispatchable: expected exactly 1 telemetry row, got 0 --
+FAIL: (g2) v2 not-dispatchable: row unparseable (line: '') --
+FAIL: (g2) v2 not-dispatchable: row lacks 'terminal=fail cause=all_arms_not_dispatchable_v2' (line: '') --
+FAIL: (g2) retired-arm drop missing (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/g2-out.log) --
+FAIL: (g3) quota-locked: expected exactly 1 telemetry row, got 0 --
+FAIL: (g3) quota-locked: row unparseable (line: '') --
+FAIL: (g3) quota-locked: row lacks 'terminal=fail cause=all_arms_quota_locked' (line: '') --
+FAIL: (g3) precheck skip line missing (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/g3-out.log) --
+FAIL: (g4) excluded: expected exactly 1 telemetry row, got 0 --
+FAIL: (g4) excluded: row unparseable (line: '') --
+FAIL: (g4) excluded: row lacks 'terminal=fail cause=all_arms_excluded' (line: '') --
+FAIL: (g4) arm_excluded line missing (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/g4-out.log) --
+FAIL: (g5) arbiter all-capped: expected exactly 1 telemetry row, got 0 --
+FAIL: (g5) arbiter all-capped: row unparseable (line: '') --
+FAIL: (g5) arbiter all-capped: row lacks 'terminal=fail cause=all_arms_capped' (line: '') --
+FAIL: (g5) arbiter refusal line missing (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/g5-out.log) --
+FAIL: (g6) quota-filter exhaustion: expected exactly 1 telemetry row, got 0 --
+FAIL: (g6) quota-filter exhaustion: row unparseable (line: '') --
+FAIL: (g6) quota-filter exhaustion: row lacks 'terminal=fail cause=all_arms_exhausted_quota' (line: '') --
+FAIL: (g6) expected terminal not reached (log: /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/core-offline-run.geMTSw/suite.GnPsJc/fp06-telem.O3PC2Y/g6-out.log) --
+FAIL: (h) M2: journal row not sanitized (line: '') --
+FAIL: (h) M2: CSV column count wrong (missing; row: ) --
+FAIL: (h) M2: comma value split the CSV row (missing; row: ) --
 PASS: (h) M2: formula-leading CSV cell is neutralized
-FAIL: (i) H4: rotation wrong (6001 lines) -- 
+FAIL: (i) H4: rotation wrong (6001 lines) --
 PASS: (i) H4: header survived rotation
-FAIL: (i) H4: newest row lost (oldrow6000) -- 
+FAIL: (i) H4: newest row lost (oldrow6000) --
 
 === 8 passed, 48 failed ===
 [CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-model-select-telemetry.sh (scope-selected ad-hoc)
@@ -3375,13 +3377,13 @@ mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.N
 [TEST] PASS: R1c: artifact line 1 carries the base_head header
 [TEST] FAIL: R2a: no status=cached in log:
 [TEST] PASS: R2b: same-head resume did NOT invalidate
-[TEST] FAIL: R3a: invalidation line wrong/missing: 
+[TEST] FAIL: R3a: invalidation line wrong/missing:
 [TEST] FAIL: R3b: no archived architect-prepass.<epoch>.md
 [TEST] FAIL: R3c: .head is '15fc73484754abdc1b2df4eb13da93d6e6147480' want '08e3a3d8fceb80bc41fe5a5d41d391a56c2cc177'
 [TEST] FAIL: R3d: regenerated artifact line 1 is '<!-- leadv2-prepass base_head=15fc73484754abdc1b2df4eb13da93d6e6147480 generated_at=2026-09-08T11:36:51Z -->'
-[TEST] FAIL: R3e: regeneration did not stabilise: 
-[TEST] FAIL: R4: no prepass_refuted invalidation: 
-[TEST] FAIL: R5: kill switch did not restore today: 
+[TEST] FAIL: R3e: regeneration did not stabilise:
+[TEST] FAIL: R4: no prepass_refuted invalidation:
+[TEST] FAIL: R5: kill switch did not restore today:
 
 [prepass-resume-invalidate] PASS=4 FAIL=8
 [CORE-OFFLINE] FAILED: prepass resume invalidation (LANE-OBSERVABILITY-02)
@@ -3501,7 +3503,7 @@ chmod: /fake-subsession.sh: No such file or directory
 mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.ZfrV9nqizb: Operation not permitted
 mkdir: /plainwork: Operation not permitted
 /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/1176c725614d/plugins/leadv2/scripts/tests/test-dispatch-cwd-root-else-branch.sh: line 121: cd: /plainwork: No such file or directory
-[TEST] FAIL: no-git + no-env: expected ledger slug=plainwork (pwd fallback), got: 
+[TEST] FAIL: no-git + no-env: expected ledger slug=plainwork (pwd fallback), got:
 [test-dispatch-cwd-root-else-branch] pass=0 fail=2
 [CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-dispatch-cwd-root-else-branch.sh (scope-selected ad-hoc)
 
@@ -3747,7 +3749,7 @@ chmod: /journal.sh: No such file or directory
 [CORE-OFFLINE] plugins/leadv2/scripts/tests/test-phase-refusal-lane-release.sh (scope-selected ad-hoc)
 /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/1176c725614d/plugins/leadv2/scripts/tests/test-phase-refusal-lane-release.sh: line 67: /bin/ps: Operation not permitted
 /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/1176c725614d/plugins/leadv2/scripts/tests/test-phase-refusal-lane-release.sh: line 67: /bin/ps: Operation not permitted
-FATAL: worker argv unexpected: 
+FATAL: worker argv unexpected:
 [CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-phase-refusal-lane-release.sh (scope-selected ad-hoc)
 
 [CORE-OFFLINE] plugins/leadv2/scripts/tests/test-plugin-review-arms.sh (scope-selected ad-hoc)
@@ -3782,7 +3784,7 @@ chmod: /fake-journal.sh: No such file or directory
 FAIL: T3a: stale-tree exit -- expected rc=4, got 127
 FAIL: T3b: refusal text -- stderr lacks the refuse line -- got: bash: /stale-tree/scripts/leadv2-dispatch-code.sh: No such file or directory
 FAIL: T3c: remedy -- no remedy line
-FAIL: T3d: journal line -- capture lacks dispatch_refused: 
+FAIL: T3d: journal line -- capture lacks dispatch_refused:
 PASS: T4a: escape hatch does not refuse (rc=127)
 FAIL: T4b: downgrade warn -- no dispatch_stale_script_tree_warn line
 PASS: T5(plugin-tree): passes provenance check (rc=1)
@@ -3798,14 +3800,14 @@ chmod: /crash-resolver.py: No such file or directory
 FAIL: T6a: engine unreviewed path -- rc=9, artifact=none
 FAIL: T6b: status -- absent
 FAIL: T6c: refusal -- absent
-FAIL: T6d: resolver_rc -- not 1: 
-FAIL: T6e: resolver_stderr -- 
+FAIL: T6d: resolver_rc -- not 1:
+FAIL: T6e: resolver_stderr --
 FAIL: T6f: merge_blocked -- absent
-FAIL: T6g: last line -- got: 
+FAIL: T6g: last line -- got:
 Traceback (most recent call last):
   File "<stdin>", line 2, in <module>
 FileNotFoundError: [Errno 2] No such file or directory: '/handoff6/review-gate.md'
-FAIL: T7: field-set drift --  
+FAIL: T7: field-set drift --
 
 plugin-review-arms: 15 pass, 13 fail
 [CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-plugin-review-arms.sh (scope-selected ad-hoc)

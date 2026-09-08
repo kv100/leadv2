@@ -1,0 +1,12 @@
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -2606,7 +2606,2 @@
+-    # Unknown is not an empty allowlist. Keep the legacy hardcoded ladder
+-    # available to every caller (arbiter, adoption, fallback tail); downstream
+-    # quota, trust and adapter checks still apply. Discard partial query output.
+-    _arms="glm,codex,sonnet"
+-    emit decision "launchable_seam task=${_sig8} source=legacy kind=$2 reason=launch_registry_unavailable fallback=${_arms}"
+-    printf '%s' "${_arms}"
+-    return 0
++    emit decision "arm_refused task=${_sig8} reason=launch_registry_unavailable kind=$2"
++    return 1
