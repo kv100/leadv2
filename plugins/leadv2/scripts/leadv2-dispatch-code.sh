@@ -6939,9 +6939,13 @@ _codex_first_byte_probe() {  # <handle>
 # landed, or the deadline is disabled via LEADV2_CODEX_FIRST_BYTE_SECS=0), 7 =
 # declared dead (no byte within the deadline) -- caller must abort the reservation
 # and spill to the next candidate arm, exactly like the existing postspawn-quota
-# rc=7 branch. On declaring dead, stands codex down for a bounded window via the
-# CODEX-DOOR-DEAD-01 §3 stand-down mode (never the quota-classification mode --
-# there is no launcher output to classify here, only silence).
+# rc=7 branch. CODEX-ALWAYS-UP (founder order 2026-09-08): the dead verdict is
+# a JOB-level verdict only -- the decision line is the whole record, no
+# provider lockout. Silence here is not a provider refusal (there is no
+# launcher output to classify), and each stand-down used to park codex for an
+# hour across every lane while the quota gate read healthy. A genuine provider
+# refusal still parks codex via _maybe_record_quota_lockout and
+# _record_postspawn_lockout -- those paths are untouched.
 _codex_first_byte_deadline_check() {  # <handle> <sig8>
   local handle="$1" sig8="$2"
   local deadline="${LEADV2_CODEX_FIRST_BYTE_SECS:-180}"
@@ -6956,9 +6960,7 @@ _codex_first_byte_deadline_check() {  # <handle> <sig8>
       return 0
     fi
     if (( SECONDS - started >= deadline )); then
-      emit decision "arm_dead_no_first_byte arm=codex task=${sig8} job=${handle}"
-      bash "${DISPATCH_SELF_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}" record-quota-lockout \
-        --provider codex --hours 1 --reason arm_dead_no_first_byte >/dev/null 2>&1 || true
+      emit decision "arm_dead_no_first_byte arm=codex task=${sig8} job=${handle} provider_standdown=none"
       return 7
     fi
     sleep "${poll_s}"
@@ -7078,8 +7080,11 @@ PY
 # machinery covers every other outcome), 7 = declared dead (task_complete +
 # last_agent_message null found within the window) -- caller must abort the
 # reservation and spill, exactly like _codex_first_byte_deadline_check's
-# rc=7 contract. Records a provider strike via the same record-quota-lockout
-# path on the dead verdict. expected_cwd (nit 2-A) scopes the rollout scan
+# rc=7 contract. CODEX-ALWAYS-UP: the dead verdict is job-level only -- the
+# decision line is the whole record, no provider lockout (a null-message
+# task_complete is our worker dying, not the provider refusing us; genuine
+# refusals still park codex via _maybe_record_quota_lockout /
+# _record_postspawn_lockout). expected_cwd (nit 2-A) scopes the rollout scan
 # to this dispatch's own --cwd when possible; ambiguity (>1 window
 # candidate) is journaled either way.
 _codex_instant_complete_deadline_check() {  # <sig8> <since_epoch> [expected_cwd]
@@ -7101,9 +7106,7 @@ _codex_instant_complete_deadline_check() {  # <sig8> <since_epoch> [expected_cwd
     if [[ -n "${f}" ]]; then
       _codex_rollout_dead_shape "${f}"; rc=$?
       if [[ ${rc} -eq 0 ]]; then
-        emit decision "arm_dead_instant_complete arm=codex task=${sig8} rollout=${f}"
-        bash "${DISPATCH_SELF_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}" record-quota-lockout \
-          --provider codex --hours 1 --reason arm_dead_instant_complete >/dev/null 2>&1 || true
+        emit decision "arm_dead_instant_complete arm=codex task=${sig8} rollout=${f} provider_standdown=none"
         return 7
       elif [[ ${rc} -eq 2 ]]; then
         return 0   # terminal, real last_agent_message -- healthy, proceed
@@ -7173,8 +7176,14 @@ PY
 # machinery already covers every other outcome), 7 = declared dead (job
 # store lost the row, or a turn_aborted event landed) -- caller must abort
 # the reservation and spill, exactly like the sibling deadline checks' rc=7
-# contract. Records a provider strike via the same record-quota-lockout
-# path on the dead verdict, reason=arm_dead_worker_liveness.
+# contract. CODEX-ALWAYS-UP (founder order 2026-09-08): the dead verdict is
+# job-level only -- the decision line is the whole record, no provider
+# lockout. A missing job-store row or an aborted turn is OUR worker dying,
+# not the provider refusing us (55 live strikes stood codex down for an hour
+# each while the quota gate read 27% < 95%); a genuine provider refusal
+# still parks codex via _maybe_record_quota_lockout (quota/quota_gate/
+# quota_circuit_open/rate_limit*) and _record_postspawn_lockout
+# (classified output) -- those paths are untouched.
 # SINGLE-SHOT, not a poll loop: nit 2-B (this same file) established that
 # any positive liveness evidence available right now is proof enough to
 # stop waiting -- a job-store row present at check time is exactly that
@@ -7199,9 +7208,7 @@ _codex_worker_liveness_deadline_check() {  # <handle> <sig8> <since_epoch> [expe
   status_out="$(bash "${CODEX_BIN}" status "${handle}" 2>&1 9>&-)"; status_rc=$?
   if [[ ${status_rc} -ne 0 ]]; then
     if printf '%s' "${status_out}" | grep -qi 'no job found'; then
-      emit decision "arm_dead_worker_liveness arm=codex task=${sig8} handle=${handle} reason=vanished_job"
-      bash "${DISPATCH_SELF_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}" record-quota-lockout \
-        --provider codex --hours 1 --reason arm_dead_worker_liveness >/dev/null 2>&1 || true
+      emit decision "arm_dead_worker_liveness arm=codex task=${sig8} handle=${handle} reason=vanished_job provider_standdown=none"
       return 7
     fi
     emit decision "codex_worker_liveness_status_unknown arm=codex task=${sig8} handle=${handle} rc=${status_rc}"
@@ -7210,9 +7217,7 @@ _codex_worker_liveness_deadline_check() {  # <handle> <sig8> <since_epoch> [expe
   scan_out="$(_codex_newest_rollout_since "${since}" "${expected_cwd}")"
   f="$(printf '%s\n' "${scan_out}" | sed -n '1p')"
   if [[ -n "${f}" ]] && _codex_rollout_turn_aborted "${f}"; then
-    emit decision "arm_dead_worker_liveness arm=codex task=${sig8} handle=${handle} reason=turn_aborted rollout=${f}"
-    bash "${DISPATCH_SELF_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}" record-quota-lockout \
-      --provider codex --hours 1 --reason arm_dead_worker_liveness >/dev/null 2>&1 || true
+    emit decision "arm_dead_worker_liveness arm=codex task=${sig8} handle=${handle} reason=turn_aborted rollout=${f} provider_standdown=none"
     return 7
   fi
   return 0   # job store row present, no turn_aborted seen -- proceed
