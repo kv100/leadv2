@@ -1,0 +1,4 @@
+leadv2-mutation-control: snapshot=head_plus_declared declared=2 excluded_dirty=0
+MUTATION-CONTROL ok suite=plugins/leadv2/tests/test-review-pool-unknown-is-not-unavailable.sh file=plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py red_line=FAIL: resolver excludes author codex: actual='codex' expected='fable' diff_hash=cb671d50333daafee2403f9d84b0602be760305cb4f06727973176db36becb0e lane_diff_hash=7d67b4b4a6069fcad1ac0e455083e6cdc5b5b9c5dac16962a4b4e53736dbc2cf
+
+control_rc=0
