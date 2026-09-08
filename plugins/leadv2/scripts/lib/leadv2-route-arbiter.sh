@@ -476,7 +476,14 @@ duration_class=str(d.get('duration_class','unknown')).lower()
 # (judge|flag|heuristic|unknown -- design.md §5.1). Absent from an
 # older/unpatched caller renders as 'unknown' -> conf 0.0, the cautious default.
 complexity_source=str(d.get('complexity_source','unknown')).lower()
-capable=[c for c in cells if mkind in c.get('kinds',[]) and size in c.get('sizes',[]) and (not require_trusted or c.get('protected',False)) and (allowed is None or c.get('arm') in allowed)]
+# POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01 (2026-09-07): the single-line
+# `capable=` comprehension above is retired. It folded FOUR different facts
+# (kind/size fit, trust, caller admissibility) into one silent set, and the
+# caller fed it the ladder SUFFIX from an already-resolved arm -- so a pinned
+# fable read `requested_arm_incapable ... arm_excluded=fable:not_allowed`
+# while fable was not incapable, only never in the room. Eligibility is now
+# built as an ordered, TYPED stage list (see _stages below), and `capable` is
+# what survives the pre-budget stages.
 # GLM-NEVER-WINS-THE-ARBITER-01 (measured 2026-09-05): `reason=cheapest_capable
 # chain=sonnet` is a TRUE statement about a candidate set of ONE, and it reads
 # exactly like "the cheap arms were considered and lost on price". On 2026-09-03
@@ -494,12 +501,56 @@ capable=[c for c in cells if mkind in c.get('kinds',[]) and size in c.get('sizes
 #
 # Selection is untouched: this re-reads the same cells and decides nothing.
 _fit=[c for c in cells if mkind in c.get('kinds',[]) and size in c.get('sizes',[])]
-_arm_excluded={}
-for _c in _fit:
-    _a=_c.get('arm')
-    if require_trusted and not _c.get('protected',False): _arm_excluded[_a]='untrusted'
-    elif allowed is not None and _a not in allowed: _arm_excluded[_a]='not_allowed'
-_excl_tok=(' arm_excluded=%s' % ','.join('%s:%s' % (a_,r_) for a_,r_ in sorted(_arm_excluded.items()))) if _arm_excluded else ''
+# POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01 (2026-09-07): the two-valued
+# _arm_excluded map (untrusted|not_allowed) is replaced by an ordered stage
+# list, one entry per matrix arm that fits kind/size -- not_in_pool,
+# not_launchable, untrusted, capped, failure_memory, price_ratio -- joined
+# with '+' when several apply, so an operator reads "never eligible" vs
+# "never tested" vs "tested and lost" off one line:
+#   not_in_pool    -- outside the hard set (arm_pool), the caller's policy
+#                     bound (allowed_arms = the when:-class eligible arms),
+#                     or the default-auction boundary (matrix cell
+#                     pool_default: false -- opus only: it shares the lead's
+#                     own account window; explicit pool/pin still reach it).
+#   not_launchable -- outside launchable_arms, the caller-side launch-
+#                     capability seam (stubbed to the DISPATCHABLE_*_ARMS
+#                     sets until sibling lane ARMS-CANNOT-LAUNCH-THEMSELVES-01
+#                     lands the registry; do not fork a second registry).
+#   untrusted      -- require_trusted and no fitting cell is protected.
+_arm_cells={}
+for _c in _fit: _arm_cells.setdefault(_c.get('arm'),[]).append(_c)
+# requested_arm is parsed HERE now (it used to be parsed further down, after
+# the failure memory): the pin participates in pool construction, not just
+# the final filter -- an explicit pin overrides the policy/default pool
+# boundary (cost policy is exactly what a pin exists to override) but never
+# the matrix, launchability, trust or budget.
+requested_arm=str(d.get('requested_arm') or '').strip()
+arm_pool_raw=d.get('arm_pool')
+arm_pool=({str(a).strip() for a in arm_pool_raw if str(a).strip()} if isinstance(arm_pool_raw,list) else None)
+launchable_raw=d.get('launchable_arms')
+launchable=({str(a).strip() for a in launchable_raw if str(a).strip()} if isinstance(launchable_raw,list) else None)
+def _pool_contains(arm):
+    if arm_pool is not None: return arm in arm_pool
+    if requested_arm and arm==requested_arm: return True
+    if allowed is not None: return arm in allowed
+    return any(c.get('pool_default',True) is not False for c in _arm_cells.get(arm,[]))
+_STAGE_ORDER=['not_in_pool','not_launchable','untrusted','capped','failure_memory','price_ratio']
+_stages={}
+def _stage_add(arm,stage):
+    _s=_stages.setdefault(arm,[])
+    if stage not in _s: _s.append(stage)
+for _a in _arm_cells:
+    if not _pool_contains(_a): _stage_add(_a,'not_in_pool')
+    if launchable is not None and _a not in launchable: _stage_add(_a,'not_launchable')
+    if require_trusted and not any(c.get('protected',False) for c in _arm_cells[_a]): _stage_add(_a,'untrusted')
+def _excl_render():
+    # Rendered in the canonical stage order regardless of the order stages
+    # were appended in (failure_memory is evaluated before capped, but the
+    # token contract is: not_in_pool, not_launchable, untrusted, capped,
+    # failure_memory, price_ratio).
+    if not _stages: return ''
+    return ' arm_excluded=%s' % ','.join('%s:%s' % (a,'+'.join(sorted(_stages[a],key=_STAGE_ORDER.index))) for a in sorted(_stages))
+capable=[c for c in _fit if c.get('arm') not in _stages]
 # ...and the pair that makes any of this re-derivable a week later: which BYTES
 # of arbiter ran, and which BYTES of matrix it read. Absent only when the digest
 # could not be taken, which is itself the honest third value.
@@ -655,6 +706,7 @@ if failure_banned:
     _kept=[c for c in capable if c.get('arm') not in failure_banned]
     if _kept:
         failure_dropped=sorted({c.get('arm') for c in capable if c.get('arm') in failure_banned})
+        for _fb in failure_dropped: _stage_add(_fb,'failure_memory')
         capable=_kept
     else:
         # Every capable cell is a repeat offender. Refusing here would turn a
@@ -697,7 +749,9 @@ def _record(arm, model, tier, reason):
               'failure_memory':failure_memory,
               'arb_rev':_arb_rev,'matrix_rev':_routing_rev,
               'failure_banned':{a:failure_banned[a] for a in failure_dropped},
-              'probe_outage':list(_probe_outage)}
+              'probe_outage':list(_probe_outage),
+              'requested_arm':requested_arm,
+              'arm_excluded':{a:'+'.join(sorted(_stages.get(a,[]),key=_STAGE_ORDER.index)) for a in sorted(_stages)}}
         with open(_jf_path,'a') as _jf: _jf.write(json.dumps(_rec)+'\n')
     except Exception:
         pass
@@ -721,28 +775,51 @@ def _record(arm, model, tier, reason):
 # auction) -- the negative-control half: asking for an arm on work it was
 # never declared capable of must fail, or "explicit choice" is actually
 # "obeys any request", which is worse than no path at all.
-requested_arm=str(d.get('requested_arm') or '').strip()
 if requested_arm:
-    _req_capable=[c for c in capable if c.get('arm')==requested_arm]
-    if not _req_capable:
+    # EXPLICIT-ARM-REQUEST-01 + POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01:
+    # a pin is honoured or refused HONESTLY, never silently substituted.
+    # requested_arm_incapable is RESERVED for the one case where it is true --
+    # this kind/size has NO capability_matrix cell for the arm at all. Every
+    # other refusal names the exact stage that removed it (not_in_pool,
+    # not_launchable, untrusted, capped, failure_memory), so the operator
+    # reads WHICH filter fired off the one line, and a perfectly capable arm
+    # is never again called incapable.
+    if requested_arm not in _arm_cells:
         _record('refuse','none','none','requested_arm_incapable')
-        print('arm=refuse model=none tier=none reason=requested_arm_incapable kind=%s requested_arm=%s chain= %s%s%s%s%s' % (kind,requested_arm,ufmt(),_outage,_fm_tok,_excl_tok,_rev_tok))
+        print('arm=refuse model=none tier=none reason=requested_arm_incapable kind=%s requested_arm=%s chain= %s%s%s%s%s' % (kind,requested_arm,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
         raise SystemExit(69)
-    _req_ok=[c for c in _req_capable if not capped(c.get('provider'))]
-    if not _req_ok:
-        _record('refuse','none','none','requested_arm_capped')
-        print('arm=refuse model=none tier=none reason=requested_arm_capped kind=%s requested_arm=%s chain= %s%s%s%s%s' % (kind,requested_arm,ufmt(),_outage,_fm_tok,_excl_tok,_rev_tok))
-        raise SystemExit(70)
-if not capable:
+    _pin_prov=next((c.get('provider') for c in _arm_cells[requested_arm]),None)
+    if capped(_pin_prov): _stage_add(requested_arm,'capped')
+    _pin_stages=_stages.get(requested_arm,[])
+    if _pin_stages:
+        _pin_reason='requested_arm_%s' % _pin_stages[0]
+        _pin_rc=70 if _pin_stages==['capped'] else 69
+        _record('refuse','none','none',_pin_reason)
+        print('arm=refuse model=none tier=none reason=%s kind=%s requested_arm=%s chain= %s%s%s%s%s' % (_pin_reason,kind,requested_arm,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
+        raise SystemExit(_pin_rc)
+# T17 fix-round (C1) split, extended: no_capable_cell means the vocabulary
+# cannot express this work at all (no _fit cell, or the bound pool names no
+# arm that fits). When arms DO fit but every one was removed by a pool/
+# launch/trust stage, that is a different fact -- the matrix knows them, the
+# pool did not want them -- and gets its own reason. rc stays 68 for both:
+# callers fail open to the ladder crash-fallback, unchanged.
+_bound_pool=arm_pool if arm_pool is not None else (allowed if allowed is not None else set(_arm_cells))
+if not _fit or not (_bound_pool & set(_arm_cells)):
     _record('refuse','none','none','no_capable_cell')
-    print('arm=refuse model=none tier=none reason=no_capable_cell kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_tok,_rev_tok))
+    print('arm=refuse model=none tier=none reason=no_capable_cell kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
+    raise SystemExit(68)
+if not capable:
+    _record('refuse','none','none','pool_empty_all_excluded')
+    print('arm=refuse model=none tier=none reason=pool_empty_all_excluded kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
     raise SystemExit(68)
 ok=[c for c in capable if not capped(c.get('provider'))]
+for _cap_a in sorted({c.get('arm') for c in capable if capped(c.get('provider'))}):
+    _stage_add(_cap_a,'capped')
 if requested_arm:
     ok=[c for c in ok if c.get('arm')==requested_arm]
 if not ok:
     _record('refuse','none','none','all_arms_capped')
-    print('arm=refuse model=none tier=none reason=all_arms_capped kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_tok,_rev_tok))
+    print('arm=refuse model=none tier=none reason=all_arms_capped kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
     raise SystemExit(3)
 # FP-08 fix-round (H1): demote freepool in the dimension the selector ACTUALLY
 # ranks by -- effective cost, the sort's dominant key. +100 clears the whole
@@ -926,6 +1003,13 @@ except Exception: last=''
 # the same price tier as an unfloored cost-1 arm.
 price=ecost(ok[0]); alternatives=[c for c in ok if ecost(c)==price and c['arm']!=last]
 w=alternatives[0] if alternatives else ok[0]
+# POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: every arm that survived all
+# exclusion stages and still did not win is named price_ratio -- it was IN
+# the pool, launchable, trusted and uncapped, and lost on effective cost.
+# Without this token those arms were invisible, and a one-arm chain read as
+# "nothing cheaper exists" when the truth was "nothing cheaper was allowed".
+for _loser in sorted({c['arm'] for c in ok} - {w['arm']}):
+    _stage_add(_loser,'price_ratio')
 # EFFORT-IS-NOT-WIRED-01: resolve effort from the SAME winning cell `w`, in
 # the SAME call that picked the arm -- never a second decision. Data-driven
 # (config/leadv2-routing.yaml router_v2.effort_matrix), never a name literal.
@@ -1022,7 +1106,7 @@ _extra += (' headroom_priced=%s' % ','.join('%s:%g' % (p_, w_) for p_, w_ in sor
 # 09-03 evidence could not: was the chain short because nothing cheaper exists,
 # or because a policy filter emptied it before the price was read. Absent when
 # nothing was filtered -- that absence is the paired control.
-_extra += _excl_tok
+_extra += _excl_render()
 _extra += _rev_tok
 # FP-08 fix-round (H1/H3): the floor journal rides on the arbiter's OWN output
 # line for THIS invocation (never a cross-run state file a stale read could
