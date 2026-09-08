@@ -648,8 +648,9 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
                 # normal launcher still owns launch/profile admission and may
                 # refuse; a failed account reading alone is not that refusal.
                 entries.append("%s:unknown:quota_checked" % arm)
-                if not checked_unknown:
-                    checked_unknown = arm
+                # Preserve the legacy terminal-unknown preference for the
+                # initial pick; fallback still walks the complete ordered pool.
+                checked_unknown = arm
                 continue
             entries.append("%s:unknown:" % arm)
             if i == last_idx and not reviewer:
