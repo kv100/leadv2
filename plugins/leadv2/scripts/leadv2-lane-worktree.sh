@@ -364,25 +364,19 @@ degrade_frozen_registry_copy() { # <abs_worktree_path>
 # registered by hand; product repos' were not, so every worktree lane silently
 # lost its Codex arm.
 #
-# Fail-open by construction: any missing file, unwritable config, or absent
-# python3 leaves lane creation untouched. Registration is idempotent on the
-# exact path, and mirrors the 4-key stanza the working entries already use.
+# Registration uses the same locked, atomic editor as manual pruning. Existing
+# policies (including an alias for the same physical path) are left intact.
+# Removal is deliberately explicit: worktree cleanup does not edit Codex config.
 codex_trust_worktree() { # <abs_worktree_path>
   local lane_path="${1:-}"
   [[ -n "$lane_path" ]] || return 0
   [[ "${LEADV2_CODEX_WORKTREE_TRUST:-on}" == "off" ]] && return 0
-  local cfg="${CODEX_HOME:-$HOME/.codex}/config.toml"
-  [[ -f "$cfg" && -w "$cfg" ]] || return 0
-  command -v python3 >/dev/null 2>&1 || return 0
-  # Register BOTH the logical and the physical path: git reports /private/var on
-  # macOS while the caller passes /var, and Codex matches on the exact cwd string.
-  local p
-  for p in "$lane_path" "$(phys "$lane_path")"; do
-    [[ -n "$p" ]] || continue
-    grep -qF "[projects.\"$p\"]" "$cfg" 2>/dev/null && continue
-    printf '\n[projects."%s"]\ntrust_level = "trusted"\napproval_policy = "never"\nsandbox_mode = "danger-full-access"\nnetwork_access = "enabled"\n' \
-      "$p" >>"$cfg" 2>/dev/null || return 0
-  done
+  local cfg="${CODEX_HOME:-$HOME/.codex}/config.toml" editor
+  [[ -f "$cfg" ]] || return 0
+  editor="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-codex-config-prune.sh"
+  if ! bash "$editor" --config "$cfg" --trust "$lane_path" >/dev/null; then
+    log_error "Codex trust registration failed for $lane_path (lane creation continues)"
+  fi
   return 0
 }
 
