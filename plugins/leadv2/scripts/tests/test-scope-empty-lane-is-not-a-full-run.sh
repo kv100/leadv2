@@ -69,7 +69,7 @@ OUT="$(/usr/bin/time -p env -u LEADV2_SUITE_DEFS_OVERRIDE -u LEADV2_CORE_OFFLINE
 check 'docs execution rc' "$rc" 0
 empty_check 'docs execution'
 printf 'case=docs-execution\n'
-printf '%s\n' "$OUT" | sed -n '/SCOPE_RESULT/p; /suites passed=/p; /^real /p'
+printf '%s\n' "$OUT" | sed -n '/SCOPE_RESULT/p; /^real /p'
 check 'docs execution summary' "$(printf '%s\n' "$OUT" | sed -n \
   's/.*suites passed=\([0-9]*\) failed=\([0-9]*\) missing=\([0-9]*\).*/\1 \2 \3/p')" '0 0 0'
 
