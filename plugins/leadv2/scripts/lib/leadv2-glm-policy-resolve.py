@@ -555,7 +555,11 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
     so this safety guard is latent in prod today -- it protects any caller that plumbs
     signals and is unit-tested; plumbing real signals is OUT OF SCOPE for KIMI-CHANNEL-01b.
 
-    Unknown-quota rule (§3.3): an unknown read blocks an arm ONLY if a later arm
+    Review Anthropic arms with an unknown quota read carry :unknown:quota_checked
+    after the same author, lockout and quota-read checks as a measured arm. The
+    close gate may attempt their normal launcher; this does not claim headroom.
+    Prefer a measured reviewer initially, retaining checked unknowns for fallback.
+    Other jobs/arms retain the legacy rule: an unknown read blocks an arm ONLY if a later arm
     exists in the pool -- the terminal arm in `order` is never blocked by an unknown
     read (an unmeasured bucket beats an outage). A KNOWN over-threshold reading blocks
     an arm regardless of position -- the terminal-arm exception is for unknown reads
@@ -599,6 +603,7 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
 
     entries = []
     reviewer = ""
+    checked_unknown = ""
     last_idx = len(order) - 1
     for i, arm in enumerate(order):
         if arm == author:
@@ -637,6 +642,15 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
             continue
         pct = _pct_for(arm)
         if pct is None:
+            if job == "review" and arm in ("fable", "opus", "sonnet"):
+                # Admission is explicit and review-only. In particular this
+                # marker must never authorize GLM as a blind fallback. The
+                # normal launcher still owns launch/profile admission and may
+                # refuse; a failed account reading alone is not that refusal.
+                entries.append("%s:unknown:quota_checked" % arm)
+                if not checked_unknown:
+                    checked_unknown = arm
+                continue
             entries.append("%s:unknown:" % arm)
             if i == last_idx and not reviewer:
                 reviewer = arm
@@ -648,6 +662,7 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
             if not reviewer:
                 reviewer = arm
 
+    reviewer = reviewer or checked_unknown
     refusal = "" if reviewer else "all_review_arms_unavailable"
 
     # D3 (dispatch-8e2a32be): the preferred pool above is genuinely exhausted (every
