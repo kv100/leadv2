@@ -1,10 +1,4 @@
 --- a/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
 +++ b/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
-@@ -342,6 +342,7 @@
-         else:
-             # Consume classify_account_state's producer field. A usage failure
-             # alone never grants this state: absent/unknown keeps the penalty.
+@@ -344,0 +345 @@
 +            accounts=[dict(z, account_state='unknown') if z.get('account_state')=='unmetered' else z for z in accounts]
-             unmetered=[z for z in accounts if z.get('account_state')=='unmetered']
-             if unmetered:
-                 return dict(empty, pct=100.0, account_state='unmetered',

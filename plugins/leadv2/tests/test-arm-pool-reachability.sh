@@ -26,6 +26,7 @@ CLAUDE_CAPPED='{"glm":{"status":"ok","five_hour":{"pct":10},"weekly":{"pct":10}}
 
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$ROUTE_TEST_QUOTA"\n' > "$TMP/live.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/free.sh"
+printf 'print("arm=opus\\nrule=legacy_opus_fixture\\nreason=opus_mission_kind\\ntier=high")\n' > "$TMP/legacy-opus.py"
 cat > "$TMP/worker.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$REACH_CAPTURE"
@@ -50,6 +51,7 @@ run_dispatch() {
   local -a spawn_args=(--no-spawn)
   [[ "${REACH_SPAWN:-0}" == 1 ]] && spawn_args=()
   (cd "$repo" && LEADV2_LANE_WORK_ROOT="$repo" LEADV2_DISPATCH_LANE_WORKTREE_BIN="$TMP/free.sh" LEADV2_STATE_ROOT="$TMP/state-root-$suffix" \
+    GLM_POLICY_RESOLVER="${REACH_LEGACY_RESOLVER:-${PLUGIN_ROOT}/scripts/lib/leadv2-glm-policy-resolve.py}" \
     LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" GLM_POLICY_QUOTA_LIVE="$TMP/live.sh" LEADV2_QUOTA_LIVE="$TMP/live.sh" \
     LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" \
     LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-dispatch-$suffix" \
@@ -72,6 +74,30 @@ expect_rc() { # <label> <actual> <want>
   fail "$1" "rc=$2 want=$3"
   return 1
 }
+
+check_opus_spawn() {
+# Explicit opus must reach the worker process, not the historical park.
+REPO_OPUS="$TMP/repo-opus"; setup_repo "$REPO_OPUS"
+out="$(REACH_LEGACY_RESOLVER="$TMP/legacy-opus.py" REACH_SPAWN=1 run_dispatch "$DISPATCH_BIN" "$REPO_OPUS" opus "$HEALTHY" --kind safety --pin-arm opus)"
+REACH_RC=$?
+printf '%s\n' "$out" > "$TMP/opus.log"
+if ! printf '%s\n' "$out" | grep -q 'arm_resolved job=build arm=opus'; then
+  fail "legacy-opus fixture did not reach the pre-arbiter park site" "$out"
+fi
+if [[ "$REACH_RC" == 0 ]] && [[ -s "$TMP/opus.argv" ]] && grep -qx opus "$TMP/opus.argv"; then
+  pass "explicit --pin-arm opus reached spawn with model opus"
+else
+  fail "explicit --pin-arm opus failed to reach spawn" "rc=$REACH_RC $(cat "$TMP/opus.argv" 2>/dev/null) $out"
+fi
+
+}
+# A focused selector for the expensive two-run mutation control. The normal
+# registered suite always exercises every case below.
+if [[ "${P1B_POOL_CASE:-all}" == opus ]]; then
+  check_opus_spawn
+  printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
+  [[ "$FAIL" == 0 ]]; exit $?
+fi
 
 # ── GREEN 1: the live bug's exact dispatch -- pin fable, plan/heavy ───────
 REPO_G1="$TMP/repo-g1"; setup_repo "$REPO_G1"
@@ -177,16 +203,7 @@ else
   fail "(g7) incapable fable/code escaped refusal" "$out"
 fi
 
-# Explicit opus must reach the worker process, not the historical park.
-REPO_OPUS="$TMP/repo-opus"; setup_repo "$REPO_OPUS"
-out="$(REACH_SPAWN=1 run_dispatch "$DISPATCH_BIN" "$REPO_OPUS" opus "$HEALTHY" --kind safety --pin-arm opus)"
-REACH_RC=$?
-printf '%s\n' "$out" > "$TMP/opus.log"
-if [[ "$REACH_RC" == 0 ]] && [[ -s "$TMP/opus.argv" ]] && grep -qx opus "$TMP/opus.argv"; then
-  pass "explicit --pin-arm opus reached spawn with model opus"
-else
-  fail "explicit --pin-arm opus failed to reach spawn" "rc=$REACH_RC $(cat "$TMP/opus.argv" 2>/dev/null) $out"
-fi
+check_opus_spawn
 
 # ── RED M1: restore _build_candidate_chain as the pool source ─────────────
 # The exact live bug: the candidate_arms array (the ladder SUFFIX from the
