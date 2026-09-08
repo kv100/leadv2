@@ -1,0 +1,532 @@
+
+[CORE-OFFLINE] all plugin shell syntax
+
+[CORE-OFFLINE] product-close scopes a single-repo lane worktree
+=== pass 1/2: post-fix (live tree: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts) ===
+[TEST][post-fix] FAIL C1-tracked-mod
+[TEST][post-fix] FAIL C2-untracked-new
+[TEST][post-fix] FAIL C3-clean-anti-rescue
+[TEST][post-fix] FAIL C4-handoff-only-dirt
+[TEST][post-fix] FAIL C5-registered-arm-silent
+
+=== pass 2/2: red-first pre-fix (git archive HEAD) — reds here are EVIDENCE ===
+[TEST][pre-fix] FAIL C1-tracked-mod
+[TEST][pre-fix] FAIL C2-untracked-new
+[TEST][pre-fix] FAIL C3-clean-anti-rescue
+[TEST][pre-fix] FAIL C4-handoff-only-dirt
+[TEST][pre-fix] FAIL C5-registered-arm-silent
+
+Results (post-fix, live tree): 0 passed, 5 failed
+FAIL: C1-tracked-mod
+FAIL: C2-untracked-new
+FAIL: C3-clean-anti-rescue
+FAIL: C4-handoff-only-dirt
+FAIL: C5-registered-arm-silent
+red-first: 0/0 post-fix-passing cases RED against pre-fix
+pre-fix-could-not-run: 0
+[CORE-OFFLINE] FAILED: product-close scopes a single-repo lane worktree
+
+[CORE-OFFLINE] plugin reliability (process liveness + role fallback + prepass/reorder signals)
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.rqtsFbnjMF: Operation not permitted
+
+[D1] _pc_process_alive — pid-file liveness (behavioral)
+mkdir: /glm-runs: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 92: /glm-runs/test-handle/meta.yaml: No such file or directory
+  ok: live meta pid detected as alive
+  ok: dead meta pid detected as dead
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 110: /glm-runs/test-handle/pgid: No such file or directory
+  FAIL: live child pid in pgid file not detected
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 122: /glm-runs/test-handle/.lockref: No such file or directory
+mkdir: /glm-runs: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 125: /glm-runs/.lock-deadbeef/pid: No such file or directory
+  FAIL: live supervisor pid in lock_dir/pid not detected
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 140: /glm-runs/test-handle/meta.yaml: No such file or directory
+  ok: self pid (68991) excluded — no self-match
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 149: /glm-runs/test-handle/meta.yaml: No such file or directory
+  ok: parent pid (54660) excluded
+  ok: no live processes detected as dead
+
+[D1] _pc_reap_worker — kills exact pids (behavioral)
+mkdir: /reap-test: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 178: /reap-test/pgid: No such file or directory
+  FAIL: victim process still alive after reap
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 192: /reap-test/pgid: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 193: /reap-test/meta.yaml: No such file or directory
+  ok: reap did not kill self (68991) or parent (54660)
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 207: /reap-test/.lockref: No such file or directory
+mkdir: /.lock-cafe1234: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 210: /.lock-cafe1234/pid: No such file or directory
+  FAIL: victim from lock_dir/pid still alive
+  ok: reap with no live processes is a no-op (rc=0)
+
+[D2] claude-subsession agents_worktree_fallback frontmatter strip
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 238: /critic.md: Operation not permitted
+awk: can't open file /critic.md
+ source line number 1
+  FAIL: agents source: frontmatter not stripped properly
+  ok: source accepts agents_worktree_fallback in frontmatter-strip branch
+mkdir: /main-checkout: Operation not permitted
+mkdir: /wt: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 267: /main-checkout/.claude/agents/critic.md: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 274: /wt/mission.md: No such file or directory
+  FAIL: worktree fallback did not trigger (ROLE_SOURCE='')
+
+[D3] prepass-park uses --no-block (fire-and-forget)
+  ok: prepass-park uses --no-block, not blocking --timeout
+  ok: prepass_parked journal line present
+
+[D4] empty-status→dead grace guard (behavioral)
+mkdir: /d4-test: Operation not permitted
+  ok: source has meta-existence grace guard before empty-status dead
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 364: /d4-test/meta.yaml: No such file or directory
+sed: /d4-test/meta.yaml: No such file or directory
+sed: /d4-test/meta.yaml: No such file or directory
+  ok: old meta (>30s) + empty status → dead-eligible
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh: line 392: /d4-test/meta.yaml: No such file or directory
+  FAIL: fresh meta aged too fast (age=1788871248) — timing issue
+
+[D5] router_v2 reorder failure journal
+  ok: router_v2_reorder_failed journal line present
+
+[PLUGIN-RELIABILITY-01] passed=13 failed=7
+[CORE-OFFLINE] FAILED: plugin reliability (process liveness + role fallback + prepass/reorder signals)
+
+[CORE-OFFLINE] builder selfcheck gate (recursion/depth guard, baseline attribution)
+[TEST] PASS: bash -n leadv2-dispatch-product-close.sh
+[TEST] PASS: /bin/bash -n leadv2-dispatch-product-close.sh (bash 3.2 syntax)
+[TEST] PASS: bash -n lib/leadv2-builder-selfcheck.sh
+[TEST] PASS: /bin/bash -n lib/leadv2-builder-selfcheck.sh (bash 3.2 syntax)
+[TEST] FAIL: broken-sh-blocks-with-reason -- post-fix rc=1, expected 0
+[TEST] RED-then-GREEN: broken-sh-review-arm-never-spent (pre_rc=1 -> post_rc=0)
+[TEST] FAIL: clean-lane-selfcheck-green -- post-fix rc=1, expected 0
+[TEST] FAIL: broken-py-blocks-with-reason -- post-fix rc=1, expected 0
+[TEST] FAIL: no-arm-skips-selfcheck -- post-fix rc=1, expected 0
+[TEST] FAIL: report-lane-skips-selfcheck -- post-fix rc=1, expected 0
+[TEST] PASS: kill-switch LEADV2_BUILDER_SELFCHECK=0 restores old path (no selfcheck.md, no selfcheck_failed)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.IBq1Xvb9Yg: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.aSxhDOss9X: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: scope-kill-switch-byte-restore-and-bypasses
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.DlctPYs1hG: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.okGGjdVe7N: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: scope-deletion-outside-write-set-blocks (SCOPE-DISCIPLINE-01) -- post-fix rc=1, expected 0
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.ROdAvI5168: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.GQlU9tXMqZ: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: scope-rename-source-outside-write-set-blocks (SCOPE-DISCIPLINE-01) -- post-fix rc=1, expected 0
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.FmnxrnP9jm: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.j6Vh4A9Dqq: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: falsification-missing-blocks-when-armed (TEST-FALSIFICATION-GATE-01) -- post-fix rc=1, expected 0
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.2d1XnKLFtp: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: falsification default advisory
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.Easm07ioFJ: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+grep: /private/tmp/core-offline-run.yO49ng/suite.U98Zex/leadv2-bscg-d.2zDhln/out.md: No such file or directory
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.HGL0F5wSZX: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+grep: /private/tmp/core-offline-run.yO49ng/suite.U98Zex/leadv2-bscg-d.9b2VWD/out.md: No such file or directory
+[TEST] FAIL: falsification-present-passes (TEST-FALSIFICATION-GATE-01) -- post-fix rc=1, expected 0
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.KGMaT8AQe3: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.cfuKKNOD60: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: kill-switch LEADV2_TEST_FALSIFICATION_GATE=off
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.r2ZJ6vWfNr: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.niiAs6su7K: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+grep: /private/tmp/core-offline-run.yO49ng/suite.U98Zex/leadv2-bscg-d.BlUHaW/out.md: No such file or directory
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.pcGFxYTRiL: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.py2slKdaHe: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+grep: /private/tmp/core-offline-run.yO49ng/suite.U98Zex/leadv2-bscg-d.5POdtf/out.md: No such file or directory
+[TEST] FAIL: falsification-forged-marker-failing-rc-blocks (codex r1 HIGH #1) -- post-fix rc=1, expected 0
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.uNeYcdtlAq: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.BLhxUfVdVU: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: falsification-widened-classifier-catches-new-dir (codex r1 MEDIUM #2) -- post-fix rc=1, expected 0
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.M922Zy3QYO: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: stem-resolved-from-lane-tests-dir (M3)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.66xIU19rcR: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: stem-priority-plugins-tests-over-tests (M3)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.laeBYvj79B: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: suite-green-checks-verdict
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.M5rxoeWc0b: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: suite-red-baseline-green-fails
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.W07IjAAd5w: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: suite-red-baseline-red-skips (H1)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.lyC8haoQ8o: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: baseline-unresolved-fails-open (H1)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.C4R5vAFONZ: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: child-suite-observes-flag-and-depth (C1)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.RuD2Kzajmu: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: depth-guard-skips-no-spawn (C1)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.Y32YxFNYxT: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+grep: /private/tmp/core-offline-run.yO49ng/suite.U98Zex/leadv2-bscg-b.vfnS3H/out.md: No such file or directory
+[TEST] FAIL: repo-level-runner-never-invoked (C1/decision-A)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.sEJLc9m14B: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+grep: /private/tmp/core-offline-run.yO49ng/suite.U98Zex/leadv2-bscg-b.Rsasva/out.md: No such file or directory
+[TEST] FAIL: tests-mode-never-skips
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.HYUo5fshCw: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+grep: /private/tmp/core-offline-run.yO49ng/suite.U98Zex/leadv2-bscg-b.xssYBP/out.md: No such file or directory
+[TEST] FAIL: auto-mode-delegates-to-e2e
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.k4AgOy4AWJ: Operation not permitted
+[TEST] FAIL: timeout-wrapper-kills-hung-command (C2)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.fDHhdxyrnz: Operation not permitted
+[TEST] FAIL: timeout-wrapper-fast-command-no-hang (C2)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.goiJvqm0rG: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: checks-zero-yields-degraded (M1)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.bWfTKSdUBF: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: bash-n-failure-ignores-baseline-arm
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.wFbOiwrKRJ: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: scope-off-write-set-blocks (SCOPE-DISCIPLINE-01)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.7GFur52sOc: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+grep: /private/tmp/core-offline-run.yO49ng/suite.U98Zex/leadv2-bscg-c.84RC56/out.md: No such file or directory
+[TEST] FAIL: scope-in-write-set-passes (SCOPE-DISCIPLINE-01)
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.esl5FDEiFk: Operation not permitted
+_: line 6: : No such file or directory
+cat: : No such file or directory
+[TEST] FAIL: scope-oversized-diff-blocks (SCOPE-DISCIPLINE-01)
+
+Results: 6 passed(red->green), 32 failed, 0 green-pre-fix, 0 could-not-run
+FAIL: broken-sh-blocks-with-reason: post-fix did not pass (rc=1)
+FAIL: clean-lane-selfcheck-green: post-fix did not pass (rc=1)
+FAIL: broken-py-blocks-with-reason: post-fix did not pass (rc=1)
+FAIL: no-arm-skips-selfcheck: post-fix did not pass (rc=1)
+FAIL: report-lane-skips-selfcheck: post-fix did not pass (rc=1)
+FAIL: scope-kill-switch-byte-restore-and-bypasses
+FAIL: scope-deletion-outside-write-set-blocks (SCOPE-DISCIPLINE-01): post-fix did not pass (rc=1)
+FAIL: scope-rename-source-outside-write-set-blocks (SCOPE-DISCIPLINE-01): post-fix did not pass (rc=1)
+FAIL: falsification-missing-blocks-when-armed (TEST-FALSIFICATION-GATE-01): post-fix did not pass (rc=1)
+FAIL: falsification default advisory
+FAIL: falsification-present-passes (TEST-FALSIFICATION-GATE-01): post-fix did not pass (rc=1)
+FAIL: falsification kill-switch byte-restore
+FAIL: falsification-forged-marker-failing-rc-blocks (codex r1 HIGH #1): post-fix did not pass (rc=1)
+FAIL: falsification-widened-classifier-catches-new-dir (codex r1 MEDIUM #2): post-fix did not pass (rc=1)
+FAIL: stem-resolved-from-lane-tests-dir (M3)
+FAIL: stem-priority-plugins-tests-over-tests (M3)
+FAIL: suite-green-checks-verdict
+FAIL: suite-red-baseline-green-fails
+FAIL: suite-red-baseline-red-skips (H1)
+FAIL: baseline-unresolved-fails-open (H1)
+FAIL: child-suite-observes-flag-and-depth (C1)
+FAIL: depth-guard-skips-no-spawn (C1)
+FAIL: repo-level-runner-never-invoked (C1/decision-A)
+FAIL: tests-mode-never-skips
+FAIL: auto-mode-delegates-to-e2e
+FAIL: timeout-wrapper-kills-hung-command (C2)
+FAIL: timeout-wrapper-fast-command-no-hang (C2)
+FAIL: checks-zero-yields-degraded (M1)
+FAIL: bash-n-failure-ignores-baseline-arm
+FAIL: scope-off-write-set-blocks (SCOPE-DISCIPLINE-01)
+FAIL: scope-in-write-set-passes (SCOPE-DISCIPLINE-01)
+FAIL: scope-oversized-diff-blocks (SCOPE-DISCIPLINE-01)
+[CORE-OFFLINE] FAILED: builder selfcheck gate (recursion/depth guard, baseline attribution)
+
+[CORE-OFFLINE] worker_reason on no_work/dead terminals (LANE-OBSERVABILITY-02)
+[TEST] PASS: A1: last result line wins over older assistant text
+[TEST] PASS: A2: assistant-text fallback when no result line
+[TEST] PASS: A3: 120-char clamp
+[TEST] PASS: A4: quote/backslash/newline sanitised (got: He said no and fellnpath C:xy)
+[TEST] PASS: A5: codex rollout cwd filter — sibling rollout never wins
+[TEST] PASS: A6: glm .out last non-blank line
+[TEST] PASS: A7: empty sources -> empty string
+[TEST] PASS: A7: empty sources -> rc 0
+[TEST] PASS: A9: rollout naming a DIFFERENT dispatch sig8 never wins (no mis-attribution)
+[TEST] PASS: A8: LEADV2_WORKER_REASON=0 kill switch
+[TEST] PASS: B1a: JSON row carries worker_reason
+[TEST] PASS: B1b: journal line gains worker_reason token
+[TEST] PASS: B2a: empty worker_reason still an always-present JSON key
+[TEST] PASS: B2b: journal line has no worker_reason token when empty
+[TEST] PASS: B3: cause readback
+[TEST] PASS: C1a: no_work terminal journal line carries worker_reason
+[TEST] PASS: C1b: review-gate.md gains worker_reason line
+[TEST] PASS: C2: no stream source -> no worker_reason token
+
+[worker-reason-terminal] PASS=18 FAIL=0
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh (scope-selected ad-hoc)
+PASS: leadv2-dispatch-code.sh resolves lane guard in a no-lib consumer farm
+PASS: leadv2-dispatch-ledger.sh resolves lane guard in a no-lib consumer farm
+PASS: leadv2-dispatch-product-close.sh resolves lane guard in a no-lib consumer farm
+PASS: lib/leadv2-admission-class.sh resolves lane guard in a no-lib consumer farm
+PASS: missing local and canonical guards fail CLOSED (terminal=pass_unlanded)
+PASS: canonical guard with a clean lane records terminal=landed
+PASS: mutation control -- flipping the ledger fail-closed stub to fail-open lets a dirty lane record landed (RED without the guarantee)
+PASS: restored ledger fail-closed stub returns the dirty lane to pass_unlanded (GREEN with the guarantee back)
+PASS: all four consumer-farm loaders resolve via canonical fallback
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-e2e-foreign-failure.sh (scope-selected ad-hoc)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+[TEST] FAIL: R1 pre-fix-equivalent: expected exit 8 + e2e_regression, got rc=5 md=<>
+[TEST] FAIL: R1 post-fix: expected non-8 rc + fail_foreign + foreign_files naming B.txt, got rc=5 md=<> flag=<>
+[TEST] FAIL: R2: own regression must kill under BOTH settings (this is a permissiveness guard, not new-red evidence) -- pre-fix-dead=0 post-fix rc=5 md=<>
+[TEST] FAIL: R3: mixed own+foreign must still kill (own wins, no laundering) -- pre-fix-dead=0 post-fix rc=5 md=<>
+[TEST] FAIL: R4: expected dead+e2e_regression+whole_tree_fallback marker, pre-fix-dead=0 post-fix rc=5 md=<>
+[TEST] FAIL: R5: expected pass with scope: lane_writes, got rc=5 flag=<>
+[TEST] FAIL: loudness (1/4): missing/mismatched e2e_gate decision line -- append dispatch-r6sig001 decision product_close task=r6sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+append dispatch-r6sig001 decision writeset_drift task=r6sig001 undeclared=B.txt
+tail dispatch-r6sig001 100000
+append dispatch-r6sig001 decision review_round_retry_skipped task=r6sig001 round=1 reason=no_mission_file
+append dispatch-r6sig001 decision review_gate task=r6sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: loudness (2/4): missing per-suite foreign_failure line -- append dispatch-r6sig001 decision product_close task=r6sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+append dispatch-r6sig001 decision writeset_drift task=r6sig001 undeclared=B.txt
+tail dispatch-r6sig001 100000
+append dispatch-r6sig001 decision review_round_retry_skipped task=r6sig001 round=1 reason=no_mission_file
+append dispatch-r6sig001 decision review_gate task=r6sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: loudness (3/4): e2e-gate.md missing status: fail_foreign -- 
+[TEST] FAIL: loudness (4/4): sentinel missing for a foreign_failure
+
+[TEST] 1 passed, 10 failed, 0 not run
+FAIL: R1 pre-fix-equivalent: expected exit 8 + e2e_regression, got rc=5 md=<>
+FAIL: R1 post-fix: expected non-8 rc + fail_foreign + foreign_files naming B.txt, got rc=5 md=<> flag=<>
+FAIL: R2: own regression must kill under BOTH settings (this is a permissiveness guard, not new-red evidence) -- pre-fix-dead=0 post-fix rc=5 md=<>
+FAIL: R3: mixed own+foreign must still kill (own wins, no laundering) -- pre-fix-dead=0 post-fix rc=5 md=<>
+FAIL: R4: expected dead+e2e_regression+whole_tree_fallback marker, pre-fix-dead=0 post-fix rc=5 md=<>
+FAIL: R5: expected pass with scope: lane_writes, got rc=5 flag=<>
+FAIL: loudness (1/4): missing/mismatched e2e_gate decision line -- append dispatch-r6sig001 decision product_close task=r6sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+append dispatch-r6sig001 decision writeset_drift task=r6sig001 undeclared=B.txt
+tail dispatch-r6sig001 100000
+append dispatch-r6sig001 decision review_round_retry_skipped task=r6sig001 round=1 reason=no_mission_file
+append dispatch-r6sig001 decision review_gate task=r6sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: loudness (2/4): missing per-suite foreign_failure line -- append dispatch-r6sig001 decision product_close task=r6sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+append dispatch-r6sig001 decision writeset_drift task=r6sig001 undeclared=B.txt
+tail dispatch-r6sig001 100000
+append dispatch-r6sig001 decision review_round_retry_skipped task=r6sig001 round=1 reason=no_mission_file
+append dispatch-r6sig001 decision review_gate task=r6sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: loudness (3/4): e2e-gate.md missing status: fail_foreign -- 
+FAIL: loudness (4/4): sentinel missing for a foreign_failure
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-e2e-foreign-failure.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-lane-root-not-a-worktree.sh (scope-selected ad-hoc)
+[TEST] PASS: bash and /bin/bash syntax
+[TEST] RED-then-GREEN: unregistered-parent-dirt (pre_rc=1 -> post_rc=0)
+[TEST] CONTROL-PASSES: registered-unscoped-positive-control (pre_rc=0, post_rc=0)
+[TEST] RED-then-GREEN: unregistered-silent-not-advanced (pre_rc=1 -> post_rc=0)
+
+Results: 4 passed(red->green), 0 failed, 0 green-pre-fix, 0 skipped
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-plugin-review-arms.sh (scope-selected ad-hoc)
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/leadv2-pra01.h9IvnvFBQp: Operation not permitted
+mkdir: /repo: Operation not permitted
+mkdir: /repo: Operation not permitted
+mkdir: /repo: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-review-arms.sh: line 71: cd: /repo: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-review-arms.sh: line 76: /poison-glm.sh: Operation not permitted
+chmod: /poison-glm.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-review-arms.sh: line 76: /poison-kimi.sh: Operation not permitted
+chmod: /poison-kimi.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-review-arms.sh: line 76: /poison-codex.sh: Operation not permitted
+chmod: /poison-codex.sh: No such file or directory
+PASS: T1a: tenant routing yaml present at .claude/ref/leadv2-routing.yaml
+PASS: T1b: tenant yaml parses under yaml.safe_load with non-empty protected_path_patterns
+PASS: T1c: plugin script path -> protected
+PASS: T1d: hooks/config/lib paths -> protected
+PASS: T1e: docs markdown path -> NOT protected (deliberate)
+PASS: T2a: --author glm keeps glm in pool tagged :author: (present but never selectable)
+PASS: T2b: --author glm seats reviewer=sonnet (not the author)
+PASS: T2c: --author opus tags opus:author: in pool
+PASS: T2d: --author opus seats reviewer=sonnet (not the author)
+PASS: T2e: kimi stays excluded:safety under protected-path signal (arm mix unchanged)
+mkdir: /stale-tree: Operation not permitted
+mkdir: /repo: Operation not permitted
+cp: /stale-tree/scripts/leadv2-dispatch-code.sh: No such file or directory
+cp: /stale-tree/scripts: Not a directory
+cp: /repo/plugins/leadv2/scripts/leadv2-dispatch-code.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-review-arms.sh: line 166: /fake-journal.sh: Operation not permitted
+chmod: /fake-journal.sh: No such file or directory
+FAIL: T3a: stale-tree exit -- expected rc=4, got 127
+FAIL: T3b: refusal text -- stderr lacks the refuse line -- got: bash: /stale-tree/scripts/leadv2-dispatch-code.sh: No such file or directory
+FAIL: T3c: remedy -- no remedy line
+FAIL: T3d: journal line -- capture lacks dispatch_refused: 
+PASS: T4a: escape hatch does not refuse (rc=127)
+FAIL: T4b: downgrade warn -- no dispatch_stale_script_tree_warn line
+PASS: T5(plugin-tree): passes provenance check (rc=1)
+PASS: T8(plugin-tree): no 'value=127' (phase-record binary resolves from the plugin tree)
+mkdir: /wt: Operation not permitted
+cp: /wt/plugins/leadv2/scripts: No such file or directory
+PASS: T5(worktree-style): passes provenance check (rc=127)
+PASS: T8(worktree-style): no 'value=127' (phase-record binary resolves from the plugin tree)
+mkdir: /handoff6: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-review-arms.sh: line 239: /d6.diff: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-plugin-review-arms.sh: line 241: /crash-resolver.py: Operation not permitted
+chmod: /crash-resolver.py: No such file or directory
+FAIL: T6a: engine unreviewed path -- rc=9, artifact=none
+FAIL: T6b: status -- absent
+FAIL: T6c: refusal -- absent
+FAIL: T6d: resolver_rc -- not 1: 
+FAIL: T6e: resolver_stderr -- 
+FAIL: T6f: merge_blocked -- absent
+FAIL: T6g: last line -- got: 
+Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+FileNotFoundError: [Errno 2] No such file or directory: '/handoff6/review-gate.md'
+FAIL: T7: field-set drift --  
+
+plugin-review-arms: 15 pass, 13 fail
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-plugin-review-arms.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-review-gate-scope-evidence.sh (scope-selected ad-hoc)
+[TEST] PASS: bash -n leadv2-dispatch-product-close.sh
+[TEST] PASS: /bin/bash -n leadv2-dispatch-product-close.sh (bash 3.2 syntax)
+[TEST] RED-then-GREEN: undiffable-write-set-bounces-early (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: mixed-write-set-not-bounced (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: unscoped-lane-work-names-offending (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: cross-repo-elsewhere-terminal (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: foreign-repo-landing (pre_rc=1 -> post_rc=0)
+
+Results: 7 passed(red->green), 0 failed, 0 green-pre-fix, 0 could-not-run
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-review-single-owner-census.sh (scope-selected ad-hoc)
+owners found:
+  /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.mut-silent-arm-idx-xrepo-75868.sh  [bucket: UNCLASSIFIED]
+  /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh  [bucket: flag=0]
+  /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-review-run.sh  [bucket: flag=1]
+FAIL: flag=0 bucket invariant broken: count=1, gate-expression-shape-found=no
+PASS: flag=1 bucket has exactly one owner: leadv2-review-run.sh
+FAIL: unclassified owner file(s) found (not in allowlist): /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.mut-silent-arm-idx-xrepo-75868.sh,
+
+================================================
+  review single-owner census: PASS=1 FAIL=2
+================================================
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-review-single-owner-census.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-worker-dod-gate.sh (scope-selected ad-hoc)
+[TEST] PASS: bash -n leadv2-dod-gate.sh (incl. 3.2)
+[TEST] PASS: bash -n leadv2-mutation-control.sh (incl. 3.2)
+[TEST] PASS: check_a: missing report.md -> fail
+[TEST] PASS: check_a: report.md without evidence heading -> fail
+[TEST] PASS: check_a: committed report.md with Evidence heading -> pass
+[TEST] PASS: check_a: brief never mentions report.md -> skip, not fail
+[TEST] PASS: check_b: paste-line with no matching fenced section -> fail
+[TEST] PASS: check_b: mutation-control paste-line present but no bound artifact -> fail
+[TEST] PASS: check_b: hand-written one-line diff_hash artifact (no provenance) -> fail
+[TEST] PASS: check_b: real generator-shaped artifact (mutation diff_hash + bound lane_diff_hash) -> pass
+[TEST] PASS: check_b: no merge-base resolvable (non-git root) -> undetermined (never a silent pass)
+[TEST] PASS: check_c: no tests/run-all.sh in repo -> skip (portability)
+[TEST] PASS: check_c: new suite path touched by diff, unregistered -> fail
+[TEST] PASS: check_c: suite registered via EXTRA_SUITE_MAP -> pass
+[TEST] PASS: check_c: conventional tests/test-*.sh path self-selects, no map row required -> pass
+[TEST] PASS: check_d: runtime-state path in diff -> fail
+[TEST] PASS: check_d: clean diff -> pass
+[TEST] PASS: check_d: deletion-only diff of runtime-state path -> fail
+[TEST] PASS: check_d: missing diff_file -> undetermined, never a silent pass
+[TEST] PASS: check_d: empty-file creation of a runtime-state path (no ---/+++ lines) -> fail
+[TEST] PASS: check_d: 100% rename into a runtime-state path (no ---/+++ lines) -> fail
+[TEST] PASS: check_d: mode-only change of a runtime-state path (no ---/+++ lines) -> fail
+[TEST] PASS: check_e: external claim w/o evidence:/UNVERIFIED nearby -> dod_note emitted
+[TEST] PASS: check_e: claim immediately followed by evidence: -> no note
+[TEST] PASS: lv2_dod_gate_run: fully-compliant fixture -> rc=0, out file written
+[TEST] PASS: lv2_dod_gate_run: runtime-state violation -> rc=1, reason recorded in out file
+[TEST] PASS: lv2_dod_gate_run: unwritable out dir -> cause still named on stdout/stderr, never dod_unknown
+[TEST] PASS: mutation-control: mutation applied, suite went red -> exit 0 ok + artifact written
+[TEST] PASS: mutation-control: diff_hash is a non-empty applied-mutant hash and lane binding is separate
+[TEST] PASS: mutation-control: two different applied mutations produce different diff_hash values
+[TEST] PASS: mutation-control: absent anchor -> exit 2 control_not_applied reason=anchor_count
+[TEST] PASS: mutation-control: non-green baseline -> exit 2 control_not_applied reason=baseline_not_green
+[TEST] PASS: mutation-control: suite does not cover the mutated file -> exit 1 mutant_survived
+[TEST] PASS: wiring: LEADV2_REVIEW_ENGINE unset (production default) -> exit 7 before engine split, review-gate.md written
+[TEST] PASS: wiring: LEADV2_REVIEW_ENGINE=1 -> identical refusal, exit 7 before engine split
+[TEST] test-worker-dod-gate: 35 passed, 0 failed
+
+[CORE-OFFLINE] plugins/leadv2/tests/test-review-pool-unknown-is-not-unavailable.sh (scope-selected ad-hoc)
+PASS: GLM selected after quota check: actual='glm' expected='glm'
+PASS: GLM quota calls before selection: actual=1 expected=1
+PASS: resolver excludes author codex: actual='fable' expected='fable'
+PASS: resolver excludes author glm: actual='fable' expected='fable'
+PASS: resolver excludes author fable: actual='opus' expected='opus'
+PASS: resolver excludes author opus: actual='fable' expected='fable'
+PASS: resolver excludes author sonnet: actual='fable' expected='fable'
+PASS: known hot pool has no reviewer: actual='' expected=''
+PASS: locked unknown pool has no reviewer: actual='' expected=''
+PASS: consumer glm:unknown:quota_checked author=codex admission rc: actual=1 expected=1
+PASS: consumer kimi:unknown:quota_checked author=codex admission rc: actual=1 expected=1
+PASS: consumer fable:unknown: author=codex admission rc: actual=1 expected=1
+PASS: consumer fable:unknown:quota_checked author=fable admission rc: actual=1 expected=1
+PASS: consumer sonnet:ok:10 author=sonnet admission rc: actual=1 expected=1
+PASS: consumer fable:unknown:quota_checked author=codex admission rc: actual=0 expected=0
+PASS: close codex launcher identities: actual=['glm', 'fable'] expected=['glm', 'fable']
+PASS: close codex reviewer identity: actual='fable' expected='fable'
+PASS: close codex gate status: actual='pass' expected='pass'
+PASS: close codex exit: actual=0 expected=0
+PASS: close codex GLM quota checked: actual=True expected=True
+PASS: close codex launcher identities: actual=['glm', 'fable', 'opus'] expected=['glm', 'fable', 'opus']
+PASS: close codex reviewer identity: actual='opus' expected='opus'
+PASS: close codex gate status: actual='pass' expected='pass'
+PASS: close codex exit: actual=0 expected=0
+PASS: close codex GLM quota checked: actual=True expected=True
+PASS: close codex launcher identities: actual=['glm', 'fable', 'opus', 'sonnet'] expected=['glm', 'fable', 'opus', 'sonnet']
+PASS: close codex reviewer identity: actual='sonnet' expected='sonnet'
+PASS: close codex gate status: actual='pass' expected='pass'
+PASS: close codex exit: actual=0 expected=0
+PASS: close codex GLM quota checked: actual=True expected=True
+PASS: close fable launcher identities: actual=['glm', 'opus'] expected=['glm', 'opus']
+PASS: close fable reviewer identity: actual='opus' expected='opus'
+PASS: close fable gate status: actual='pass' expected='pass'
+PASS: close fable exit: actual=0 expected=0
+PASS: close fable GLM quota checked: actual=True expected=True
+PASS: close sonnet launcher identities: actual=['glm', 'fable'] expected=['glm', 'fable']
+PASS: close sonnet reviewer identity: actual='fable' expected='fable'
+PASS: close sonnet gate status: actual='pass' expected='pass'
+PASS: close sonnet exit: actual=0 expected=0
+PASS: close sonnet GLM quota checked: actual=True expected=True
+RESULT: 0 failures
+[CORE-OFFLINE] SHARD_RESULT idx=0 pass=7 fail=6 missing=0

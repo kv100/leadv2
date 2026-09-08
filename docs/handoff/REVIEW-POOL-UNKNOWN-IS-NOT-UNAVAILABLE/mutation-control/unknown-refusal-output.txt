@@ -1,0 +1,4 @@
+leadv2-mutation-control: snapshot=head_plus_declared declared=2 excluded_dirty=0
+MUTATION-CONTROL ok suite=plugins/leadv2/tests/test-review-pool-unknown-is-not-unavailable.sh file=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh red_line=FAIL: consumer fable:unknown:quota_checked author=codex admission rc: actual=1 expected=0 diff_hash=0c84de5a9d758a7126f2cd215a3ed0e091df8368c6ce1578d29d1226f6773e24 lane_diff_hash=7d67b4b4a6069fcad1ac0e455083e6cdc5b5b9c5dac16962a4b4e53736dbc2cf
+
+control_rc=0

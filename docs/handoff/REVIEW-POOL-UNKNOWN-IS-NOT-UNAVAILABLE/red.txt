@@ -1,0 +1,63 @@
+PASS: GLM selected after quota check: actual='glm' expected='glm'
+PASS: GLM quota calls before selection: actual=1 expected=1
+PASS: resolver excludes author codex: actual='fable' expected='fable'
+PASS: resolver excludes author glm: actual='fable' expected='fable'
+PASS: resolver excludes author fable: actual='opus' expected='opus'
+PASS: resolver excludes author opus: actual='fable' expected='fable'
+PASS: resolver excludes author sonnet: actual='fable' expected='fable'
+PASS: known hot pool has no reviewer: actual='' expected=''
+PASS: locked unknown pool has no reviewer: actual='' expected=''
+FAIL: close codex launcher identities: actual=['glm'] expected=['glm', 'fable']
+FAIL: close codex reviewer identity: actual=None expected='fable'
+FAIL: close codex gate status: actual='unreviewed' expected='pass'
+FAIL: close codex exit: actual=9 expected=0
+PASS: close codex GLM quota checked: actual=True expected=True
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=unknown01 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=unknown01 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=unknown01 reason=empty_scope_writes_csv
+[leadv2-dispatch-product-close] selfcheck task=unknown01 status=green checks=4 skipped=2
+[leadv2-dispatch-product-close] e2e_gate task=unknown01 status=disabled reason=kill_switch
+[leadv2-dispatch-product-close] review_routing_yaml task=unknown01 source=tenant
+[leadv2-dispatch-product-close] review_signals task=unknown01 protected_path=1 source=no_patterns_failclosed matched=-
+[leadv2-dispatch-product-close] route_resolved by=arbiter role=reviewer arm=glm task=unknown01 reason=cheapest_capable 
+[leadv2-dispatch-product-close] review_pool_resolve task=unknown01 rc=0 reviewer=glm pool_n=6
+[leadv2-dispatch-product-close] review_gate task=unknown01 status=arm_refused arm=glm reason=refused_quota
+[leadv2-dispatch-product-close] review_gate task=unknown01 status=unreviewed reason=all_arms_unavailable author=codex pool=codex:author:,glm:ok:80,kimi:excluded:safety,fable:unknown:,opus:unknown:,sonnet:unknown: tried=glm refusal=all_arms_unavailable resolver_rc=0
+
+FAIL: close fable launcher identities: actual=['glm'] expected=['glm', 'opus']
+FAIL: close fable reviewer identity: actual=None expected='opus'
+FAIL: close fable gate status: actual='unreviewed' expected='pass'
+FAIL: close fable exit: actual=9 expected=0
+PASS: close fable GLM quota checked: actual=True expected=True
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=unknown01 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=unknown01 worker_liveness=unknown author=fable handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=unknown01 reason=empty_scope_writes_csv
+[leadv2-dispatch-product-close] selfcheck task=unknown01 status=green checks=4 skipped=2
+[leadv2-dispatch-product-close] e2e_gate task=unknown01 status=disabled reason=kill_switch
+[leadv2-dispatch-product-close] review_routing_yaml task=unknown01 source=tenant
+[leadv2-dispatch-product-close] review_signals task=unknown01 protected_path=1 source=no_patterns_failclosed matched=-
+[leadv2-dispatch-product-close] route_resolved by=arbiter role=reviewer arm=glm task=unknown01 reason=cheapest_capable 
+[leadv2-dispatch-product-close] review_pool_resolve task=unknown01 rc=0 reviewer=glm pool_n=6
+[leadv2-dispatch-product-close] codex_dead_reroute task=unknown01 from=codex to=glm codex=codex:blocked:100 pool=codex:blocked:100,glm:ok:80,kimi:excluded:safety,fable:author:,opus:unknown:,sonnet:unknown:
+[leadv2-dispatch-product-close] review_gate task=unknown01 status=arm_refused arm=glm reason=refused_quota
+[leadv2-dispatch-product-close] review_gate task=unknown01 status=unreviewed reason=all_arms_unavailable author=fable pool=codex:blocked:100,glm:ok:80,kimi:excluded:safety,fable:author:,opus:unknown:,sonnet:unknown: tried=glm refusal=all_arms_unavailable resolver_rc=0
+
+FAIL: close sonnet launcher identities: actual=['glm'] expected=['glm', 'fable']
+FAIL: close sonnet reviewer identity: actual=None expected='fable'
+FAIL: close sonnet gate status: actual='unreviewed' expected='pass'
+FAIL: close sonnet exit: actual=9 expected=0
+PASS: close sonnet GLM quota checked: actual=True expected=True
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=unknown01 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=unknown01 worker_liveness=unknown author=sonnet handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=unknown01 reason=empty_scope_writes_csv
+[leadv2-dispatch-product-close] selfcheck task=unknown01 status=green checks=4 skipped=2
+[leadv2-dispatch-product-close] e2e_gate task=unknown01 status=disabled reason=kill_switch
+[leadv2-dispatch-product-close] review_routing_yaml task=unknown01 source=tenant
+[leadv2-dispatch-product-close] review_signals task=unknown01 protected_path=1 source=no_patterns_failclosed matched=-
+[leadv2-dispatch-product-close] route_resolved by=arbiter role=reviewer arm=glm task=unknown01 reason=cheapest_capable 
+[leadv2-dispatch-product-close] review_pool_resolve task=unknown01 rc=0 reviewer=glm pool_n=6
+[leadv2-dispatch-product-close] codex_dead_reroute task=unknown01 from=codex to=glm codex=codex:blocked:100 pool=codex:blocked:100,glm:ok:80,kimi:excluded:safety,fable:unknown:,opus:unknown:,sonnet:author:
+[leadv2-dispatch-product-close] review_gate task=unknown01 status=arm_refused arm=glm reason=refused_quota
+[leadv2-dispatch-product-close] review_gate task=unknown01 status=unreviewed reason=all_arms_unavailable author=sonnet pool=codex:blocked:100,glm:ok:80,kimi:excluded:safety,fable:unknown:,opus:unknown:,sonnet:author: tried=glm refusal=all_arms_unavailable resolver_rc=0
+
+RESULT: 12 failures

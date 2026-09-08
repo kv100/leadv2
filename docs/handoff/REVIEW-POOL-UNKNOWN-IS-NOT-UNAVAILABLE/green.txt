@@ -1,0 +1,41 @@
+PASS: GLM selected after quota check: actual='glm' expected='glm'
+PASS: GLM quota calls before selection: actual=1 expected=1
+PASS: resolver excludes author codex: actual='fable' expected='fable'
+PASS: resolver excludes author glm: actual='fable' expected='fable'
+PASS: resolver excludes author fable: actual='opus' expected='opus'
+PASS: resolver excludes author opus: actual='fable' expected='fable'
+PASS: resolver excludes author sonnet: actual='fable' expected='fable'
+PASS: known hot pool has no reviewer: actual='' expected=''
+PASS: locked unknown pool has no reviewer: actual='' expected=''
+PASS: consumer glm:unknown:quota_checked author=codex admission rc: actual=1 expected=1
+PASS: consumer kimi:unknown:quota_checked author=codex admission rc: actual=1 expected=1
+PASS: consumer fable:unknown: author=codex admission rc: actual=1 expected=1
+PASS: consumer fable:unknown:quota_checked author=fable admission rc: actual=1 expected=1
+PASS: consumer sonnet:ok:10 author=sonnet admission rc: actual=1 expected=1
+PASS: consumer fable:unknown:quota_checked author=codex admission rc: actual=0 expected=0
+PASS: close codex launcher identities: actual=['glm', 'fable'] expected=['glm', 'fable']
+PASS: close codex reviewer identity: actual='fable' expected='fable'
+PASS: close codex gate status: actual='pass' expected='pass'
+PASS: close codex exit: actual=0 expected=0
+PASS: close codex GLM quota checked: actual=True expected=True
+PASS: close codex launcher identities: actual=['glm', 'fable', 'opus'] expected=['glm', 'fable', 'opus']
+PASS: close codex reviewer identity: actual='opus' expected='opus'
+PASS: close codex gate status: actual='pass' expected='pass'
+PASS: close codex exit: actual=0 expected=0
+PASS: close codex GLM quota checked: actual=True expected=True
+PASS: close codex launcher identities: actual=['glm', 'fable', 'opus', 'sonnet'] expected=['glm', 'fable', 'opus', 'sonnet']
+PASS: close codex reviewer identity: actual='sonnet' expected='sonnet'
+PASS: close codex gate status: actual='pass' expected='pass'
+PASS: close codex exit: actual=0 expected=0
+PASS: close codex GLM quota checked: actual=True expected=True
+PASS: close fable launcher identities: actual=['glm', 'opus'] expected=['glm', 'opus']
+PASS: close fable reviewer identity: actual='opus' expected='opus'
+PASS: close fable gate status: actual='pass' expected='pass'
+PASS: close fable exit: actual=0 expected=0
+PASS: close fable GLM quota checked: actual=True expected=True
+PASS: close sonnet launcher identities: actual=['glm', 'fable'] expected=['glm', 'fable']
+PASS: close sonnet reviewer identity: actual='fable' expected='fable'
+PASS: close sonnet gate status: actual='pass' expected='pass'
+PASS: close sonnet exit: actual=0 expected=0
+PASS: close sonnet GLM quota checked: actual=True expected=True
+RESULT: 0 failures

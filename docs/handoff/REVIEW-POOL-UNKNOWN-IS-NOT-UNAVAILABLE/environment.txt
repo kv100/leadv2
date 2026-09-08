@@ -1,0 +1,5 @@
+$ TMPDIR=/private/tmp /usr/bin/mktemp -d
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.nlgiq7ZdS7: Operation not permitted
+rc=1
+$ TMPDIR=/private/tmp ps -p 2227 -o pid=
+[Errno 1] Operation not permitted: 'ps'

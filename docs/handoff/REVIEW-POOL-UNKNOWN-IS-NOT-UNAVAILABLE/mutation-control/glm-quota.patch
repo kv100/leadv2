@@ -1,0 +1,11 @@
+--- a/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
++++ b/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
+@@ -587,7 +587,7 @@
+         if arm == "codex":
+             return live_codex_weekly_pct(quota_live_bin)
+         if arm in ("glm", "glm-flash"):  # GLM-53-FLASH-ARM-01: one glm bucket
+-            return live_glm_pct(quota_live_bin)
++            return 0  # mutation: skip GLM quota transport
+         if arm in ("opus", "sonnet", "fable"):
+             if "anthropic" in pcts:
+                 return pcts["anthropic"]

@@ -1,0 +1,6 @@
+$ bash -n plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+rc=0
+$ bash -n plugins/leadv2/tests/test-review-pool-unknown-is-not-unavailable.sh
+rc=0
+$ python3 -m py_compile plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
+rc=0

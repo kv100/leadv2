@@ -449,6 +449,20 @@ _pc_write_unreviewed() {
 # collapse to sonnet (which would just re-create the self-review bug for a sonnet
 # author) or to glm (founder rule: GLM never reviews without going through its own
 # quota check, never as a blind fallback).
+# One admission predicate for arbiter adoption, fallback and remaining count.
+# A checked unknown is NOT measured headroom: only the three Anthropic review
+# adapters may attempt it, through run_reviewer_arm's normal launcher. Bare
+# unknowns, exclusions, lockouts and GLM unknowns never qualify here.
+_pc_review_entry_eligible() { # <pool-entry>
+  local entry="$1" arm="${1%%:*}"
+  [[ "${arm}" == "${AUTHOR%%:*}" ]] && return 1
+  case "${entry}" in
+    "${arm}:ok:"*) return 0 ;;
+    fable:unknown:quota_checked|opus:unknown:quota_checked|sonnet:unknown:quota_checked) return 0 ;;
+  esac
+  return 1
+}
+
 resolve_review_pool_call() {
   local resolver="${LEADV2_GLM_POLICY_RESOLVER:-}"
   if [[ -z "${resolver}" ]]; then
@@ -555,7 +569,9 @@ resolve_review_pool_call() {
       IFS=',' read -r -a _ra_candidates <<< "${_ra_chain}"
       for _ra_candidate in "${_ra_candidates[@]}"; do
         [[ "${_ra_candidate}" == "${_ra_author}" ]] && continue
-        if printf '%s\n' "${_resolver_out}" | sed -n 's/^pool=//p' | tr ',' '\n' | grep -q "^${_ra_candidate}:ok:"; then
+        local _ra_entry
+        _ra_entry="$(printf '%s\n' "${_resolver_out}" | sed -n 's/^pool=//p' | tr ',' '\n' | awk -F: -v arm="${_ra_candidate}" '$1 == arm {print; exit}')"
+        if [[ -n "${_ra_entry}" ]] && _pc_review_entry_eligible "${_ra_entry}"; then
           _ra_pick="${_ra_candidate}"; break
         fi
       done
@@ -3533,7 +3549,7 @@ run_reviewer_arm() { # <arm>
 }
 
 # KIMI-CHANNEL-01b §2.3.3, generalised by N-5 §2.3: read the first entry AFTER
-# <after-arm> whose disposition is :ok: in the already-computed ${pool} (comma-joined,
+# <after-arm> admitted by _pc_review_entry_eligible in the computed ${pool} (comma-joined,
 # e.g. codex:blocked:100,glm:ok:,...). Prints the arm name on stdout, exit 1 if none.
 # Used by the arm-agnostic fallback loop below -- a forward-only walk of a FIXED pool,
 # so repeated calls can visit each arm at most once and the loop always terminates.
@@ -3543,7 +3559,7 @@ next_ok_arm_after() { # <after-arm>  reads ${pool}
   local IFS=','
   for entry in ${_pool}; do
     arm="${entry%%:*}"
-    if [[ "${found}" == "1" && "${entry}" == "${arm}:ok:"* ]]; then
+    if [[ "${found}" == "1" ]] && _pc_review_entry_eligible "${entry}"; then
       printf '%s' "${arm}"
       return 0
     fi
@@ -3553,7 +3569,7 @@ next_ok_arm_after() { # <after-arm>  reads ${pool}
 }
 
 # ARM-NO-VERDICT-01 (dispatch-4fb7381a): companion to next_ok_arm_after -- counts how
-# many :ok: arms remain in the FIXED ${pool} after <after-arm>, without consuming one.
+# many eligible arms remain in the FIXED ${pool} after <after-arm>, without consuming one.
 # Purely informational (the `remaining=<n>` field on the arm_no_verdict journal line),
 # never used for loop control -- next_ok_arm_after / the tried[] cap still own that.
 _pc_remaining_ok_after() { # <after-arm>  reads ${pool}  -> prints count on stdout
@@ -3562,7 +3578,7 @@ _pc_remaining_ok_after() { # <after-arm>  reads ${pool}  -> prints count on stdo
   local IFS=','
   for entry in ${_pool}; do
     arm="${entry%%:*}"
-    if [[ "${found}" == "1" && "${entry}" == "${arm}:ok:"* ]]; then
+    if [[ "${found}" == "1" ]] && _pc_review_entry_eligible "${entry}"; then
       count=$((count + 1))
     fi
     [[ "${arm}" == "${after}" ]] && found=1

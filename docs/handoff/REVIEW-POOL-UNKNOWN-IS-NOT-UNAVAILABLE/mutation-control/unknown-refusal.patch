@@ -1,0 +1,11 @@
+--- a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+@@ -458,7 +458,7 @@
+   [[ "${arm}" == "${AUTHOR%%:*}" ]] && return 1
+   case "${entry}" in
+     "${arm}:ok:"*) return 0 ;;
+-    fable:unknown:quota_checked|opus:unknown:quota_checked|sonnet:unknown:quota_checked) return 0 ;;
++    fable:unknown:quota_checked|opus:unknown:quota_checked|sonnet:unknown:quota_checked) return 1 ;;
+   esac
+   return 1
+ }
