@@ -853,7 +853,19 @@ _core_offline_scope_changed_select() {
   } | sort -u)"
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
-    case "$f" in *.md|docs/*) continue ;; esac
+    # GATE-BUDGET-...-01 / lane-liveness-artifacts: a leading-anchor `docs/*`
+    # only matches housekeeping at the repo root. A mis-rooted caller (see
+    # leadv2-lane-liveness.sh PLUGINS-DOCS-LANE-SHARE-01) can leave runtime
+    # debris nested at plugins/docs/leadv2/.lane-liveness-share/... — same
+    # housekeeping, one level deeper. Match `docs/` as a full path segment at
+    # ANY depth, plus the .lane-liveness-share artifact dir by name, so a
+    # nested copy neither forces nor dodges a full run either. Deliberately
+    # NOT a bare `*docs*` — that would also swallow a real source file under
+    # some future plugins/docs-tool/, and the whole value of the unmapped-file
+    # safety net below is that it refuses to guess.
+    case "$f" in
+      *.md|docs/*|*/docs/*|.lane-liveness-share/*|*/.lane-liveness-share/*) continue ;;
+    esac
     rel_changed+=("$f")
   done <<< "${changed:-}"
   SCOPE_CHANGED_COUNT=${#rel_changed[@]}
