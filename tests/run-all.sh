@@ -93,6 +93,34 @@ is_known_red() { # <id>
 # line, "<stem>:<suite>"). The PHASE-DISCIPLINE-01 array form was migrated into
 # it during the MON-PULSE-01 merge (2026-08-28) — one mechanism, not two.
 
+# E2E-GATE-RUNS-ALL-94-SUITES-BECAUSE-run-all-SWALLOWS-SCOPE-01: the core
+# runner (run-core-offline.sh) has had its own --scope contract since it
+# added scope-aware selection, but nothing upstream of it ever forwarded
+# one -- it was always invoked bare, so a `--scope changed` gate run always
+# executed run-core-offline.sh's full unscoped suite set (95 of 95) instead
+# of the narrow set it was told to run. Isolated in its own function, not
+# inlined at the call site, so a negative-control mutant can target exactly
+# this decision point without reddening every other suite invocation in the
+# run loop for the wrong reason.
+#
+# DECLARED NEGATIVE CONTROLS (E2E-KILLRATE-01), applied by
+# leadv2-mutation-control.sh to the two `scope-mut-*` marker lines INSIDE
+# this function's body:
+#   M1 scope-mut-1: drop the forwarded scope again (always return "") ->
+#      test-run-all-forwards-scope.sh goes red on the --scope changed case:
+#      the fake core-offline stub sees argv `--scope ` instead of
+#      `--scope changed`, reintroducing the exact original defect.
+#   M2 scope-mut-2: hardcode "changed" regardless of what run-all itself was
+#      given -> the suite goes red on the --scope all case: a gate that can
+#      no longer be asked for a full run is a new lying-green surface.
+# A top-level insert is NOT a valid control for this suite: it reddens every
+# suite invocation in the run loop for the wrong reason.
+core_offline_scope_arg() { # -> the --scope value to hand to run-core-offline.sh
+  # scope-mut-1: forward the value run-all itself was given
+  # scope-mut-2: never a value other than what run-all itself was given
+  printf '%s' "${SCOPE}"
+}
+
 add_suite() { # <path>
   local p="$1" real
   real="$(cd "$(dirname "$p")" 2>/dev/null && pwd)/$(basename "$p")" || return 0
@@ -429,8 +457,15 @@ for suite in ${SUITES[@]+"${SUITES[@]}"}; do
     # Capture the wrapper transcript so the [CORE-OFFLINE] FAILED: labels can
     # be classified below, then stream it verbatim — ci-gate.sh re-parses the
     # same lines from this output, so nothing may be swallowed.
+    # E2E-GATE-RUNS-ALL-94-SUITES-BECAUSE-run-all-SWALLOWS-SCOPE-01: forward
+    # the scope this script itself was given. run-core-offline.sh has had its
+    # own --scope contract since it added scope-aware selection, but nothing
+    # upstream of it ever passed one through — it was always invoked bare, so
+    # it always ran its full unscoped suite set regardless of --scope changed.
+    core_scope_arg="$(core_offline_scope_arg)"
+    printf 'run-all: delegating scope=%s to %s\n' "${core_scope_arg}" "${suite#"${ROOT}/"}"
     suite_log="$(mktemp "${TMPDIR:-/tmp}/run-all-core-offline.XXXXXX")"
-    bash "${suite}" >"${suite_log}" 2>&1
+    bash "${suite}" --scope "${core_scope_arg}" >"${suite_log}" 2>&1
     rc=$?
     cat "${suite_log}"
   else
