@@ -1,6 +1,6 @@
 # B4 final merge-base selection proof
 
-The checkpoint was absent, then written with the merge base before this selection-only run and removed by its EXIT trap. This rechecks selection after the report commit; it does not claim another broad test execution.
+The checkpoint was absent, then written with the merge base before this selection-only run and removed afterward with an exact-path, expected-content check (see mechanical-checks.md). This rechecks selection after the report commit; it does not claim another broad test execution.
 
 ```text
 base=fe491bffb6df9f3a4ac17e14ac6a2f7ea43c2982
