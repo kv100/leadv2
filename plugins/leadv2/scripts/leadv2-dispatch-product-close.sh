@@ -754,6 +754,34 @@ _PC_WORKER_PROBE_TIMEOUT_S=20
 # Exactly once: a per-lane marker file prevents any second attempt.  Kill switch:
 # LEADV2_PC_DWR_RESUME=0 restores byte-for-byte current behaviour.
 
+# B4-EMPTY-DIFF: all four Claude arms use claude-subsession's full handle.
+# Keep AUTHOR/HANDLE intact for receipts and routing; only process operations
+# consume this PID. Accept the historical bare numeric handle too.
+_pc_claude_pid() { # <author> <handle> -> exact positive PID, or rc1
+  case "$1" in sonnet|haiku|opus|fable) ;; *) return 1 ;; esac
+  local pid="${2%% *}"
+  pid="${pid#PID=}"
+  [[ "${pid}" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s' "${pid}"
+}
+
+# A stream heartbeat is secondary evidence when the PID/finalizer cannot be
+# observed. Use the attempt-specific STREAM receipt where available; the shared
+# handoff pointer can move between launches. Freshness expires after 120s without
+# writes (configurable 1..3600s). This is an inactivity bound, not a think budget.
+_pc_claude_stream_fresh() {
+  local stream="${HANDOFF}/developer.stream.jsonl" age_s now mtime
+  if [[ "${HANDLE:-}" == *" STREAM="* ]]; then
+    stream="${HANDLE##* STREAM=}"
+  fi
+  age_s="${LEADV2_PC_CLAUDE_STREAM_STALE_S:-120}"
+  [[ "${age_s}" =~ ^[1-9][0-9]*$ ]] || age_s=120
+  (( age_s > 3600 )) && age_s=3600
+  mtime="$(_pc_stat_mtime "${stream}")" || return 1
+  now="$(date +%s)"
+  (( now - mtime < age_s ))
+}
+
 # Resolve the run-dir path for a given author+handle (mirrors the liveness probe
 # and the asked-into-void block).  Empty when unresolvable.
 _pc_run_dir_for() { # <author> <handle> -> path on stdout
@@ -762,7 +790,7 @@ _pc_run_dir_for() { # <author> <handle> -> path on stdout
   case "${author}" in
     glm|glm-flash) run_dir="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${handle}" ;;
     kimi) run_dir="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${handle}" ;;
-    sonnet) run_dir="$(_pc_sonnet_run_dir_for_handle "${handle}")" ;;
+    sonnet|haiku|opus|fable) run_dir="$(_pc_sonnet_run_dir_for_handle "$(_pc_claude_pid "${author}" "${handle}")")" ;;
     *)    run_dir="${_PC_RUNS_ROOT}/${author}-runs/${handle}" ;;
   esac
   printf '%s' "${run_dir}"
@@ -1087,17 +1115,18 @@ _pc_reap_worker() { # <run_dir> [meta_pid]
   # both in a bounded order before the terminal funnel records dead/timeout;
   # otherwise the close gate can declare the lane terminal while the finalizer
   # is still able to write the worktree.
-  if [[ "${AUTHOR:-}" == "sonnet" && "${HANDLE:-}" =~ ^[0-9]+$ ]]; then
+  local _claude_pid
+  if _claude_pid="$(_pc_claude_pid "${AUTHOR:-}" "${HANDLE:-}")"; then
     local _sonnet_run _sonnet_finalizer _waited
-    _sonnet_run="$(_pc_sonnet_run_dir_for_handle "${HANDLE}")"
-    if kill -0 "${HANDLE}" 2>/dev/null; then
-      kill -TERM "${HANDLE}" 2>/dev/null || true
+    _sonnet_run="$(_pc_sonnet_run_dir_for_handle "${_claude_pid}")"
+    if kill -0 "${_claude_pid}" 2>/dev/null; then
+      kill -TERM "${_claude_pid}" 2>/dev/null || true
       _waited=0
-      while kill -0 "${HANDLE}" 2>/dev/null && (( _waited < 10 )); do
+      while kill -0 "${_claude_pid}" 2>/dev/null && (( _waited < 10 )); do
         sleep 0.5
         _waited=$((_waited + 1))
       done
-      kill -KILL "${HANDLE}" 2>/dev/null || true
+      kill -KILL "${_claude_pid}" 2>/dev/null || true
     fi
     _sonnet_finalizer="$(cat "${_sonnet_run}/finalizer_pid" 2>/dev/null || true)"
     if [[ "${_sonnet_finalizer}" =~ ^[0-9]+$ ]]; then
@@ -1108,7 +1137,7 @@ _pc_reap_worker() { # <run_dir> [meta_pid]
       done
       kill -KILL "${_sonnet_finalizer}" 2>/dev/null || true
     fi
-    emit decision "product_close task=${TASK:-} worker_reaped sonnet_pid=${HANDLE} finalizer_pid=${_sonnet_finalizer:-unknown}"
+    emit decision "product_close task=${TASK:-} worker_reaped sonnet_pid=${_claude_pid} finalizer_pid=${_sonnet_finalizer:-unknown}"
     return 0
   fi
 
@@ -1176,22 +1205,16 @@ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
     return 1
   fi
   case "${AUTHOR}" in
-    sonnet)
-      if [[ "${HANDLE}" =~ ^[0-9]+$ ]]; then
-        kill -0 "${HANDLE}" 2>/dev/null && return 0
-        # Claude's model PID can exit before the detached inline finalizer
-        # finishes the scoped auto-commit. A run with no .finalized marker is
-        # still owned by the worker lifecycle, so keep the terminal funnel
-        # closed until the finalizer has finished or the hard ceiling reaps it.
-        run_dir="$(_pc_sonnet_run_dir_for_handle "${HANDLE}")"
-        if [[ -n "${run_dir}" ]]; then
-          [[ -f "${run_dir}/.finalized" ]] && return 1
-          pid="$(cat "${run_dir}/finalizer_pid" 2>/dev/null || true)"
-          [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null && return 0
-          return 0
-        fi
-        return 1
-      fi
+    sonnet|haiku|opus|fable)
+      # Launch confirmation is not completion. In particular fable's full
+      # PID=... receipt must never fall into proceed_legacy on the first poll.
+      _pc_worker_process_alive && return 0
+      pid="$(_pc_claude_pid "${AUTHOR}" "${HANDLE}")"
+      run_dir="$(_pc_sonnet_run_dir_for_handle "${pid}")"
+      # Finalized is authoritative only after neither model nor finalizer lives.
+      [[ -n "${run_dir}" && -f "${run_dir}/.finalized" ]] && return 1
+      _pc_claude_stream_fresh && return 0
+      return 1
       ;;
     codex)
       provider_state="$(_pc_codex_provider_state)"
@@ -1387,9 +1410,10 @@ PYEOF
 
 pc_await_worker_exit() {
   if [[ "${LEADV2_PC_AWAIT_WORKER:-1}" != 1 ]]; then
-    # One-flip rollback is byte-for-byte equivalent to the former Sonnet-only wait.
-    if [[ "${AUTHOR}" == sonnet && "${HANDLE}" =~ ^[0-9]+$ ]]; then
-      while kill -0 "${HANDLE}" 2>/dev/null; do sleep 2; done
+    # Disabling provider probes still waits for every Claude arm's processes.
+    local claude_pid
+    if claude_pid="$(_pc_claude_pid "${AUTHOR}" "${HANDLE}")"; then
+      while _pc_worker_process_alive; do sleep 2; done
     fi
     return 0
   fi
@@ -1599,13 +1623,14 @@ _pc_lane_commits_ahead() {  # <root> -> stdout "N" | "unknown"; always rc0
 # alive) on any missing/unresolvable input -- never manufactures a false "alive".
 _pc_worker_process_alive() {  # -> rc0 iff a worker process for AUTHOR/HANDLE is provably alive
   [[ -n "${HANDLE:-}" ]] || return 1
-  if [[ "${AUTHOR}" == "sonnet" && "${HANDLE}" =~ ^[0-9]+$ ]]; then
-    kill -0 "${HANDLE}" 2>/dev/null && return 0
+  local claude_pid
+  if claude_pid="$(_pc_claude_pid "${AUTHOR}" "${HANDLE}")"; then
+    kill -0 "${claude_pid}" 2>/dev/null && return 0
     local sonnet_run_dir sonnet_finalizer_pid
-    sonnet_run_dir="$(_pc_sonnet_run_dir_for_handle "${HANDLE}")"
-    if [[ -n "${sonnet_run_dir}" && ! -f "${sonnet_run_dir}/.finalized" ]]; then
+    sonnet_run_dir="$(_pc_sonnet_run_dir_for_handle "${claude_pid}")"
+    if [[ -n "${sonnet_run_dir}" ]]; then
       sonnet_finalizer_pid="$(cat "${sonnet_run_dir}/finalizer_pid" 2>/dev/null || true)"
-      [[ "${sonnet_finalizer_pid}" =~ ^[0-9]+$ ]] && kill -0 "${sonnet_finalizer_pid}" 2>/dev/null && return 0
+      [[ "${sonnet_finalizer_pid}" =~ ^[1-9][0-9]*$ ]] && kill -0 "${sonnet_finalizer_pid}" 2>/dev/null && return 0
     fi
     return 1
   fi
