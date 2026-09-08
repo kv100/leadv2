@@ -216,13 +216,34 @@ _p8_e2e_root="${_lv2_e2e_root}"
 # collapsed into either. Same exclude set as lv2_lane_diff_is_empty /
 # GATE-FOREIGN-FAILURE-01 (docs/leadv2, docs/handoff are housekeeping
 # journal/handoff dirs, never the deliverable itself).
+# DOCS-ONLY-DETECTOR-STAMPS-A-FALSE-PASS-01: the list below must include the
+# COMMITTED lane range. This function used to read only the working tree
+# (diff HEAD) + untracked, so a lane that did the right thing and committed
+# everything produced an EMPTY list, the vacuous for-loop returned 0, and
+# the gate stamped e2e-gate-passed.flag with reason=no_executable_change
+# WITHOUT running anything (measured 2026-09-08 on f33ff575078f/a0b9aa86:
+# a committed ~180-line Python estimator + suite, skipped as "docs only").
+# The empty-list rule is the other half of the same fix and is fail-closed:
+# "I saw no files" is NOT "I saw only .md files" -- a diff this function
+# could not read must be RUN, never skipped.
 _p8_diff_is_docs_only() { # <e2e_root> -> rc0 if every changed file is .md/docs/*, rc1 otherwise
-  local _root="$1" _f
+  local _root="$1" _f _base
   local -a _changed
+  # Same base ladder as lv2_lane_diff_is_empty: no `main` / failed
+  # merge-base -> empty base -> the committed-range source is skipped and
+  # the HEAD-only sources below carry the list (today's behaviour), but the
+  # empty-list return below still fails closed.
+  _base="$(git -C "${_root}" merge-base main HEAD 2>/dev/null)" || _base=""
   mapfile -t _changed < <(
-    { git -C "${_root}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+    { if [[ -n "${_base}" ]]; then
+        git -C "${_root}" diff --name-only "${_base}" HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+      fi
+      git -C "${_root}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
       git -C "${_root}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
   )
+  # Empty list = this function is blind (unresolvable base and a clean
+  # tree, or a lane shape it does not understand) -> rc1, NOT docs-only.
+  [[ "${#_changed[@]}" -eq 0 ]] && return 1
   for _f in "${_changed[@]}"; do
     [[ -z "${_f}" ]] && continue
     if [[ "${_f}" != *.md && "${_f}" != docs/* ]]; then
@@ -333,8 +354,19 @@ fi
 # (HARNESS-COSTS-MORE-THAN-IT-CATCHES-01). Same non-kill treatment as foreign.
 if [[ ( -n "${FOREIGN_CSV}" || -n "${PRE_EXISTING_CSV}" ) && -z "${OWN_CSV}" && -z "${UNDECIDABLE_CSV}" ]]; then
   IFS=',' read -r -a _lane_writes <<< "${WRITES_CSV}"
+  # DOCS-ONLY-DETECTOR-STAMPS-A-FALSE-PASS-01 audit: same three sources as
+  # _p8_diff_is_docs_only above (committed lane range + working tree +
+  # untracked). This list only feeds the foreign_files REPORT -- the verdict
+  # of this branch comes from the ownership CSVs above -- but for a
+  # committed lane the HEAD-only sources see nothing, so the report would
+  # have listed zero foreign files while the journal claimed foreign
+  # failures. No verdict is minted from this list either way.
+  _p8_lane_base="$(git -C "${_p8_e2e_root}" merge-base main HEAD 2>/dev/null)" || _p8_lane_base=""
   mapfile -t _all_changed < <(
-    { git -C "${_p8_e2e_root}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+    { if [[ -n "${_p8_lane_base}" ]]; then
+        git -C "${_p8_e2e_root}" diff --name-only "${_p8_lane_base}" HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+      fi
+      git -C "${_p8_e2e_root}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
       git -C "${_p8_e2e_root}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
   )
   _foreign_files=()
