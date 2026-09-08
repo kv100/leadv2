@@ -308,7 +308,7 @@ def util(provider):
         return dict(empty, pct=(0.0 if free_ok else 100.0),
                     status=('ok' if free_ok else ('down' if free_reason=='arm_down' else (free_reason or 'unknown'))))
     x=q.get('anthropic' if provider=='claude' else provider,{})
-    if x.get('status')!='ok': return dict(empty, pct=100.0, unknown=True)
+    if provider!='claude' and x.get('status')!='ok': return dict(empty, pct=100.0, unknown=True)
     if provider=='glm':
         windows={k:(x.get(k) or {}) for k in ('five_hour','weekly')}; pct_key='pct'
     elif provider=='codex':
@@ -340,6 +340,12 @@ def util(provider):
             label=(active or {}).get('account_label')
             a=next((z for z in ok_accounts if z.get('account_label')==label), ok_accounts[0])
         else:
+            # Consume classify_account_state's producer field. A usage failure
+            # alone never grants this state: absent/unknown keeps the penalty.
+            unmetered=[z for z in accounts if z.get('account_state')=='unmetered']
+            if unmetered:
+                return dict(empty, pct=100.0, account_state='unmetered',
+                            priced_from='configured_allowance_conservative')
             return dict(empty, pct=100.0, unknown=True)
         windows={'five_hour':(a.get('five_hour') or {'pct':a.get('five_hour_pct'),'reset_iso':a.get('five_hour_reset_iso')}),
                  'seven_day':(a.get('seven_day') or {'pct':a.get('seven_day_pct'),'reset_iso':a.get('seven_day_reset_iso')})}
@@ -422,7 +428,7 @@ def ufmt():
     # the word `down`, never as the number 100 — one number must not carry
     # two facts. Other gate refusals (gate_broken/pin_drift) keep their
     # numeric pct and are named by the freepool_gate= token on the line.
-    util_part=' '.join('util_%s=%s' % (p, 'unknown_capped' if unk[p] else ('down' if (p=='freepool' and _uraw['freepool'].get('status')=='down') else '%d'%u[p])) for p in ('glm','codex','claude','freepool'))
+    util_part=' '.join('util_%s=%s' % (p, 'unmetered' if _uraw[p].get('account_state')=='unmetered' else 'unknown_capped' if unk[p] else ('down' if (p=='freepool' and _uraw['freepool'].get('status')=='down') else '%d'%u[p])) for p in ('glm','codex','claude','freepool'))
     reset_part=' '.join('reset_%s=%s' % (p, ('%.2fh_%s' % (_uraw[p]['hours_to_reset'], _uraw[p]['reset_basis'])) if _uraw[p].get('hours_to_reset') is not None else 'n/a') for p in ('glm','codex','claude','freepool'))
     return util_part + ' ' + reset_part
 ceil=((data.get('router_v2') or {}).get('quota_ceilings') or {})
@@ -455,7 +461,7 @@ def capped(provider):
     # refusing the work outright. Rejected alternatives: "skip it" is today's bug
     # verbatim; "take it as free" would spend a genuinely burnt provider on the
     # strength of a failed reading.
-    if unk.get(provider): return False
+    if unk.get(provider) or _uraw[provider].get('account_state')=='unmetered': return False
     if over_ceiling(provider) and near_reset_wait(provider):
         return False
     return over_ceiling(provider)
@@ -948,6 +954,12 @@ def _hw_row(un):
     except (TypeError, ValueError, KeyError, IndexError): return 1.0
 def headroom_weight(provider):
     if not _HEADROOM_ON: return 1.0
+    if _uraw[provider].get('account_state')=='unmetered':
+        # Configured matrix cost, charged at the least generous configured
+        # allowance weight. No fabricated usage/reset rate or unknown penalty.
+        weights=[float(r['weight']) for r in (data.get('router_v2', {}).get('headroom_weights') or [])
+                 if isinstance(r,dict) and num(r.get('weight')) is not None and 0 < float(r['weight']) <= 1]
+        return min(weights) if weights else 1.0
     if unk.get(provider):
         _headroom_unknown[provider]='probe'; return 1.0
     un=usable.get(provider)
@@ -1106,6 +1118,10 @@ _extra += (' headroom_priced=%s' % ','.join('%s:%g' % (p_, w_) for p_, w_ in sor
 # 09-03 evidence could not: was the chain short because nothing cheaper exists,
 # or because a policy filter emptied it before the price was read. Absent when
 # nothing was filtered -- that absence is the paired control.
+_extra += ' claude_account_state=%s claude_probe_penalty=%g claude_priced_from=%s' % (
+    _uraw['claude'].get('account_state', 'unknown' if unk['claude'] else 'ok'),
+    UNKNOWN_PROBE_PENALTY if unk['claude'] else 0.0,
+    _uraw['claude'].get('priced_from', 'unknown_probe_penalty' if unk['claude'] else 'measured'))
 _extra += _excl_render()
 _extra += _rev_tok
 # FP-08 fix-round (H1/H3): the floor journal rides on the arbiter's OWN output
@@ -1123,7 +1139,9 @@ _complexity = ' complexity=%s duration_class=%s' % (complexity, duration_class)
 # remaining budget and reset distance on the SAME line the arm was picked on
 # -- a decision that cannot be read back from the journal did not happen.
 _w_info=_uraw.get(w.get('provider'), {})
-if _w_info.get('unknown'):
+if _w_info.get('account_state')=='unmetered':
+    _w_remaining='unmetered'
+elif _w_info.get('unknown'):
     _w_remaining='unknown'
 elif _w_info.get('pct') is None:
     _w_remaining='n/a'

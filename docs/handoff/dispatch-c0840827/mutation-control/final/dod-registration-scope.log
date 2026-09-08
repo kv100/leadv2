@@ -1,0 +1,4 @@
+dod_pass check=suite_registration
+dod_pass check=runtime_state
+
+DOD_RC=0

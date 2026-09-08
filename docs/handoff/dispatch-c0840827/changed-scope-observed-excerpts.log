@@ -1,0 +1,7 @@
+Observed via tool reads while the runner was active; its timeout cleanup removed the shard logs.
+[CORE-OFFLINE] scope=changed running 116 of 95 suites (base=main@0424a4516a, 5 changed files, 0 unmapped)
+[CORE-OFFLINE] SCOPE_RESULT selected=116 total=95 base=main@0424a4516a changed=5 unmapped=0 reason=-
+[CORE-OFFLINE] running 116 suites across 4 shards
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-effort-routing.sh (scope-selected ad-hoc)
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-dispatch-duplicate-caller-race.sh (scope-selected ad-hoc)
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-landing-diff-scoping.sh (scope-selected ad-hoc)

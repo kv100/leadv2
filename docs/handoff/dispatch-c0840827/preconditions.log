@@ -1,0 +1,5 @@
+$ git branch --merged main | grep worktree-13581c3eb064
++ worktree-13581c3eb064
+$ git merge-base --is-ancestor 4e15098b HEAD
+RC=0
+$ git diff 2780cf07 HEAD -- plugins/leadv2/scripts/lib/leadv2-launch-registry.py plugins/leadv2/scripts/codex-task.sh

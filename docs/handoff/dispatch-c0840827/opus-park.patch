@@ -1,0 +1,7 @@
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -8590,0 +8591,4 @@
++  if [[ "${arm}" == "opus" ]]; then
++    atomic_dispatch_reserve_confirm_opus "${sig}" "${arm}" "${rule}"
++    exit 3
++  fi

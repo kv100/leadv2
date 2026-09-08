@@ -1,0 +1,13 @@
+$ timeout 10 bash -n plugins/leadv2/scripts/leadv2-dispatch-code.sh
+RC=0
+$ timeout 10 bash -n plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+RC=0
+$ timeout 10 bash -n plugins/leadv2/tests/test-launch-uses-the-chosen-arm.sh
+RC=0
+$ timeout 10 bash -n plugins/leadv2/tests/test-unmetered-account-not-penalised.sh
+RC=0
+$ timeout 10 bash -n plugins/leadv2/tests/test-arm-pool-reachability.sh
+RC=0
+$ timeout 10 bash -n docs/handoff/dispatch-c0840827/live-probe.sh
+RC=0
+python3 -m py_compile: no Python files changed

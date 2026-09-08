@@ -1,0 +1,22 @@
+decision launch_model_resolved task=argv-sonnet task_id=dispatch-argv-sonnet arm=sonnet resolved_model=sonnet
+decision worker_spawned by=router model=sonnet task=argv-sonnet attempt=fixture handle=PID=66609 LABEL=fixture SESSION_ID=fixture
+worker_spawned model=sonnet task=argv-sonnet attempt=fixture handle=PID=66609 LABEL=fixture SESSION_ID=fixture
+decision mission-version task=- sig=argv-sonnet rev=? head="## Delegation (nested agents) You may spawn nested subagents for bulk reads, censuses, or "
+SUBSESSION_ARGV arm=sonnet argv=['--role', 'developer', '--model', 'sonnet', '--effort', 'high', '--task-id', 'dispatch-argv-sonnet', '--mission-file', '/tmp/leadv2-dispatch-mission.OhabEq', '--requested-profile', 'work']
+decision launch_model_resolved task=argv-haiku task_id=dispatch-argv-haiku arm=haiku resolved_model=haiku
+decision worker_spawned by=router model=haiku task=argv-haiku attempt=fixture handle=PID=66609 LABEL=fixture SESSION_ID=fixture
+worker_spawned model=haiku task=argv-haiku attempt=fixture handle=PID=66609 LABEL=fixture SESSION_ID=fixture
+decision mission-version task=- sig=argv-haiku rev=? head="## Delegation (nested agents) You may spawn nested subagents for bulk reads, censuses, or "
+SUBSESSION_ARGV arm=haiku argv=['--role', 'developer', '--model', 'haiku', '--effort', 'high', '--task-id', 'dispatch-argv-haiku', '--mission-file', '/tmp/leadv2-dispatch-mission.yhBlAs', '--requested-profile', 'work']
+decision launch_model_resolved task=argv-fable task_id=dispatch-argv-fable arm=fable resolved_model=fable
+decision worker_spawned by=router model=fable task=argv-fable attempt=fixture handle=PID=66609 LABEL=fixture SESSION_ID=fixture
+worker_spawned model=fable task=argv-fable attempt=fixture handle=PID=66609 LABEL=fixture SESSION_ID=fixture
+decision mission-version task=- sig=argv-fable rev=? head="## Delegation (nested agents) You may spawn nested subagents for bulk reads, censuses, or "
+SUBSESSION_ARGV arm=fable argv=['--role', 'developer', '--model', 'fable', '--effort', 'high', '--task-id', 'dispatch-argv-fable', '--mission-file', '/tmp/leadv2-dispatch-mission.fnGNMg', '--requested-profile', 'work']
+decision launch_model_resolved task=argv-opus task_id=dispatch-argv-opus arm=opus resolved_model=opus
+decision worker_spawned by=router model=opus task=argv-opus attempt=fixture handle=PID=66609 LABEL=fixture SESSION_ID=fixture
+worker_spawned model=opus task=argv-opus attempt=fixture handle=PID=66609 LABEL=fixture SESSION_ID=fixture
+decision mission-version task=- sig=argv-opus rev=? head="## Delegation (nested agents) You may spawn nested subagents for bulk reads, censuses, or "
+SUBSESSION_ARGV arm=opus argv=['--role', 'developer', '--model', 'opus', '--effort', 'high', '--task-id', 'dispatch-argv-opus', '--mission-file', '/tmp/leadv2-dispatch-mission.YTVV1b', '--requested-profile', 'work']
+decision arm_refused by=router model=fable task=incapable reason=launch_registry_miss detail=refused:_not_a_build_arm_
+PASS registry miss refuses before subsession; all four actual argv models match

@@ -1,0 +1,4 @@
+leadv2-mutation-control: snapshot=head_plus_declared declared=2 excluded_dirty=0
+MUTATION-CONTROL ok suite=plugins/leadv2/tests/test-arm-pool-reachability.sh file=plugins/leadv2/scripts/leadv2-dispatch-code.sh red_line=FAIL: explicit --pin-arm opus failed to reach spawn -- rc=3  [leadv2-dispatch-code] arm_pool_persisted task=2dfa5b60 pool=- pin=opus src=cli diff_hash=967bacdcf969e394e43857dc60c6dbc7b88b807bb2345512acecc7ca5b1ed375 lane_diff_hash=c23484413d2101af949d865dadf3b74a19930ffbfa238c50eefd80b427698558
+
+MUTATION_TOOL_RC=0

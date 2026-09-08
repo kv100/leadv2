@@ -1,0 +1,4 @@
+--- a/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
++++ b/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+@@ -344,0 +345 @@
++            accounts=[dict(z, account_state='unknown') if z.get('account_state')=='unmetered' else z for z in accounts]

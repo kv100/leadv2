@@ -1,0 +1,5 @@
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -6411 +6411 @@
+-             "${_claude_launch_args[@]}" \
++             --role developer --model sonnet --effort "${_claude_launch_args[5]}" \

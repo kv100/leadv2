@@ -1,0 +1,16 @@
+patching file 'plugins/leadv2/scripts/leadv2-dispatch-code.sh'
+decision launch_model_resolved task=argv-sonnet task_id=dispatch-argv-sonnet arm=sonnet resolved_model=sonnet
+decision worker_spawned by=router model=sonnet task=argv-sonnet attempt=fixture handle=PID=56634 LABEL=fixture SESSION_ID=fixture
+worker_spawned model=sonnet task=argv-sonnet attempt=fixture handle=PID=56634 LABEL=fixture SESSION_ID=fixture
+decision mission-version task=- sig=argv-sonnet rev=? head="## Delegation (nested agents) You may spawn nested subagents for bulk reads, censuses, or "
+SUBSESSION_ARGV arm=sonnet argv=['--role', 'developer', '--model', 'sonnet', '--effort', 'high', '--task-id', 'dispatch-argv-sonnet', '--mission-file', '/tmp/leadv2-dispatch-mission.SHBzHm', '--requested-profile', 'work']
+decision launch_model_resolved task=argv-haiku task_id=dispatch-argv-haiku arm=haiku resolved_model=haiku
+decision worker_spawned by=router model=haiku task=argv-haiku attempt=fixture handle=PID=56634 LABEL=fixture SESSION_ID=fixture
+worker_spawned model=haiku task=argv-haiku attempt=fixture handle=PID=56634 LABEL=fixture SESSION_ID=fixture
+decision mission-version task=- sig=argv-haiku rev=? head="## Delegation (nested agents) You may spawn nested subagents for bulk reads, censuses, or "
+SUBSESSION_ARGV arm=haiku argv=['--role', 'developer', '--model', 'sonnet', '--effort', 'high', '--task-id', 'dispatch-argv-haiku', '--mission-file', '/tmp/leadv2-dispatch-mission.6q2hOn', '--requested-profile', 'work']
+Traceback (most recent call last):
+  File "<stdin>", line 5, in <module>
+AssertionError: ARGV_MISMATCH expected=haiku actual=sonnet
+
+SUITE_RC=1

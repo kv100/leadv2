@@ -1,0 +1,4 @@
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/da195ecf5abc/plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: delegating scope=changed to plugins/leadv2/scripts/tests/run-core-offline.sh
+
+CHANGED_SCOPE_RC=124

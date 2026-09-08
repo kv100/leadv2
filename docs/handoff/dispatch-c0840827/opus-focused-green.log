@@ -1,0 +1,3 @@
+PASS: bash syntax: dispatch
+PASS: explicit --pin-arm opus reached spawn with model opus
+SUMMARY: pass=2 fail=0
