@@ -92,7 +92,7 @@ if [[ "${FAKE_CORE_OFFLINE_MODE:-}" == "narrow" ]]; then
   printf -- '[CORE-OFFLINE] SCOPE_RESULT selected=1 total=9 base=main@deadbeef changed=1 unmapped=0 verdict=selected reason=-\n'
 fi
 printf -- '[CORE-OFFLINE] suites passed=%d failed=%d missing=0 repo=fake\n' "$((1-n))" "$n"
-[[ "${FAKE_CORE_OFFLINE_HANG:-0}" == "1" ]] && sleep 30
+[[ "${FAKE_CORE_OFFLINE_HANG:-0}" == "1" ]] && sleep "${FAKE_CORE_OFFLINE_HANG_S:-30}"
 (( n == 0 ))
 FAKE
 chmod +x "$SCRATCH/plugins/leadv2/scripts/tests/run-core-offline.sh"
@@ -230,6 +230,23 @@ if [[ $RC -ne 0 ]] && grep -q '^\[SUITE-TIMEOUT\] plugins/leadv2/scripts/tests/r
   pass "(8) ceiling-killed wrapper stays blocking despite allow-listed partial transcript (rc=$RC)"
 else
   fail "(8) killed wrapper laundered; rc=$RC out=
+$OUT"
+fi
+
+# ── case 9: --scope all does NOT ceiling the wrapper — the nightly full
+# sweep is DESIGNED to run long (CI budget: 120 min), and it is the one
+# place allow-listed suites still execute; ceilinging it there would kill
+# the gone-green surface. The fake sleeps 8s with the ceiling set to 3: a
+# wrongly-applied ceiling kills it at 3s and prints [SUITE-TIMEOUT].
+FAKE_ENV_OUT="$TMP/env9"; rm -f "$TMP/env9"
+OUT="$(cd "$SCRATCH" && env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" \
+  LEADV2_RUN_ALL_SUITE_TIMEOUT_S=3 FAKE_CORE_OFFLINE_HANG=1 FAKE_CORE_OFFLINE_HANG_S=8 \
+  FAKE_ENV_OUT="$TMP/env9" bash tests/run-all.sh --scope all 2>&1)"
+RC=$?
+if [[ $RC -eq 0 ]] && ! grep -q '^\[SUITE-TIMEOUT\] plugins/leadv2/scripts/tests/run-core-offline.sh' <<<"$OUT"; then
+  pass "(9) --scope all wrapper NOT ceiling-killed despite ceiling=3s (nightly long-run property kept; rc=$RC)"
+else
+  fail "(9) scope=all wrapper wrongly ceilinged; rc=$RC out=
 $OUT"
 fi
 

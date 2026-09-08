@@ -629,6 +629,16 @@ for suite in ${SUITES[@]+"${SUITES[@]}"}; do
     core_scope_arg="$(core_offline_scope_arg)"
     printf 'run-all: delegating scope=%s to %s\n' "${core_scope_arg}" "${suite#"${ROOT}/"}"
     suite_log="$(mktemp "${TMPDIR:-/tmp}/run-all-core-offline.XXXXXX")"
+    # The wrapper is a CONTAINER of suites, not a suite: under --scope all it
+    # is DESIGNED to run long (the nightly full sweep, CI budget 120 min) and
+    # it is the one place allow-listed suites still execute — ceilinging it
+    # there would kill the gone-green surface. Budget scopes only.
+    if core_offline_budget_skip_env; then
+      _ra_wrapper_ceiling="$(_suite_ceiling_s)"
+    else
+      _ra_wrapper_ceiling=0
+    fi
+    _ra_ceiling="${_ra_wrapper_ceiling}"
     # B2-GATE-BUDGET-4: budget modes (changed/changed-since) additionally ask
     # the wrapper to skip allow-listed known-red nested suites — their
     # classification was already non-blocking (round 3), what they cost is
