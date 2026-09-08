@@ -1,0 +1,28 @@
+PASS: bash syntax: dispatch
+FIXTURE_QUOTA={"anthropic":{"status":"unknown","accounts":[{"account_label":"work","active":true,"status":"unknown","account_state":"unmetered","subscription_type":"team","http":401}]},"codex":{"status":"unknown"},"glm":{"status":"unknown"}}
+[leadv2-dispatch-code] arm_pool_persisted task=188b0644 pool=sonnet,codex pin=- src=cli
+[leadv2-dispatch-code] lane_plan_skipped task=188b0644 reason=shared_tree
+[leadv2-dispatch-code] task_class=Heavy route=phases source=flag task=188b0644
+[leadv2-dispatch-code] complexity_gate_applied task=188b0644 complexity=complex complexity_source=judge pipeline_route=plan_first forced_plan=0 review_rounds=3
+[leadv2-dispatch-code] task_class_override by=admission task=188b0644 requested=heavy resolved=Heavy reason=complexity_complex source=flag
+[leadv2-dispatch-code] class_floor_held task=188b0644 declared=Heavy computed=Heavy
+[leadv2-dispatch-code] brain_decision task=188b0644 class=Heavy class_source=floor_held phases=classify,diverge,plan,gate1,build,test,review,deploy,live_verify,e2e,close reason=declared_floor
+[leadv2-dispatch-code] dispatch_classified task=188b0644 class=non_product reason=explicit_kind_docs kind=docs
+[leadv2-dispatch-code] protection_derived by=router task=188b0644 writes=src/x.py write_class=standard writes_protected=0 manual_protected=0 effective_protected=0
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none complexity=complex duration_class=unknown
+[leadv2-dispatch-code] arm_dropped_not_dispatchable arm=haiku task=188b0644 router=v1 reason=not_in_DISPATCHABLE_BUILD_ARMS
+[leadv2-dispatch-code] arm_dropped_not_dispatchable arm=opus task=188b0644 router=v1 reason=not_in_DISPATCHABLE_BUILD_ARMS
+[leadv2-dispatch-code] arm_dropped_not_dispatchable arm=fable task=188b0644 router=v1 reason=not_in_DISPATCHABLE_BUILD_ARMS
+[leadv2-dispatch-code] arm_excluded by=router arm=glm-flash task=188b0644 reason=arm_not_capable_for_size task_class=heavy when=trivial,light,standard
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=188b0644 reason=arm_not_capable_for_size task_class=heavy when=light,standard,bulk
+[leadv2-dispatch-code] launchable_seam task=188b0644 source=registry kind=docs
+[leadv2-dispatch-code] freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=188b0644
+[leadv2-dispatch-code] launchable_seam task=188b0644 source=registry kind=docs
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=sonnet model=sonnet tier=standard effort=low task=188b0644 reason=cheapest_capable arbiter_pick=sonnet util_glm=unknown_capped util_codex=unknown_capped util_claude=unmetered util_freepool=0 reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=0.2 claude_account_state=unmetered claude_probe_penalty=0 claude_priced_from=configured_allowance_conservative arm_excluded=codex:price_ratio,glm:not_in_pool arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=complex duration_class=unknown complexity_policy=capability_fit remaining=unmetered reset_in=n/a reset_basis=n/a probe_outage=glm,codex failure_memory=no_history complexity_source=judge conf=0.9 req_eff=4.0 fit_mode=on fit_pick=sonnet fit_differs=0 fit_bucket=sonnet:0,codex:0
+[leadv2-dispatch-code] candidate_chain task=188b0644 arms=sonnet,codex
+[leadv2-dispatch-code] route_resolved by=router router=arbiter model=sonnet task=188b0644 rule=none reason=cheapest_capable
+route_resolved by=router router=arbiter model=sonnet task=188b0644 rule=none reason=cheapest_capable
+[leadv2-dispatch-code] dispatch_rolled_back reason=no_spawn_dry_run task=188b0644
+[leadv2-dispatch-code] active_lane_release_skipped task=188b0644 id=dispatch-188b0644 where=exit_trap reason=not_owner_row_intact rows=1 removed=0 live_worker_kept=0
+
+FIXTURE_DISPATCH_RC=0

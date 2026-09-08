@@ -1,0 +1,23 @@
+PASS: bash syntax: dispatch
+PASS: (g1) pin fable plan/heavy resolves as fable
+PASS: (g1) the dispatcher selects fable
+PASS: (g1) requested_arm_incapable is gone for a capable (matrix-covered) arm
+PASS: (g1) the launchability seam names its source (registry)
+PASS: (g1) capable pin resolves (rc=0)
+PASS: (g2) --pin-arm behaves exactly like --requested-arm (selection + persisted pin)
+PASS: (g3) pin sonnet with claude at 99% refuses: requested_arm_capped
+PASS: (g3) the capped stage is typed on the line (sonnet:capped)
+PASS: (g3) capped pin exits 4 (rc=4)
+PASS: (g4) explicit pool glm,codex: winner (glm) runs inside the set
+PASS: (g4) arms outside the hard set are typed not_in_pool (sonnet)
+PASS: (g4) explicit pool resolves, rc=0 (rc=0)
+PASS: (g5) unknown pool member refused at the door, before any resolution
+PASS: (g6) pin+pool conflict refused (a pin IS a singleton pool)
+PASS: (g7) fable cannot launch code and is refused
+PASS: explicit --pin-arm opus reached spawn with model opus
+PASS: (m1) chain-as-pool regression reproduces: pin dies as not_in_pool, suite is red under it
+PASS: (m3) stripped exit lets the capped pin continue (rc=0), suite is red under it
+---
+SUMMARY: pass=19 fail=0
+
+SUITE_RC=0
