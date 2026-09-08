@@ -52,3 +52,69 @@ The replacement test will:
 3. Demonstrate that mutating the zero-stop rule (e.g., setting ZERO_MAX=0 or removing zero-stop logic) causes the test to fail
 
 This approach maintains the backlog's purpose of preventing regressions while aligning with main's correct design decision.
+
+---
+
+# B2-GATE-BUDGET — blocked before implementation
+
+No implementation change, merge, or push was performed. Acceptance is NOT met.
+The lane started clean at `f0ee0c90`; branch `worktree-B2-GATE-BUDGET`.
+The merge base with main was `fe491bffb6df9f3a4ac17e14ac6a2f7ea43c2982`.
+Initial `git diff --stat main...HEAD` was empty.
+
+## Write-set mismatch
+
+The mission permits two runner/allowlist paths that do not exist in this checkout:
+
+```text
+$ cat plugins/leadv2/scripts/tests/run-all.sh
+cat: plugins/leadv2/scripts/tests/run-all.sh: No such file or directory
+$ cat plugins/leadv2/scripts/tests/known-red-suites.txt
+cat: plugins/leadv2/scripts/tests/known-red-suites.txt: No such file or directory
+$ ls tests/test-lane-truth-batch-01.sh plugins/leadv2/scripts/tests/test-lane-truth-batch-01.sh
+ls: tests/test-lane-truth-batch-01.sh: No such file or directory
+plugins/leadv2/scripts/tests/test-lane-truth-batch-01.sh
+```
+
+Reading `tests/run-all.sh` and `tests/known-red-suites.txt` succeeded. The latter
+contains 14 `core:` entries, including lane truth batch; it is not a one-entry
+allowlist. The bash32 suite is at `tests/test-status-surface-bash32.sh`.
+Creating the absent authorized paths would not change the existing entrypoint.
+
+## Related allowlist issue
+
+Read `docs/tasks.yaml` row `24cc139cc4fb`, titled
+`E2E-GATE-CANNOT-SEE-THE-ALLOWLIST-01`. Its note describes nested suite failures
+being obscured by the core wrapper. The actual `tests/run-all.sh` already parses
+`[CORE-OFFLINE] FAILED:` labels and classifies them with `is_known_red`.
+This is source inspection only; no behavioural proof or subsumption is claimed.
+
+## Async authorization attempt — raw output
+
+```bash
+bash /Users/kostiantyn.vlasenko/.claude/scripts/leadv2-ask.sh dispatch-62ec970a 'Pinned B2 checkout lacks both authorized plugins/leadv2/scripts/tests/run-all.sh and known-red-suites.txt. Actual files are tests/run-all.sh and tests/known-red-suites.txt. May I substitute those two write paths and add report.md with evidence (keeping the named new suite path)?' --option 'a|Stop implementation and commit a blocker report only' --option 'b|Authorize actual tests paths plus report.md and evidence artifacts' --default-option a --timeout 60
+```
+
+```text
+/Users/kostiantyn.vlasenko/.claude/scripts/leadv2-state-path.sh: line 350: /Users/kostiantyn.vlasenko/.claude/leadv2-state/leadv2/.state-path-migrate.lock: Operation not permitted
+[leadv2-state-path] WARN: migration lock busy after 5s -- skipping migration this invocation (path still resolved).
+Traceback (most recent call last):
+  File "<stdin>", line 42, in <module>
+PermissionError: [Errno 1] Operation not permitted: '/Users/kostiantyn.vlasenko/.claude/leadv2-state/leadv2/questions/.write.lock'
+[leadv2-ask] control-plane write failed (sandbox EPERM?); falling back to legacy handoff store
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.IxlttJxhB7: Operation not permitted
+```
+
+Command exited 1. No answer or recorded timeout default was received. Redirecting
+the question into a private test state would not reach the lead; retrying its
+legacy fallback would target the forbidden runtime-state handoff directory.
+
+## Falsification and remaining work
+
+No shell or Python files changed, so changed-file `bash -n` and `py_compile` have
+no inputs. No timing runs, changed-scope execution, selection proof, mutation
+controls, or real close-gate verdict were obtained. No red/green claim is made.
+These requirements remain outstanding, including repeated suite timings and
+internal bash32 profiling. No background job was started.
+
+BLOCKED: authorize the actual tests/run-all.sh and tests/known-red-suites.txt write paths and restore a writable async question channel.
