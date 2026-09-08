@@ -36,6 +36,27 @@ if [[ -n "$LANE_ID" && ( -n "$JOB_ID" || "$ALL" -eq 1 ) ]] || [[ -n "$JOB_ID" &&
   exit 2
 fi
 
+# PLUGINS-DOCS-LANE-SHARE-01: PROJECT_ROOT is trusted verbatim by every caller
+# (--project-root / LEADV2_PROJECT_ROOT / bare $PWD) with no guarantee it is
+# actually a repo toplevel -- a caller that derives it by counting `../` hops
+# from a script under plugins/leadv2/scripts/ (two hops: scripts -> leadv2 ->
+# plugins) undershoots the real toplevel by one directory and hands us
+# "<repo>/plugins". leadv2-state-path.sh already re-derives its own LINK_ROOT
+# through `git rev-parse --show-toplevel` for exactly this reason (any
+# subdirectory of a repo resolves to the SAME toplevel), which is why the
+# state-path.sh branch below silently self-heals. The raw fallback two lines
+# down does not -- it string-concats PROJECT_ROOT as given, so a mis-rooted
+# caller lands the lane-liveness share dir at "<repo>/plugins/docs/leadv2/
+# .lane-liveness-share" instead of "<repo>/docs/leadv2/.lane-liveness-share".
+# Measured 2026-09-08 (lane d2823c51e670): both paths existed side by side.
+# Re-root the same way state-path.sh does, fail-open to the value we were
+# given when git resolution is unavailable (test sandboxes, non-repo fixtures).
+if [[ -n "$PROJECT_ROOT" ]]; then
+  _ll_git_root="$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "$_ll_git_root" ]] && PROJECT_ROOT="$_ll_git_root"
+  unset _ll_git_root
+fi
+
 # State paths may be outside a worktree.  Keep the local path as a fallback
 # for standalone fixtures and old plugin installs.
 ACTIVE_YAML="$PROJECT_ROOT/docs/leadv2/active.yaml"
