@@ -1886,31 +1886,166 @@ os.execvp(sys.argv[1], sys.argv[1:])
 }
 
 
-# Detached companion brokers were observed dying with SIGKILL while their
-# task-worker remained alive, then exited on EOF without finalizing the job.
-# Keep the app-server under the worker's own lifetime. The companion exposes
-# this transport via connect(..., {disableBroker:true}); preload only in its
-# task-worker, without changing the installed companion or other subcommands.
+# Companion 1.0.4 API probe: lib/codex.mjs exports both run entries;
+# lib/app-server.mjs exposes connect(), exitPromise and close(). Keep all
+# adaptation here: an in-memory ESM facade wraps exports, never upstream files.
 _codex_worker_owned_app_server() {
   local preload
   preload="$(python3 - <<'PYLOAD'
 import base64
-source = """
+source = r"""
 import { pathToFileURL } from 'node:url';
 import { basename } from 'node:path';
-if (basename(process.argv[1] || '') === 'codex-companion.mjs' && process.argv[2] === 'task-worker') {
-  const { CodexAppServerClient } = await import(new URL('./lib/app-server.mjs', pathToFileURL(process.argv[1])));
+import { realpathSync } from 'node:fs';
+import * as module from 'node:module';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { spawnSync } from 'node:child_process';
+if (basename(process.argv[1] || '') === 'codex-companion.mjs' &&
+    ['task', 'review', 'adversarial-review', 'task-worker'].includes(process.argv[2])) {
+  const fail = (detail) => { throw new Error('codex_companion_api_incompatible:' + detail); };
+  if (typeof module.registerHooks !== 'function') fail('registerHooks_missing');
+  const lib = new URL('./lib/', pathToFileURL(realpathSync(process.argv[1])));
+  async function importCompanion(file) {
+    try { return await import(new URL(file, lib)); }
+    catch { fail(file.split('?')[0] + '_load_failed'); }
+  }
+  const { CodexAppServerClient } = await importCompanion('app-server.mjs');
+  if (typeof CodexAppServerClient?.connect !== 'function') fail('connect_missing');
   const connect = CodexAppServerClient.connect;
-  CodexAppServerClient.connect = function connectWorkerOwned(cwd, options = {}) {
-    return connect.call(this, cwd, { ...options, disableBroker: true });
+  const state = await importCompanion('state.mjs');
+  const turns = await importCompanion('codex.mjs?leadv2-original');
+  const tracked = await importCompanion('tracked-jobs.mjs?leadv2-original');
+  for (const name of ['runAppServerTurn', 'runAppServerReview']) {
+    if (typeof turns[name] !== 'function') fail(name + '_missing');
+  }
+  if (typeof tracked.runTrackedJob !== 'function') fail('runTrackedJob_missing');
+  for (const name of ['readJobFile', 'resolveJobFile', 'writeJobFile', 'upsertJob']) {
+    if (typeof state[name] !== 'function') fail(name + '_missing');
+  }
+  const jobs = new AsyncLocalStorage();
+  const attempts = new AsyncLocalStorage();
+  const cause = 'codex_worker_exited_before_turn_completed';
+  const mode = process.argv[2] === 'task-worker' ? 'background' : 'foreground';
+  function persist(ctx) {
+    if (!ctx) return;
+    const { job, codexAttempts } = ctx;
+    const patch = { id: job.id, codexTransport: 'worker-owned', codexAttempts };
+    const stored = state.readJobFile(state.resolveJobFile(job.workspaceRoot, job.id));
+    state.writeJobFile(job.workspaceRoot, job.id, { ...stored, ...patch });
+    state.upsertJob(job.workspaceRoot, patch);
+  }
+  function record(attempt, status, reason = null) {
+    const ctx = jobs.getStore();
+    const entry = { attempt: attempt.number, status, cause: reason,
+      mode, transport: 'worker-owned', appServerPid: attempt.client?.proc?.pid ?? null,
+      at: new Date().toISOString() };
+    if (ctx) {
+      ctx.codexAttempts.push(entry);
+      persist(ctx);
+    }
+    const message = '[codex-task] ' + mode + ' transport=worker-owned app-server attempt=' +
+      attempt.number + ' status=' + status + (reason ? ' cause=' + reason : '') +
+      ' app_server_pid=' + (entry.appServerPid ?? 'unknown');
+    attempt.options.onProgress?.({ message });
+    if (!attempt.options.onProgress) console.error(message);
+    if (reason === cause) {
+      const event = process.env.LEADV2_CODEX_EVENT_BIN;
+      if (event) {
+        // Never pass the preload to unrelated Node subprocesses started by the emitter.
+        const env = { ...process.env }; delete env.NODE_OPTIONS;
+        const result = spawnSync('bash', [event, 'emit', '--repo', basename(attempt.cwd),
+          '--kind', 'codex_worker_died', '--arm', 'codex', '--handle', ctx?.job.id ?? 'foreground',
+          '--detail', 'cause=' + reason + ' attempt=' + attempt.number + ' status=' + status],
+          { env, timeout: 10000, encoding: 'utf8' });
+        if (result.error || result.status !== 0) console.error('[codex-task] journal_write_failed: ' + (result.error?.message ?? result.stderr));
+      }
+    }
+  }
+  CodexAppServerClient.connect = async function connectWorkerOwned(cwd, options = {}) {
+    const client = await connect.call(this, cwd, { ...options, disableBroker: true });
+    if (!client?.exitPromise || typeof client.exitPromise.then !== 'function' || typeof client.close !== 'function') {
+      // No turn is launched on an incompatible client. Tear down our child if possible.
+      client?.proc?.kill('SIGTERM');
+      fail('exitPromise_or_close_missing');
+    }
+    const attempt = attempts.getStore();
+    if (attempt) {
+      attempt.client = client;
+      const close = client.close;
+      client.close = function closeWorkerOwned(...args) {
+        // withAppServer closes on normal completion too; that is not a lost turn.
+        attempt.closing = true;
+        return close.apply(this, args);
+      };
+      client.exitPromise.then(() => {
+        if (!attempt.closing) attempt.rejectExit(Object.assign(new Error(cause), { code: cause }));
+      }, () => {
+        if (!attempt.closing) attempt.rejectExit(Object.assign(new Error(cause), { code: cause }));
+      });
+      record(attempt, 'started');
+    }
+    return client;
   };
+  async function runWithExitRace(run, cwd, options = {}) {
+    async function once(number) {
+      const attempt = { number, cwd, options, closing: false };
+      const exitRace = new Promise((_, reject) => { attempt.rejectExit = reject; });
+      return attempts.run(attempt, async () => {
+        try {
+          const turn = run(cwd, options);
+          const result = await Promise.race([turn, exitRace]);
+          record(attempt, 'completed');
+          return result;
+        } catch (error) {
+          record(attempt, 'failed', error?.code === cause ? cause : String(error?.message ?? error));
+          throw error;
+        } finally {
+          attempt.closing = true;
+          if (attempt.client) await attempt.client.close();
+        }
+      });
+    }
+    try {
+      return await once(1);
+    } catch (error) {
+      if (error?.code !== cause) throw error;
+      return await once(2); // Exactly one fresh connection; never recursive retry.
+    }
+  }
+  const api = {
+    runAppServerTurn: (cwd, options) => runWithExitRace(turns.runAppServerTurn, cwd, options),
+    runAppServerReview: (cwd, options) => runWithExitRace(turns.runAppServerReview, cwd, options),
+    async runTrackedJob(job, runner, options) {
+      const ctx = { job, codexAttempts: [] };
+      return jobs.run(ctx, async () => {
+        try { return await tracked.runTrackedJob(job, runner, options); }
+        finally { if (ctx.codexAttempts.length) persist(ctx); }
+      });
+    }
+  };
+  globalThis[Symbol.for('leadv2.codex.turn-resilience')] = api;
+  const facades = new Map();
+  for (const [file, names] of [['codex.mjs', ['runAppServerTurn', 'runAppServerReview']],
+                               ['tracked-jobs.mjs', ['runTrackedJob']]]) {
+    const url = new URL(file, lib).href;
+    const source = 'export * from ' + JSON.stringify(url + '?leadv2-original') + ';' +
+      'const api = globalThis[Symbol.for("leadv2.codex.turn-resilience")];' +
+      names.map(name => 'export const ' + name + ' = api.' + name + ';').join('');
+    facades.set(url, source);
+  }
+  module.registerHooks({
+    load(url, context, nextLoad) {
+      if (facades.has(url)) return { format: 'module', source: facades.get(url), shortCircuit: true };
+      return nextLoad(url, context);
+    }
+  });
 }
 """
 print('data:text/javascript;base64,' + base64.b64encode(source.encode()).decode())
 PYLOAD
 )" || return 1
   export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$preload"
-  echo '[codex-task] background transport=worker-owned app-server' >&2
+  export LEADV2_CODEX_EVENT_BIN="${LEADV2_EVENT_BIN:-${_CODEX_SCRIPT_DIR}/leadv2-event.sh}"
 }
 
 _run_node() {
@@ -1920,9 +2055,7 @@ _run_node() {
   # Local export reaches the detached worker, but does not change the caller's
   # Node options or the guard/reaper processes armed after this call returns.
   local NODE_OPTIONS="${NODE_OPTIONS:-}"
-  if [[ "$_bg" -eq 1 ]]; then
-    _codex_worker_owned_app_server || return $?
-  fi
+  _codex_worker_owned_app_server || return $?
   if [[ -n "$_TIMEOUT_CMD" ]]; then
     if [[ "$_bg" -eq 1 ]]; then
       # `timeout`/`gtimeout` execve() their target directly -- they cannot
