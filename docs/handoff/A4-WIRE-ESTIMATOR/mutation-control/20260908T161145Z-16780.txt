@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-depth-gate-uses-the-estimate.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s@eff="standard"   # heuristic@eff="${cx:-trivial}"   # heuristic@
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: S1c no-signal fixture: got [unknown unknown brief_direct 3], want standard/*/plan_first/2 — a missing estimate must never buy a shallower review
+diff_hash=ff6c103f1190a6e927de75b82aad56f06b8d9d4f16b6ffd80639fd777325ee9d
+lane_diff_hash=0c19741353e8eb39e9ed6215c7f35b73566b85f4a221664536ed7398f8b2f19c
