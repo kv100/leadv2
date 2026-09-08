@@ -1,104 +1,74 @@
-# MAIN-CORE-SUITE-RED-01 — 15 of 86 core suites are red on main
+# MAIN-CORE-SUITE-RED-01 — раунд 2: ловушка названа, выход один
 
-LANE ROOT: `/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/MAIN-CORE-SUITE-RED-01`
+## Что произошло в раунде 1
 
-LANE_WRITES: plugins/leadv2/scripts/,plugins/leadv2/hooks/,plugins/leadv2/scripts/tests/,tests/run-all.sh,docs/handoff/MAIN-CORE-SUITE-RED-01/
-
-Branch from current main. Run with `LEADV2_SUITE_LOCK_DISABLE=1`.
-
-## Measured on main, 2026-09-01
-
-`plugins/leadv2/scripts/tests/run-core-offline.sh`, full run (about 12 minutes):
+Линия сделала коммит `d2971b7e` («wip: suite fixes from prior run») и была отвергнута гейтом
+`selfcheck_failed` на четырёх сюитах:
 
 ```
-suites passed=71 failed=15 missing=0
-EXIT=1
+plugins/leadv2/scripts/tests/test-idle-lead-guard.sh
+plugins/leadv2/scripts/tests/test-injector-dedup.sh
+plugins/leadv2/scripts/tests/test-lane-diff-single-repo.sh
+plugins/leadv2/scripts/tests/test-phase-precondition.sh
 ```
 
-The runner's own exit code is correct — it is not lying green. The suites are simply red, and they
-have been red while lane after lane was accepted against them.
-
-The fifteen:
+Я померил их **из чистой базы** — `git archive main | tar -x` во временный каталог,
+никакого твоего диффа там нет:
 
 ```
-shard 0   landed-at-spawn (no terminal=landed at spawn; target repo keying)
-          phase precondition guard matrix                        [PHASE-PRECONDITION] pass=75 fail=4
-          claim-evidence gate (CLAIM-EVIDENCE-GATE-01)
-shard 1   product-close scopes a single-repo lane worktree
-          codex-dead review reroute (QUOTA-GATE-PARITY-01)
-shard 2   review round exhaustive/verify-only                    PASS=23 FAIL=1
-          deferred-GLM ladder (V3-GLM-LADDER-01)                  FAIL=1
-shard 3   review round cap (REVIEW-ROUNDCAP-01)                  PASS=13 FAIL=1
-serial    dispatch refusal fallback chain
-          product-close waits for worker exit
-          Codex full-cycle runner                                PASS=22 FAIL=1
-          lanes snapshot reconciliation
-          lane truth batch (log_path + quarantine convergence)   pass=15 fail=1
-          report-only gate (REPORT-ONLY-GATE-01)
+test-idle-lead-guard        base_rc=1
+test-injector-dedup         base_rc=1
+test-lane-diff-single-repo  base_rc=1
+test-phase-precondition     base_rc=1
 ```
 
-Note the serial shard: `pass=7 fail=7`. Half of everything that cannot be parallelised is failing.
+Все четыре красны на `main`. То есть линия заблокирована ровно тем, что ей поручено починить.
+Гейт этого различить не умеет — это отдельная работа (`REVIEW-GATE-IS-MUTE-01`), и ждать её
+не нужно.
 
-## [Critical] 1 — classify before fixing anything
+## Выход, и он ровно один
 
-Each of the fifteen is one of three things, and they need opposite treatment:
+**Довести эти четыре до зелёного.** Не оправдать, не занести в список, не откатить — они и есть
+предмет задачи. Гейт откроется сам, когда сюита станет зелёной: он не спрашивает «чья краснота»,
+он спрашивает «красна ли».
 
-- **a real regression** — production code broke and the suite is correctly red. Fix the production
-  code.
-- **a stale assertion** — the contract changed deliberately and the suite was never updated. Update
-  the assertion, and state in `report.md` which contract changed and where that decision is recorded.
-- **an environment dependency** — the suite needs something this machine does not have (a live Codex
-  transport, a quota state, a clock). It must then be made hermetic or explicitly skipped with a
-  reason, never left as a permanent red that everyone learns to ignore.
+Порядок на каждую из четырёх:
 
-Produce that classification for all fifteen **before** changing a line. A red suite nobody has
-classified is how a real regression hides among stale ones.
+1. **Сначала прогон из базы** — `git archive main | tar -x -C <tmp>`, запустить там, записать
+   `rc` и первые строки провала. Это фиксирует, что чинишь настоящую болезнь, а не свою правку.
+2. **Прочитать провал, а не догадаться о нём.** Имя коммита раунда 1 перечисляет пять гипотез
+   (`idle-lead-guard registration`, `injector-dedup anchor guard`, `lane-diff pycache`,
+   `phase-precondition bare handle`, `t14 effort baseline`) — ни одна не сделала сюиту зелёной.
+   Значит либо гипотеза неверна, либо правка не дошла до места, которое сюита щупает.
+   Различает это прогон, а не рассуждение.
+3. **Починка в ПРОДУКТЕ, если врёт продукт; в сюите — только если доказано, что сюита проверяет
+   поведение, которого больше нет.** Второе объявляй явно и с указанием коммита, который это
+   поведение убрал.
+4. **Парный негатив на каждую починенную:** внеси в продукт ту самую поломку, которую сюита
+   обязана ловить, — сюита обязана покраснеть; откати — обязана позеленеть. Без этой пары
+   зелёная сюита не отличается от сюиты, которая ничего не проверяет.
+5. **Прогон из базы ПОВТОРНО в конце** — он обязан остаться красным. Если база вдруг позеленела,
+   значит зелень пришла не от тебя, и вывод о починке неверен.
 
-## [Critical] 2 — a permanent red is worse than no suite
+## Приёмка
 
-Fifteen standing failures mean the whole run is ignored, which is why nobody noticed. Whatever the
-classification, the end state is: the core run is green, or every remaining red is a deliberate,
-named, reasoned skip that the runner reports as a skip rather than a failure.
+`docs/handoff/MAIN-CORE-SUITE-RED-01/report.md`: по каждой из четырёх — `rc` из базы до, `rc`
+в линии после, что именно было сломано, вывод парного негатива. Плюс строка в
+`tests/mutations/catalog.yaml` на каждую.
 
-## [Critical] 3 — do not fix a suite by weakening it
+Если какая-то из четырёх не поддаётся — назови её честно в четвёртой куче «не смог определить»
+с тем, что уже известно, и не выдавай откат за починку. Три починенные и одна честно открытая
+лучше четырёх зелёных без пары.
 
-The failure mode this repo has hit repeatedly is turning a red suite green by deleting the assertion
-that caught the bug. For every suite you make pass, show in `report.md` that it still goes red under
-a mutation of the behaviour it covers. A suite that passes and can no longer fail has been destroyed,
-not fixed — see `SUITE-THAT-CANNOT-FAIL-01`.
+## Запреты (без изменений)
 
-## Scope
+Дерево общее: не `git add -A`, не жёсткий сброс, не очистка, не прятание изменений.
+В origin не пушить. `tests/known-red-suites.txt` и `known-failures.txt` могут только СОКРАЩАТЬСЯ —
+дописывать в них запрещено, это и был бы выдаваемый за починку откат.
+Не трогать `lib/leadv2-route-arbiter.sh`, `config/leadv2-routing.yaml`, `leadv2-dispatch-code.sh`
+и `leadv2-phase-record.sh` — они заняты соседними сессиями прямо сейчас.
 
-Fifteen suites is likely more than one lane. Prioritise in this order and stop when the lane is full,
-reporting exactly what is left:
-
-1. `claim-evidence gate`, `report-only gate`, `phase precondition guard matrix` — these gate whether
-   a lane's work is accepted at all, so a break here lets unverified work land;
-2. `dispatch refusal fallback chain`, `deferred-GLM ladder`, `codex-dead review reroute` — routing;
-3. the rest.
-
-## Acceptance
-
-1. all fifteen classified in `report.md` with evidence, before any fix;
-2. every suite this lane touches ends green;
-3. every suite this lane makes green is shown red under a mutation of its own subject;
-4. any suite left red is left red **deliberately**, named in `report.md` with the reason;
-5. `run-core-offline.sh` still exits non-zero while any unexplained failure remains.
-
-## Rules
-
-- Mutation INSIDE the production body on the real call path, RED, revert, GREEN, clean
-  `git diff --stat`.
-- No `grep` against script source as an assertion; no negated command as an assertion; a printed
-  `FAIL:` line that leaves `$?` at 0 is not an assertion.
-- Never delete an assertion to make a suite pass. If an assertion is wrong, say why in `report.md`.
-- Bash 3.2.57 only (no `mapfile`); every `${arr[@]}` guarded under `set -u`.
-- `git add <file> <file>`, never `git add <dir>`. Commit before you stop, even if partial.
-
-## Done means
-
-Main's core run is green, or every remaining red is a named deliberate skip — and no suite was made
-green by removing the thing that made it useful.
+LANE_WRITES: plugins/leadv2/scripts/, plugins/leadv2/scripts/tests/, tests/, docs/handoff/MAIN-CORE-SUITE-RED-01/
 
 ---
 If you hit a decision you cannot safely make yourself (including destructive

@@ -1,0 +1,9 @@
+status: unreviewed
+reason: all_arms_unavailable
+author: codex
+pool: codex:author:,glm:ok:80,kimi:excluded:safety,fable:unknown:,opus:unknown:,sonnet:unknown:
+tried: glm
+refusal: all_arms_unavailable
+resolver_rc: 0
+resolver_stderr: /Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-6763e6d5/review-pool-resolver.err
+merge_blocked: true

@@ -1,0 +1,33 @@
+task_id: MAIN-CORE-SUITE-RED-01
+sig8: 77919011
+class: Heavy
+brief: docs/handoff/MAIN-CORE-SUITE-RED-01/round-2.md
+
+decisions:
+  - id: D1
+    text: >-
+      The four suites blocking the gate are red on a clean base checkout, so the
+      lane is blocked by the very redness it was dispatched to fix. The only exit
+      is to make them green; excusing them via an allowlist is forbidden because
+      known-red-suites.txt may only shrink.
+    evidence: >-
+      git archive main | tar -x into a temp dir, then each suite run there:
+      test-idle-lead-guard rc=1, test-injector-dedup rc=1,
+      test-lane-diff-single-repo rc=1, test-phase-precondition rc=1 (2026-09-05T20:16Z).
+  - id: D2
+    text: >-
+      Round 1 committed five hypotheses in one wip commit and none turned a suite
+      green, so each suite must be re-read from its actual failure output rather
+      than re-guessed.
+    evidence: commit d2971b7e message vs the gate refusal naming the same four suites.
+
+controls:
+  - id: C1
+    text: paired negative per fixed suite — break the product back, suite must go red
+  - id: C2
+    text: base run repeated at the end must STAY red, else the green came from elsewhere
+
+writes:
+  - plugins/leadv2/scripts/
+  - tests/
+  - docs/handoff/MAIN-CORE-SUITE-RED-01/

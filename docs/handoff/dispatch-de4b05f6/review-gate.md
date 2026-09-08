@@ -1,0 +1,9 @@
+status: fail
+critical: 0
+high: 1
+medium: 0
+low: 0
+findings_source: none
+findings: unavailable
+findings_reason: parse_failed
+report: docs/handoff/dispatch-de4b05f6/review-codex.md
