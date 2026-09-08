@@ -84,6 +84,64 @@ EOF
   return 2
 }
 
+# ── C2-OWNERSHIP-CHECK — the consolidated ownership check ──────────────────
+# `plugin-scripts-drift-guard.sh --check [<repo-root>]` (row C2,
+# PRE-WAVES-PLAN.md): a real copy of a plugin-owned file anywhere under a
+# repo's .claude/scripts is detected and NAMED — the copy's path plus the
+# canonical it shadows. Properties the row demands:
+#   - names the file and the canonical it shadows (COPY: <copy> shadows
+#     canonical <canon> (identical|diverged, REGRESSION|DRIFT));
+#   - cannot pass by accident: the tally `checked=N ...` is printed on every
+#     outcome (clean, dirty, and no-.claude/scripts alike), and a missing
+#     canonical tree fails closed — it is never a silent clean;
+#   - perimeter is the whole .claude/scripts tree at any depth (.sh/.py,
+#     node_modules/__pycache__/.mypy_cache pruned) — leadv2's own
+#     .claude/scripts included (measured 2026-09-09: 517 real copies there,
+#     .gitignore'd, so a fresh worktree materializes none and a count-blind
+#     check goes green on an empty set — the hole the checked=N tally closes).
+# Exit: 0 = clean, 1 = copies found OR canonical missing. LEADV2_CANONICAL_ROOT
+# overrides the canonical repo (tests point it at a scratch fixture).
+plugin_script_ownership_scan() { # <repo-root>
+  local repo_root="$1" canonical_root canonical_scripts vendored
+  canonical_root="${LEADV2_CANONICAL_ROOT:-$HOME/Projects/leadv2}"
+  canonical_scripts="${canonical_root}/plugins/leadv2/scripts"
+  if [[ ! -d "$canonical_scripts" ]]; then
+    printf 'ownership: FATAL canonical scripts tree missing: %s — cannot classify, failing closed\n' "$canonical_scripts"
+    return 1
+  fi
+  vendored="${repo_root}/.claude/scripts"
+  if [[ ! -d "$vendored" ]]; then
+    printf 'checked=0 copies=0 (no .claude/scripts tree under %s)\n' "$repo_root"
+    return 0
+  fi
+  local checked=0 linked=0 native=0 copies=0 path relpath classification canon_file bytes
+  while IFS= read -r -d '' path; do
+    checked=$((checked + 1))
+    relpath="${path#"${vendored}/"}"
+    classification="$(plugin_script_classify "$repo_root" "$relpath" filesystem)"
+    case "$classification" in
+      LINKED) linked=$((linked + 1)) ;;
+      NATIVE) native=$((native + 1)) ;;
+      REGRESSION|DRIFT)
+        copies=$((copies + 1))
+        canon_file="${canonical_scripts}/${relpath}"
+        if cmp -s "$path" "$canon_file"; then bytes=identical; else bytes=diverged; fi
+        printf 'COPY: %s shadows canonical %s (%s, %s)\n' \
+          "${vendored}/${relpath}" "$canon_file" "$bytes" "$classification"
+        ;;
+    esac
+  done < <(find "$vendored" \
+             \( -name node_modules -o -name __pycache__ -o -name .mypy_cache \) -prune \
+             -o \( -type f -o -type l \) \( -name '*.sh' -o -name '*.py' \) -print0)
+  printf 'checked=%d linked=%d native=%d copies=%d\n' "$checked" "$linked" "$native" "$copies"
+  [[ "$copies" -eq 0 ]]
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  if [[ "${1:-}" == "--check" ]]; then
+    CHECK_ROOT="${2:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+    plugin_script_ownership_scan "$CHECK_ROOT"
+    exit $?
+  fi
   plugin_script_guard_main
 fi
