@@ -241,22 +241,24 @@ fi
 
 # Case 5: end-to-end deadline-check declares the dead shape within the window
 # and returns 7 (the caller's spill signal). Same isolated CODEX_HOME as
-# case 4 — c4_new already carries the dead shape. Real DISPATCH_SELF_BIN
-# (nit 2-C) so requirement (c) — the provider strike is actually recorded —
-# is asserted from the real lockout file, not just the rc=7 spill.
+# case 4 — c4_new already carries the dead shape. CODEX-ALWAYS-UP
+# (2026-09-08) flipped requirement (c): a dead JOB must NOT record a
+# provider strike — the spill stays, the stand-down goes. Real
+# DISPATCH_SELF_BIN kept so the absence is proven against the real writer
+# path, not just the rc=7 spill.
 c5_lockout_dir="$(mktemp -d)"
 cleanup_items+=("$c5_lockout_dir")
-echo "[CODEX-INSTANT-COMPLETE] case 5: deadline-check returns 7 on the dead shape AND records the strike"
+echo "[CODEX-INSTANT-COMPLETE] case 5: deadline-check returns 7 on the dead shape AND parks nothing"
 rc=0
 CODEX_HOME="$c4_home" LEADV2_CODEX_INSTANT_COMPLETE_SECS=5 LEADV2_ARM_EARLY_VERDICT_POLL_S=0.1 \
   DISPATCH_SELF_BIN="$DISPATCH" LEADV2_QUOTA_LOCKOUT_DIR="$c5_lockout_dir" \
   bash "$harness_script" _codex_instant_complete_deadline_check "testsig8" "$since_epoch" >/dev/null 2>&1 || rc=$?
 c5_lockfile="$c5_lockout_dir/quota-lockout-codex.json"
-if [ "$rc" -eq 7 ] && [ -f "$c5_lockfile" ] && grep -q "arm_dead_instant_complete" "$c5_lockfile"; then
-  echo "[CODEX-INSTANT-COMPLETE]   deadline-check returned 7 (spill) AND wrote $c5_lockfile ✓"
+if [ "$rc" -eq 7 ] && [ ! -f "$c5_lockfile" ]; then
+  echo "[CODEX-INSTANT-COMPLETE]   deadline-check returned 7 (spill) and parked nothing ✓"
   pass=$((pass + 1))
 else
-  echo "[CODEX-INSTANT-COMPLETE]   FAIL: expected rc=7 + lockfile with reason, got rc=$rc lockfile_exists=$([ -f "$c5_lockfile" ] && echo yes || echo no)" >&2
+  echo "[CODEX-INSTANT-COMPLETE]   FAIL: expected rc=7 + no lockfile (CODEX-ALWAYS-UP), got rc=$rc lockfile_exists=$([ -f "$c5_lockfile" ] && echo yes || echo no)" >&2
   fail=$((fail + 1))
 fi
 

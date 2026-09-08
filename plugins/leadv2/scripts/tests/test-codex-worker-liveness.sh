@@ -102,23 +102,25 @@ lockout_dir="$(mktemp -d)"
 cleanup_items+=("$lockout_dir")
 
 # Case 1 (RED before the fix): job store has lost the row (status rc!=1) --
-# must be declared dead (rc=7) and the strike must actually land, same
-# evidence bar 2-C established for the sibling instant-complete check.
+# must be declared dead (rc=7). CODEX-ALWAYS-UP (2026-09-08) flipped the
+# provider half of the old contract: a dead JOB must NOT write a provider
+# lockout -- the spill stays, the stand-down goes, so the assertion is now
+# rc=7 AND no lockout record (codex stays selectable for the next dispatch).
 codex_home1="$(mktemp -d)"
 cleanup_items+=("$codex_home1")
 since_epoch=1787192500
-echo "[CODEX-WORKER-LIVENESS] case 1: job store lost the row -> arm_dead_worker_liveness + strike recorded"
+echo "[CODEX-WORKER-LIVENESS] case 1: job store lost the row -> arm_dead_worker_liveness, spill but NO provider stand-down"
 rc=0
 CODEX_HOME="$codex_home1" CODEX_BIN="$vanished_bin" DISPATCH_SELF_BIN="$DISPATCH" \
   LEADV2_QUOTA_LOCKOUT_DIR="$lockout_dir" \
   bash "$harness_script" _codex_worker_liveness_deadline_check "job-abc123" "testsig8" "$since_epoch" "" \
   >/dev/null 2>&1 || rc=$?
 lockfile="$lockout_dir/quota-lockout-codex.json"
-if [ "$rc" -eq 7 ] && [ -f "$lockfile" ] && grep -q "arm_dead_worker_liveness" "$lockfile"; then
-  echo "[CODEX-WORKER-LIVENESS]   returned 7 (spill) AND wrote $lockfile ✓"
+if [ "$rc" -eq 7 ] && [ ! -f "$lockfile" ]; then
+  echo "[CODEX-WORKER-LIVENESS]   returned 7 (spill) and parked nothing ✓"
   pass=$((pass + 1))
 else
-  echo "[CODEX-WORKER-LIVENESS]   FAIL: expected rc=7 + lockfile with reason, got rc=$rc lockfile_exists=$([ -f "$lockfile" ] && echo yes || echo no)" >&2
+  echo "[CODEX-WORKER-LIVENESS]   FAIL: expected rc=7 + no lockfile, got rc=$rc lockfile_exists=$([ -f "$lockfile" ] && echo yes || echo no)" >&2
   fail=$((fail + 1))
 fi
 
@@ -155,18 +157,18 @@ write_rollout "$aborted_rollout" \
 python3 -c "import os,sys; os.utime(sys.argv[1], (int(sys.argv[2])+10, int(sys.argv[2])+10))" "$aborted_rollout" "$since_epoch"
 lockout_dir3="$(mktemp -d)"
 cleanup_items+=("$lockout_dir3")
-echo "[CODEX-WORKER-LIVENESS] case 3: turn_aborted event in rollout -> arm_dead_worker_liveness + strike recorded"
+echo "[CODEX-WORKER-LIVENESS] case 3: turn_aborted event in rollout -> arm_dead_worker_liveness, spill but NO provider stand-down"
 rc=0
 CODEX_HOME="$codex_home3" CODEX_BIN="$alive_bin" DISPATCH_SELF_BIN="$DISPATCH" \
   LEADV2_QUOTA_LOCKOUT_DIR="$lockout_dir3" \
   bash "$harness_script" _codex_worker_liveness_deadline_check "job-abc123" "testsig8" "$since_epoch" "" \
   >/dev/null 2>&1 || rc=$?
 lockfile3="$lockout_dir3/quota-lockout-codex.json"
-if [ "$rc" -eq 7 ] && [ -f "$lockfile3" ] && grep -q "arm_dead_worker_liveness" "$lockfile3"; then
-  echo "[CODEX-WORKER-LIVENESS]   returned 7 (spill) AND wrote $lockfile3 ✓"
+if [ "$rc" -eq 7 ] && [ ! -f "$lockfile3" ]; then
+  echo "[CODEX-WORKER-LIVENESS]   returned 7 (spill) and parked nothing ✓"
   pass=$((pass + 1))
 else
-  echo "[CODEX-WORKER-LIVENESS]   FAIL: expected rc=7 + lockfile with reason, got rc=$rc lockfile_exists=$([ -f "$lockfile3" ] && echo yes || echo no)" >&2
+  echo "[CODEX-WORKER-LIVENESS]   FAIL: expected rc=7 + no lockfile (CODEX-ALWAYS-UP), got rc=$rc lockfile_exists=$([ -f "$lockfile3" ] && echo yes || echo no)" >&2
   fail=$((fail + 1))
 fi
 
