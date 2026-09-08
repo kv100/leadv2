@@ -12,11 +12,23 @@ set -euo pipefail
 #   codex-task.sh cancel [job-id]
 #
 # --tier <top|standard|volume>  Resolves to a Codex model (+ effort where the
-#   subcommand accepts one) using the SAME tier table as leadv2-codex-planner.sh:
-#     top      -> gpt-5.6-sol/high, falls back to gpt-5.6-terra/xhigh if sol is
-#                 absent from ~/.codex/models_cache.json (gov-gated)
-#     standard -> gpt-5.6-terra/medium  (EFFORT-RECAL 2026-07-10, was /high)
-#     volume   -> gpt-5.6-luna/low      (EFFORT-RECAL 2026-07-10, was /medium)
+#   subcommand accepts one) via ONE shared table (_resolve_tier_model_effort;
+#   the timeout-retry helper _tier_model_effort delegates to the same function
+#   so the two can never drift). Each chain is presence-checked against
+#   ~/.codex/models_cache.json per tier; an absent model falls back DOWN the
+#   chain and the substitution is JOURNALED BY NAME on stderr -- never silent:
+#     top      -> gpt-5.6-sol/high,     falls back gpt-5.6-terra, then gpt-6-astra
+#     standard -> gpt-5.6-terra/medium, falls back gpt-6-astra   (EFFORT-RECAL 2026-07-10, was /high)
+#     volume   -> gpt-5.6-luna/low,     falls back gpt-6-astra   (EFFORT-RECAL 2026-07-10, was /medium)
+#   Tier->model sources: the pre-ASTRA-BUMP-01 mapping this header documented,
+#   cross-checked against the codex cost ladder in
+#   plugins/leadv2/config/leadv2-routing.yaml capability_matrix (volume=3 <
+#   standard=4 < top=7). Effort stays PER TIER on fallback (model = hardness,
+#   effort = marginal value of extra thinking -- the two must not fold
+#   together), which is why top's terra fallback is terra/HIGH, not the
+#   pre-bump terra/xhigh. leadv2-codex-planner.sh still maps every tier to
+#   gpt-6-astra (its own ASTRA-BUMP-01 table) -- the tables are NO LONGER
+#   identical; do not copy one onto the other blindly.
 #   Applies to `task` (model+effort) and `adversarial-review`/`review`
 #   (model only — codex-companion's review command does not accept --effort;
 #   passing it there would corrupt the focus-text positionals). Ignored (WARN)
@@ -1397,36 +1409,68 @@ _has_flag() {
   return 1
 }
 
+# A1-CODEX-TIERS-A2 part A: ONE tier -> (model, effort) table, presence-checked
+# against ~/.codex/models_cache.json per tier (the check the old `top` branch
+# had at one site, generalized to every tier and to the retry helper too).
+# Absent models fall back DOWN the chain and every substitution is journaled
+# by name on stderr -- a silent astra is the exact defect this fixes: all
+# three tiers resolved to gpt-6-astra with only the effort differing while
+# the header documented sol/terra/luna, so sol, luna and terra were
+# unreachable through any tier.
+_codex_cache_has() {
+  # _codex_cache_has <slug> -- true iff models_cache.json verifiably lists
+  # <slug>. False on missing jq / missing file / bad JSON too: "unverifiable"
+  # and "absent" are treated the same, exactly like the old top branch did.
+  local _mc="${CODEX_MODELS_CACHE:-$HOME/.codex/models_cache.json}"
+  command -v jq >/dev/null 2>&1 && [[ -f "$_mc" ]] \
+    && jq -e --arg slug "$1" '.models[]? | select(.slug==$slug)' "$_mc" >/dev/null 2>&1
+}
+
+# _resolve_tier_model_effort <tier> <model_outvar> <effort_outvar>
+#   Sets <model_outvar>/<effort_outvar> for the tier. Effort is PER TIER and
+#   never changes with the fallback (model = hardness, effort = marginal
+#   thinking value -- routing.yaml's own split). Chains, journaled by name:
+#     top:      gpt-5.6-sol -> gpt-5.6-terra -> gpt-6-astra   (effort high)
+#     standard: gpt-5.6-terra -> gpt-6-astra                  (effort medium)
+#     volume:   gpt-5.6-luna -> gpt-6-astra                   (effort low)
+#   Never fails on an unreadable cache: the terminal model (gpt-6-astra, the
+#   one model proven live on this account) is used and the journal line says
+#   the cache could not be read. Returns 1 only for an unknown tier name.
+_resolve_tier_model_effort() {
+  local _tier="$1" _model_out="$2" _effort_out="$3"
+  local _mc="${CODEX_MODELS_CACHE:-$HOME/.codex/models_cache.json}"
+  local -a _chain
+  local _effort _m _chosen="" _missing=""
+  case "$_tier" in
+    top)      _chain=(gpt-5.6-sol gpt-5.6-terra gpt-6-astra); _effort="high" ;;
+    standard) _chain=(gpt-5.6-terra gpt-6-astra);             _effort="medium" ;;
+    volume)   _chain=(gpt-5.6-luna gpt-6-astra);              _effort="low" ;;
+    *)
+      echo "[codex-task] unknown --tier: $_tier (expected top|standard|volume)" >&2
+      return 1
+      ;;
+  esac
+  for _m in "${_chain[@]}"; do
+    if _codex_cache_has "$_m"; then _chosen="$_m"; break; fi
+    _missing+="${_missing:+, }$_m"
+  done
+  if [[ -z "$_chosen" ]]; then
+    _chosen="gpt-6-astra"
+    echo "[codex-task] tier=$_tier fallback: models_cache unreadable at $_mc -> $_chosen (presence unverified)" >&2
+  elif [[ -n "$_missing" ]]; then
+    echo "[codex-task] tier=$_tier fallback: $_missing absent from $_mc -> $_chosen" >&2
+  fi
+  printf -v "$_model_out" '%s' "$_chosen"
+  printf -v "$_effort_out" '%s' "$_effort"
+  return 0
+}
+
 # CODEX-QUOTA-GUARDRAILS-01 — default _TIER to standard when unset so model
 # and effort are always explicitly pinned (never left to the CLI default,
 # which is xhigh for `codex exec` — the primary RCA burn vector).
 [[ -z "${_TIER:-}" ]] && _TIER="standard"
 if [[ -n "$_TIER" ]]; then
-  MODELS_CACHE="${CODEX_MODELS_CACHE:-$HOME/.codex/models_cache.json}"
-  case "$_TIER" in
-    top)
-      if command -v jq >/dev/null 2>&1 && [[ -f "$MODELS_CACHE" ]] \
-         && jq -e '.models[]? | select(.slug=="gpt-6-astra")' "$MODELS_CACHE" >/dev/null 2>&1; then
-        TIER_MODEL="gpt-6-astra"; TIER_EFFORT="high"
-      else
-        # lean: sol is gov-gated and currently absent from models_cache.json --
-        # fall back to terra/ultra. upgrade when sol lands on this plan.
-        TIER_MODEL="gpt-6-astra"; TIER_EFFORT="high"
-      fi
-      ;;
-    standard)
-      # EFFORT-RECAL 2026-07-10 (OpenAI 5.6: one-level-lower holds quality; rollback: standard=high, volume=medium)
-      TIER_MODEL="gpt-6-astra"; TIER_EFFORT="medium"
-      ;;
-    volume)
-      # EFFORT-RECAL 2026-07-10 (OpenAI 5.6: one-level-lower holds quality; rollback: standard=high, volume=medium)
-      TIER_MODEL="gpt-6-astra"; TIER_EFFORT="low"
-      ;;
-    *)
-      echo "[codex-task] unknown --tier: $_TIER (expected top|standard|volume)" >&2
-      exit 1
-      ;;
-  esac
+  _resolve_tier_model_effort "$_TIER" TIER_MODEL TIER_EFFORT || exit 1
   # codex-companion only accepts {none,minimal,low,medium,high,xhigh} on the wire --
   # "ultra" is a logical top-tier label only. Same translation as the planner.
   WIRE_EFFORT="$TIER_EFFORT"
@@ -2168,26 +2212,16 @@ _tier_timeout_for() {
   esac
 }
 
-# Sets TIER_MODEL_OUT / WIRE_EFFORT_OUT for the given tier name. Same
-# resolution table as the --tier extraction block above.
+# Sets TIER_MODEL_OUT / WIRE_EFFORT_OUT for the given tier name. A1-CODEX-TIERS-A2:
+# delegates to the SAME _resolve_tier_model_effort the --tier block uses -- the
+# second copy of the table that lived here is what let the two sites drift
+# apart. An unknown tier keeps this helper's pre-A2 never-fail shape
+# (astra/medium): unreachable from the timeout-retry path (its _tier_down only
+# yields standard|volume) but preserved so a future caller cannot crash mid-retry.
 _tier_model_effort() {
-  local _t="$1" _mc _eff
-  _mc="${CODEX_MODELS_CACHE:-$HOME/.codex/models_cache.json}"
-  case "$_t" in
-    top)
-      if command -v jq >/dev/null 2>&1 && [[ -f "$_mc" ]] \
-         && jq -e '.models[]? | select(.slug=="gpt-6-astra")' "$_mc" >/dev/null 2>&1; then
-        TIER_MODEL_OUT="gpt-6-astra"; _eff="high"
-      else
-        TIER_MODEL_OUT="gpt-6-astra"; _eff="high"
-      fi
-      ;;
-    standard) TIER_MODEL_OUT="gpt-6-astra"; _eff="medium" ;;
-    volume)   TIER_MODEL_OUT="gpt-6-astra";  _eff="low" ;;
-    *)        TIER_MODEL_OUT="gpt-6-astra"; _eff="medium" ;;
-  esac
-  WIRE_EFFORT_OUT="$_eff"
-  [[ "$WIRE_EFFORT_OUT" == "ultra" ]] && WIRE_EFFORT_OUT="xhigh"
+  if ! _resolve_tier_model_effort "$1" TIER_MODEL_OUT WIRE_EFFORT_OUT; then
+    TIER_MODEL_OUT="gpt-6-astra"; WIRE_EFFORT_OUT="medium"
+  fi
 }
 
 _run_with_fallback() {

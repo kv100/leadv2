@@ -91,6 +91,58 @@ def resolve_effort(kind, task_class):
             or "medium")
 
 
+# ── codex (model, tier) launch table (A1-CODEX-TIERS-A2 part A) ──────────────
+# One entry per (codex model, tier) pair codex-task.sh's tier table can now
+# launch AS ITSELF: each tier's primary model plus its journaled-fallback
+# models (top: sol, terra, astra; standard: terra, astra; volume: luna,
+# astra). lookup() REFUSES a matrix row whose (model, tier) pair is not in
+# this table -- the registry narrows what is launchable, never widens what
+# the matrix allows.
+#
+# EFFORT IS PART OF THE ENTRY, not a constant: founder requirement (verbatim)
+# -- models must be selectable "и выбирать эффорт везде в зависимости от
+# задач" -- so each pair carries its own per-TASK-CLASS effort, derived from
+# the tier's codex-task.sh effort (top=high / standard=medium / volume=low,
+# EFFORT-RECAL 2026-07-10) shifted one codex-wire step by hardness
+# ({none,minimal,low,medium,high,xhigh}): heavy/complex/strategic up,
+# trivial/light down, bulk at base -- EFFORT_BY_KIND_AND_CLASS's doctrine
+# (mechanical ⇒ low, ordinary ⇒ medium, high-stakes ⇒ high) mapped onto the
+# class axis. Two pairs in the same tier share the table because the MODEL
+# does not change the marginal value of extra thinking; the TASK does.
+_CODEX_EFFORT_TABLES = {
+    "top": {
+        "trivial": "medium", "light": "medium", "standard": "high",
+        "heavy": "xhigh", "complex": "xhigh", "strategic": "xhigh", "bulk": "high",
+    },
+    "standard": {
+        "trivial": "low", "light": "low", "standard": "medium",
+        "heavy": "high", "complex": "high", "strategic": "high", "bulk": "medium",
+    },
+    "volume": {
+        "trivial": "low", "light": "low", "standard": "low",
+        "heavy": "medium", "complex": "medium", "strategic": "medium", "bulk": "low",
+    },
+}
+CODEX_MODEL_TIERS = {
+    ("gpt-5.6-sol", "top"): _CODEX_EFFORT_TABLES["top"],
+    ("gpt-5.6-terra", "top"): _CODEX_EFFORT_TABLES["top"],
+    ("gpt-5.6-terra", "standard"): _CODEX_EFFORT_TABLES["standard"],
+    ("gpt-5.6-luna", "volume"): _CODEX_EFFORT_TABLES["volume"],
+    ("gpt-6-astra", "top"): _CODEX_EFFORT_TABLES["top"],
+    ("gpt-6-astra", "standard"): _CODEX_EFFORT_TABLES["standard"],
+    ("gpt-6-astra", "volume"): _CODEX_EFFORT_TABLES["volume"],
+}
+
+
+def codex_effort_for(model, tier, task_class):
+    """Per-task-class effort for a REGISTERED (codex model, tier) pair, or
+    None when the pair is not launchable (lookup() refuses on that)."""
+    table = CODEX_MODEL_TIERS.get((model, tier))
+    if table is None:
+        return None
+    return table.get((task_class or "").lower()) or table["standard"]
+
+
 # ── pool_default registry DATA (brief item 1) ────────────────────────────────
 # opus stays out of the default auction (shares the lead's own window) --
 # reachable by explicit pool or pin, never by default. Recorded here as DATA
@@ -216,21 +268,37 @@ def load_capability_matrix(routing_yaml=None):
 # threads --effort via _sonnet_effort_args when RESOLVED_EFFORT is set. So
 # for the whole claude family the fix is generalizing the MODEL literal --
 # the effort plumbing already exists.
-def _argv_claude(role, model, tier, effort):
+def _argv_claude(role, model, tier, effort, kind=None):  # kind: builder-call parity; claude wire never branches on it
     argv = ["--role", role, "--model", model]
     if effort:
         argv += ["--effort", effort]
     return argv, True
 
 
-# codex-task.sh:1176-1423 resolves --tier <volume|standard|top> to a concrete
-# model+effort INTERNALLY (grep -n -- '--model\|tier)' codex-task.sh: every
-# tier already maps to gpt-6-astra with its own TIER_EFFORT, ASTRA-BUMP-01).
-# --reason is REQUIRED for --tier top (codex-task.sh:1219, hard exit
-# otherwise) -- so effort is adapter-derived from tier, never a passthrough
-# flag: effort_supported=False here is a true adapter fact, not a gap.
-def _argv_codex(role, model, tier, effort):
+# codex-task.sh resolves --tier <volume|standard|top> to a concrete model
+# INTERNALLY (_resolve_tier_model_effort, A1-CODEX-TIERS-A2: sol/terra/luna
+# per tier with journaled fallback to astra), and --reason is REQUIRED for
+# --tier top (codex-task.sh, hard exit otherwise). For the kinds that run
+# codex-task.sh `task`, an EXPLICIT --model/--effort always wins over the
+# tier-resolved value (codex-task.sh: "explicit --model already present" /
+# "explicit --effort already present"), so those argv PIN the registered
+# (model, effort) -- the pair the arbiter chose is exactly what launches,
+# not whatever the tier table might fall back to at runtime. `review` keeps
+# the tier-only argv (frozen by test-launch-registry-argv.sh: the review
+# command takes no --effort wire, and that suite asserts ["--tier",
+# "standard"] verbatim); `plan` keeps it too (leadv2-codex-planner.sh
+# REJECTS --model and its tier table is still all-astra -- wiring plan is
+# part B together with the planner's own table adoption). The 4-arg call
+# without kind is the pre-A2 shape, preserved for the same suite.
+_CODEX_TASK_WIRE_KINDS = frozenset(
+    ("code", "docs", "recon", "fanout-class-funnel", "backlog-pump"))
+
+
+def _argv_codex(role, model, tier, effort, kind=None):
     argv = ["--tier", tier]
+    if kind in _CODEX_TASK_WIRE_KINDS and (model, tier) in CODEX_MODEL_TIERS:
+        argv += ["--model", model, "--effort", effort]
+        return argv, True
     if tier == "top":
         argv += ["--reason", "registry-resolved-top-tier"]
     return argv, False
@@ -309,9 +377,22 @@ def lookup(kind, role, arm, task_class, routing_yaml=None):
     if builder is None:
         return {"ok": False, "reason": "adapter_argv_not_registered", "arm": arm,
                 "provider": provider, "kind": kind}
+    if provider == "codex" and (row.get("model"), row.get("tier")) not in CODEX_MODEL_TIERS:
+        # A1-CODEX-TIERS-A2: the matrix won a (model, tier) this registry
+        # cannot launch AS ITSELF -- refuse rather than emit a --tier that
+        # would resolve to some other model at runtime. Narrowing only: no
+        # previously-launchable pair was removed.
+        return {"ok": False, "reason": "codex_model_tier_not_registered", "arm": arm,
+                "kind": kind, "model": row.get("model"), "tier": row.get("tier")}
 
-    effort_requested = resolve_effort(kind, task_class)
-    argv, effort_supported = builder(role, row.get("model"), row.get("tier"), effort_requested)
+    if provider == "codex":
+        # Effort from the PAIR's own per-class table (founder: «и выбирать
+        # эффорт везде в зависимости от задач»), not the kind doctrine that
+        # governs the claude family.
+        effort_requested = codex_effort_for(row.get("model"), row.get("tier"), task_class)
+    else:
+        effort_requested = resolve_effort(kind, task_class)
+    argv, effort_supported = builder(role, row.get("model"), row.get("tier"), effort_requested, kind)
     return {
         "ok": True,
         "kind": kind, "role": role, "arm": arm, "task_class": task_class,
