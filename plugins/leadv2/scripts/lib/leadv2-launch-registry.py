@@ -24,11 +24,14 @@ section P1.
 
 Only Anthropic Claude-family arms (haiku, sonnet, opus, fable) and Codex are
 built out with verified adapter argv shapes (below). glm/glm-flash/freepool
-are NOT reported broken by the brief (their model literals are already
-threaded dynamically, or -- for glm -- the `--model` value passed to the
-underlying `claude` CLI is a fixed translation-layer literal unrelated to
-arm selection) and are intentionally left `adapter_argv_not_registered` here
-rather than guessing an unverified CLI shape for them.
+are NOT adapter-less -- they launch through their OWN adapters
+(scripts/glm-coder.sh, scripts/freepool-coder.sh) which the dispatcher drives
+directly, never through this registry. A3-LAUNCH-REGISTRY (2026-09-09): their
+lookup() refusal keeps reason=adapter_argv_not_registered (pinned verbatim by
+tests/test-launch-registry-argv.sh) but now carries adapter_scope="external"
+via _EXTERNAL_ADAPTERS, so "no launch path exists" and "the launch path is
+not mine to describe" are distinguishable answers instead of the same
+ok:false a caller cannot tell apart.
 
 CLI:
     leadv2-launch-registry.py --kind <kind> --role <role> --arm <arm> \\
@@ -309,6 +312,26 @@ _FAMILY_BUILDERS = {
     "codex": _argv_codex,
 }
 
+# ── external adapters: launch paths this registry does NOT own ──────────────
+# A3-LAUNCH-REGISTRY (2026-09-09): "can arm X launch" had two truths. This
+# registry answered a bare adapter_argv_not_registered for glm/glm-flash/
+# freepool -- indistinguishable from "no launch path exists" -- while the
+# dispatcher launched those arms all day (journal: CODEX-ALWAYS-UP,
+# RECON-5H-WINDOW author=glm; B2 route_resolved role=reviewer arm=glm), and
+# the launchability seam (_arm_launchable_arms) had to hardcode
+# {'glm','glm-flash','freepool'} shell-side to paper over the disagreement.
+# This map is the registry-side declaration of the same scope: providers
+# whose launch path is REAL but lives outside this registry, keyed by
+# provider (the adapter-level truth -- one adapter serves every arm of that
+# provider), value = the adapter script the dispatcher actually drives
+# (GLM_BIN/FREEPOOL_BIN defaults under scripts/). A name here WITHOUT a live
+# dispatcher-driven launch path would be the lying-green disease in registry
+# form; this map must name only adapters that really run.
+_EXTERNAL_ADAPTERS = {
+    "glm": "glm-coder.sh",        # serves glm + glm-flash (provider glm)
+    "freepool": "freepool-coder.sh",
+}
+
 # Canonical "arm launches as itself" model literal, used by check(). Claude
 # family: the arm name IS the --model value (claude-subsession.sh:124).
 _CLAUDE_ARMS = ("haiku", "sonnet", "opus", "fable")
@@ -386,8 +409,24 @@ def lookup(kind, role, arm, task_class, routing_yaml=None):
     provider = row.get("provider")
     builder = _FAMILY_BUILDERS.get(provider)
     if builder is None:
-        return {"ok": False, "reason": "adapter_argv_not_registered", "arm": arm,
-                "provider": provider, "kind": kind}
+        # A3-LAUNCH-REGISTRY (2026-09-09): two cases used to share one
+        # answer. (a) The provider genuinely has no launch path here -- an
+        # invented provider, a matrix row nobody wired: ok:false IS the
+        # verdict. (b) The arm HAS a launch path this registry does not own
+        # (see _EXTERNAL_ADAPTERS): the old unqualified refusal read as
+        # "cannot launch" for arms that demonstrably run, so the refusal now
+        # carries adapter_scope="external" + the real adapter -- an honest
+        # "not my arm" a caller derives launchability from instead of
+        # duplicating arm names shell-side. The reason string itself is
+        # unchanged (tests/test-launch-registry-argv.sh pins it verbatim),
+        # and no argv is fabricated: registering a claude-shaped --model argv
+        # for these arms would be a green answer nothing executes.
+        refusal = {"ok": False, "reason": "adapter_argv_not_registered", "arm": arm,
+                   "provider": provider, "kind": kind}
+        if provider in _EXTERNAL_ADAPTERS:
+            refusal["adapter_scope"] = "external"
+            refusal["external_adapter"] = _EXTERNAL_ADAPTERS[provider]
+        return refusal
     if provider == "codex" and (row.get("model"), row.get("tier")) not in CODEX_MODEL_TIERS:
         # A1-CODEX-TIERS-A2: the matrix won a (model, tier) this registry
         # cannot launch AS ITSELF -- refuse rather than emit a --tier that
