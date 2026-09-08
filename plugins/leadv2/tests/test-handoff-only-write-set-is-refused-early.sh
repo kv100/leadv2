@@ -78,8 +78,13 @@ def copy_plugin(dest, mutant=None):
             shutil.copytree(src, dest / sub)
     dispatch = dest / 'scripts' / 'leadv2-dispatch-code.sh'
     text = dispatch.read_text()
-    check('guard anchor occurs exactly once in dispatcher', text.count(PRED) == 1,
-          f'count={text.count(PRED)}')
+    # anchor-drift guard fires on the LIVE file only: a deliberate mutant run
+    # replaces this very line, so counting it there would redden the suite for
+    # an ancillary reason instead of the case assertions (the exact
+    # "wrong-reason red" E2E-KILLRATE-01 exists to prevent).
+    if mutant is None:
+        check('guard anchor occurs exactly once in dispatcher', text.count(PRED) == 1,
+              f'count={text.count(PRED)}')
     if mutant is not None:
         dispatch.write_text(text.replace(PRED, mutant, 1))
     for bash in ('bash', '/bin/bash'):
