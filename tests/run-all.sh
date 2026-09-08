@@ -335,7 +335,10 @@ scan_suite_triggers() {
       _hits="$(grep -h '^# run-all-triggers:' "${_file}" 2>/dev/null || true)"
       [[ -n "${_hits}" ]] || continue
       parse_suite_triggers "${_file#"${ROOT}/"}" "${_hits}"
-    done < <(find "${_dir}" -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort)
+    # C5 (GATE-DISCOVERS-246-UNTRACKED-SUITES-01): a suite runs only if
+    # something tracked admits it. Count mode leaves a proportional, visible
+    # refusal signal without emitting one line per untracked file on every run.
+    done < <(bash "${ROOT}/plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh" --root "${ROOT}" --dir "${_dir}" --skip-report=count)
   done
   if [[ -n "${TRIGGER_ERRORS}" ]]; then
     printf '%s' "${TRIGGER_ERRORS}" >&2
@@ -460,10 +463,16 @@ scope_changed_checkpoint_record() {
 }
 
 if [[ "${SCOPE}" == "all" ]]; then
-  while IFS= read -r f; do add_suite "$f"; done < <(
-    find "${ROOT}/plugins/leadv2/scripts/tests" "${ROOT}/.claude/scripts/tests" "${ROOT}/plugins/leadv2/tests" "${ROOT}/tests" \
-      -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort
-  )
+  # C5 (GATE-DISCOVERS-246-UNTRACKED-SUITES-01): never consume a suite
+  # list whose git admission cannot be proved. Names + summary are intentional
+  # here: a full sweep must make every refusal loud.
+  _c5_list="$(mktemp "${TMPDIR:-/tmp}/run-all-discovery.XXXXXX")" || exit 2
+  if ! bash "${ROOT}/plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh" --root "${ROOT}" > "${_c5_list}"; then
+    rm -f "${_c5_list}"
+    exit 2
+  fi
+  while IFS= read -r f; do add_suite "$f"; done < "${_c5_list}"
+  rm -f "${_c5_list}"
 else
   # Union the uncommitted diff with the range scope_changed_anchor resolved.
   # B6-SCOPE-CHANGED: deterministic merge-base anchor for --scope changed,

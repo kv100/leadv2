@@ -1,39 +1,42 @@
 #!/usr/bin/env bash
 # changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, discovered by scan_suite_triggers):
 # run-all-triggers: leadv2-suite-discovery
-# plugins/leadv2/tests/test-discovery-refuses-untracked-suites.sh — C5, GATE-DISCOVERS-246-UNTRACKED-SUITES-01
+# plugins/leadv2/tests/test-discovery-refuses-untracked-suites.sh — C5b, GATE-DISCOVERS-246-UNTRACKED-SUITES-01
 #
 # A suite runs only if something tracked admits it. Measured 2026-09-09:
 # .claude/scripts/tests in the main checkout holds 246 test-*.sh absent
 # from git ls-files and zero trigger rows — --scope all executed all of
 # them. The admission contract lives in
-# plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh; tests/run-all.sh
-# wires it in (B2 owns that file — the wiring patch is the lane's finding,
-# and this suite applies that exact patch to a scratch COPY of the real
-# run-all.sh, so the control proves the shipped pair: lib + wiring).
+# plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh. The live
+# tests/run-all.sh routes BOTH discovery vectors through that lib: header
+# registration (count-only signal) and --scope all execution (named refusals
+# plus count). This suite proves the shipped pair, rather than asserting that
+# the superseded proposal patch can still apply.
 #
 # Method (test-gate-reaches-a-verdict-inside-budget.sh's): a scratch git
-# repo carries the REAL tests/run-all.sh (patched with the wiring lines) +
-# planted suites. No real suite runs; every case is seconds-fast.
+# repo carries the REAL tests/run-all.sh and admission library + planted
+# suites. No real suite runs; every case is seconds-fast.
 # Assertions are on VALUES (exit codes, [RUN]/[SELECT] rows, skip lines),
 # never prose.
 #
 # DECLARED NEGATIVE CONTROLS (E2E-KILLRATE-01), applied by
-# leadv2-mutation-control.sh to marker lines INSIDE the lib's function
-# bodies (never at top level). Both must turn THIS suite red:
-#   M1 c5-mut-1 — gate disabled (untracked executes again):
+# leadv2-mutation-control.sh only inside function bodies (never at top
+# level). Both must turn THIS suite red:
+#   M1 c5b-mut-raw-find — restore the pre-wiring raw find in run-all's
+#   --scope all branch (untracked executes again):
 #     leadv2-mutation-control.sh plugins/leadv2/tests/test-discovery-refuses-untracked-suites.sh \
-#       plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh \
-#       's|1) return 1 ;;  # c5-mut-1: untracked -> refused|1) return 0 ;;|'
+#       tests/run-all.sh \
+#       's|if ! bash "${ROOT}/plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh" --root "${ROOT}" > "${_c5_list}"; then|if ! find "${ROOT}/plugins/leadv2/scripts/tests" "${ROOT}/.claude/scripts/tests" "${ROOT}/plugins/leadv2/tests" "${ROOT}/tests" -maxdepth 1 -type f -name '\''test-*.sh'\'' 2>/dev/null | sort > "${_c5_list}"; then|'
 #     -> case 1 goes RED: the planted poison suite executes (marker file
 #        present, run-all exits 1, [UNTRACKED-SKIP] lines gone).
-#   M2 c5-mut-2 — refuse everything (the green-that-runs-nothing):
+#   M2 c5b-mut-admit-all — make the admission predicate unconditionally true:
 #     leadv2-mutation-control.sh plugins/leadv2/tests/test-discovery-refuses-untracked-suites.sh \
 #       plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh \
-#       's|0) return 0 ;;  # c5-mut-2: tracked -> admitted|0) return 1 ;;|'
-#     -> cases 2/3 go RED: zero [SELECT]/[RUN] rows for tracked suites and
-#        the tracked trigger rows vanish — a green that ran nothing is the
-#        failure this control exists to catch.
+#       's|git -C "${_root}" ls-files --error-unmatch -- "${_rel}" >/dev/null 2>&1|return 0 # c5b-mut-admit-all: predicate always true|'
+#     -> case 1 goes RED: refused count is zero and the poison suite runs.
+#        A green which merely says nothing was refused is indistinguishable
+#        from the original bug, so this suite requires both refusal signal
+#        and non-execution.
 #
 # Portable: bash 3.2, scratch fixtures only. Run from anywhere:
 #   bash plugins/leadv2/tests/test-discovery-refuses-untracked-suites.sh
@@ -57,7 +60,8 @@ if bash -n "$RUN_ALL"; then pass "bash -n clean (tests/run-all.sh)"; else fail "
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/c5-discovery.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 SCRATCH="$TMP/repo"
-mkdir -p "$SCRATCH/tests" "$SCRATCH/plugins/leadv2/tests" "$SCRATCH/.claude/scripts/tests"
+mkdir -p "$SCRATCH/tests" "$SCRATCH/plugins/leadv2/scripts/tests" \
+  "$SCRATCH/plugins/leadv2/tests" "$SCRATCH/.claude/scripts/tests"
 git init -q "$SCRATCH" 2>/dev/null
 git -C "$SCRATCH" config user.email t@t.invalid
 git -C "$SCRATCH" config user.name t
@@ -77,34 +81,9 @@ printf '%s\n' '#!/usr/bin/env bash' '# run-all-triggers: ghost-stem' 'exit 0' \
 git -C "$SCRATCH" add tests/test-alpha-tracked.sh plugins/leadv2/tests/test-beta-tracked.sh
 git -C "$SCRATCH" commit -q -m "fixture: tracked suites only" || { echo "FAIL: fixture commit" >&2; exit 1; }
 
-# The real run-all, carrying the exact wiring patch the lead applies
-# (C5 finding; B2 owns tests/run-all.sh). Python asserts each anchor
-# occurs exactly once before replacing — drift in run-all reddens HERE,
-# loudly, instead of testing a stale carrier.
 cp "$RUN_ALL" "$SCRATCH/tests/run-all.sh"
-if ! python3 - "$SCRATCH/tests/run-all.sh" "$LIB" <<'PY'
-import sys
-path, lib = sys.argv[1], sys.argv[2]
-s = open(path).read()
-scan_old = '    done < <(find "${_dir}" -maxdepth 1 -type f -name \'test-*.sh\' 2>/dev/null | sort)'
-scan_new = '    done < <(bash "%s" --root "${ROOT}" --dir "${_dir}" --skip-report=count)' % lib
-all_old = ('    find "${ROOT}/plugins/leadv2/scripts/tests" "${ROOT}/.claude/scripts/tests" '
-           '"${ROOT}/plugins/leadv2/tests" "${ROOT}/tests" \\\n'
-           '      -maxdepth 1 -type f -name \'test-*.sh\' 2>/dev/null | sort')
-all_new = '    bash "%s" --root "${ROOT}"' % lib
-for name, old, new in (("scan-anchor", scan_old, scan_new), ("scope-all-anchor", all_old, all_new)):
-    n = s.count(old)
-    if n != 1:
-        print("FAIL: wiring anchor %s found %d times (expected 1) — tests/run-all.sh drifted; re-pin the patch" % (name, n))
-        sys.exit(1)
-    s = s.replace(old, new)
-open(path, "w").write(s)
-PY
-then
-  echo "FAIL: wiring patch did not apply to the run-all copy" >&2
-  exit 1
-fi
-pass "wiring patch applied (both anchors, exactly once)"
+mkdir -p "$SCRATCH/plugins/leadv2/scripts/lib"
+cp "$LIB" "$SCRATCH/plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh"
 
 # Invoke the fixture run-all the way the product gates see it: clean env
 # (env -i) so the `pwd` in run-all's HERE resolution answers physically —
@@ -144,6 +123,18 @@ grep -qF 'suite-discovery: [UNTRACKED-SKIP] .claude/scripts/tests/test-poison-un
 grep -qF 'suite-discovery: [UNTRACKED-SKIP] .claude/scripts/tests/test-ghost-untracked.sh' "$err" \
   && pass "case1 ghost named in [UNTRACKED-SKIP]" || fail "case1 ghost not named by name"
 grep -qF '2 suite file(s) refused' "$err" && pass "case1 skip count reported (2)" || fail "case1 skip count missing"
+
+# Assert the live carrier calls the admission library at each required site.
+# This runs after the executable symptom proof above so the raw-find mutation
+# first demonstrates the restored failure, not merely a missing source token.
+scan_wiring='bash "${ROOT}/plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh" --root "${ROOT}" --dir "${_dir}" --skip-report=count'
+scope_wiring='bash "${ROOT}/plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh" --root "${ROOT}" > "${_c5_list}"'
+scan_n="$(grep -Fc "$scan_wiring" "$RUN_ALL" || true)"
+scope_n="$(grep -Fc "$scope_wiring" "$RUN_ALL" || true)"
+[[ "$scan_n" -eq 1 ]] && pass "live run-all scan routes through admission lib once" \
+  || fail "live run-all scan wiring rows=${scan_n} (expected 1)"
+[[ "$scope_n" -eq 1 ]] && pass "live run-all --scope all routes through admission lib once" \
+  || fail "live run-all scope-all wiring rows=${scope_n} (expected 1)"
 
 # ── case 2: the trigger map — tracked rows survive, untracked rows don't ──
 # (M2 c5-mut-2 reddens this case: tracked rows vanish.)
