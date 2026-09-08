@@ -1,0 +1,11 @@
+--- a/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
++++ b/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
+@@ -606,7 +606,7 @@
+     checked_unknown = ""
+     last_idx = len(order) - 1
+     for i, arm in enumerate(order):
+-        if arm == author:
++        if False and arm == author:
+             entries.append("%s:author:" % arm)
+             continue
+         # D4 (dispatch-8e2a32be): a live on-disk quota lockout for this arm's provider

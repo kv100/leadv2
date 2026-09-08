@@ -1,0 +1,237 @@
+
+[CORE-OFFLINE] product-close resumes a died-with-work lane once
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.RxjpuIBSXq: Operation not permitted
+mkdir: /repo: Operation not permitted
+mkdir: /repo: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 26: /resolver.py: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 29: /codex.sh: Operation not permitted
+chmod: /codex.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 34: /journal.sh: Operation not permitted
+chmod: /journal.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 36: /ledger.sh: Operation not permitted
+chmod: /ledger.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 55: /stub-launcher.sh: Operation not permitted
+chmod: /stub-launcher.sh: No such file or directory
+mkdir: /glm-runs: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 92: /glm-runs/260803-173809-deadrun1/meta.yaml: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 94: /glm-runs/260803-173809-deadrun1/prompt.txt: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 105: /launcher-calls.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 106: /close.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 121: /launcher-calls.log: No such file or directory
+[TEST] FAIL: stub launcher invoked exactly once (got '0' want '1')
+[TEST] FAIL: stub argv missing bg or --cwd (got: )
+[TEST] FAIL: .dwr-resume-attempted missing
+[TEST] FAIL: journal dwr_resume line missing (got: <none>)
+[TEST] FAIL: gating did not run
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.ivFhvcPdSp: Operation not permitted
+mkdir: /repo: Operation not permitted
+mkdir: /repo: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 26: /resolver.py: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 29: /codex.sh: Operation not permitted
+chmod: /codex.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 34: /journal.sh: Operation not permitted
+chmod: /journal.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 36: /ledger.sh: Operation not permitted
+chmod: /ledger.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 55: /stub-launcher.sh: Operation not permitted
+chmod: /stub-launcher.sh: No such file or directory
+mkdir: /glm-runs: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 92: /glm-runs/260803-173809-deadrun2/meta.yaml: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 94: /glm-runs/260803-173809-deadrun2/prompt.txt: No such file or directory
+mkdir: /repo: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 148: /repo/docs/handoff/dispatch-dwrb0002/.dwr-resume-attempted: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 149: /launcher-calls.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 150: /close.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 163: /launcher-calls.log: No such file or directory
+[TEST] PASS: stub launcher NOT invoked when marker present
+[TEST] FAIL: journal missing skipped line (got: <none>)
+[TEST] FAIL: gating did not run
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.OsxCink6Fb: Operation not permitted
+mkdir: /repo: Operation not permitted
+mkdir: /repo: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 26: /resolver.py: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 29: /codex.sh: Operation not permitted
+chmod: /codex.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 34: /journal.sh: Operation not permitted
+chmod: /journal.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 36: /ledger.sh: Operation not permitted
+chmod: /ledger.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 55: /stub-launcher.sh: Operation not permitted
+chmod: /stub-launcher.sh: No such file or directory
+mkdir: /glm-runs: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 92: /glm-runs/260803-173809-completed/meta.yaml: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 94: /glm-runs/260803-173809-completed/prompt.txt: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 182: /launcher-calls.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 183: /close.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 194: /launcher-calls.log: No such file or directory
+[TEST] PASS: stub NOT invoked for outcome=completed
+[TEST] PASS: outcome=completed has no dwr_resume journal line
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.zUWy3XmKXD: Operation not permitted
+mkdir: /repo: Operation not permitted
+mkdir: /repo: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 26: /resolver.py: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 29: /codex.sh: Operation not permitted
+chmod: /codex.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 34: /journal.sh: Operation not permitted
+chmod: /journal.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 36: /ledger.sh: Operation not permitted
+chmod: /ledger.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 55: /stub-launcher.sh: Operation not permitted
+chmod: /stub-launcher.sh: No such file or directory
+mkdir: /glm-runs: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 92: /glm-runs/260803-173809-died-clean/meta.yaml: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 94: /glm-runs/260803-173809-died-clean/prompt.txt: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 182: /launcher-calls.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 183: /close.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 194: /launcher-calls.log: No such file or directory
+[TEST] PASS: stub NOT invoked for outcome=died-clean
+[TEST] PASS: outcome=died-clean has no dwr_resume journal line
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.Et9DL6mBW9: Operation not permitted
+mkdir: /repo: Operation not permitted
+mkdir: /repo: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 26: /resolver.py: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 29: /codex.sh: Operation not permitted
+chmod: /codex.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 34: /journal.sh: Operation not permitted
+chmod: /journal.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 36: /ledger.sh: Operation not permitted
+chmod: /ledger.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 55: /stub-launcher.sh: Operation not permitted
+chmod: /stub-launcher.sh: No such file or directory
+mkdir: /glm-runs: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 92: /glm-runs/260803-173809-deadrun4/meta.yaml: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 94: /glm-runs/260803-173809-deadrun4/prompt.txt: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 211: /launcher-calls.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 212: /close.log: Operation not permitted
+[TEST] FAIL: journal missing blocked_by_gate (got: <none>)
+[TEST] FAIL: gating did not run
+[TEST] FAIL: marker missing after gate refusal
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.m2i23Iuqht: Operation not permitted
+mkdir: /repo: Operation not permitted
+mkdir: /repo: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 26: /resolver.py: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 29: /codex.sh: Operation not permitted
+chmod: /codex.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 34: /journal.sh: Operation not permitted
+chmod: /journal.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 36: /ledger.sh: Operation not permitted
+chmod: /ledger.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 55: /stub-launcher.sh: Operation not permitted
+chmod: /stub-launcher.sh: No such file or directory
+mkdir: /kimi-runs: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 92: /kimi-runs/260803-173809-kimidead/meta.yaml: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 94: /kimi-runs/260803-173809-kimidead/prompt.txt: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 242: /launcher-calls.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 243: /close.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 258: /launcher-calls.log: No such file or directory
+[TEST] FAIL: kimi: stub launcher invoked once (got '0' want '1')
+[TEST] FAIL: kimi: journal dwr_resume missing (got: <none>)
+[TEST] FAIL: kimi: gating did not run
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.zkXqqhJpCV: Operation not permitted
+mkdir: /repo: Operation not permitted
+mkdir: /repo: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 26: /resolver.py: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 29: /codex.sh: Operation not permitted
+chmod: /codex.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 34: /journal.sh: Operation not permitted
+chmod: /journal.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 36: /ledger.sh: Operation not permitted
+chmod: /ledger.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 55: /stub-launcher.sh: Operation not permitted
+chmod: /stub-launcher.sh: No such file or directory
+mkdir: /glm-runs: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 92: /glm-runs/260803-173809-ksdead/meta.yaml: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 94: /glm-runs/260803-173809-ksdead/prompt.txt: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 275: /launcher-calls.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 276: /close.log: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-dwr-resume.sh: line 289: /launcher-calls.log: No such file or directory
+[TEST] PASS: kill switch: stub NOT invoked
+[TEST] PASS: kill switch: no dwr_resume journal line
+
+=== 7 passed, 13 failed ===
+[CORE-OFFLINE] FAILED: product-close resumes a died-with-work lane once
+
+[CORE-OFFLINE] question delivery ownership
+[TEST] === QUESTION-DELIVERY-OWNERSHIP-01 test suite ===
+
+[TEST] PASS: Syntax: leadv2-ask.sh OK
+[TEST] PASS: Syntax: leadv2-reply-router.sh OK
+[TEST] PASS: Syntax: leadv2-dispatch-product-close.sh OK
+[TEST] Test (a): ask stamps owner_session / owner_task / asked_repo
+[TEST] PASS: Test (a): owner_session=sess-alpha-123 owner_task=TASK-OWNER asked_repo=link
+[TEST] Test (b1): router refuses young foreign answer (exit 6)
+[TEST] PASS: Test (b1): young foreign answer refused (exit 6), owner printed
+[TEST] Test (b2): router allows old foreign answer (age >= threshold)
+[TEST] PASS: Test (b2): old foreign answer allowed and recorded
+[TEST] Test (b3): router allows own session to answer (regardless of age)
+[TEST] PASS: Test (b3): own session answered immediately (no age gate)
+[TEST] Test (b4): --force overrides young foreign refusal
+[TEST] PASS: Test (b4): --force overrode refusal and logged FORCE_FOREIGN
+[TEST] Test (c): old-row (no owner fields) tolerated by router
+[TEST] PASS: Test (c): old-row without owner fields answered (no refusal)
+[TEST] Test (d): _pc_emit_pending_questions emits for own task, not others
+<string>:3: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+[TEST] PASS: Test (d): emitted question_pending for own task qid, not other task's
+
+[TEST] === Results: PASS=10 FAIL=0 ===
+[TEST] All tests passed.
+
+[CORE-OFFLINE] worker ends turn on a wait (contract + detector + salvage)
+[TEST] PASS (a) wait shape recognised: I'll wait for the background job t…
+[TEST] PASS (a) wait shape recognised: Waiting for the review to come bac…
+[TEST] PASS (a) wait shape recognised: I will wait — before proceeding I …
+[TEST] PASS (b) NEG-CTL: normal completion is not a wait: Landed the fix and committed it as…
+[TEST] PASS (b) NEG-CTL: normal completion is not a wait: Suite is 12/0; report written to d…
+[TEST] PASS (b) NEG-CTL: normal completion is not a wait: BLOCKED: the API key is missing — …
+[TEST] PASS (c) uncommitted lane work is salvaged into a commit
+[TEST] PASS (c2) a file outside the write set is left uncommitted (no add -A)
+[TEST] PASS (d) a clean lane reports nothing_to_commit
+[TEST] PASS (e) an unidentified tree is never committed into
+[TEST] PASS (f) no declared write set -> refuses, and commits nothing
+[TEST] PASS (g) a wait-shaped stop is journaled and the lane is committed
+[TEST] PASS (h) NEG-CTL: a normal stop journals nothing and commits nothing
+[TEST] PASS (i) LEADV2_WORKER_ENDED_ON_WAIT=0 stops it
+[TEST] PASS (j) the dispatched mission carries the ## Waiting contract
+[TEST] 15 passed, 0 failed
+
+[CORE-OFFLINE] silent-arm commits-ahead + live-worker guard (GATE-FALSE-SILENT-01)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+[TEST] PASS: Case A: a committed lane (clean worktree) is NOT classified arm_produced_nothing
+[TEST] PASS: Case A: no arm_advance decision for a committed lane
+[TEST] PASS: Case B: absent stream is NOT classified arm_produced_nothing
+[TEST] PASS: Case C: fresh stream is NOT classified arm_produced_nothing
+[TEST] PASS: Case D: genuinely silent arm still classified arm_produced_nothing
+[TEST] PASS: Case D: ledger row is no_work/arm_produced_nothing
+[TEST] PASS: Case D: exactly one arm_advance decision line
+[TEST] PASS: Case D: .arm-advanced-glm marker present
+[TEST] PASS: Case E: unresolvable-base lane is NOT classified arm_produced_nothing
+[TEST] PASS: Case E: degradation line emitted for unresolvable base
+[TEST] PASS: Case F: prove-zero linked worktree with unmoved HEAD IS classified arm_produced_nothing
+[TEST] PASS: Case F: no silent_probe_base_unresolved line for a provably-zero lane
+[TEST] PASS: Case G: linked worktree that committed is NOT classified arm_produced_nothing
+[TEST] PASS: Case G: degradation line emitted (unresolved) OR a resolved non-zero count logged
+
+[TEST] 15 passed, 0 failed
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-asked-into-void.sh (scope-selected ad-hoc)
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.FqkzfPy3j8: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-asked-into-void.sh: line 39: /result.md: Operation not permitted
+[TEST] FAIL: trailing '?' should be detected
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-asked-into-void.sh: line 41: /result.md: Operation not permitted
+[TEST] PASS: normal result not flagged
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-asked-into-void.sh: line 43: /result.md: Operation not permitted
+[TEST] FAIL: fullwidth '？' should be detected
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-asked-into-void.sh: line 45: /result.md: Operation not permitted
+[TEST] PASS: empty result not flagged
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.MAz5Arf5uh: Operation not permitted
+mkdir: /repo: Operation not permitted
+mkdir: /repo: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-asked-into-void.sh: line 60: /resolver.py: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-asked-into-void.sh: line 63: /codex.sh: Operation not permitted
+chmod: /codex.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-asked-into-void.sh: line 68: /journal.sh: Operation not permitted
+chmod: /journal.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-asked-into-void.sh: line 70: /ledger.sh: Operation not permitted
+chmod: /ledger.sh: No such file or directory
+mkdir: /cache: Operation not permitted
+touch: /cache/kimi-runs/h-empt/.asked_into_void: No such file or directory

@@ -1,0 +1,746 @@
+
+[CORE-OFFLINE] parked worker contract and one-shot resume (WORKER-PARKED-ON-BG-01)
+[TEST] FAIL: contract red-first (post=1)
+[TEST] PASS: clean waiting result with unsatisfied deliverable classifies parked
+[TEST] PASS: parked outcome carries continue next
+[TEST] PASS: clean success stream replay is parked-shaped
+[TEST] PASS: clean success with deliverable does not resume
+[TEST] PASS: parked lane launches exactly one resume
+[TEST] PASS: second parked exit does not loop
+[TEST] PASS: second parked exit journals already_attempted
+[TEST] FAIL: positive control died-with-work resume
+[TEST] RESULT: pass=7 fail=2 skip=0
+[CORE-OFFLINE] FAILED: parked worker contract and one-shot resume (WORKER-PARKED-ON-BG-01)
+
+[CORE-OFFLINE] review body persist (opus/sonnet materialisation + body_lost guard)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+[TEST] PASS: /bin/bash 3.2 -n clean (leadv2-dispatch-product-close.sh)
+[TEST] FAIL: Test (a): expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=tasig001 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=tasig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=tasig001 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.HWWq9KQfax: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=tasig001 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=tasig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test (a): review-sonnet.md does not exist
+[TEST] FAIL: Test (a2): expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=ta2sig002 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=ta2sig002 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=ta2sig002 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.MGbdFRHKFh: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=ta2sig002 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=ta2sig002 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test (a2): review-sonnet.md does not exist
+[TEST] FAIL: Test (b): expected exit 6, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=tbsig003 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=tbsig003 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=tbsig003 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.PaIchELFbB: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=tbsig003 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=tbsig003 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test (b): review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-tbsig003/selfcheck.md
+[TEST] FAIL: Test (c): expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=tcsig004 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=tcsig004 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=tcsig004 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.TeEvog8CTv: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=tcsig004 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=tcsig004 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test (c): review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-tcsig004/selfcheck.md
+
+[TEST] 2 passed, 8 failed
+FAIL: Test (a): expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=tasig001 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=tasig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=tasig001 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.HWWq9KQfax: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=tasig001 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=tasig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test (a): review-sonnet.md does not exist
+FAIL: Test (a2): expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=ta2sig002 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=ta2sig002 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=ta2sig002 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.MGbdFRHKFh: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=ta2sig002 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=ta2sig002 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test (a2): review-sonnet.md does not exist
+FAIL: Test (b): expected exit 6, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=tbsig003 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=tbsig003 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=tbsig003 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.PaIchELFbB: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=tbsig003 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=tbsig003 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test (b): review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-tbsig003/selfcheck.md
+FAIL: Test (c): expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=tcsig004 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=tcsig004 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=tcsig004 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.TeEvog8CTv: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=tcsig004 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=tcsig004 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test (c): review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-tcsig004/selfcheck.md
+[CORE-OFFLINE] FAILED: review body persist (opus/sonnet materialisation + body_lost guard)
+
+[CORE-OFFLINE] codex-dead review reroute (QUOTA-GATE-PARITY-01)
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.MlNkgiU5sg: Operation not permitted
+[TEST] PASS: bash -n clean (lib/leadv2-review-reroute-note.sh)
+[TEST] PASS: py_compile clean (lib/leadv2-glm-policy-resolve.py)
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-codex-dead-reroute.sh: line 44: /fake-live.sh: Operation not permitted
+chmod: /fake-live.sh: No such file or directory
+mkdir: /lockout: Operation not permitted
+[TEST] FAIL: resolver codex disposition -- pool=codex:unknown:,glm:unknown:,kimi:unknown:,fable:unknown:quota_checked,opus:unknown:quota_checked,sonnet:author: out=arm=codex
+rule=none
+reason=base_arm_default
+tier=standard
+codex_quota_blocked=0
+reviewer=fable
+pool=codex:unknown:,glm:unknown:,kimi:unknown:,fable:unknown:quota_checked,opus:unknown:quota_checked,sonnet:author:
+refusal=
+[TEST] PASS: resolver: reviewer rerouted away from dead codex (reviewer=fable)
+[TEST] FAIL: reroute-note content -- note=codex_dead_reroute task=dispatch-test123 from=codex to=fable codex=codex:unknown: pool=codex:unknown:,glm:unknown:,kimi:unknown:,fable:unknown:quota_checked,opus:unknown:quota_checked,sonnet:author:
+[TEST] PASS: reroute-note: exactly one line
+[TEST] PASS: reroute-note: silent when codex is the (healthy) reviewer
+[TEST] PASS: leadv2-review-run.sh: sources + calls the shared reroute-note helper
+[TEST] PASS: leadv2-dispatch-product-close.sh: sources + calls the shared reroute-note helper
+[TEST] PASS: bash -n clean (leadv2-review-run.sh)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+
+=== 9 passed, 2 failed ===
+FAIL: resolver codex disposition
+FAIL: reroute-note content
+[CORE-OFFLINE] FAILED: codex-dead review reroute (QUOTA-GATE-PARITY-01)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-close-gate-nowork-abandoned.sh (scope-selected ad-hoc)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+[TEST] PASS: Case A: 3 commits ahead of origin/main are NOT stamped no_work/empty_diff
+[TEST] PASS: Case A: no empty_diff ledger row for the lane with real work ahead of main
+[TEST] PASS: Case B: a lane whose work genuinely landed in main is still stamped empty_diff
+[TEST] PASS: Case B: ledger row is no_work/empty_diff for the landed lane
+
+[TEST] 5 passed, 0 failed
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-dispatch-silent-arm.sh (scope-selected ad-hoc)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+[TEST] PASS: Case 1: exits 5 (falls through to the existing empty_diff terminal)
+[TEST] PASS: Case 1: absent stream is NOT classified as arm_produced_nothing
+[TEST] PASS: Case 1: ledger row is no_work/empty_diff (existing path, not the silent-arm path)
+[TEST] PASS: Case 1: no arm_advance decision for an absent stream
+[TEST] PASS: Case 2: review-gate.md not arm_produced_nothing (assistant events present)
+[TEST] FAIL: Case 2: expected landed, got -- {"ts":"2026-09-08T12:40:45Z","task_sig":"c2c2c2c2","founder_task_id":"","task_id":"","terminal":"refused","cause":"selfcheck_failed","evidence":"failed= checks=0 skipped=0","commit":"none","deliverable":"unknown","attempt":"c2c2c2c2-1788871244-66193","worker_reason":""} (rc=5, out=[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=c2c2c2c2 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=c2c2c2c2 worker_liveness=unknown author=glm handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=c2c2c2c2 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.nQiGyfjVIi: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=c2c2c2c2 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=c2c2c2c2 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0)
+[TEST] PASS: Case 3: fresh (within growth window) stream falls through as NOT silent
+[TEST] PASS: Case 3: existing empty-diff path still produces reason: no_work
+[TEST] PASS: Case 4: stale stream + clean worktree classified as silent
+[TEST] PASS: Case 5: no arm_produced_nothing when arm not registered (empty_diff path owns it)
+[TEST] PASS: Case 5: no arm_advance decision without arm registration
+
+[TEST] 11 passed, 1 failed
+FAIL: Case 2: expected landed, got -- {"ts":"2026-09-08T12:40:45Z","task_sig":"c2c2c2c2","founder_task_id":"","task_id":"","terminal":"refused","cause":"selfcheck_failed","evidence":"failed= checks=0 skipped=0","commit":"none","deliverable":"unknown","attempt":"c2c2c2c2-1788871244-66193","worker_reason":""} (rc=5, out=[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=c2c2c2c2 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=c2c2c2c2 worker_liveness=unknown author=glm handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=c2c2c2c2 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.nQiGyfjVIi: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=c2c2c2c2 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=c2c2c2c2 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0)
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-dispatch-silent-arm.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-landing-diff-scoping.sh (scope-selected ad-hoc)
+[TEST] FAIL Q1-glm
+[TEST] FAIL Q1-codex
+[TEST] FAIL Q1-sonnet
+[TEST] PASS Q2-basic
+[TEST] PASS Q2-self
+[TEST] FAIL Q3-pair
+[TEST] PASS Q0-unset-safety
+[TEST] PASS Q4-committed-lane
+[TEST] PASS Q5-never-smaller-glm
+[TEST] PASS Q5-never-smaller-sonnet
+[TEST] FAIL Q6-bad-sha-fallback
+[TEST] FAIL Q1-glm
+[TEST] FAIL Q1-codex
+[TEST] FAIL Q1-sonnet
+[TEST] PASS Q2-basic
+[TEST] PASS Q2-self
+[TEST] FAIL Q3-pair
+[TEST] PASS Q0-unset-safety
+[TEST] PASS Q4-committed-lane
+[TEST] PASS Q5-never-smaller-glm
+[TEST] PASS Q5-never-smaller-sonnet
+[TEST] FAIL Q6-bad-sha-fallback
+
+Results (post-fix, live tree): 6 passed, 5 failed
+FAIL: Q1-glm
+FAIL: Q1-codex
+FAIL: Q1-sonnet
+FAIL: Q3-pair
+FAIL: Q6-bad-sha-fallback
+red-first: 0/6 post-fix-passing cases RED against pre-fix
+GREEN-PRE-FIX (not evidence): Q2-basic
+GREEN-PRE-FIX (not evidence): Q2-self
+GREEN-PRE-FIX (not evidence): Q0-unset-safety
+GREEN-PRE-FIX (not evidence): Q4-committed-lane
+GREEN-PRE-FIX (not evidence): Q5-never-smaller-glm
+GREEN-PRE-FIX (not evidence): Q5-never-smaller-sonnet
+pre-fix-could-not-run: 0
+TRIPWIRE: paths changed under ${LEADV2_REPO}/plugins or ~/.claude during the run (attribution required in report):
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-ledger.sh
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/__pycache__
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/__pycache__/leadv2_tasks_yaml_common.cpython-314.pyc
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/lib/__pycache__
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/lib/__pycache__/leadv2-glm-policy-resolve.cpython-314.pyc
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/lib/__pycache__/leadv2_pid_alive.cpython-314.pyc
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/lib/__pycache__/leadv2-launch-registry.cpython-314.pyc
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-landing-diff-scoping.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh (scope-selected ad-hoc)
+[TEST] PASS: bash -n leadv2-merged-worktree-sweep.sh
+[TEST] FAIL: merged-lane-with-orchestration-dirt-is-swept -- post-fix rc=1, expected 0
+[TEST] GREEN-PRE-FIX: real-uncommitted-work-is-never-swept -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] FAIL: unmerged-lane-is-never-swept -- post-fix rc=1, expected 0
+[TEST] RED-then-GREEN: newborn-lane-age-0-is-never-swept (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: untracked-handoff-deliverable-survives-sweep (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: staged-handoff-not-reverted-by-sweep (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: ignored-handoff-not-removed-through (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: exclusion-regex-matches-its-twin -- also passed pre-fix; a safety invariant, not evidence of this fix
+
+Results: 4 passed(red->green), 2 failed, 2 green-pre-fix
+FAIL: merged-lane-with-orchestration-dirt-is-swept: post-fix rc=1
+FAIL: unmerged-lane-is-never-swept: post-fix rc=1
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-review-arm-no-verdict.sh (scope-selected ad-hoc)
+[TEST] FAIL: Test 1: expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t1sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.cqMk5MwqUR: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t1sig001 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t1sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 1: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t1sig001/selfcheck.md
+[TEST] FAIL: Test 1: no arm_no_verdict fallthrough line for sonnet -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t1sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.cqMk5MwqUR: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t1sig001 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t1sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 1: no ran/verdict=PASS line attributing the verdict to glm -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t1sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.cqMk5MwqUR: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t1sig001 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t1sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 2: expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sig002 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t2sig002 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sig002 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.qd8TGTlxHE: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t2sig002 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t2sig002 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 2: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t2sig002/selfcheck.md
+[TEST] FAIL: Test 2: no arm_no_verdict fallthrough line for empty sonnet output -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sig002 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t2sig002 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sig002 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.qd8TGTlxHE: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t2sig002 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t2sig002 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 3: expected exit 6, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t3sig003 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.NHXKISLA2x: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t3sig003 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t3sig003 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 3: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t3sig003/selfcheck.md
+[TEST] FAIL: Test 3: terminal journal line missing full tried= list -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t3sig003 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.NHXKISLA2x: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t3sig003 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t3sig003 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 3: missing one or both per-arm arm_no_verdict lines -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t3sig003 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.NHXKISLA2x: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t3sig003 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t3sig003 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 4: expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t4sig004 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t4sig004 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t4sig004 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.mOPBj0wdqq: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t4sig004 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t4sig004 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 4: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t4sig004/selfcheck.md
+[TEST] PASS: Test 4: glm (second arm) was never invoked -- review-glm.md does not exist
+[TEST] PASS: Test 4: no arm_no_verdict/arm_refused journal lines -- exactly one arm ran
+
+[TEST] 2 passed, 13 failed
+FAIL: Test 1: expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t1sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.cqMk5MwqUR: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t1sig001 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t1sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 1: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t1sig001/selfcheck.md
+FAIL: Test 1: no arm_no_verdict fallthrough line for sonnet -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t1sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.cqMk5MwqUR: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t1sig001 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t1sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 1: no ran/verdict=PASS line attributing the verdict to glm -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t1sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.cqMk5MwqUR: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t1sig001 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t1sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 2: expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sig002 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t2sig002 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sig002 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.qd8TGTlxHE: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t2sig002 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t2sig002 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 2: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t2sig002/selfcheck.md
+FAIL: Test 2: no arm_no_verdict fallthrough line for empty sonnet output -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sig002 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t2sig002 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sig002 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.qd8TGTlxHE: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t2sig002 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t2sig002 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 3: expected exit 6, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t3sig003 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.NHXKISLA2x: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t3sig003 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t3sig003 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 3: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t3sig003/selfcheck.md
+FAIL: Test 3: terminal journal line missing full tried= list -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t3sig003 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.NHXKISLA2x: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t3sig003 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t3sig003 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 3: missing one or both per-arm arm_no_verdict lines -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t3sig003 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.NHXKISLA2x: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t3sig003 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t3sig003 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 4: expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t4sig004 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t4sig004 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t4sig004 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.mOPBj0wdqq: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t4sig004 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t4sig004 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 4: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t4sig004/selfcheck.md
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-review-arm-no-verdict.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-review-silence-gate.sh (scope-selected ad-hoc)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+[TEST] PASS: bash -n clean (lib/leadv2-refusal-classify.sh)
+[TEST] FAIL: Test 1: expected exit 6, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t1sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.CSU9v67NPz: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t1sig001 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t1sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 1: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t1sig001/selfcheck.md
+[TEST] FAIL: Test 2: expected exit 6, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sig002 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t2sig002 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sig002 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.aDLZWkmS5O: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t2sig002 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t2sig002 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 2: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t2sig002/selfcheck.md
+[TEST] FAIL: Test 3: expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t3sig003 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.kbt9zKgFFT: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t3sig003 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t3sig003 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 3: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t3sig003/selfcheck.md
+[TEST] FAIL: Test 3: no arm_refused decision line for glm -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t3sig003 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.kbt9zKgFFT: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t3sig003 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t3sig003 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 4: expected exit 9, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t4sig004 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t4sig004 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t4sig004 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.7ffvc2VJN0: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t4sig004 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t4sig004 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 4: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t4sig004/selfcheck.md
+[TEST] FAIL: Test 5: expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t5sig005 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t5sig005 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t5sig005 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.z1qSSvBUch: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t5sig005 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t5sig005 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: Test 5: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t5sig005/selfcheck.md
+[TEST] FAIL: Test 6 setup: close-gate process exited before SIGTERM could be sent -- out=[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t6sig006 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t6sig006 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t6sig006 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.RnlbkOaawW: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t6sig006 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t6sig006 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] PASS: Test 6 (crash_backstop): non-zero exit (rc=5) on SIGTERM mid-review
+[TEST] FAIL: Test 6: review-gate.md wrong or missing -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t6sig006/selfcheck.md
+
+[TEST] 3 passed, 13 failed
+FAIL: Test 1: expected exit 6, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t1sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sig001 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.CSU9v67NPz: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t1sig001 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t1sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 1: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t1sig001/selfcheck.md
+FAIL: Test 2: expected exit 6, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sig002 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t2sig002 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sig002 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.aDLZWkmS5O: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t2sig002 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t2sig002 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 2: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t2sig002/selfcheck.md
+FAIL: Test 3: expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t3sig003 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.kbt9zKgFFT: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t3sig003 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t3sig003 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 3: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t3sig003/selfcheck.md
+FAIL: Test 3: no arm_refused decision line for glm -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t3sig003 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t3sig003 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.kbt9zKgFFT: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t3sig003 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t3sig003 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 4: expected exit 9, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t4sig004 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t4sig004 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t4sig004 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.7ffvc2VJN0: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t4sig004 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t4sig004 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 4: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t4sig004/selfcheck.md
+FAIL: Test 5: expected exit 0, got 5 -- [leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t5sig005 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t5sig005 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t5sig005 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.z1qSSvBUch: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t5sig005 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t5sig005 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 5: review-gate.md wrong -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t5sig005/selfcheck.md
+FAIL: Test 6 setup: close-gate process exited before SIGTERM could be sent -- out=[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t6sig006 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t6sig006 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t6sig006 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.RnlbkOaawW: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t6sig006 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t6sig006 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: Test 6: review-gate.md wrong or missing -- status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t6sig006/selfcheck.md
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-review-silence-gate.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-silent-arm-index-and-cross-repo.sh (scope-selected ad-hoc)
+[TEST] PASS: Case 1: report staged in the lane's index (docs/handoff, never committed) is NOT classified arm_produced_nothing
+[TEST] PASS: Case 2: a commit naming FOUNDER_TASK_ID in the sibling leadv2 repo is NOT classified arm_produced_nothing
+[TEST] PASS: Case 3: an unrelated commit in the sibling repo does not suppress a genuinely silent verdict
+[TEST] PASS: Case 4: a genuinely silent arm (no index content, no cross-repo evidence) is still classified arm_produced_nothing
+[TEST] PASS: MUTATION CONTROL: reverting both escape hatches makes Case 1 and Case 2 go red (arm_produced_nothing again)
+ALL PASS: test-silent-arm-index-and-cross-repo.sh (5 passed)
+
+[CORE-OFFLINE] plugins/leadv2/tests/test-review-arm-pool.sh (scope-selected ad-hoc)
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.XYZc0L2G6w: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/tests/test-review-arm-pool.sh: line 30: /routing.yaml: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/tests/test-review-arm-pool.sh: line 46: /quota-live-stub.sh: Operation not permitted
+chmod: /quota-live-stub.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/tests/test-review-arm-pool.sh: line 83: /kimi-coder-stub.sh: Operation not permitted
+chmod: /kimi-coder-stub.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/tests/test-review-arm-pool.sh: line 94: /routing-kimi.yaml: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/tests/test-review-arm-pool.sh: line 109: /routing-default.yaml: Operation not permitted
+FAIL: (a) codex-blocked, glm-84 -> reviewer=glm (got reviewer=opus)
+FAIL: (b1) glm=85 -> offered as reviewer (got reviewer=opus)
+FAIL: (b2) glm=95 -> refused, reviewer=opus (got reviewer=opus pool=codex:unknown:,glm:unknown:,kimi:unknown:,fable:unknown:quota_checked,opus:unknown:quota_checked,sonnet:author:)
+PASS: (c) reviewer != author across full arm matrix
+FAIL: (d) all arms blocked -> reviewer empty, refusal=all_review_arms_unavailable (got reviewer='opus' refusal='')
+PASS: (e) codex+glm blocked, anthropic ok -> reviewer=opus
+PASS: (e2) product-close launcher passes --model "${arm}" (R1 guard, no hardcoded sonnet; KIMI-CHANNEL-01b renamed inline ${reviewer} to the run_reviewer_arm param ${arm})
+PASS: (f) no --review-pool -> exact 5-line legacy output, no reviewer=/pool=/refusal=
+PASS: (g) status: conflict retired from review gate
+PASS: (h) status: no_reviewer artifact present
+FAIL: (k1) codex+glm blocked, kimi up -> reviewer=kimi (got reviewer=opus pool=codex:unknown:,glm:unknown:,kimi:unknown:,fable:unknown:quota_checked,opus:unknown:quota_checked,sonnet:author:)
+PASS: (k2) author=kimi -> kimi:author:, reviewer != kimi
+FAIL: (k3) KIMI_RC=77 -> kimi:blocked:probe (got reviewer=opus pool=codex:unknown:,glm:unknown:,kimi:unknown:,fable:unknown:quota_checked,opus:unknown:quota_checked,sonnet:author:)
+PASS: (k4) safety_touched -> kimi:excluded:safety
+FAIL: (k5) review_arm_order absent -> default order includes kimi (got reviewer=opus pool=codex:unknown:,glm:unknown:,kimi:unknown:,fable:unknown:quota_checked,opus:unknown:quota_checked,sonnet:author:)
+PASS: (k6) kimi-bin nonexistent -> kimi:unknown:, not selected (later arm exists)
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/tests/test-review-arm-pool.sh: line 323: /routing-signals.yaml: Operation not permitted
+PASS: (s0) leadv2-review-signals.sh lib present
+mktemp: mkstemp failed on /sig.8cD5XB: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/tests/test-review-arm-pool.sh: line 317: : No such file or directory
+sed: : No such file or directory
+sed: : No such file or directory
+FAIL: (s1) protected-path diff -> kimi:excluded:safety (json= src= matched= reviewer=opus pool=codex:unknown:,glm:unknown:,kimi:unknown:,fable:unknown:quota_checked,opus:unknown:quota_checked,sonnet:author:)
+mktemp: mkstemp failed on /sig.48eQ1M: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/tests/test-review-arm-pool.sh: line 317: : No such file or directory
+sed: : No such file or directory
+sed: : No such file or directory
+FAIL: (s2) ordinary path -> kimi:ok: (json= src= pool=codex:unknown:,glm:unknown:,kimi:unknown:,fable:unknown:quota_checked,opus:unknown:quota_checked,sonnet:author:)
+mktemp: mkstemp failed on /sig.9rIDcz: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/tests/test-review-arm-pool.sh: line 317: : No such file or directory
+sed: : No such file or directory
+sed: : No such file or directory
+FAIL: (s3) no patterns -> fail-closed (json= src=)
+mktemp: mkstemp failed on /sig.kN3lHQ: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/tests/test-review-arm-pool.sh: line 317: : No such file or directory
+sed: : No such file or directory
+sed: : No such file or directory
+FAIL: (s4) empty lane writes -> fail-closed (json= src=)
+
+10 passed, 11 failed
+[CORE-OFFLINE] FAILED: plugins/leadv2/tests/test-review-arm-pool.sh (scope-selected ad-hoc)
+[CORE-OFFLINE] SHARD_RESULT idx=3 pass=2 fail=9 missing=0

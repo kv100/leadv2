@@ -1,0 +1,352 @@
+
+[CORE-OFFLINE] lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)
+[TEST] PASS: bash -n sweep hook + cleanup + lib
+[TEST] GREEN-PRE-FIX: P1-registered-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P2-arm-open-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P3-arm-terminal-lane-swept(hook) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P4-live-pid-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P5-young-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] FAIL: P6-orphan-swept-and-journaled(hook) -- post-fix rc=2, expected 0
+[TEST] GREEN-PRE-FIX: P7-unreadable-registry-sweeps-nothing(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P8-malformed-env-degrades(hook) (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: P11-age-from-gitdir-not-dirmtime(hook) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P12-min-age-s-precedence(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P1-registered-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P2-arm-open-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P3-arm-terminal-lane-swept(dead) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P4-live-pid-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P5-young-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] FAIL: P6-orphan-swept-and-journaled(dead) -- post-fix rc=2, expected 0
+[TEST] GREEN-PRE-FIX: P7-unreadable-registry-sweeps-nothing(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P8-malformed-env-degrades(dead) (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: P11-age-from-gitdir-not-dirmtime(dead) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P12-min-age-s-precedence(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P9-failed-removal-never-guts(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh: line 109: /bin/ps: Operation not permitted
+[TEST] FAIL: P13-pid-reuse-is-not-live
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh: line 140: /bin/ps: Operation not permitted
+[TEST] FAIL: P14-pid-birth-lib-absent-degrades
+[TEST] RED-then-GREEN: P10-twin-regex-unchanged
+
+Results: 7 passed(red->green), 4 failed, 13 green-pre-fix
+FAIL: P6-orphan-swept-and-journaled(hook): post-fix rc=2
+FAIL: P6-orphan-swept-and-journaled(dead): post-fix rc=2
+FAIL: P13-pid-reuse-is-not-live
+FAIL: P14-pid-birth-lib-absent-degrades
+[CORE-OFFLINE] FAILED: lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)
+
+[CORE-OFFLINE] plugin reliability-02 (zombie-reaper: run_dir arg + group signaling + ordering + TASK)
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.FiObuaBQDj: Operation not permitted
+mkdir: /cache: Operation not permitted
+mkdir: /cache: Operation not permitted
+Traceback (most recent call last):
+  File "<string>", line 4, in <module>
+    os.chdir(os.path.dirname(sys.argv[1]))
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/cache/glm-runs/timeout-reap-proof'
+FAIL: setsid group child did not start
+[CORE-OFFLINE] FAILED: plugin reliability-02 (zombie-reaper: run_dir arg + group signaling + ordering + TASK)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-arm-advance-real.sh (scope-selected ad-hoc)
+FAIL: expected two worker_spawned lines, got 1
+lane_plan_missing task=f3ea32c6 reason=source_absent source=/private/tmp/core-offline-run.yO49ng/suite.ExZEFe/armfix.p6entH/repo/docs/handoff/f3ea32c6/context.yaml carried_siblings=0
+task_class=Standard route=phases source=classifier_error task=f3ea32c6
+complexity_gate_applied task=f3ea32c6 complexity=standard complexity_source=flag pipeline_route=plan_first forced_plan=0 review_rounds=2
+task_class_override by=admission task=f3ea32c6 requested=light resolved=Standard reason=classifier_error_fallback source=classifier_error
+brain_decision task=f3ea32c6 class=Standard class_source=declared_fallback phases=classify,plan,gate1,build,test,review,live_verify,close reason=judge_unavailable
+complexity_estimate_unavailable task=f3ea32c6 reason=judge_binary_missing degrade=arbiter_uses_size_only
+complexity_floor_applied task=f3ea32c6 from=unknown to=standard source=flag by=flag
+cost_estimate_recorded task=f3ea32c6 founder_task=f3ea32c6 complexity=standard duration_class=unknown phase=pre_arm_selection path=docs/handoff/f3ea32c6/cost-estimate.yaml
+dispatch_classified task=f3ea32c6 class=product reason=conservative_default kind=code asserts=admission_strictness remedy=--kind:plugin|tooling|tool|docs|documentation|diagnosis|diagnostic|investigation
+phase_precondition_bootstrap task=f3ea32c6 class=Standard would_be_missing=classify,plan,gate1 mode=warn scope=pre-build
+lane_writes task=f3ea32c6 source=row writes=src/proof.txt
+mission_writeset_gate_disabled task=f3ea32c6 reason=REQUIRE_MISSION_WRITESET=0 note=no_write_scope_check_ran
+architect_prepass task=f3ea32c6 status=disabled reason=kill_switch
+protection_derived by=router task=f3ea32c6 writes=src/proof.txt write_class=standard writes_protected=0 manual_protected=0 effective_protected=0
+arm_resolved job=build arm=glm-flash reason=none complexity=standard duration_class=unknown
+arm_dropped_not_dispatchable arm=haiku task=f3ea32c6 router=v1 reason=not_in_DISPATCHABLE_BUILD_ARMS
+arm_dropped_not_dispatchable arm=opus task=f3ea32c6 router=v1 reason=not_in_DISPATCHABLE_BUILD_ARMS
+arm_dropped_not_dispatchable arm=fable task=f3ea32c6 router=v1 reason=not_in_DISPATCHABLE_BUILD_ARMS
+launchable_seam task=f3ea32c6 source=registry kind=code
+freepool_floor_mode mode=full source=default test_only=0 task=f3ea32c6
+launchable_seam task=f3ea32c6 source=registry kind=code
+launchable_seam task=f3ea32c6 source=registry kind=code
+ladder_fallback_appended task=f3ea32c6 tail=glm,glm-flash,codex,sonnet
+route_resolved by=arbiter role=worker arm=freepool model=freepool tier=standard effort=medium task=f3ea32c6 reason=forced arbiter_pick=freepool util_glm=90 util_codex=90 util_claude=90 util_freepool=0 floor_mode=full floor_mode_source=test
+candidate_chain task=f3ea32c6 arms=freepool,glm,glm-flash,codex,sonnet
+worker_env_assert arm=freepool task=f3ea32c6 var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+worker_env_assert arm=freepool task=f3ea32c6 var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+code_intel_preamble arm=freepool task=f3ea32c6 mode=skipped reason=fail_open cause=resolve_role_mcp_config_rc=12
+effort_dropped by=router arm=freepool task=f3ea32c6 effort=medium reason=no_effort_control
+worker_spawned by=router model=freepool task=f3ea32c6 attempt=f3ea32c6-1788871287-93455 handle=armfix-freepool
+mission-version task=- sig=f3ea32c6 rev=? head="## Delegation (nested agents) You may spawn nested subagents for bulk reads, censuses, or "
+product_close task=f3ea32c6 status=spawned author=freepool
+route_resolved by=router router=arbiter model=freepool task=f3ea32c6 rule=none reason=forced
+model_select_telemetry task=f3ea32c6 role=worker class=standard work_kind=code arm=freepool model=freepool fallback_depth=0 floor=none spawn_to_terminal_s=10 terminal=win cause=worker_spawned
+lane_worktree_left task=f3ea32c6 founder_task= path=/private/tmp/core-offline-run.yO49ng/suite.ExZEFe/armfix.p6entH/repo/.claude/worktrees/f3ea32c6
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-arm-advance-real.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh (scope-selected ad-hoc)
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.buKag9mg76: Operation not permitted
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh (scope-selected ad-hoc)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+[TEST] FAIL: R1: expected exit 5 + status:unknown + reason:e2e_timeout, got rc=5 md=<>
+[TEST] FAIL: R1: journal missing verdict=timeout line -- append dispatch-r1sig001 decision product_close task=r1sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+append dispatch-r1sig001 decision stop_gate_autocommit task=r1sig001 files=1
+tail dispatch-r1sig001 100000
+append dispatch-r1sig001 decision review_round_retry_skipped task=r1sig001 round=1 reason=no_mission_file
+append dispatch-r1sig001 decision review_gate task=r1sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[TEST] FAIL: R1: ledger call did not record parked/e2e_timeout -- write-terminal r1sig001  refused selfcheck_failed failed= checks=0 skipped=0 r1sig001-1788871334-13637  none unknown 
+write-terminal r1sig001  refused selfcheck_failed failed= checks=0 skipped=0 r1sig001-1788871334-13637  none unknown 
+[TEST] PASS: R1: worker's write survives as a checkpoint commit despite the timeout terminal
+[TEST] FAIL: R2 (negative control): expected exit 8 + e2e_regression, got rc=5 md=<>
+[TEST] FAIL: R2: ledger call did not record dead/e2e_regression -- write-terminal r1sig001  refused selfcheck_failed failed= checks=0 skipped=0 r1sig001-1788871334-13637  none unknown 
+write-terminal r1sig001  refused selfcheck_failed failed= checks=0 skipped=0 r1sig001-1788871334-13637  none unknown 
+write-terminal r2sig001  refused selfcheck_failed failed= checks=0 skipped=0 r2sig001-1788871336-14673  none unknown 
+write-terminal r2sig001  refused selfcheck_failed failed= checks=0 skipped=0 r2sig001-1788871336-14673  none unknown 
+[TEST] PASS: R3: standalone phase-8 gate records timeout as unknown, exit 5, and writes no pass sentinel
+[TEST] PASS: R3: standalone phase-8 journal records verdict=timeout rc=124
+
+[TEST] 4 passed, 5 failed, 0 not run
+FAIL: R1: expected exit 5 + status:unknown + reason:e2e_timeout, got rc=5 md=<>
+FAIL: R1: journal missing verdict=timeout line -- append dispatch-r1sig001 decision product_close task=r1sig001 worker_liveness=unknown author=codex handle=- action=proceed_legacy
+append dispatch-r1sig001 decision stop_gate_autocommit task=r1sig001 files=1
+tail dispatch-r1sig001 100000
+append dispatch-r1sig001 decision review_round_retry_skipped task=r1sig001 round=1 reason=no_mission_file
+append dispatch-r1sig001 decision review_gate task=r1sig001 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: R1: ledger call did not record parked/e2e_timeout -- write-terminal r1sig001  refused selfcheck_failed failed= checks=0 skipped=0 r1sig001-1788871334-13637  none unknown 
+write-terminal r1sig001  refused selfcheck_failed failed= checks=0 skipped=0 r1sig001-1788871334-13637  none unknown 
+FAIL: R2 (negative control): expected exit 8 + e2e_regression, got rc=5 md=<>
+FAIL: R2: ledger call did not record dead/e2e_regression -- write-terminal r1sig001  refused selfcheck_failed failed= checks=0 skipped=0 r1sig001-1788871334-13637  none unknown 
+write-terminal r1sig001  refused selfcheck_failed failed= checks=0 skipped=0 r1sig001-1788871334-13637  none unknown 
+write-terminal r2sig001  refused selfcheck_failed failed= checks=0 skipped=0 r2sig001-1788871336-14673  none unknown 
+write-terminal r2sig001  refused selfcheck_failed failed= checks=0 skipped=0 r2sig001-1788871336-14673  none unknown 
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-lane-writes-scoping.sh (scope-selected ad-hoc)
+[TEST] PASS: bash -n leadv2-dispatch-code.sh
+[TEST] PASS: bash -n leadv2-dispatch-product-close.sh
+[TEST] PASS: bash -n leadv2-fanout-lane-launcher.sh
+[TEST] PASS: /bin/bash -n leadv2-dispatch-product-close.sh (bash 3.2 syntax)
+[TEST] FAIL: C1-glm -- post-fix rc=1, expected 0
+[TEST] FAIL: C1-codex -- post-fix rc=1, expected 0
+[TEST] FAIL: C1-sonnet -- post-fix rc=1, expected 0
+[TEST] GREEN-PRE-FIX: C2 -- passed against HEAD too (pre_rc=0)
+[TEST] FAIL: C2-b -- post-fix rc=1, expected 0
+[TEST] FAIL: C3 -- post-fix rc=1, expected 0
+[TEST] GREEN-PRE-FIX: H4 -- passed against HEAD too (pre_rc=0)
+[TEST] FAIL: H5 -- post-fix rc=1, expected 0
+[TEST] GREEN-PRE-FIX: H6 -- passed against HEAD too (pre_rc=0)
+[TEST] FAIL: M7 -- post-fix rc=1, expected 0
+[TEST] GREEN-PRE-FIX: M8 -- passed against HEAD too (pre_rc=0)
+[TEST] FAIL: L11 -- post-fix rc=1, expected 0
+[TEST] GREEN-PRE-FIX: L12 -- passed against HEAD too (pre_rc=0)
+
+Results: 4 passed(red->green), 8 failed, 5 green-pre-fix, 0 could-not-run
+red=4 green-pre-fix=5 could-not-run=0
+FAIL: C1-glm: post-fix did not pass (rc=1)
+FAIL: C1-codex: post-fix did not pass (rc=1)
+FAIL: C1-sonnet: post-fix did not pass (rc=1)
+FAIL: C2-b: post-fix did not pass (rc=1)
+FAIL: C3: post-fix did not pass (rc=1)
+FAIL: H5: post-fix did not pass (rc=1)
+FAIL: M7: post-fix did not pass (rc=1)
+FAIL: L11: post-fix did not pass (rc=1)
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-lane-writes-scoping.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-produced-nothing-cause.sh (scope-selected ad-hoc)
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.WXkO33qHHy: Operation not permitted
+Traceback (most recent call last):
+  File "<stdin>", line 5, in <module>
+PermissionError: [Errno 1] Operation not permitted: '/cause.sh'
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-produced-nothing-cause.sh: line 41: /cause.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-produced-nothing-cause.sh: line 47: /journal.sh: Operation not permitted
+chmod: /journal.sh: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-produced-nothing-cause.sh: line 49: /journal.txt: Operation not permitted
+mkdir: /lane: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-produced-nothing-cause.sh: line 54: /journal.txt: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-produced-nothing-cause.sh: line 55: _pc_produced_nothing_cause: command not found
+FAIL: a: got ''
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-produced-nothing-cause.sh: line 60: /journal.txt: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-produced-nothing-cause.sh: line 62: _pc_produced_nothing_cause: command not found
+FAIL: b: got ''
+mkdir: /lane: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-produced-nothing-cause.sh: line 68: _pc_produced_nothing_cause: command not found
+FAIL: c: got ''
+FAIL: d: not three distinct non-empty words: '' '' ''
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-produced-nothing-cause.sh: line 83: /journal.txt: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-produced-nothing-cause.sh: line 84: _pc_produced_nothing_cause: command not found
+FAIL: e: got ''
+[PRODUCED-NOTHING-CAUSE] pass=0 fail=5
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-produced-nothing-cause.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-review-pool-empty-rootcause.sh (scope-selected ad-hoc)
+PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+FAIL: T1: resolver crash loud-failure shape -- rc=5 gate=status: blocked
+reason: selfcheck_failed
+kind: diff
+base: HEAD
+failed: 
+checks: 0
+skipped: 0
+selfcheck: docs/handoff/dispatch-t1sigrc01/selfcheck.md out=[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sigrc01 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t1sigrc01 worker_liveness=unknown author=sonnet handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t1sigrc01 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.A6Yum3U9HP: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t1sigrc01 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t1sigrc01 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+FAIL: T1 detail: resolver stderr capture -- path= contents=MISSING
+FAIL: T2: review_pool_resolve ledger line missing on success -- out=[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sigrc02 reason=writes_csv_empty
+[leadv2-dispatch-product-close] product_close task=t2sigrc02 worker_liveness=unknown author=sonnet handle=- action=proceed_legacy
+[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=t2sigrc02 reason=empty_scope_writes_csv
+mktemp: mkstemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.wPXkuvZW44: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh: line 3124: : No such file or directory
+cat: : No such file or directory
+[leadv2-dispatch-product-close] review_round_retry_skipped task=t2sigrc02 round=1 reason=no_mission_file
+[leadv2-dispatch-product-close] review_gate task=t2sigrc02 status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed= checks=0 skipped=0
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-review-pool-empty-rootcause.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-review-verdict-recovery.sh (scope-selected ad-hoc)
+[TEST] PASS: bash -n leadv2-dispatch-product-close.sh
+[TEST] PASS: /bin/bash -n leadv2-dispatch-product-close.sh (bash 3.2 syntax)
+[TEST] FAIL: verdict-recovered-from-persisted-body -- post-fix rc=1, expected 0
+[TEST] FAIL: no-verdict-marker-names-persisted-body -- post-fix rc=1, expected 0
+
+Results: 2 passed(red->green), 2 failed, 0 green-pre-fix, 0 could-not-run
+FAIL: verdict-recovered-from-persisted-body: post-fix did not pass (rc=1)
+FAIL: no-verdict-marker-names-persisted-body: post-fix did not pass (rc=1)
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-review-verdict-recovery.sh (scope-selected ad-hoc)
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-worker-outlives-terminal-state.sh (scope-selected ad-hoc)
+PASS: Sonnet launcher records the finalizer PID
+PASS: continuation path normalizes raw handles
+PASS: Sonnet raw handle reduces to PID
+PASS: close gate waits while finalizer is alive
+PASS: close gate finishes after .finalized
+PASS: pointer-moved close gate waits on exact PID run directory
+PASS: pointer-moved close gate finishes after exact run finalization
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-worker-outlives-terminal-state.sh: line 186: 29657 Killed: 9                  sleep 30
+PASS: timeout close exits blocked
+PASS: timeout terminal has no live model or finalizer
+PASS: timeout terminal emitted after reaping
+PASS: recorded terminal leaves worker and finalizer gone within 15s (8s)
+test-worker-outlives-terminal-state: 11 passed, 0 failed
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-fable-think-tier.sh (scope-selected ad-hoc)
+mktemp: mkdtemp failed on /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.xtwZwLUczC: Operation not permitted
+PASS: resolver default = fable
+PASS: resolver LEADV2_THINK_MODEL=opus override wins (negative control)
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 80: /cap-unavailable.yaml: Operation not permitted
+PASS: resolver falls back to opus when fable marked unavailable
+PASS: kill switch beats env: LEADV2_THINK_MODEL=fable + fable unavailable -> 'opus' (never fable)
+PASS: dispatch export path runs under set -u even with a pre-set pin; spawned child sees resolver's answer LEADV2_THINK_MODEL=opus (kill switch overwrote the 'fable' pin)
+PASS: file order: SCRIPT_DIR assignment (line 483) precedes export block (line 495)
+FAIL: tree-wide census: unclassified 'opus' literal(s): /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.75882.sh:3609:  out="$(PROJECT_ROOT="${PROJECT_ROOT}" python3 - "${ARCHITECT_PREPASS_TIMEOUT_SEC}" "${ARCHITECT_BIN}" "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" "dispatch-${sig8}-${ARCHITECT_LANE_SUFFIX}" "${mfile}" <<'PY' 2>&1
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.75882.sh:3701:    case "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" in
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.75882.sh:3703:      *) _pp_failed_prov="$(_arm_provider "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}")" ;;
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.75882.sh:4944:                Exit codes: 0 spawned/resolved, 2 duplicate task-sig, 3 arm=opus (lead
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.75882.sh:5640:  if [[ "${arm}" == "opus" ]]; then
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.dbg-funcs.sh:3606:  out="$(PROJECT_ROOT="${PROJECT_ROOT}" python3 - "${ARCHITECT_PREPASS_TIMEOUT_SEC}" "${ARCHITECT_BIN}" "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" "dispatch-${sig8}-${ARCHITECT_LANE_SUFFIX}" "${mfile}" <<'PY' 2>&1
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.dbg-funcs.sh:3698:    case "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" in
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.dbg-funcs.sh:3700:      *) _pp_failed_prov="$(_arm_provider "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}")" ;;
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.dbg-funcs.sh:4941:                Exit codes: 0 spawned/resolved, 2 duplicate task-sig, 3 arm=opus (lead
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.dbg-funcs.sh:5634:  if [[ "${arm}" == "opus" ]]; then
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.59126.sh:3609:  out="$(PROJECT_ROOT="${PROJECT_ROOT}" python3 - "${ARCHITECT_PREPASS_TIMEOUT_SEC}" "${ARCHITECT_BIN}" "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" "dispatch-${sig8}-${ARCHITECT_LANE_SUFFIX}" "${mfile}" <<'PY' 2>&1
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.59126.sh:3701:    case "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" in
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.59126.sh:3703:      *) _pp_failed_prov="$(_arm_provider "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}")" ;;
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.59126.sh:4944:                Exit codes: 0 spawned/resolved, 2 duplicate task-sig, 3 arm=opus (lead
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.59126.sh:5640:  if [[ "${arm}" == "opus" ]]; then
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/lib/leadv2-launch-registry.py:131:                {"codex", "sonnet", "opus", "fable"})
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/lib/leadv2-launch-registry.py:246:_CLAUDE_ARMS = ("haiku", "sonnet", "opus", "fable")
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py:645:            if job == "review" and arm in ("fable", "opus", "sonnet"):
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.68797.sh:3609:  out="$(PROJECT_ROOT="${PROJECT_ROOT}" python3 - "${ARCHITECT_PREPASS_TIMEOUT_SEC}" "${ARCHITECT_BIN}" "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" "dispatch-${sig8}-${ARCHITECT_LANE_SUFFIX}" "${mfile}" <<'PY' 2>&1
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.68797.sh:3701:    case "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" in
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.68797.sh:3703:      *) _pp_failed_prov="$(_arm_provider "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}")" ;;
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.68797.sh:4944:                Exit codes: 0 spawned/resolved, 2 duplicate task-sig, 3 arm=opus (lead
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.68797.sh:5640:  if [[ "${arm}" == "opus" ]]; then
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.63162.sh:3609:  out="$(PROJECT_ROOT="${PROJECT_ROOT}" python3 - "${ARCHITECT_PREPASS_TIMEOUT_SEC}" "${ARCHITECT_BIN}" "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" "dispatch-${sig8}-${ARCHITECT_LANE_SUFFIX}" "${mfile}" <<'PY' 2>&1
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.63162.sh:3701:    case "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" in
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.63162.sh:3703:      *) _pp_failed_prov="$(_arm_provider "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}")" ;;
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.63162.sh:4944:                Exit codes: 0 spawned/resolved, 2 duplicate task-sig, 3 arm=opus (lead
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/.test-dispatch-ppf-r5-funcs.63162.sh:5640:  if [[ "${arm}" == "opus" ]]; then
+PASS: repo-install.sh: LEADV2_MAIN_MODEL has its own default (opus), independent of LV2_THINK_MODEL —  "LEADV2_MAIN_MODEL": os.environ.get("LV2_MAIN_MODEL", "opus"),
+PASS: repo-install.sh: LEADV2_THINK_MODEL still resolves via the think resolver (fable), independent of the main axis —  "LEADV2_THINK_MODEL": os.environ.get("LV2_THINK_MODEL", "fable"),
+PASS: negative control A: pre-fix collapsed main-axis line correctly RED under the split check; the real file's line above is GREEN (revert proven)
+PASS: negative control B: a main-derived think-axis line correctly RED under the split check; the real file's line above is GREEN (revert proven)
+PASS: mutation A (full model id pin) matches census_re
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 388: /mut-fallback-no-guard.js: Operation not permitted
+PASS: mutation B (unguarded 'fallback'-labeled opus pin) correctly rejected
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 399: /mut-fallback-guard.js: Operation not permitted
+FAIL: resolver-gated fallback (guard present) wrongly rejected
+fixtures 2d: red-shapes+controls matched=10 missed=0
+mkdir: /stub-repo: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 449: /stub-repo/.claude/leadv2-overrides/session-routing.yaml: No such file or directory
+PASS: session-route Heavy: stub config 'heavy: opus' cannot pin — resolver wins (model=fable)
+PASS: session-route Heavy: unreachable resolver degrades to fable, script survives (rc=0)
+PASS: leadv2-diverge: THINK_MODEL honours LEADV2_THINK_MODEL env (kill-switch channel)
+PASS: leadv2-learn: THINK_MODEL honours LEADV2_THINK_MODEL env (kill-switch channel)
+PASS: leadv2-diagnose: THINK_MODEL honours LEADV2_THINK_MODEL env (kill-switch channel)
+PASS: leadv2-po-feedback-loop: THINK_MODEL honours LEADV2_THINK_MODEL env (kill-switch channel)
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 495: /ask-model-stub.sh: Operation not permitted
+chmod: /ask-model-stub.sh: No such file or directory
+mkdir: /ask-repo: Operation not permitted
+mkdir: /ask-repo: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 514: /ask-repo/docs/tasks.yaml: No such file or directory
+FAIL: ask architect-decide: expected timeout->architect with --model fable; got qfile=<none> decision=none
+PASS: llm-judge: resolver command substitution failure-guarded (set -euo pipefail safe)
+PASS: repo-install: LEADV2_THINK_MODEL written into settings.json env (kill-switch channel)
+PASS: dispatch-code: unconditional LEADV2_THINK_MODEL export to spawned sessions (no -z skip-if-pinned guard)
+PASS: priors-compile: no opus baseline rec for think roles (architect/critic on fable)
+PASS: zero opus-4 literals under plugins/leadv2/{scripts,config,ref,workflows,hooks}
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 584: /escape-cmd.sh: Operation not permitted
+FAIL: architect-escape-mission.md: extracted bash block fails bash -n
+PASS: architect-escape-mission.md: referenced router script exists (/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/leadv2-router.sh)
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 601: /quota-live.sh: Operation not permitted
+chmod: /quota-live.sh: No such file or directory
+mkdir: /lockout-empty: Operation not permitted
+PASS: pool orders fable before opus (codex:unknown:,glm:unknown:,kimi:author:,fable:unknown:quota_checked,opus:unknown:quota_checked,sonnet:unknown:quota_checked)
+FAIL: fable not ok in pool — anthropic bucket mapping missing: pool=codex:unknown:,glm:unknown:,kimi:author:,fable:unknown:quota_checked,opus:unknown:quota_checked,sonnet:unknown:quota_checked
+FAIL: reviewer expected fable, got: reviewer=sonnet
+FAIL: author-exclusion broke: pool=codex:unknown:,glm:unknown:,kimi:excluded:safety,fable:unknown:quota_checked,opus:author:,sonnet:unknown:quota_checked / reviewer=sonnet
+PASS: dispatch-code.sh: no hardcoded opus prepass default
+PASS: dispatch-code.sh prepass default resolves via router think-model
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 727: /leadv2-diverge-think-block.js: Operation not permitted
+cat: /leadv2-diverge-think-block.js: No such file or directory
+FAIL: leadv2-diverge.js JS channel (unresolved 'fable' pin + killing yaml -> opus) DEAD: THINK_MODEL='<empty>' agent_calls='<empty>' (expected THINK_MODEL='opus' agent_calls=1)
+cat: /leadv2-diverge-think-block.js: No such file or directory
+FAIL: leadv2-diverge.js JS channel (yaml allows -> fable (router round-trip, not a hardcoded default)) DEAD: THINK_MODEL='<empty>' agent_calls='<empty>' (expected THINK_MODEL='fable' agent_calls=1)
+cat: /leadv2-diverge-think-block.js: No such file or directory
+FAIL: leadv2-diverge.js JS channel (explicit a.model override wins outright, agent() never called) DEAD: THINK_MODEL='<empty>' agent_calls='<empty>' (expected THINK_MODEL='sonnet' agent_calls=0)
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 727: /leadv2-diagnose-think-block.js: Operation not permitted
+cat: /leadv2-diagnose-think-block.js: No such file or directory
+FAIL: leadv2-diagnose.js JS channel (unresolved 'fable' pin + killing yaml -> opus) DEAD: THINK_MODEL='<empty>' agent_calls='<empty>' (expected THINK_MODEL='opus' agent_calls=1)
+cat: /leadv2-diagnose-think-block.js: No such file or directory
+FAIL: leadv2-diagnose.js JS channel (yaml allows -> fable (router round-trip, not a hardcoded default)) DEAD: THINK_MODEL='<empty>' agent_calls='<empty>' (expected THINK_MODEL='fable' agent_calls=1)
+cat: /leadv2-diagnose-think-block.js: No such file or directory
+FAIL: leadv2-diagnose.js JS channel (explicit a.model override wins outright, agent() never called) DEAD: THINK_MODEL='<empty>' agent_calls='<empty>' (expected THINK_MODEL='sonnet' agent_calls=0)
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 727: /leadv2-learn-think-block.js: Operation not permitted
+cat: /leadv2-learn-think-block.js: No such file or directory
+FAIL: leadv2-learn.js JS channel (unresolved 'fable' pin + killing yaml -> opus) DEAD: THINK_MODEL='<empty>' agent_calls='<empty>' (expected THINK_MODEL='opus' agent_calls=1)
+cat: /leadv2-learn-think-block.js: No such file or directory
+FAIL: leadv2-learn.js JS channel (yaml allows -> fable (router round-trip, not a hardcoded default)) DEAD: THINK_MODEL='<empty>' agent_calls='<empty>' (expected THINK_MODEL='fable' agent_calls=1)
+cat: /leadv2-learn-think-block.js: No such file or directory
+FAIL: leadv2-learn.js JS channel (explicit a.model override wins outright, agent() never called) DEAD: THINK_MODEL='<empty>' agent_calls='<empty>' (expected THINK_MODEL='sonnet' agent_calls=0)
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 727: /leadv2-po-feedback-loop-think-block.js: Operation not permitted
+cat: /leadv2-po-feedback-loop-think-block.js: No such file or directory
+FAIL: leadv2-po-feedback-loop.js JS channel (unresolved 'fable' pin + killing yaml -> opus) DEAD: THINK_MODEL='<empty>' agent_calls='<empty>' (expected THINK_MODEL='opus' agent_calls=1)
+cat: /leadv2-po-feedback-loop-think-block.js: No such file or directory
+FAIL: leadv2-po-feedback-loop.js JS channel (yaml allows -> fable (router round-trip, not a hardcoded default)) DEAD: THINK_MODEL='<empty>' agent_calls='<empty>' (expected THINK_MODEL='fable' agent_calls=1)
+cat: /leadv2-po-feedback-loop-think-block.js: No such file or directory
+FAIL: leadv2-po-feedback-loop.js JS channel (explicit a.model override wins outright, agent() never called) DEAD: THINK_MODEL='<empty>' agent_calls='<empty>' (expected THINK_MODEL='sonnet' agent_calls=0)
+mkdir: /noyaml: Operation not permitted
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 758: /noyaml/yaml.py: No such file or directory
+/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75cef0fbfd23/plugins/leadv2/scripts/tests/test-fable-think-tier.sh: line 759: /cap-available.yaml: Operation not permitted
+PASS: resolver fails CLOSED when PyYAML missing: fable available -> opus (via unavailable:true degradation)
+PASS: resolver stays CLOSED when PyYAML missing + fable unavailable -> opus
+PASS=39 FAIL=19
+[CORE-OFFLINE] FAILED: plugins/leadv2/scripts/tests/test-fable-think-tier.sh (scope-selected ad-hoc)
+[CORE-OFFLINE] SHARD_RESULT idx=1 pass=1 fail=10 missing=0
