@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-401-is-not-a-dead-account.sh
+file=plugins/leadv2/scripts/leadv2-quota-read.py
+anchor=s/^    return ACCOUNT_STATE_UNKNOWN$/    return ACCOUNT_STATE_UNMETERED/
+baseline_rc=0
+mutated_rc=1
+red_line=arm=haiku kind=docs model=haiku tier=standard effort=low reason=cheapest_capable chain=haiku,sonnet,glm util_glm=unknown_capped util_codex=unknown_capped util_claude=unmetered util_freepool=100 reset_glm=n/a reset_codex=n/a reset_claude=n/a reset_freepool=n/a headroom_w=0.2 claude_account_state=unmetered claude_probe_penalty=0 claude_priced_from=configured_allowance_conservative arm_excluded=codex:not_in_pool+not_launchable,freepool:not_in_pool+not_launchable,glm:price_ratio,glm-flash:not_in_pool+not_launchable,sonnet:price_ratio arb_rev=13cff1513f08 matrix_rev=a7adb07b0b4e floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=simple duration_class=unknown complexity_policy=capability_fit remaining=unmetered reset_in=n/a reset_basis=n/a probe_outage=glm,codex failure_memory=unavailable complexity_source=flag conf=0.7 req_eff=2.3 fit_mode=on fit_pick=haiku fit_differs=0 fit_bucket=haiku:0,sonnet:0,glm:0
+diff_hash=58ab7faf1d2913aa639299ae1adbba91e2e022ace93ca13b86998e763701b476
+lane_diff_hash=37fcb01e2cd5a513a4590edb50ae96f7928e230720af487f25f1b3aee66c33d6
