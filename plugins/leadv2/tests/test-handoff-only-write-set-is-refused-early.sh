@@ -78,13 +78,15 @@ def copy_plugin(dest, mutant=None):
             shutil.copytree(src, dest / sub)
     dispatch = dest / 'scripts' / 'leadv2-dispatch-code.sh'
     text = dispatch.read_text()
-    # anchor-drift guard fires on the LIVE file only: a deliberate mutant run
-    # replaces this very line, so counting it there would redden the suite for
-    # an ancillary reason instead of the case assertions (the exact
-    # "wrong-reason red" E2E-KILLRATE-01 exists to prevent).
-    if mutant is None:
-        check('guard anchor occurs exactly once in dispatcher', text.count(PRED) == 1,
-              f'count={text.count(PRED)}')
+    # Informational only, deliberately NOT a check(): under a
+    # leadv2-mutation-control.sh run the dispatcher the suite copies is ALREADY
+    # sed-mutated, so an anchor count of 0 is the expected shape there, and a
+    # hard assertion would redden the suite at an ancillary line instead of the
+    # case assertions (the wrong-reason red E2E-KILLRATE-01 forbids). Anchor
+    # drift is still caught the honest way: the case-3/4 python mutants
+    # replace() no-ops on a drifted file, so those cases run unmutated and go
+    # red on their own assertions, and the runner's cmp detects a noop sed.
+    print(f'[TEST] anchor count in dispatcher copy (informational): {text.count(PRED)}', flush=True)
     if mutant is not None:
         dispatch.write_text(text.replace(PRED, mutant, 1))
     for bash in ('bash', '/bin/bash'):
