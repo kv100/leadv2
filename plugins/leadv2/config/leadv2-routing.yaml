@@ -213,9 +213,9 @@ router_v2:
     - { arm: codex, provider: codex, model: gpt-6-astra, tier: volume, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true, capability: 3 } # PLUGIN-PAPERCUTS-01 defect 2: was tier: spark — codex-task.sh rejects spark (banned, founder directive 2026-04-28; accepts top|standard|volume only), so this cell won the auction and died at spawn. volume (gpt-6-astra/low after ASTRA-BUMP-01) is the launcher cheapest valid tier for this cheap leg.
     - { arm: codex, provider: codex, model: gpt-6-astra, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true, capability: 4 }
     - { arm: codex, provider: codex, model: gpt-6-astra, tier: top, cost: 7, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 4 }
-    - { arm: haiku, provider: claude, model: haiku, tier: standard, cost: 2, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true, capability: 2 } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
+    - { arm: haiku, provider: claude, model: haiku, tier: standard, cost: 2, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true, capability: 2, pool_default: true } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
     - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true, capability: 4 }
-    - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 4 }
+    - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 4, pool_default: false }
     # FABLE-RESTORE-01 (founder permission, 2026-09-06 open-threads.md, entry
     # [FABLE-RESTORE-01]): fable had ZERO capability_matrix cells since
     # FABLE-RETIRE-01 (2026-07-07), so the arbiter could never select it as a
@@ -525,24 +525,30 @@ router:
       effort: standard
       health_gated: true
       untrusted: true
-    # dispatch-8e2a32be (D3): review-only entries, never build-dispatched (dispatch:
-    # false, same posture as fable below) -- they exist here solely so the review-pool
-    # floor has a provider mapping + rank for every Anthropic-account arm the review
-    # path can actually invoke (run_reviewer_arm's generic claude-subsession.sh --model
-    # <arm> branch already handles any arm name, haiku/opus included).
+    # dispatch-8e2a32be (D3): review-only entries. POOL-IS-COMPUTED-AFTER-THE-
+    # ARM-IS-CHOSEN-01 (2026-09-07) removed `dispatch: false` from both rows --
+    # that flag bounded the arbiter pool by way of _LADDER_IDS and could keep a
+    # perfectly capable arm out of the room (opus/fable at ZERO of 73 live
+    # decisions was reachability, not economics). Pool membership for the DEFAULT
+    # auction is now the matrix cell's `pool_default` (haiku true, opus false --
+    # opus shares the lead's own account window and lead starvation is worse
+    # than any routing gain); both arms stay reachable by explicit --arm-pool
+    # or --pin-arm, never by the default auction. `when: [review]` still keeps
+    # them out of build-class fallback chains. They exist here so the review-pool
+    # floor has a provider mapping + rank for every Anthropic-account arm the
+    # review path can actually invoke (run_reviewer_arm's generic
+    # claude-subsession.sh --model <arm> branch already handles any arm name).
     - id: haiku
       provider: anthropic
       model: haiku
       when: [review]
       effort: standard
-      dispatch: false
       review_rank: 1
     - id: opus
       provider: anthropic
       model: opus
       when: [review]
       effort: high
-      dispatch: false
       review_rank: 3
     # FABLE-RESTORE-01 (founder permission, 2026-09-06 open-threads.md entry
     # [FABLE-RESTORE-01]): this comment previously claimed fable is "never
