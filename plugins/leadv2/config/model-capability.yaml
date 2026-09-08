@@ -218,7 +218,12 @@ glm:
     claims remain UNVERIFIED-by-third-party. Credit weight on the coding plan
     (docs.z.ai/devpack/teamplan.md, fetched 2026-09-02): input 6.9 / cached 1.7 /
     output 24 per 10k credits — the 1x baseline glm-5.3-flash is measured against.
-    Off-peak (outside Mon-Fri 14:00-18:00 SGT) bills at 0.5x.
+    Off-peak bills at 0.5x; Z.AI's published window is Mon-Fri 14:00-18:00 SGT.
+    OUR gate treats peak as EVERY DAY 14:00-18:00 SGT (= 06:00-10:00 UTC),
+    weekends included -- founder ruling 2026-09-08, deliberately wider than
+    the vendor's billing window. leadv2-glm-quota-gate.sh:77-86 is the
+    implementation and has no weekday check BY DESIGN; do not "fix" it to
+    match the Mon-Fri text above.
   sources:
     - https://docs.z.ai/guides/llm/glm-5.3.md
     - https://docs.z.ai/devpack/teamplan.md
