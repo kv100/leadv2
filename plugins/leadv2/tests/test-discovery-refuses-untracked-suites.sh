@@ -60,7 +60,8 @@ if bash -n "$RUN_ALL"; then pass "bash -n clean (tests/run-all.sh)"; else fail "
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/c5-discovery.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 SCRATCH="$TMP/repo"
-mkdir -p "$SCRATCH/tests" "$SCRATCH/plugins/leadv2/tests" "$SCRATCH/.claude/scripts/tests"
+mkdir -p "$SCRATCH/tests" "$SCRATCH/plugins/leadv2/scripts/tests" \
+  "$SCRATCH/plugins/leadv2/tests" "$SCRATCH/.claude/scripts/tests"
 git init -q "$SCRATCH" 2>/dev/null
 git -C "$SCRATCH" config user.email t@t.invalid
 git -C "$SCRATCH" config user.name t
