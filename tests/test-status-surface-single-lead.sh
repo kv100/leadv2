@@ -2,7 +2,7 @@
 # Fixture coverage for SWIFTBAR-SINGLE-LEAD-01. Every input is sandboxed;
 # nothing reads or writes the operator's live leadv2 state.
 # Guard against mktemp -t without XXX in template
-# run-all-triggers: claude-subsession glm-coder mktemp-guard leadv2-codex-lead
+# run-all-triggers: status-surface leadv2-status-surface leadv2-status-surface.5s claude-subsession glm-coder mktemp-guard leadv2-codex-lead
 #
 # SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
 # marker and matched no name convention, so `run-all.sh --scope changed`
@@ -89,11 +89,23 @@ EOF
 # workers. Individual cases override by setting PS_STUB before calling widget.
 PS_STUB="1 sleep 1"
 
+# Keep the wrapper's label lookup on the same registry as the renderer.
+# Its default scans every live repo even when STATUS_STATE_DIR is isolated.
+seed_registry() {
+  cat > "$STATE/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: FIXTURE-REGISTRY
+    worktree: $FIX/dispatch-deadbeef
+EOF
+}
+
 widget() {
   PATH="${TEST_PATH:-$PATH}" \
   LEADV2_STATUS_SYNC=1 \
   LEADV2_STATUS_RENDERER="$SURFACE" \
   LEADV2_STATUS_STATE_DIR="$STATE" \
+  LEADV2_STATUS_ACTIVE_YAML="$STATE/active.yaml" \
   LEADV2_STATUS_LEDGER_DIR="$LEDGERS" \
   LEADV2_STATUS_RUNS_ROOT="$RUNS" \
   LEADV2_STATUS_REPO="$REPO" \
@@ -206,6 +218,12 @@ case "$_title" in
     bad "(a) expected '🛠 deadbeef sonnet ...', got '$_title' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
     ;;
 esac
+
+# The rendered title must consume the seeded registry label, not merely
+# ignore registries altogether. Keep (a)'s sig8 fallback expectation intact.
+seed_registry
+assert_title "(a-registry) seeded registry label" "🛠 FIXTURE-REGISTRY sonnet now"
+printf 'meta: {}\nsessions: []\n' > "$STATE/active.yaml"
 
 # (a2) reservation provides human task_id, process provides liveness
 printf '{"task_sig":"deadbeef1234567890","arm":"sonnet","state":"confirmed","created_epoch":%s,"task_id":"FEED-SCAN"}\n' \
