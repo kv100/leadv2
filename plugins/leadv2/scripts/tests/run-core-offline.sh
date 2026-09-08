@@ -42,11 +42,11 @@ unset _src _dir
 # flag was silently discarded and every gate run executed all 94 suites
 # (measured: lane d2823c51e670, a 4-file diff, parked e2e_timeout rc=124 after
 # 900 s). Three rules bind the implementation below, in priority order:
-#   1. Fail OPEN. An undeterminable changed set (no base ref, git failure, an
-#      unmapped file, an empty selection) runs EVERYTHING and says why on
-#      stdout -- a scope bug that selects zero suites and exits 0 is the
-#      lying-green disease in its purest form, and it is invisible: the gate
-#      would go green FASTER and nobody would ask why.
+#   1. Fail OPEN when coverage is unknown (no base ref, git failure, an
+#      unmapped file): run EVERYTHING and say why. Narrow cf03dd6a's original
+#      rule only for a known empty relevant diff: run nothing and explicitly
+#      report verdict=nothing_to_run. This proves no suites passed; rejecting
+#      a lane that produced nothing is a separate review/close responsibility.
 #   2. Say what it narrowed to, and why: suite count AND reason, every run.
 #      A gate whose only output in 900 s is one line is undiagnosable -- that
 #      is how this defect survived.
@@ -812,6 +812,7 @@ _core_offline_scope_changed_select() {
   local tok base_ref="" merge_base="" range_start="" changed="" f="" g="" line=""
   local -a rel_changed=() selected_files=() uniq_files=()
   SCOPE_FALLBACK_REASON=""
+  SCOPE_SELECTION_REASON="-"
   SCOPE_BASE_DESC="unresolvable"
   SCOPE_CHANGED_COUNT=0
   SCOPE_UNMAPPED_COUNT=0
@@ -870,8 +871,8 @@ _core_offline_scope_changed_select() {
   done <<< "${changed:-}"
   SCOPE_CHANGED_COUNT=${#rel_changed[@]}
   if [[ "$SCOPE_CHANGED_COUNT" -eq 0 ]]; then
-    SCOPE_FALLBACK_REASON="no_relevant_changed_files (base=${SCOPE_BASE_DESC}; everything else is .md/docs housekeeping)"
-    return 1
+    SCOPE_SELECTION_REASON="no_relevant_changed_files"
+    return 0 # scope-empty-control: known empty diff, no coverage to prove
   fi
   _scope_load_map_rows
   if [[ -n "$SCOPE_TRIGGER_ERRORS" ]]; then
@@ -896,7 +897,7 @@ _core_offline_scope_changed_select() {
   done
   if [[ ${#uniq_files[@]} -eq 0 || "$SCOPE_UNMAPPED_COUNT" -gt 0 ]]; then
     SCOPE_FALLBACK_REASON="unmapped_files (${SCOPE_UNMAPPED_COUNT} of ${SCOPE_CHANGED_COUNT} changed files selected no suite) — cannot prove the diff is covered"
-    return 1
+    return 1 # scope-unmapped-control: unknown coverage must run the full set
   fi
   # scope-mut-2: selection applied below this line
   local entry name rest cmd_str base matched_syntax=0
@@ -948,21 +949,30 @@ if [[ "$CORE_OFFLINE_SCOPE" == "changed" ]]; then
     SUITE_DEFS=(${SCOPE_SELECTED_DEFS[@]+"${SCOPE_SELECTED_DEFS[@]}"})
     printf -- '[CORE-OFFLINE] scope=changed running %d of %d suites (base=%s, %d changed files, %d unmapped)\n' \
       "${#SUITE_DEFS[@]}" "$_scope_total" "$SCOPE_BASE_DESC" "$SCOPE_CHANGED_COUNT" "$SCOPE_UNMAPPED_COUNT"
-    _scope_reason="-"
+    _scope_reason="$SCOPE_SELECTION_REASON"
+    _scope_verdict="selected"
+    if [[ "$_scope_reason" == no_relevant_changed_files ]]; then
+      _scope_verdict="nothing_to_run"
+    fi
   else
     printf -- '[CORE-OFFLINE] scope=changed running %d of %d suites (base=%s, %d changed files, %d unmapped -> full-set fallback: %s)\n' \
       "${#SUITE_DEFS[@]}" "$_scope_total" "$SCOPE_BASE_DESC" "$SCOPE_CHANGED_COUNT" "$SCOPE_UNMAPPED_COUNT" "$SCOPE_FALLBACK_REASON"
     _scope_reason="$SCOPE_FALLBACK_REASON"
+    _scope_verdict="full_set_fallback"
   fi
-  printf -- '[CORE-OFFLINE] SCOPE_RESULT selected=%d total=%d base=%s changed=%d unmapped=%d reason=%s\n' \
-    "${#SUITE_DEFS[@]}" "$_scope_total" "$SCOPE_BASE_DESC" "$SCOPE_CHANGED_COUNT" "$SCOPE_UNMAPPED_COUNT" "$_scope_reason"
+  printf -- '[CORE-OFFLINE] SCOPE_RESULT selected=%d total=%d base=%s changed=%d unmapped=%d verdict=%s reason=%s\n' \
+    "${#SUITE_DEFS[@]}" "$_scope_total" "$SCOPE_BASE_DESC" "$SCOPE_CHANGED_COUNT" "$SCOPE_UNMAPPED_COUNT" "$_scope_verdict" "$_scope_reason"
   if [[ -n "${LEADV2_CORE_OFFLINE_SCOPE_DUMP:-}" ]]; then
     for _e in ${SUITE_DEFS[@]+"${SUITE_DEFS[@]}"}; do
       printf -- '[CORE-OFFLINE] SCOPE_SELECTED %s\n' "${_e%%|||*}"
     done
     exit 0
   fi
-  unset _scope_total _scope_reason _e
+  if [[ "$_scope_verdict" == nothing_to_run ]]; then
+    printf -- '[CORE-OFFLINE] suites passed=0 failed=0 missing=0 verdict=nothing_to_run reason=no_relevant_changed_files repo=%s\n' "$REPO_ROOT"
+    exit 0
+  fi
+  unset _scope_total _scope_reason _scope_verdict _e
 fi
 
 _core_offline_run_entry() {

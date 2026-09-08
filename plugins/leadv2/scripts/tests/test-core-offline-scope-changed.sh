@@ -232,16 +232,20 @@ unmapped_case() {
     || fail "unmapped: unmapped=[$unmapped] reason=[$reason]"
 }
 
-# ── (e) only .md/docs housekeeping -> FULL set + reason ─────────────────────
+# ── (e) considered reversal of cf03dd6a: known empty diff -> no suites ──────
 clean_case() {
-  local out rc executed reason
+  local out rc executed reason selected verdict
   build_fix clean
   out="$(run_fix 1 1 --scope changed)"; rc=$?
   executed="$(executed_from "$out")"
   reason="$(scope_field "$out" reason)"
+  selected="$(scope_field "$out" selected)"
+  verdict="$(scope_field "$out" verdict)"
   [[ $rc -eq 0 ]] && pass "clean: exit 0" || fail "clean: rc=$rc"
-  [[ "$executed" == "4" ]] && pass "clean: full set executed (4 of 4)" \
-    || fail "clean: expected 4 executed, got $executed"
+  [[ "$executed" == "0" && "$selected" == "0" ]] && pass "clean: no suites selected or executed" \
+    || fail "clean: expected 0 executed/selected, got $executed/$selected"
+  [[ "$verdict" == nothing_to_run ]] && pass "clean: explicit nothing_to_run verdict" \
+    || fail "clean: verdict=[$verdict]"
   [[ "$reason" == *no_relevant_changed_files* ]] && pass "clean: reason names no_relevant_changed_files" \
     || fail "clean: reason=[$reason]"
 }
