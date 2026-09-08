@@ -71,7 +71,14 @@ for pair in filter(None, os.environ.get("LEADV2_OVERRIDE_TRIAGE_ROOTS", "").spli
     DEFAULT_ROOTS[repo] = os.path.abspath(os.path.expanduser(path))
 
 EXCLUDE_PARTS = {"docs", "__pycache__", "node_modules", ".git"}
-CLAUDE_EXCLUDE = {"worktrees", "leadv2-overrides", "cache", "projects"}
+CLAUDE_EXCLUDE = {
+    # These are runtime/transcript/browser-artifact stores, not code surfaces.
+    # In particular, m3-market's auth profiles contain hundreds of MB of browser
+    # cache.  Scanning them made a four-repo check exceed a foreground gate while
+    # adding no possible override consumer.
+    "worktrees", "leadv2-overrides", "cache", "projects", "leadv2-tasks",
+    "auth-profiles", "screenshots",
+}
 # Self-referential artefacts: this checker and the yaml table it checks both
 # name every override path, so they must never count as readers.
 SELF_FILES = {os.path.abspath(os.environ.get("LEADV2_OVERRIDE_TRIAGE_YAML_PATH", "")),
@@ -112,6 +119,12 @@ def scan_domain(repo, root):
                 try:
                     if os.path.getsize(p) > 2_000_000:
                         continue
+                    # Ignore binary artefacts even when they happen to be small.
+                    # A text reader can still be extensionless (for example an
+                    # executable shell entry point), so do not filter by suffix.
+                    with open(p, "rb") as probe:
+                        if b"\\0" in probe.read(8192):
+                            continue
                     with open(p, "r", errors="ignore") as f:
                         out.append((p, f.read()))
                 except OSError:

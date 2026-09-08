@@ -30,10 +30,13 @@ Machine table: `plugins/leadv2/config/override-triage.yaml` · checker: `plugins
 ## 2. Method
 
 **Scan domain** (per repo): leadv2 = `plugins/`, `tests/`, `.claude/` minus
-{worktrees, leadv2-overrides, cache, projects}; other repos = `.claude/`, `scripts/`, `bin/`,
-`.circleci/`, `.github/` (as exist) minus the overrides dir itself. Everywhere excluded: `docs/`
-(mentions are not readers), `__pycache__`, `node_modules`, `.git`, symlinks (not followed — plugin
-readers are covered once by scanning canonical leadv2), files >2 MB. Shared trees
+{worktrees, leadv2-overrides, cache, projects, leadv2-tasks, auth-profiles, screenshots}; other
+repos = `.claude/`, `scripts/`, `bin/`, `.circleci/`, `.github/` (as exist) minus the overrides
+dir itself. Everywhere excluded: `docs/` (mentions are not readers), `__pycache__`,
+`node_modules`, `.git`, symlinks (not followed — plugin readers are covered once by scanning
+canonical leadv2), files >2 MB, and NUL-containing files. The runtime/browser-artifact exclusions
+are deliberate: `m3-market/.claude/auth-profiles/` contains hundreds of MB of cache, not possible
+code consumers; including it made the checker exceed a bounded foreground gate. Shared trees
 (`~/.claude/leadv2-shared`, `~/.claude/agents-shared`, `~/.claude/scripts`, `~/.claude/settings.json`)
 were additionally hand-searched for every candidate — zero hits.
 
@@ -231,7 +234,18 @@ rc=0
 
 Changed-scope runner:
 
-%RUNALL%
+```
+$ LEADV2_SUITE_LOCK_DISABLE=1 timeout 300s bash tests/run-all.sh --scope changed
+changed-scope rc=124
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/C4-OVERRIDE-TRIAGE/plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: delegating scope=changed to plugins/leadv2/scripts/tests/run-core-offline.sh
+```
+
+This is a **bounded ambient-gate failure**, not a green result: the delegated core runner emitted
+no suite result before the 300-second limit. `LEADV2_SUITE_LOCK_DISABLE=1` was used so this result
+cannot be a contended-lock wait. The focused lane proof is green (checker + the full five-case
+negative-control suite above), and the stateless selection oracle chose this suite; a lead must
+resolve the core-runner timeout before treating the broad changed-scope gate as closure evidence.
 
 ## 8. Corrections to the record
 
