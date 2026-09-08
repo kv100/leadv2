@@ -1,0 +1,8 @@
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -2770 +2770 @@
+-      [[ "${_id}" == "${_d}" ]] && { _keep=1; break; }
++      [[ "${_id}" == "${_d}" && "${_id}" != "codex" ]] && { _keep=1; break; }
+@@ -2775 +2775 @@
+-      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} router=${_router} reason=not_in_launchable_arms${_site:+ site=${_site}}"
++      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} router=${_router} reason=not_in_DISPATCHABLE_BUILD_ARMS${_site:+ site=${_site}}"

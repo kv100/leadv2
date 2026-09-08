@@ -1,0 +1,2 @@
+leadv2-mutation-control: snapshot=head_plus_declared declared=2 excluded_dirty=1
+MUTATION-CONTROL ok suite=plugins/leadv2/tests/test-registry-failure-keeps-a-launchable-arm.sh file=plugins/leadv2/scripts/leadv2-dispatch-code.sh red_line=FAIL: registry outage status becomes usable fallback: actual=1 expected=0 diff_hash=89b4a218516692c3683457ca046311a1e9f0697484e16e5f36e96849cf9e6680 lane_diff_hash=0add6e1c60d0371a77971d15c48b198d7cf24ce25655045cb520abf35436f92e

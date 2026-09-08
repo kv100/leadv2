@@ -1,0 +1,2 @@
+leadv2-mutation-control: snapshot=head_plus_declared declared=2 excluded_dirty=0
+MUTATION-CONTROL ok suite=plugins/leadv2/tests/test-registry-failure-keeps-a-launchable-arm.sh file=plugins/leadv2/scripts/leadv2-dispatch-code.sh red_line=FAIL: initial survivor VALUE: actual='0:sonnet' expected='0:codex sonnet' diff_hash=f33fadc5ff1215435fe64300da5d25ce051edbb2bfe0d4e276a7604c90be5695 lane_diff_hash=0add6e1c60d0371a77971d15c48b198d7cf24ce25655045cb520abf35436f92e
