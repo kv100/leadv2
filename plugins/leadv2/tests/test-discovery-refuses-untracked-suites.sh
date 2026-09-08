@@ -80,18 +80,6 @@ printf '%s\n' '#!/usr/bin/env bash' '# run-all-triggers: ghost-stem' 'exit 0' \
 git -C "$SCRATCH" add tests/test-alpha-tracked.sh plugins/leadv2/tests/test-beta-tracked.sh
 git -C "$SCRATCH" commit -q -m "fixture: tracked suites only" || { echo "FAIL: fixture commit" >&2; exit 1; }
 
-# Assert the live carrier calls the admission library at each required site.
-# This is deliberately a source-structure assertion: the fixture below then
-# executes that exact carrier against a real untracked poison suite.
-scan_wiring='bash "${ROOT}/plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh" --root "${ROOT}" --dir "${_dir}" --skip-report=count'
-scope_wiring='bash "${ROOT}/plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh" --root "${ROOT}" > "${_c5_list}"'
-scan_n="$(grep -Fc "$scan_wiring" "$RUN_ALL" || true)"
-scope_n="$(grep -Fc "$scope_wiring" "$RUN_ALL" || true)"
-[[ "$scan_n" -eq 1 ]] && pass "live run-all scan routes through admission lib once" \
-  || fail "live run-all scan wiring rows=${scan_n} (expected 1)"
-[[ "$scope_n" -eq 1 ]] && pass "live run-all --scope all routes through admission lib once" \
-  || fail "live run-all scope-all wiring rows=${scope_n} (expected 1)"
-
 cp "$RUN_ALL" "$SCRATCH/tests/run-all.sh"
 mkdir -p "$SCRATCH/plugins/leadv2/scripts/lib"
 cp "$LIB" "$SCRATCH/plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh"
@@ -134,6 +122,18 @@ grep -qF 'suite-discovery: [UNTRACKED-SKIP] .claude/scripts/tests/test-poison-un
 grep -qF 'suite-discovery: [UNTRACKED-SKIP] .claude/scripts/tests/test-ghost-untracked.sh' "$err" \
   && pass "case1 ghost named in [UNTRACKED-SKIP]" || fail "case1 ghost not named by name"
 grep -qF '2 suite file(s) refused' "$err" && pass "case1 skip count reported (2)" || fail "case1 skip count missing"
+
+# Assert the live carrier calls the admission library at each required site.
+# This runs after the executable symptom proof above so the raw-find mutation
+# first demonstrates the restored failure, not merely a missing source token.
+scan_wiring='bash "${ROOT}/plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh" --root "${ROOT}" --dir "${_dir}" --skip-report=count'
+scope_wiring='bash "${ROOT}/plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh" --root "${ROOT}" > "${_c5_list}"'
+scan_n="$(grep -Fc "$scan_wiring" "$RUN_ALL" || true)"
+scope_n="$(grep -Fc "$scope_wiring" "$RUN_ALL" || true)"
+[[ "$scan_n" -eq 1 ]] && pass "live run-all scan routes through admission lib once" \
+  || fail "live run-all scan wiring rows=${scan_n} (expected 1)"
+[[ "$scope_n" -eq 1 ]] && pass "live run-all --scope all routes through admission lib once" \
+  || fail "live run-all scope-all wiring rows=${scope_n} (expected 1)"
 
 # ── case 2: the trigger map — tracked rows survive, untracked rows don't ──
 # (M2 c5-mut-2 reddens this case: tracked rows vanish.)
