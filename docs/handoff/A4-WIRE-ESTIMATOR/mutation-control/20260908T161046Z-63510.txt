@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-depth-gate-uses-the-estimate.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s|  GATE_DEPTH_COMPLEXITY="${eff}"; GATE_DEPTH_SOURCE="${src}"|  eff="standard"; GATE_DEPTH_COMPLEXITY="${eff}"; GATE_DEPTH_SOURCE="${src}"|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: S1a trivial fixture: got [standard estimate plan_first 2], want trivial/estimate/brief_direct/1
+diff_hash=efba0cf18dd3c44b8ff84d2d0ed75962ede37821c7901c6feae7e2145b7e89ab
+lane_diff_hash=0c19741353e8eb39e9ed6215c7f35b73566b85f4a221664536ed7398f8b2f19c

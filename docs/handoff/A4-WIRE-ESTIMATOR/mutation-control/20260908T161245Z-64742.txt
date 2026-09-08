@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-depth-gate-uses-the-estimate.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=/_bf_desc="\$(python3/s@"${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}" "${DC_COMPLEXITY_SOURCE:-unknown}"@"unknown" "unknown" "unknown"@
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: S4 bench-fallback leg lost the signal: complexity=unknown complexity_source=unknown conf=0.0 req_eff=3.0
+diff_hash=b585722ece06aa823469eeb65f9dafff3821d2c1b20512d543c085ed1cdf270f
+lane_diff_hash=0c19741353e8eb39e9ed6215c7f35b73566b85f4a221664536ed7398f8b2f19c
