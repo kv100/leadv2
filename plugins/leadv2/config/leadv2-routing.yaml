@@ -210,9 +210,30 @@ router_v2:
     # when the gate benches freepool. No glm/codex/sonnet/opus cell carries
     # recon — the doctrine is "the cheapest capable arm", exactly these two.
     - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, cost: 1, kinds: [code, docs, recon, fanout-class-funnel, backlog-pump], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false, capability: 2 }
-    - { arm: codex, provider: codex, model: gpt-6-astra, tier: volume, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true, capability: 3 } # PLUGIN-PAPERCUTS-01 defect 2: was tier: spark — codex-task.sh rejects spark (banned, founder directive 2026-04-28; accepts top|standard|volume only), so this cell won the auction and died at spawn. volume (gpt-6-astra/low after ASTRA-BUMP-01) is the launcher cheapest valid tier for this cheap leg.
-    - { arm: codex, provider: codex, model: gpt-6-astra, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true, capability: 4 }
-    - { arm: codex, provider: codex, model: gpt-6-astra, tier: top, cost: 7, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 4 }
+    # CODEX-TIERS-COLLAPSED-ONTO-ASTRA part B (2026-09-09): one row per real
+    # tier. Part A taught the launcher the tier->model chain (codex-task.sh:1445:
+    # top -> gpt-5.6-sol/high, standard -> gpt-5.6-terra/medium, volume ->
+    # gpt-5.6-luna/low); until here this matrix named gpt-6-astra in all three
+    # codex rows, so every codex-shaped resolve collapsed onto one model
+    # whichever cell won the auction. The model cells below are the
+    # ~/.codex/models_cache.json slugs verbatim (sol priority 6, terra 7,
+    # luna 8 — the catalog's own strength ladder inside the 5.6 family, astra
+    # priority 1 above it all): a tier the account cannot serve must not be
+    # selectable, and test-codex-tiers-selectable.sh holds matrix-vs-cache
+    # consistency plus the tier->slug binding. Astra stays the LAUNCHER's
+    # named fallback tail (part A journals CODEX_FALLBACK_EVENT), never a
+    # matrix row. Tier names stay top|standard|volume only — codex-task.sh
+    # accepts nothing else (spark remains banned, founder 2026-04-28).
+    # Costs keep the astra-era ladder 3/4/7 so the cross-arm economy is
+    # untouched: luna (catalog: "fast and affordable") under sonnet's 5, terra
+    # ("balanced") at 4 preferred over sonnet for standard/heavy code, sol
+    # ("workhorse", strongest 5.6) at 7 above sonnet and below fable 8 /
+    # opus 9. Capabilities stay 3/4/4 and sizes stay unchanged on purpose:
+    # heavy code must resolve terra at 4, never sol at 7 — sol is the
+    # sizes:[heavy]-only adversarial/exhaustive arm.
+    - { arm: codex, provider: codex, model: gpt-5.6-luna, tier: volume, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true, capability: 3 }
+    - { arm: codex, provider: codex, model: gpt-5.6-terra, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true, capability: 4 }
+    - { arm: codex, provider: codex, model: gpt-5.6-sol, tier: top, cost: 7, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 4 }
     - { arm: haiku, provider: claude, model: haiku, tier: standard, cost: 2, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true, capability: 2, pool_default: true } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
     - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true, capability: 4 }
     - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 4, pool_default: false }
