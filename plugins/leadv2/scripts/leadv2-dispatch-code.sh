@@ -2586,37 +2586,28 @@ print(" ".join(sorted(m.DISPATCHABLE_BUILD_ARMS)))
 }
 
 # ── POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01 (2026-09-07) ───────────────
-# THE one named seam to the launch-capability registry (sibling lane
-# ARMS-CANNOT-LAUNCH-THEMSELVES-01, plan P1: "(kind, role, arm, model, tier)
-# -> adapter arguments"). Until that registry lands, this predicate is
-# STUBBED to the current DISPATCHABLE_*_ARMS sets -- exactly the arms the
-# _spawn_worker_body case statement can actually launch (glm|glm-flash,
-# codex, freepool, sonnet). Do NOT fork a second registry here; when the
-# sibling lands, it replaces the stub body in THIS one function.
+# Registry-backed launchability for Claude/Codex. GLM/freepool keep their
+# existing adapters: the Python registry explicitly leaves those out of scope.
 _arm_launchable_arms() {  # <sig8> <kind> -> stdout: csv of launchable arm ids
-  local _sig8="$1" _stub
-  # _dispatchable_arms is space-separated; normalize to csv here so the
-  # descriptor build's comma split sees the real members (a seam that fed
-  # "codex glm sonnet" as ONE comma-field marked every arm not_launchable
-  # and drained the default pool -- caught by the lane's own probe).
-  _stub="$(_dispatchable_arms "${_sig8}" | tr '[:space:]' ',' | sed 's/,+/,/g; s/^,//; s/,$//')"
-  if [[ -f "${SCRIPT_DIR}/lib/leadv2-launch-registry.sh" ]]; then
-    local _reg
-    _reg="$(bash -c 'source "$1" 2>/dev/null; declare -F leadv2_launchable_arms >/dev/null 2>&1 && leadv2_launchable_arms "$2" worker' _ "${SCRIPT_DIR}/lib/leadv2-launch-registry.sh" "$2" 2>/dev/null || true)"
-    if [[ -n "${_reg}" ]]; then
-      if [[ ",${_SEAM_JOURNALED:-}," != *",${_sig8}:$2,"* ]]; then
-        emit decision "launchable_seam task=${_sig8} source=registry kind=$2"
-        _SEAM_JOURNALED="${_SEAM_JOURNALED:+${_SEAM_JOURNALED},}${_sig8}:$2"
-      fi
-      printf '%s' "${_reg}"
-      return 0
-    fi
-  fi
-  if [[ ",${_SEAM_JOURNALED:-}," != *",${_sig8}:$2,"* ]]; then
-    emit decision "launchable_seam task=${_sig8} source=stub_dispatchable kind=$2 note=ARMS-CANNOT-LAUNCH-THEMSELVES-01_registry_not_landed"
-    _SEAM_JOURNALED="${_SEAM_JOURNALED:+${_SEAM_JOURNALED},}${_sig8}:$2"
-  fi
-  printf '%s' "${_stub}"
+  local _sig8="$1" _arms
+  _arms="$(python3 - "${SCRIPT_DIR}/lib/leadv2-launch-registry.py" "$2" "${task_class:-standard}" <<'PYREG'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("launch_registry", sys.argv[1])
+r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
+kind, task_class = sys.argv[2:]
+arms = {row['arm'] for row in r.load_capability_matrix()}
+legacy = r._dispatchable_arm_sets()[0] & {'glm', 'glm-flash', 'freepool'}
+print(','.join(sorted(arm for arm in arms if
+    r.lookup(kind, 'developer', arm, task_class).get('ok') or
+    (arm in legacy and any(row.get('arm') == arm and kind in row.get('kinds', [])
+                          for row in r.load_capability_matrix())))))
+PYREG
+)" || {
+    emit decision "arm_refused task=${_sig8} reason=launch_registry_unavailable kind=$2"
+    return 1
+  }
+  emit decision "launchable_seam task=${_sig8} source=registry kind=$2"
+  printf '%s' "${_arms}"
 }
 
 # The when:-class eligible ladder arms, ORDER-FREE (every entry, never the
@@ -6119,7 +6110,7 @@ _spawn_worker_body() {
   # cannot disagree. Explicit env still wins: LEADV2_SUBSESSION_SLIM_MCP=0
   # restores the old spawn — loudly, see the cause= journal field.
   local _ci_slim="${LEADV2_SUBSESSION_SLIM_MCP:-}"
-  if [[ "${arm}" == "sonnet" && -z "${_ci_slim}" ]]; then
+  if [[ "${arm}" =~ ^(sonnet|haiku|opus|fable)$ && -z "${_ci_slim}" ]]; then
     _ci_slim=1
   fi
   # Loud fail-open (same lane): capture the lib's stderr so the journal line
@@ -6378,10 +6369,10 @@ CONTRACT_EOF
       _fp_spawn_ok=1
       bash "${SCRIPT_DIR}/lib/leadv2-freepool-gate.sh" record "${_fp_spawn_ok}" "$(( $(date +%s) - _fp_spawn_start ))" 2>/dev/null || true
       ;;
-    sonnet)
+    sonnet|haiku|opus|fable)
       local mfile
       mfile="$(mktemp "${TMPDIR:-/tmp}/leadv2-dispatch-mission.XXXXXX")" || {
-        log_err "spawn(sonnet): could not create mission tempfile"; return 1
+        log_err "spawn(${arm}): could not create mission tempfile"; return 1
       }
       printf '%s' "${mission}" > "${mfile}"
       # FIX PASS 4: same `9>&-` defense-in-depth as the glm arm above -- claude-subsession.sh
@@ -6393,42 +6384,52 @@ CONTRACT_EOF
       # process having already been `cd`'d there by its caller -- same value glm/codex now
       # get via --cwd, so all three arms are cwd-independent of how dispatch-code.sh itself
       # was invoked.
-      # EFFORT-IS-NOT-WIRED-01: claude-subsession.sh's --effort flag is passed
-      # straight through to the `claude` CLI's own --effort arg untouched; an
-      # empty RESOLVED_EFFORT (arbiter never ran) omits the flag, same as before.
-      local -a _sonnet_effort_args=()
-      [[ -n "${RESOLVED_EFFORT:-}" ]] && _sonnet_effort_args=(--effort "${RESOLVED_EFFORT}")
-      # NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-ACCOUNT-01: threaded only here --
-      # the sonnet arm is the only one that runs through claude-subsession.sh
-      # / the profile selector. claude-subsession.sh hard-refuses (exit 5) if
-      # the named account cannot be confirmed, which surfaces below as a
-      # non-zero rc through the normal spawn_failed/refused path -- no new
-      # failure branch needed here.
-      local -a _sonnet_profile_args=()
-      [[ -n "${requested_profile}" ]] && _sonnet_profile_args=(--requested-profile "${requested_profile}")
+      # Resolve the actual adapter argv, not just the journal's chosen arm.
+      local _claude_argv_text _claude_model _arg
+      local -a _claude_launch_args=() _claude_profile_args=()
+      if ! _claude_argv_text="$(python3 "${SCRIPT_DIR}/lib/leadv2-launch-registry.py" \
+          --kind "${kind:-code}" --role developer --arm "${arm}" \
+          --task-class "${task_class:-standard}" 2>"${errf}")"; then
+        rm -f "${mfile}"
+        LAST_ARM_OUTCOME="${arm}_refused_launch_registry"
+        emit decision "arm_refused by=router model=${arm} task=${sig8} reason=launch_registry_miss detail=$(tr ' \n' '__' < "${errf}")"
+        return 2
+      fi
+      while IFS= read -r _arg; do _claude_launch_args+=("${_arg}"); done <<< "${_claude_argv_text}"
+      _claude_model="${_claude_launch_args[3]:-}"
+      if ! python3 "${SCRIPT_DIR}/lib/leadv2-launch-registry.py" --check \
+          --arm "${arm}" --model "${_claude_model}" >/dev/null; then
+        rm -f "${mfile}"
+        emit decision "arm_refused by=router model=${arm} task=${sig8} reason=launch_model_mismatch resolved_model=${_claude_model}"
+        return 2
+      fi
+      # The arbiter's effort belongs to the winning cell; keep it when present.
+      [[ -n "${RESOLVED_EFFORT:-}" ]] && _claude_launch_args[5]="${RESOLVED_EFFORT}"
+      [[ -n "${requested_profile:-}" ]] && _claude_profile_args=(--requested-profile "${requested_profile}")
+      emit decision "launch_model_resolved task=${sig8} task_id=dispatch-${sig8} arm=${arm} resolved_model=${_claude_model}"
       out="$(cd "${WORK_ROOT}" && PROJECT_ROOT="${PROJECT_ROOT}" LEADV2_SUBSESSION_SLIM_MCP="${LEADV2_SUBSESSION_SLIM_MCP:-1}" bash "${SUBSESSION_BIN}" \
-             --role developer --model sonnet \
-             --task-id "dispatch-${sig8}" --mission-file "${mfile}" "${_sonnet_effort_args[@]}" "${_sonnet_profile_args[@]}" 2>"${errf}" 9>&-)"; rc=$?
+             "${_claude_launch_args[@]}" \
+             --task-id "dispatch-${sig8}" --mission-file "${mfile}" "${_claude_profile_args[@]}" 2>"${errf}" 9>&-)"; rc=$?
       rm -f "${mfile}"
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
         local refusal
         refusal="$(refusal_reason "${arm}" "${rc}" "${out}" "${err}" || true)"
         if [[ -n "${refusal}" ]]; then
-          LAST_ARM_OUTCOME="sonnet_refused_${refusal}"
-          emit decision "arm_refused by=router model=sonnet task=${sig8} reason=sonnet_refused_${refusal}"
-          _maybe_record_quota_lockout "sonnet" "${refusal}" "${out}"$'\n'"${err}"
-          log "spawn(sonnet) refused: ${refusal}"
+          LAST_ARM_OUTCOME="${arm}_refused_${refusal}"
+          emit decision "arm_refused by=router model=${arm} task=${sig8} reason=${arm}_refused_${refusal}"
+          _maybe_record_quota_lockout "${arm}" "${refusal}" "${out}"$'\n'"${err}"
+          log "spawn(${arm}) refused: ${refusal}"
           return 2
         fi
-        emit decision "spawn_failed by=router model=sonnet task=${sig8} rc=${rc} reason=launcher_nonzero_exit"
-        log_err "spawn(sonnet) failed rc=${rc}: ${out} ${err}"
+        emit decision "spawn_failed by=router model=${arm} task=${sig8} rc=${rc} reason=launcher_nonzero_exit"
+        log_err "spawn(${arm}) failed rc=${rc}: ${out} ${err}"
         return 1
       fi
       handle="$(printf '%s\n' "${out}" | tail -1)"
       if [[ -z "${handle}" ]]; then
-        emit decision "spawn_failed by=router model=sonnet task=${sig8} reason=empty_handle"
-        log_err "spawn(sonnet) returned an empty handle -- treating as launch failure (dry-run launcher?)"
+        emit decision "spawn_failed by=router model=${arm} task=${sig8} reason=empty_handle"
+        log_err "spawn(${arm}) returned an empty handle -- treating as launch failure (dry-run launcher?)"
         return 1
       fi
       # Liveness: claude-subsession.sh's handle line is `PID=<pid> LABEL=... SESSION_ID=...`
@@ -6442,8 +6443,8 @@ CONTRACT_EOF
       local pid
       pid="$(printf '%s\n' "${handle}" | sed -n 's/^PID=\([0-9][0-9]*\).*/\1/p')"
       if [[ -z "${pid}" ]]; then
-        emit decision "spawn_failed by=router model=sonnet task=${sig8} handle=${handle} reason=no_pid_in_handle"
-        log_err "spawn(sonnet) handle='${handle}' has no parseable PID= token -- treating as launch failure"
+        emit decision "spawn_failed by=router model=${arm} task=${sig8} handle=${handle} reason=no_pid_in_handle"
+        log_err "spawn(${arm}) handle='${handle}' has no parseable PID= token -- treating as launch failure"
         return 1
       fi
       if ! kill -0 "${pid}" 2>/dev/null; then
@@ -6464,8 +6465,8 @@ CONTRACT_EOF
           _cause="$(grep -v '^[[:space:]]*$' "${_stream_file}" 2>/dev/null | head -3 \
                     | cut -c1-200 | tr '\n' '|' | tr -s ' ')"
         fi
-        emit decision "spawn_failed by=router model=sonnet task=${sig8} handle=${handle} reason=not_live cause=${_cause}"
-        log_err "spawn(sonnet) pid=${pid} is not alive -- treating as launch failure; first stream lines: ${_cause}"
+        emit decision "spawn_failed by=router model=${arm} task=${sig8} handle=${handle} reason=not_live cause=${_cause}"
+        log_err "spawn(${arm}) pid=${pid} is not alive -- treating as launch failure; first stream lines: ${_cause}"
         return 1
       fi
       # LANE-REGISTRY-SELF-DEADLOCK-01 Defect 1: stamp the WORKER's pid + birth
@@ -6604,7 +6605,7 @@ CONTRACT_EOF
   # (leadv2-lane-pulse-watch.sh), so the registry's liveness now tracks the
   # LANE's lifetime, not this dispatcher's. The sonnet arm keeps its own,
   # more precise worker pid -- never overwritten here.
-  if [[ "${arm}" != "sonnet" && -n "${DISPATCH_REG_ID:-}" && -n "${_LV2_LANE_PULSE_WATCH_PID:-}" ]] \
+  if [[ ! "${arm}" =~ ^(sonnet|haiku|opus|fable)$ && -n "${DISPATCH_REG_ID:-}" && -n "${_LV2_LANE_PULSE_WATCH_PID:-}" ]] \
      && kill -0 "${_LV2_LANE_PULSE_WATCH_PID}" 2>/dev/null; then
     set +e
     if declare -F leadv2_active_set_worker_pid >/dev/null 2>&1; then
@@ -7407,8 +7408,7 @@ Usage:
                 --resume-lane / --worktree pin WORK_ROOT to an EXISTING lane worktree instead
                 of ensure-creating a new one (mutually exclusive; resumes finished/dead lanes,
                 never hijacks a running one).
-                Exit codes: 0 spawned/resolved, 2 duplicate task-sig, 3 arm=opus (lead
-                judgment, not auto-dispatched), 4 spawn failed (retryable -- a failed
+                Exit codes: 0 spawned/resolved, 2 duplicate task-sig, 4 spawn failed (retryable -- a failed
                 spawn or --no-spawn never leaves a blocking ledger row behind), 5 placement
                 refused (nonexistent/foreign-repo/live lane — no ledger row, no spawn),
                 6 burn hard cap (BURN-GOVERNOR-01: 24h local token burn >= hard cap --
@@ -8588,47 +8588,8 @@ exit is treated as an incident."
   # so callers don't hard-fail on an unknown arg, but it is a documented no-op for dedup
   # purposes (logged as such below).
 
-  # opus arms are lead judgment (design/safety/arch) — resolved but NOT auto-dispatched,
-  # so there is nothing to spawn or roll back. Keep the simpler reserve-only atomic (no
-  # race is possible here: nothing ever needs to be undone for this arm).
-  # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: the pre-arbiter opus park
-  # only guards the DEFAULT path (opus shares the lead's own account window;
-  # its matrix cell is pool_default: false). An explicit --pin-arm opus or an
-  # --arm-pool containing opus is an operator decision: it goes through the
-  # arbiter and either runs or refuses with a typed stage.
-  if [[ "${arm}" == "opus" && -z "${requested_arm}" && -z "${arm_pool_cli}" ]]; then
-    local orc
-    atomic_dispatch_reserve_confirm_opus "${sig}" "${arm}" "${rule}"
-    orc=$?
-    if [[ ${orc} -eq 2 ]]; then
-      if [[ "${force}" == "1" ]]; then
-        emit decision "dispatch_override_rejected reason=force_not_permitted task=${sig8} ledger=$(dispatch_ledger_file)"
-      fi
-      emit decision "dispatch_refused reason=duplicate_task_signature task=${sig8} ledger=$(dispatch_ledger_file)"
-      # FIX (wave2 finding 3): do NOT terminalize this caller against the shared sig8
-      # key. A duplicate-signature refusal only tells us ANOTHER caller for the same
-      # sig is already in flight -- it says nothing about how that other caller's
-      # dispatch will end. Writing "refused" here would win the terminal ledger's
-      # write-once race and permanently discard whatever landed/parked/dead verdict
-      # the actual winner eventually earns.
-      printf 'dispatch_refused reason=duplicate_task_signature task=%s\n' "${sig8}"
-      exit 2
-    elif [[ ${orc} -ne 0 ]]; then
-      log_err "dispatch ledger record failed (rc=${orc}) for task=${sig8}"
-      _dl_note "${sig8}" dead "ledger_record_failed_rc_${orc}" "" "${founder_task_id}"
-      exit 1
-    fi
-    emit decision "route_resolved by=router router=${router_label} model=opus task=${sig8} rule=${rule} reason=${reason}${_ROUTE_FAIL_OPEN}"
-    printf 'route_resolved by=router router=%s model=opus task=%s rule=%s reason=%s%s\n' "${router_label}" "${sig8}" "${rule}" "${reason}" "${_ROUTE_FAIL_OPEN}"
-    log "route_note model=opus requires_lead_judgment (GLM banned for kind=${kind:-<none>}); not auto-dispatched"
-    # FIX (wave2 finding 4): opus dispatch is explicitly NOT auto-dispatched -- nothing
-    # ran, nothing was ever going to run, and the lead's own judgment (a separate,
-    # out-of-band action) is what actually resolves this task. "landed" claimed
-    # delivered work that never happened; "parked" is the true state until the lead
-    # acts.
-    _dl_note "${sig8}" parked resolved_opus_lead_judgment "" "${founder_task_id}"
-    exit 3
-  fi
+  # No pre-arbiter opus park: pool_default excludes default spend, while
+  # explicit pins/pools use the same reserve/spawn/confirm transaction below.
 
   # A refusal is an admission signal, not a broken launcher.  The candidate
   # chain follows the dispatch_ladder from the routing YAML (P1): the resolved

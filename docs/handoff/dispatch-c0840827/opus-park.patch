@@ -1,0 +1,13 @@
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -8588,6 +8588,10 @@
+   # so callers don't hard-fail on an unknown arg, but it is a documented no-op for dedup
+   # purposes (logged as such below).
+ 
++  if [[ "${arm}" == "opus" ]]; then
++    atomic_dispatch_reserve_confirm_opus "${sig}" "${arm}" "${rule}"
++    exit 3
++  fi
+   # No pre-arbiter opus park: pool_default excludes default spend, while
+   # explicit pins/pools use the same reserve/spawn/confirm transaction below.
+ 

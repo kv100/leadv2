@@ -2,42 +2,8 @@
 # changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01);
 # EXTRA_SUITE_MAP rows for the same stems live in tests/run-all.sh at the repo root.
 # run-all-triggers: leadv2-dispatch-code leadv2-route-arbiter leadv2-routing.yaml leadv2-glm-policy-resolve.py
-#
-# POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01 -- the pool must be computed
-# BEFORE the arm is chosen, never reconstructed from the ordered ladder
-# suffix of an already-resolved arm.
-#
-# Bug reproduced live (2026-09-07): a dispatch pinned to fable
-# (--kind plan --task-class heavy --requested-arm fable) came back
-#   route_resolved by=arbiter role=worker arm=refuse
-#   reason=requested_arm_incapable ... arm_excluded=fable:not_allowed
-# The pin never had a chance: _build_candidate_chain walked dispatch_ladder
-# from the RESOLVED arm's position (suffix only), haiku/opus/fable were
-# dropped by `dispatch: false` / the DISPATCHABLE filter, the suffix became
-# the arbiter's allowed_arms, and everything outside was marked not_allowed
-# BEFORE the requested_arm filter ran. Fable was not incapable -- it was
-# never in the room.
-#
-# Contract under test (mission):
-#   - a pin to an arm the legacy ladder branch didn't contain either RUNS on
-#     that arm or REFUSES naming the exact typed stage (not_in_pool,
-#     not_launchable, untrusted, capped, failure_memory) -- never
-#     requested_arm_incapable for a capable arm;
-#   - --arm-pool a,b,c is a hard candidate set: unknown names / empty /
-#     pin+pool conflict are errors BEFORE anything launches; the winner runs
-#     inside the set;
-#   - --pin-arm is an alias of --requested-arm;
-#   - the launchability seam is one named function: with a registry present
-#     (sibling lane ARMS-CANNOT-LAUNCH-THEMSELVES-01) a pin to a
-#     registry-launchable arm RUNS; with the stub (today) it refuses
-#     honestly as not_launchable.
-#
-# Controls (mission, each mutation INSIDE a throwaway copy of the production
-# script, each must turn this suite red):
-#   M1: restore _build_candidate_chain as the allowed_arms/pool source
-#       (the exact live bug) -> the pin-fable case must flip.
-#   M3: allow silent substitution when the pinned arm is capped (strip the
-#       exit) -> the pin-capped case must flip.
+# Real registry reachability, hard pool/pin restrictions and argv capture.
+# GLM/freepool remain on their existing adapters; incapable fable/code refuses.
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,28 +21,16 @@ trap '[[ "${POOLREACH_KEEP_LOGS:-0}" == "1" ]] || rm -rf "$TMP"' EXIT
 bash -n "$DISPATCH_BIN" || { fail "bash syntax: dispatch"; printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"; exit 1; }
 pass "bash syntax: dispatch"
 
-# fable MUST still be absent from the stub seam's DISPATCHABLE_BUILD_ARMS --
-# the whole "honest refusal today, runs when the registry lands" story rests
-# on the stub telling the truth about what _spawn_worker_body can launch.
-STUB_ARMS="$(python3 -c '
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("_pr", sys.argv[1])
-m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-print(" ".join(sorted(m.DISPATCHABLE_BUILD_ARMS)))' \
-  "${PLUGIN_ROOT}/scripts/lib/leadv2-glm-policy-resolve.py" 2>/dev/null || true)"
-if [[ -n "${STUB_ARMS}" && " ${STUB_ARMS} " == *" fable "* ]]; then
-  fail "(fixture) fable joined DISPATCHABLE_BUILD_ARMS (${STUB_ARMS})" \
-    "the stub seam now claims to launch fable; re-anchor this suite on an arm the stub still cannot launch (see the seam note in leadv2-glm-policy-resolve.py)"
-else
-  pass "(fixture) fable is still outside the stub seam (DISPATCHABLE_BUILD_ARMS)"
-fi
-
 HEALTHY='{"glm":{"status":"ok","five_hour":{"pct":10},"weekly":{"pct":10}},"codex":{"status":"ok","binding_window":"primary","windows":[{"kind":"primary","used_percent":20}]},"anthropic":{"status":"ok","accounts":[{"active":true,"status":"ok","five_hour_pct":20,"seven_day_pct":20}]}}'
 CLAUDE_CAPPED='{"glm":{"status":"ok","five_hour":{"pct":10},"weekly":{"pct":10}},"codex":{"status":"ok","binding_window":"primary","windows":[{"kind":"primary","used_percent":20}]},"anthropic":{"status":"ok","accounts":[{"active":true,"status":"ok","five_hour_pct":99,"seven_day_pct":99}]}}'
 
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$ROUTE_TEST_QUOTA"\n' > "$TMP/live.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/free.sh"
-printf '#!/usr/bin/env bash\nprintf "PID=%%s LABEL=t SESSION_ID=t\\n" "$$"\n' > "$TMP/worker.sh"
+cat > "$TMP/worker.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$REACH_CAPTURE"
+printf 'PID=%s LABEL=t SESSION_ID=t\n' "$REACH_PID"
+EOF
 printf '#!/usr/bin/env bash\nprintf %%s "{\\"complexity\\":\\"complex\\",\\"estimate_source\\":\\"judge\\"}"\n' > "$TMP/task-judge.sh"
 chmod +x "$TMP/live.sh" "$TMP/free.sh" "$TMP/worker.sh" "$TMP/task-judge.sh"
 
@@ -93,21 +47,24 @@ setup_repo() { # <dir>
 # with rc preserved in REACH_RC (never pipe this: exit codes are the M3 signal).
 run_dispatch() {
   local bin="$1" repo="$2" suffix="$3" quota="$4"; shift 4
-  (cd "$repo" && LEADV2_STATE_ROOT="$TMP/state-root-$suffix" \
-    LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" \
+  local -a spawn_args=(--no-spawn)
+  [[ "${REACH_SPAWN:-0}" == 1 ]] && spawn_args=()
+  (cd "$repo" && LEADV2_LANE_WORK_ROOT="$repo" LEADV2_DISPATCH_LANE_WORKTREE_BIN="$TMP/free.sh" LEADV2_STATE_ROOT="$TMP/state-root-$suffix" \
+    LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" GLM_POLICY_QUOTA_LIVE="$TMP/live.sh" LEADV2_QUOTA_LIVE="$TMP/live.sh" \
     LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" \
     LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-dispatch-$suffix" \
-    ROUTE_TEST_QUOTA="$quota" \
+    ROUTE_TEST_QUOTA="$quota" REACH_CAPTURE="$TMP/$suffix.argv" REACH_PID="$$" \
     CLAUDE_PROJECT_ROOT="$repo" LEADV2_PROJECT_ROOT="$repo" \
     LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-$suffix" \
     LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
     LEADV2_REQUIRE_PHASES=0 \
     LEADV2_ROUTER_V2=0 LEADV2_EXCLUDED_ARMS=__none__ LEADV2_LANE_SHAPE=off \
-    LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
+    LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 LEADV2_TEST_CONTEXT=1 LEADV2_PULSE_MODE=0 LEADV2_ARM_LANE_PULSE_WATCH=0 LEADV2_SINGLE_LEAD_BEAT=0 \
+    LEADV2_DISPATCH_COST_ESTIMATE=0 LEADV2_JOURNAL_BIN="$TMP/free.sh" LEADV2_EVENT_BIN="$TMP/free.sh" \
     LEADV2_TASK_JUDGE_BIN="$TMP/task-judge.sh" \
     LEADV2_DISPATCH_SUBSESSION_BIN="$TMP/worker.sh" \
     bash "$bin" "pool-reachability probe $suffix" \
-      --kind plan --task-class heavy --no-spawn --writes src/x.py "$@" 2>&1)
+      --kind plan --task-class heavy "${spawn_args[@]}" --writes src/x.py "$@" 2>&1)
 }
 
 expect_rc() { # <label> <actual> <want>
@@ -121,36 +78,36 @@ REPO_G1="$TMP/repo-g1"; setup_repo "$REPO_G1"
 out="$(run_dispatch "$DISPATCH_BIN" "$REPO_G1" g1 "$HEALTHY" --requested-arm fable)"
 REACH_RC=$?
 printf '%s\n' "$out" > "$TMP/g1.log"
-if printf '%s\n' "$out" | grep -q 'reason=requested_arm_not_launchable requested_arm=fable'; then
-  pass "(g1) pin fable plan/heavy refuses naming the stage: requested_arm_not_launchable"
+if printf '%s\n' "$out" | grep -q 'route_resolved by=arbiter role=worker arm=fable'; then
+  pass "(g1) pin fable plan/heavy resolves as fable"
 else
-  fail "(g1) pin fable plan/heavy did not refuse with requested_arm_not_launchable" "log: $TMP/g1.log"
+  fail "(g1) pin fable plan/heavy did not resolve as fable" "log: $TMP/g1.log"
 fi
-if printf '%s\n' "$out" | grep -q 'arm_excluded=[^ ]*fable:not_launchable'; then
-  pass "(g1) the refusal line carries the typed token fable:not_launchable"
+if printf '%s\n' "$out" | grep -q 'arbiter_pick=fable'; then
+  pass "(g1) the dispatcher selects fable"
 else
-  fail "(g1) refusal line lacks fable:not_launchable" "log: $TMP/g1.log"
+  fail "(g1) dispatcher lacks arbiter_pick=fable" "log: $TMP/g1.log"
 fi
 if printf '%s\n' "$out" | grep -q 'requested_arm_incapable'; then
   fail "(g1) requested_arm_incapable still appears for a capable arm -- the live bug is back" "log: $TMP/g1.log"
 else
   pass "(g1) requested_arm_incapable is gone for a capable (matrix-covered) arm"
 fi
-if printf '%s\n' "$out" | grep -q 'launchable_seam .*source=stub_dispatchable'; then
-  pass "(g1) the launchability seam names its source (stub_dispatchable)"
+if printf '%s\n' "$out" | grep -q 'launchable_seam .*source=registry'; then
+  pass "(g1) the launchability seam names its source (registry)"
 else
-  fail "(g1) no launchable_seam source=stub_dispatchable line" "log: $TMP/g1.log"
+  fail "(g1) no launchable_seam source=registry line" "log: $TMP/g1.log"
 fi
-expect_rc "(g1) stage refusal exits 4 (never silently substitutes)" "$REACH_RC" "4"
+expect_rc "(g1) capable pin resolves" "$REACH_RC" "0"
 
 # ── GREEN 2: --pin-arm is an alias of --requested-arm ──────────────────────
 REPO_G2="$TMP/repo-g2"; setup_repo "$REPO_G2"
 out="$(run_dispatch "$DISPATCH_BIN" "$REPO_G2" g2 "$HEALTHY" --pin-arm fable)"
 REACH_RC=$?
 printf '%s\n' "$out" > "$TMP/g2.log"
-if printf '%s\n' "$out" | grep -q 'reason=requested_arm_not_launchable requested_arm=fable' \
+if printf '%s\n' "$out" | grep -q 'route_resolved by=arbiter role=worker arm=fable' \
   && printf '%s\n' "$out" | grep -q 'pin=fable'; then
-  pass "(g2) --pin-arm behaves exactly like --requested-arm (refusal + persisted pin)"
+  pass "(g2) --pin-arm behaves exactly like --requested-arm (selection + persisted pin)"
 else
   fail "(g2) --pin-arm alias diverged" "log: $TMP/g2.log"
 fi
@@ -209,38 +166,27 @@ printf '%s\n' "$out" | grep -q 'dispatch_refused reason=pin_and_pool_conflict' \
   && pass "(g6) pin+pool conflict refused (a pin IS a singleton pool)" \
   || fail "(g6) pin_and_pool_conflict missing" "log: $TMP/g6.log"
 
-# ── GREEN 7: the registry-landed shape -- a pin to a launchable arm RUNS ──
-# Contract of the seam (_arm_launchable_arms): when
-# scripts/lib/leadv2-launch-registry.sh exists and exports
-# leadv2_launchable_arms <kind> <role>, the seam uses IT (source=registry)
-# and the same pin that refuses not_launchable today must RUN. This is the
-# single named seam the sibling lane (ARMS-CANNOT-LAUNCH-THEMSELVES-01)
-# lands into -- do not fork a second registry.
-REG_PLUGIN="$TMP/registry-plugin"
-mkdir -p "$REG_PLUGIN"
-cp -R "${PLUGIN_ROOT}/scripts" "$REG_PLUGIN/scripts"
-cp -R "${PLUGIN_ROOT}/config" "$REG_PLUGIN/config"
-cat > "$REG_PLUGIN/scripts/lib/leadv2-launch-registry.sh" <<'EOF'
-# fixture registry (test double for ARMS-CANNOT-LAUNCH-THEMSELVES-01)
-leadv2_launchable_arms() {
-  printf '%s' "glm,glm-flash,freepool,codex,sonnet,haiku,opus,fable"
-}
-EOF
+# A genuinely incapable kind stays refused through the real registry.
 REPO_G7="$TMP/repo-g7"; setup_repo "$REPO_G7"
-out="$(run_dispatch "$REG_PLUGIN/scripts/leadv2-dispatch-code.sh" "$REPO_G7" g7 "$HEALTHY" --requested-arm fable)"
+out="$(run_dispatch "$DISPATCH_BIN" "$REPO_G7" g7 "$HEALTHY" --kind code --pin-arm fable)"
 REACH_RC=$?
 printf '%s\n' "$out" > "$TMP/g7.log"
-if printf '%s\n' "$out" | grep -q 'launchable_seam .*source=registry'; then
-  pass "(g7) seam flips to source=registry when the registry is present"
+if [[ "$REACH_RC" == 4 ]] && printf '%s\n' "$out" | grep -q 'requested_arm_'; then
+  pass "(g7) fable cannot launch code and is refused"
 else
-  fail "(g7) seam did not report source=registry" "log: $TMP/g7.log"
+  fail "(g7) incapable fable/code escaped refusal" "$out"
 fi
-if printf '%s\n' "$out" | grep -q 'route_resolved by=arbiter role=worker arm=fable.*reason=explicit_requested_capable'; then
-  pass "(g7) the SAME pin now RUNS on fable (explicit_requested_capable)"
+
+# Explicit opus must reach the worker process, not the historical park.
+REPO_OPUS="$TMP/repo-opus"; setup_repo "$REPO_OPUS"
+out="$(REACH_SPAWN=1 run_dispatch "$DISPATCH_BIN" "$REPO_OPUS" opus "$HEALTHY" --kind safety --pin-arm opus)"
+REACH_RC=$?
+printf '%s\n' "$out" > "$TMP/opus.log"
+if [[ "$REACH_RC" == 0 ]] && [[ -s "$TMP/opus.argv" ]] && grep -qx opus "$TMP/opus.argv"; then
+  pass "explicit --pin-arm opus reached spawn with model opus"
 else
-  fail "(g7) registry-launchable pin did not run on fable" "log: $TMP/g7.log"
+  fail "explicit --pin-arm opus failed to reach spawn" "rc=$REACH_RC $(cat "$TMP/opus.argv" 2>/dev/null) $out"
 fi
-expect_rc "(g7) registry-launchable pin resolves rc=0" "$REACH_RC" "0"
 
 # ── RED M1: restore _build_candidate_chain as the pool source ─────────────
 # The exact live bug: the candidate_arms array (the ladder SUFFIX from the
