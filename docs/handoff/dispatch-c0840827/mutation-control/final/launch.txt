@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-launch-uses-the-chosen-arm.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=docs/handoff/dispatch-c0840827/launch.patch
+baseline_rc=0
+mutated_rc=1
+red_line=AssertionError: ARGV_MISMATCH expected=haiku actual=sonnet
+diff_hash=1c775b294d65cae9db05a7d4c7e8f2831aee5d3cbe4630a69a9a4b0fc72c8d5c
+lane_diff_hash=c23484413d2101af949d865dadf3b74a19930ffbfa238c50eefd80b427698558
