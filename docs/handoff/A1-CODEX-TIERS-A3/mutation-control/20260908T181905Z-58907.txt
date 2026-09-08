@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-codex-tier-model-table.sh
+file=plugins/leadv2/scripts/codex-task.sh
+anchor=s|echo "\[codex-task\] tier=\$_tier fallback: \$_missing absent from \$_mc -> \$_chosen" >&2|_chosen="gpt-6-astra"  # MUTATED-NEGATIVE-CONTROL: silent astra, no journal|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: g2: sol-absent journal line missing: 
+diff_hash=af50746fc561e9112b8037549c53b5fd5e37f1e8799ac4f1b66ece6a26aa7102
+lane_diff_hash=6de530beed51e403300020194ffb5f6258db9ab53aa95ba952c72a0623654688
