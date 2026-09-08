@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-core-offline-known-red-skip.sh
+file=plugins/leadv2/scripts/tests/run-core-offline.sh
+anchor=s|return 1 # skip-mut-1 marker: budget scope gates the skip$|: # skip-mut-1 mutated: scope gate dropped|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: (2) bare invocation skipped allow-listed suites; rc=0 out=
+diff_hash=7413af1ea37c00fa6e49f03faeb3893e8eb75e10dde4f3ef8d53b3bf4728a2c2
+lane_diff_hash=13a781ab06867bf65792fec8ab80a0a2243f878314c78bf20eacf88a083215ec

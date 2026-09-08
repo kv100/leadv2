@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-gate-reaches-a-verdict-inside-budget.sh
+file=tests/run-all.sh
+anchor=s|# known-red-mut-1 marker: the allow-list decision every classification consumes|return 0 # known-red-mut-1: everything is known-red|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: (2) guard failed; rc=0 out=
+diff_hash=48d46a18c086ac1a75b875f35fdee00b40eb6ea7736f58fb0c40d3b2b7a24362
+lane_diff_hash=13a781ab06867bf65792fec8ab80a0a2243f878314c78bf20eacf88a083215ec

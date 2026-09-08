@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-gate-reaches-a-verdict-inside-budget.sh
+file=tests/run-all.sh
+anchor=s|^  printf '%s' "${v}" # ceiling-mut-1 marker.*$|  printf '0'|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: (1) ceiling verdict failed; rc=0 out=
+diff_hash=36038d7843a90e6c67556f4b35b8baf3319c59aa3ef05ed20af89ee7c7a6bc4d
+lane_diff_hash=13a781ab06867bf65792fec8ab80a0a2243f878314c78bf20eacf88a083215ec
