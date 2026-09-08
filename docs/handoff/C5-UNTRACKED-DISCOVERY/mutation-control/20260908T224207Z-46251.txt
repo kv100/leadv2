@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-discovery-refuses-untracked-suites.sh
+file=plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh
+anchor=s|1) return 1 ;;  # c5-mut-1: untracked -> refused|1) return 0 ;;|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: case1 rc=1 (expected 0)
+diff_hash=cfc0f413343c189f40bbd0b910b73d6e89d70b490aa47f8855a8fb2f025bb60f
+lane_diff_hash=49dffba18ceb39484334859c8640fa0393e20bb85ada05013929381f5ca8f15d
