@@ -59,3 +59,7 @@
 - 2026-08-07T00:45:44Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786063542-520 handle=glm-test-run
 - 2026-08-07T00:45:44Z [decision] mission-version task=- sig=567ba028 rev=? head="plugin-only degraded mode test  --- If you hit a decision you cannot safely make yourself "
 - 2026-08-07T00:45:47Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-09-06T00:22:28Z [decision] route_v2_estimate estimate_id=09e510fe estimate_source=fallback complexity=trivial work_kind=build duration_class=short risk_class=none flag_source=title subsystems_touched=1 needs_live_verification=False cache_hit=false safety_floor=none
+- 2026-09-07T03:28:16Z [decision] route_v2_estimate estimate_id=09e510fe estimate_source=fallback complexity=trivial work_kind=build duration_class=short risk_class=none subsystems_touched=1 needs_live_verification=False cache_hit=false
+- 2026-09-07T03:48:34Z [decision] route_v2_estimate estimate_id=09e510fe estimate_source=fallback complexity=trivial work_kind=build duration_class=short risk_class=none subsystems_touched=1 needs_live_verification=False cache_hit=false
+- 2026-09-07T04:05:31Z [decision] route_v2_estimate estimate_id=09e510fe estimate_source=fallback complexity=trivial work_kind=build duration_class=short risk_class=none subsystems_touched=1 needs_live_verification=False cache_hit=false
