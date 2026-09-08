@@ -71,6 +71,15 @@ mkdir -p "$OUT_DIR"
 SENTINEL="${OUT_DIR}/e2e-gate-passed.flag"
 LOG="${OUT_DIR}/e2e-gate.log"
 
+# Moved up from below (was defined just before its first use, near line 231)
+# so the D2 docs-only skip check below can log a journal decision too --
+# JOURNAL_BIN/_p8_emit only need SCRIPT_DIR/TASK_ID, both already set here.
+JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
+_p8_emit() { # <type> <text>
+  [[ -f "${JOURNAL_BIN}" ]] && bash "${JOURNAL_BIN}" append "${TASK_ID}" "$1" "$2" >/dev/null 2>&1 || true
+  printf '[leadv2-phase8-e2e-gate] %s\n' "$2" >&2
+}
+
 # Advisory lock: prevent two concurrent invocations for the SAME task_id
 # from interleaving writes to $LOG (see plan.md §9 R4). Mirrors the flock
 # convention already used by the deploy path.
@@ -199,6 +208,37 @@ if ! _lv2_e2e_resolve_root "${_p8_e2e_root}" "${PROJECT_ROOT}"; then
   exit 1
 fi
 _p8_e2e_root="${_lv2_e2e_root}"
+
+# ── D2: applicability check (E2E-GATE-TIMES-OUT-ON-DOCS-ONLY-DIAGNOSTICS-01) ─
+# Decide from the DIFF, not the task class: a change set with no executable
+# file has no end-to-end behaviour to verify. `skipped` is a THIRD outcome,
+# distinct from both `pass` and the rc=124 timeout path below -- never
+# collapsed into either. Same exclude set as lv2_lane_diff_is_empty /
+# GATE-FOREIGN-FAILURE-01 (docs/leadv2, docs/handoff are housekeeping
+# journal/handoff dirs, never the deliverable itself).
+_p8_diff_is_docs_only() { # <e2e_root> -> rc0 if every changed file is .md/docs/*, rc1 otherwise
+  local _root="$1" _f
+  local -a _changed
+  mapfile -t _changed < <(
+    { git -C "${_root}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+      git -C "${_root}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
+  )
+  for _f in "${_changed[@]}"; do
+    [[ -z "${_f}" ]] && continue
+    if [[ "${_f}" != *.md && "${_f}" != docs/* ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+if _p8_diff_is_docs_only "${_p8_e2e_root}"; then
+  printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: changed\nbypassed: false\nbypass_reason: \noutcome: skipped\nskip_reason: no_executable_change\ndeploy_verified: %s\ndeploy_verify_bypassed: %s\ndeploy_verify_bypass_reason: %s\n' \
+    "$TASK_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$DEPLOY_VERIFIED" "$DEPLOY_VERIFY_BYPASSED" "$DEPLOY_VERIFY_BYPASS_REASON" > "$SENTINEL"
+  _p8_emit decision "e2e_gate task=${TASK_ID} status=skipped verdict=skipped reason=no_executable_change"
+  echo "leadv2-phase8-e2e-gate: SKIPPED — diff contains no executable change (.md/docs only), nothing to exercise end-to-end — sentinel written: ${SENTINEL}" | tee "$LOG" >&2
+  exit 0
+fi
+
 if ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${_p8_e2e_root}")"; then
   echo "leadv2-phase8-e2e-gate: no e2e entrypoint in $(basename "${_p8_e2e_root}") -- blocked" \
     | tee "$LOG" >&2
@@ -228,11 +268,6 @@ fi
 # LANE_WRITES: line the dispatch path resolves via _prepass_writes(), out of
 # this task's own handoff dir. No LANE_WRITES declared -> empty, and the
 # whole_tree_fallback branch below applies exactly as before.
-JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
-_p8_emit() { # <type> <text>
-  [[ -f "${JOURNAL_BIN}" ]] && bash "${JOURNAL_BIN}" append "${TASK_ID}" "$1" "$2" >/dev/null 2>&1 || true
-  printf '[leadv2-phase8-e2e-gate] %s\n' "$2" >&2
-}
 _p8_prepass_writes() {
   local f="${OUT_DIR}/architect-prepass.md" line
   [[ -s "${f}" ]] || return 0

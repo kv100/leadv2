@@ -35,6 +35,60 @@ TEST_DIR="$PLUGIN_ROOT/scripts/tests"
 unset _src _dir
 # -----------------------------------------------------------------------------
 
+# --- E2E-GATE-RUNS-ALL-94-SUITES...-01: --scope contract ---------------------
+# tests/run-all.sh (and persona-engine's) implement `--scope changed|all`; the
+# phase-8 gate appends `--scope changed` to whatever leadv2-e2e-entrypoint.sh
+# resolves. Until 2026-09-07 this runner parsed NO arguments at all, so the
+# flag was silently discarded and every gate run executed all 94 suites
+# (measured: lane d2823c51e670, a 4-file diff, parked e2e_timeout rc=124 after
+# 900 s). Three rules bind the implementation below, in priority order:
+#   1. Fail OPEN. An undeterminable changed set (no base ref, git failure, an
+#      unmapped file, an empty selection) runs EVERYTHING and says why on
+#      stdout -- a scope bug that selects zero suites and exits 0 is the
+#      lying-green disease in its purest form, and it is invisible: the gate
+#      would go green FASTER and nobody would ask why.
+#   2. Say what it narrowed to, and why: suite count AND reason, every run.
+#      A gate whose only output in 900 s is one line is undiagnosable -- that
+#      is how this defect survived.
+#   3. An unknown argument is a loud error (exit 2), never a silent no-op.
+#      Silent arg-dropping is what let the gate claim a narrowed run for weeks.
+# The changed-file -> suite mapping reuses run-all's own mechanism (`#
+# run-all-triggers:` self-registration + EXTRA_SUITE_MAP rows, both literal
+# forms), so a suite registers its triggers in exactly ONE place no matter
+# which runner executes it. No argument at all keeps today's behaviour: the
+# full set, byte-for-byte.
+CORE_OFFLINE_SCOPE=""
+# The parser below SHIFTS the positional params away, so the original argv is
+# saved FIRST: the flock re-exec further down must forward it verbatim — the
+# locked child is the process that actually runs the suites, and re-parsing
+# there is idempotent.
+CORE_OFFLINE_ORIG_ARGS=("$@")
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --scope)
+      if [[ $# -lt 2 ]]; then
+        printf -- 'run-core-offline: --scope requires a value (changed|all)\n' >&2
+        exit 2
+      fi
+      CORE_OFFLINE_SCOPE="$2"; shift 2 ;;
+    --scope=*)
+      CORE_OFFLINE_SCOPE="${1#--scope=}"; shift ;;
+    -h|--help)
+      printf -- 'usage: run-core-offline.sh [--scope changed|all]\n' \
+        '  (no arguments: the full curated set — the pre-scope behaviour)\n' >&2
+      exit 0 ;;
+    *)
+      printf -- 'run-core-offline: unknown argument: %s\n' "$1" >&2
+      exit 2 ;;
+  esac
+done
+case "$CORE_OFFLINE_SCOPE" in
+  ''|all|changed) ;;
+  *)
+    printf -- 'run-core-offline: --scope must be changed|all (got %s)\n' "$CORE_OFFLINE_SCOPE" >&2
+    exit 2 ;;
+esac
+
 if [ -n "${LEADV2_CORE_OFFLINE_PROBE:-}" ]; then
   printf -- '[CORE-OFFLINE] probe LOGICAL_DIR=%s REPO_ROOT=%s PLUGIN_ROOT=%s TEST_DIR=%s\n' \
     "$LOGICAL_DIR" "$REPO_ROOT" "$PLUGIN_ROOT" "$TEST_DIR"
@@ -110,12 +164,19 @@ LEADV2_SUITE_LOCK_FILE="${LEADV2_SUITE_LOCK_FILE:-/tmp/leadv2-core-offline-$(_co
 # exit 0/1/2 -- see EOF) so "flock could not acquire" is unambiguous against
 # "the wrapped run legitimately exited with that code".
 #
-# Pure introspection (lists the shard partition, runs nothing) never needs to
-# serialize against a concurrent real run — skip the lock entirely for it.
+# Pure introspection (lists the shard partition, resolves the scope, runs
+# nothing) never needs to serialize against a concurrent real run — skip the
+# lock entirely for it.
 if [[ "$LEADV2_SUITE_LOCK_DISABLE" != "1" && -z "${LEADV2_SUITE_SHARDS_DUMP:-}" \
+  && -z "${LEADV2_CORE_OFFLINE_SCOPE_DUMP:-}" \
   && "${_LV2_CORE_OFFLINE_LOCK_HELD:-0}" != "1" ]]; then
+  # CORE_OFFLINE_ORIG_ARGS (saved before the parser shifted $@ away) is
+  # forwarded on both re-execs below: the locked child is the process that
+  # actually runs the suites, so dropping the arguments here would silently
+  # un-scope every real (lock-taking) invocation — the exact silent-arg-
+  # dropping this file's --scope contract exists to end.
   if flock -x -n -E 99 -o "$LEADV2_SUITE_LOCK_FILE" \
-    env _LV2_CORE_OFFLINE_LOCK_HELD=1 bash "${BASH_SOURCE[0]}"; then
+    env _LV2_CORE_OFFLINE_LOCK_HELD=1 bash "${BASH_SOURCE[0]}" ${CORE_OFFLINE_ORIG_ARGS[@]+"${CORE_OFFLINE_ORIG_ARGS[@]}"}; then
     exit 0
   else
     _lock_rc=$?
@@ -127,7 +188,7 @@ if [[ "$LEADV2_SUITE_LOCK_DISABLE" != "1" && -z "${LEADV2_SUITE_SHARDS_DUMP:-}" 
   printf -- '[CORE-OFFLINE] waiting for lock file=%s holder=%s (held by a concurrent run)\n' \
     "$LEADV2_SUITE_LOCK_FILE" "${_lock_holder:-<unknown>}" >&2
   if flock -x -w "$LEADV2_SUITE_LOCK_WAIT_S" -E 99 -o "$LEADV2_SUITE_LOCK_FILE" \
-    env _LV2_CORE_OFFLINE_LOCK_HELD=1 bash "${BASH_SOURCE[0]}"; then
+    env _LV2_CORE_OFFLINE_LOCK_HELD=1 bash "${BASH_SOURCE[0]}" ${CORE_OFFLINE_ORIG_ARGS[@]+"${CORE_OFFLINE_ORIG_ARGS[@]}"}; then
     exit 0
   else
     _lock_rc2=$?
@@ -515,6 +576,10 @@ SUITE_DEFS=(
   # justified ones stay in it.
   "core-offline shard pool placement lock (E2E-GATE-BROKE-TODAY-01)|||bash $TEST_DIR/test-core-offline-shard-scope-01.sh"
   "core-offline per-suite TMPDIR isolation (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-tmpdir-01.sh"
+  # The scope=changed contract itself (E2E-GATE-RUNS-ALL-94-SUITES-...-01):
+  # selection, fail-open fallbacks, loud narrowing, arg errors, negative
+  # controls M1/M2 via leadv2-mutation-control.sh.
+  "core-offline scope=changed selection (E2E-GATE-RUNS-ALL-94-SUITES-01)|||bash $TEST_DIR/test-core-offline-scope-changed.sh"
   "silent-arm commits-ahead + live-worker guard (GATE-FALSE-SILENT-01)|||bash $TEST_DIR/test-silent-arm-commits-ahead.sh"
   "plugin sync .claude/scripts link classification|||bash $TEST_DIR/test-plugin-sync-claude-scripts.sh"
   "plugin sync contracts write gate|||bash $TEST_DIR/test-plugin-sync-contracts-gate.sh"
@@ -552,6 +617,340 @@ if [[ -n "${LEADV2_SUITE_DEFS_OVERRIDE:-}" ]]; then
     [[ -n "$_override_line" ]] || continue
     SUITE_DEFS+=("$_override_line")
   done <<< "$LEADV2_SUITE_DEFS_OVERRIDE"
+fi
+
+# --- scope=changed selection (E2E-GATE-RUNS-ALL-94-SUITES-...-01) -----------
+# Reuses tests/run-all.sh's own file->suite mechanism so a suite registers its
+# triggers in exactly one place no matter which runner executes it:
+#   * `# run-all-triggers: <stem> ...` self-registration, discovered by the
+#     same four-directory walk, the same token rule ([A-Za-z0-9._-]+), and the
+#     same FATAL on a malformed declaration (an authoring error is never a
+#     silently unselected suite);
+#   * EXTRA_SUITE_MAP rows, both literal forms (leadv2's scalar string and
+#     persona-engine's declare -A), extracted with the same sed shapes
+#     lib/leadv2-dod-gate.sh's _dod_extra_suite_map_values() uses in
+#     production.
+# Selection narrows the SUITE_DEFS list above; the phase-8 gate's `--scope
+# changed` then exercises the lane's own suites instead of all 94.
+SCOPE_FILE_SEL=()
+_scope_sel_add() { # <abs suite path> — dedup append to SCOPE_FILE_SEL
+  local p="$1" e
+  for e in ${SCOPE_FILE_SEL[@]+"${SCOPE_FILE_SEL[@]}"}; do
+    [[ "$e" == "$p" ]] && return 0
+  done
+  SCOPE_FILE_SEL+=("$p")
+}
+
+_scope_resolve_suite_token() { # <repo-relative path | basename> -> abs path, rc1 if unresolvable
+  local v="$1" d
+  case "$v" in
+    /*) [[ -f "$v" ]] && { printf '%s' "$v"; return 0; }; return 1 ;;
+    */*) [[ -f "$REPO_ROOT/$v" ]] && { printf '%s' "$REPO_ROOT/$v"; return 0; }; return 1 ;;
+  esac
+  for d in "$REPO_ROOT/plugins/leadv2/scripts/tests" "$REPO_ROOT/.claude/scripts/tests" \
+           "$REPO_ROOT/plugins/leadv2/tests" "$REPO_ROOT/tests"; do
+    [[ -f "$d/$v" ]] && { printf '%s' "$d/$v"; return 0; }
+  done
+  return 1
+}
+
+# Fills SCOPE_MAP_ROWS ("key<TAB>value") from trigger declarations + EXTRA rows.
+# A malformed declaration sets SCOPE_TRIGGER_ERRORS (FATAL at use, mirroring
+# run-all's scan_suite_triggers); a malformed EXTRA row key is skipped — the
+# unmapped rule below is the safety net that turns it into a full-set run,
+# never a silent zero-suite run.
+_scope_load_map_rows() {
+  SCOPE_MAP_ROWS=()
+  SCOPE_TRIGGER_ERRORS=""
+  local dir file line spec tok n run_all row key val
+  for dir in "$REPO_ROOT/plugins/leadv2/scripts/tests" \
+             "$REPO_ROOT/.claude/scripts/tests" \
+             "$REPO_ROOT/plugins/leadv2/tests" \
+             "$REPO_ROOT/tests"; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r file; do
+      [[ -n "$file" ]] || continue
+      while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        spec="${line#'# run-all-triggers:'}"
+        n=0
+        while IFS= read -r tok; do
+          [[ -n "$tok" ]] || continue
+          case "$tok" in
+            *[!A-Za-z0-9._-]*)
+              SCOPE_TRIGGER_ERRORS="${SCOPE_TRIGGER_ERRORS}${file}: invalid trigger '${tok}' (allowed [A-Za-z0-9._-])
+" ;;
+            *)
+              n=$((n + 1))
+              SCOPE_MAP_ROWS+=("${tok}"$'\t'"${file}") ;;
+          esac
+        done <<< "$(printf '%s' "$spec" | tr ',' ' ' | tr -s '[:space:]' '\n')"
+        if [[ "$n" -eq 0 ]]; then
+          SCOPE_TRIGGER_ERRORS="${SCOPE_TRIGGER_ERRORS}${file}: declaration with no triggers
+"
+        fi
+      done <<< "$(grep -h '^# run-all-triggers:' "$file" 2>/dev/null || true)"
+    done < <(find "$dir" -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort)
+  done
+  run_all="$REPO_ROOT/tests/run-all.sh"
+  [[ -f "$run_all" ]] || return 0
+  # FORM 1 — scalar rows "stem:suite-path" (the leadv2 shape).
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    case "$row" in *:*) ;; *) continue ;; esac
+    key="${row%%:*}"
+    val="${row#*:}"
+    [[ -n "$val" ]] || continue
+    case "$key" in *[!A-Za-z0-9._-]*) continue ;; esac
+    SCOPE_MAP_ROWS+=("${key}"$'\t'"${val}")
+  done <<< "$(sed -n '/^EXTRA_SUITE_MAP="/,/"$/p' "$run_all" \
+    | sed -e '1s/^EXTRA_SUITE_MAP="//' -e '$s/"$//')"
+  # FORM 2 — declare -A rows ["stem"]="suite [suite...]" (the persona-engine
+  # shape); values are suite basenames there, resolved by
+  # _scope_resolve_suite_token below.
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    key="${row%%$'\t'*}"
+    val="${row#*$'\t'}"
+    case "$key" in *[!A-Za-z0-9._-]*) continue ;; esac
+    while IFS= read -r tok; do
+      [[ -n "$tok" ]] || continue
+      SCOPE_MAP_ROWS+=("${key}"$'\t'"${tok}")
+    done <<< "$(printf '%s' "$val" | tr -s '[:space:]' '\n')"
+  done <<< "$(sed -n '/^declare -A EXTRA_SUITE_MAP=(/,/^)/p' "$run_all" \
+    | sed -n 's/^[[:space:]]*\[\([^]]*\)\]="\([^"]*\)".*/\1'"$(_scope_tab)"'\2/p')"
+}
+_scope_tab() { printf '\t'; }
+
+_scope_sel_map_rows_for_stem() { # <stem> — add every map row keyed stem|stem.sh
+  local stem="$1" row key val resolved
+  for row in ${SCOPE_MAP_ROWS[@]+"${SCOPE_MAP_ROWS[@]}"}; do
+    key="${row%%$'\t'*}"
+    [[ "$key" == "$stem" || "$key" == "$stem".sh ]] || continue
+    val="${row#*$'\t'}"
+    resolved="$(_scope_resolve_suite_token "$val" || true)"
+    [[ -n "$resolved" ]] && _scope_sel_add "$resolved"
+  done
+}
+
+# One changed file -> suite files, by run-all's rules: a changed test file
+# selects itself; synthetic stems for files the generic allowlist never
+# reaches; then `test-<stem>.sh` candidates plus map rows. rc0 = the file is
+# mapped (>=1 suite selected), rc1 = unmapped.
+_scope_changed_file_select() { # <repo-relative changed file>
+  local cf="$1" stem="" via_hooks=0 cand
+  case "$cf" in
+    plugins/leadv2/scripts/tests/test-*.sh|.claude/scripts/tests/test-*.sh|plugins/leadv2/tests/test-*.sh|tests/test-*.sh)
+      [[ -f "$REPO_ROOT/$cf" ]] && _scope_sel_add "$REPO_ROOT/$cf" ;;
+  esac
+  if [[ "$cf" == "plugins/leadv2/hooks/hooks.json" ]]; then
+    stem="hooks.json"; via_hooks=1
+  elif [[ "$cf" == plugins/leadv2/hooks/*.sh ]]; then
+    stem="$(basename "$cf" .sh)"; via_hooks=1
+  elif [[ "$cf" == "plugins/leadv2/config/freepool-arm.yaml" ]]; then
+    stem="freepool-arm.yaml"
+  elif [[ "$cf" == "plugins/leadv2/config/leadv2-routing.yaml" ]]; then
+    stem="leadv2-routing.yaml"
+  elif [[ "$cf" == "plugins/leadv2/config/model-capability.yaml" ]]; then
+    stem="model-capability.yaml"
+  elif [[ "$cf" == "plugins/leadv2/ref/leadv2-main-model.yaml" ]]; then
+    stem="leadv2-main-model.yaml"
+  elif [[ "$cf" == "plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py" ]]; then
+    stem="leadv2-glm-policy-resolve.py"
+  elif [[ "$cf" == plugins/leadv2/workflows/*.js ]]; then
+    stem="$(basename "$cf")"
+  elif [[ "$cf" == ".claude/leadv2-overrides/status-collector-facts.sh" ]]; then
+    stem="status-collector-facts"
+  elif [[ "$cf" == ".gitignore" ]]; then
+    stem="gitignore"
+  elif [[ "$cf" == "tests/run-all.sh" ]]; then
+    stem="run-all.sh"
+  else
+    case "$cf" in
+      plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/scripts/*.py|plugins/leadv2/hooks/*.sh) ;;
+      *)
+        [[ ${#SCOPE_FILE_SEL[@]} -gt 0 ]] && return 0
+        return 1 ;;
+    esac
+    stem="$(basename "$cf")"
+    stem="${stem%.*}"
+  fi
+  if [[ "$via_hooks" == "1" ]]; then
+    for cand in "$REPO_ROOT/plugins/leadv2/scripts/tests/test-${stem}.sh" \
+                "$REPO_ROOT/tests/test-${stem}.sh"; do
+      [[ -f "$cand" ]] && _scope_sel_add "$cand"
+    done
+  else
+    for cand in "$REPO_ROOT/plugins/leadv2/scripts/tests/test-${stem}.sh" \
+                "$REPO_ROOT/.claude/scripts/tests/test-${stem}.sh" \
+                "$REPO_ROOT/plugins/leadv2/tests/test-${stem}.sh" \
+                "$REPO_ROOT/tests/test-${stem}.sh"; do
+      [[ -f "$cand" ]] && _scope_sel_add "$cand"
+    done
+  fi
+  _scope_sel_map_rows_for_stem "$stem"
+  [[ ${#SCOPE_FILE_SEL[@]} -gt 0 ]]
+}
+
+# The scope-resolution body. On success: SCOPE_SELECTED_DEFS holds the narrowed
+# defs and SCOPE_FALLBACK_REASON is empty; on failure: the full set stays and
+# SCOPE_FALLBACK_REASON says why. NO last-checked stamp on purpose: run-all
+# can persist its last-checked SHA because its always-on set re-runs
+# regardless; this runner's narrowed set IS the whole gate, so a stamp would
+# shrink a second gate run's diff to only-new commits and green it on partial
+# coverage — the lying-green shape, paid for with an optimization.
+#
+# DECLARED NEGATIVE CONTROLS (E2E-KILLRATE-01), applied by leadv2-mutation-
+# control.sh to the two `scope-mut-*` marker lines INSIDE this body — the two
+# shapes a scope gate takes when it lies green:
+#   M1 scope-mut-1: an unresolvable base returns an EMPTY selection as success
+#      -> the suite goes red on the executed-suite count being 0.
+#   M2 scope-mut-2: the changed-file list is ignored, everything is selected
+#      -> --scope parsed, full set run anyway; red on the count for a narrow
+#      diff (today's bug wearing the new flag).
+_core_offline_scope_changed_select() {
+  local tok base_ref="" merge_base="" range_start="" changed="" f="" g="" line=""
+  local -a rel_changed=() selected_files=() uniq_files=()
+  SCOPE_FALLBACK_REASON=""
+  SCOPE_BASE_DESC="unresolvable"
+  SCOPE_CHANGED_COUNT=0
+  SCOPE_UNMAPPED_COUNT=0
+  SCOPE_SELECTED_DEFS=()
+  if ! git -C "$REPO_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+    SCOPE_FALLBACK_REASON="git_error (rev-parse HEAD failed in $REPO_ROOT)"
+    return 1
+  fi
+  for tok in main origin/main; do
+    if git -C "$REPO_ROOT" rev-parse --verify "$tok" >/dev/null 2>&1; then
+      base_ref="$tok"
+      break
+    fi
+  done
+  if [[ -n "$base_ref" ]]; then
+    merge_base="$(git -C "$REPO_ROOT" merge-base HEAD "$base_ref" 2>/dev/null || true)"
+    if [[ -n "$merge_base" ]]; then
+      range_start="$merge_base"
+      SCOPE_BASE_DESC="${base_ref}@${merge_base:0:10}"
+    fi
+  fi
+  if [[ -z "$range_start" ]] && git -C "$REPO_ROOT" rev-parse --verify 'HEAD~1' >/dev/null 2>&1; then
+    range_start='HEAD~1'
+    SCOPE_BASE_DESC="HEAD~1@$(git -C "$REPO_ROOT" rev-parse --short 'HEAD~1' 2>/dev/null || printf 'HEAD~1')"
+  fi
+  if [[ -z "$range_start" ]]; then
+    # scope-mut-1: no-base fallthrough — fail OPEN to the full set, never an empty run
+    SCOPE_FALLBACK_REASON="no_base_ref (no main/origin/main merge-base, no HEAD~1)"
+    return 1
+  fi
+  # Changed set: uncommitted + committed range + untracked, minus the phase-8
+  # gate's own non-executable excludes (docs/leadv2, docs/handoff, *.md,
+  # docs/* — the gate skips such diffs as no_executable_change, so they must
+  # neither force nor dodge a full run here).
+  changed="$({
+    git -C "$REPO_ROOT" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null || true
+    git -C "$REPO_ROOT" diff --name-only "$range_start" HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null || true
+    git -C "$REPO_ROOT" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null || true
+  } | sort -u)"
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    case "$f" in *.md|docs/*) continue ;; esac
+    rel_changed+=("$f")
+  done <<< "${changed:-}"
+  SCOPE_CHANGED_COUNT=${#rel_changed[@]}
+  if [[ "$SCOPE_CHANGED_COUNT" -eq 0 ]]; then
+    SCOPE_FALLBACK_REASON="no_relevant_changed_files (base=${SCOPE_BASE_DESC}; everything else is .md/docs housekeeping)"
+    return 1
+  fi
+  _scope_load_map_rows
+  if [[ -n "$SCOPE_TRIGGER_ERRORS" ]]; then
+    printf '%s' "$SCOPE_TRIGGER_ERRORS" >&2
+    printf -- 'run-core-offline: FATAL bad_trigger_decl — a malformed # run-all-triggers: declaration is an error, never a silently unselected suite; fix the suite file(s) listed above\n' >&2
+    exit 2
+  fi
+  for f in ${rel_changed[@]+"${rel_changed[@]}"}; do
+    SCOPE_FILE_SEL=()
+    if _scope_changed_file_select "$f" && [[ ${#SCOPE_FILE_SEL[@]} -gt 0 ]]; then
+      selected_files+=("${SCOPE_FILE_SEL[@]}")
+    else
+      SCOPE_UNMAPPED_COUNT=$((SCOPE_UNMAPPED_COUNT + 1))
+    fi
+  done
+  for f in ${selected_files[@]+"${selected_files[@]}"}; do
+    local dup=0
+    for g in ${uniq_files[@]+"${uniq_files[@]}"}; do
+      [[ "$g" == "$f" ]] && { dup=1; break; }
+    done
+    [[ "$dup" == "0" ]] && uniq_files+=("$f")
+  done
+  if [[ ${#uniq_files[@]} -eq 0 || "$SCOPE_UNMAPPED_COUNT" -gt 0 ]]; then
+    SCOPE_FALLBACK_REASON="unmapped_files (${SCOPE_UNMAPPED_COUNT} of ${SCOPE_CHANGED_COUNT} changed files selected no suite) — cannot prove the diff is covered"
+    return 1
+  fi
+  # scope-mut-2: selection applied below this line
+  local entry name rest cmd_str base matched_syntax=0
+  local -a new_defs=() consumed=()
+  # Always-on under a narrowed scope: whole-plugin shell syntax (the entry
+  # whose command is the syntax_all function), the one curated invariant that
+  # syntax-checks EVERY changed .sh file even when its mapped suite does not;
+  # costs seconds. Only when the curated set actually has one (a
+  # LEADV2_SUITE_DEFS_OVERRIDE list may not).
+  for entry in ${SUITE_DEFS[@]+"${SUITE_DEFS[@]}"}; do
+    rest="${entry#*|||}"
+    if [[ "${rest%%|||*}" == "syntax_all" ]]; then
+      new_defs+=("$entry")
+      matched_syntax=1
+      break
+    fi
+  done
+  for entry in ${SUITE_DEFS[@]+"${SUITE_DEFS[@]}"}; do
+    name="${entry%%|||*}"
+    rest="${entry#*|||}"
+    cmd_str="${rest%%|||*}"
+    base=""
+    case "$cmd_str" in */*) base="${cmd_str##*/}" ;; esac
+    [[ -n "$base" ]] || continue
+    for f in ${uniq_files[@]+"${uniq_files[@]}"}; do
+      if [[ "${f##*/}" == "$base" ]]; then
+        new_defs+=("$entry")
+        consumed+=("$f")
+        break
+      fi
+    done
+  done
+  for f in ${uniq_files[@]+"${uniq_files[@]}"}; do
+    local seen=0
+    for g in ${consumed[@]+"${consumed[@]}"}; do
+      [[ "$g" == "$f" ]] && { seen=1; break; }
+    done
+    if [[ "$seen" == "0" ]]; then
+      new_defs+=("${f#"$REPO_ROOT"/} (scope-selected ad-hoc)|||bash $f")
+    fi
+  done
+  SCOPE_SELECTED_DEFS=(${new_defs[@]+"${new_defs[@]}"})
+  return 0
+}
+
+if [[ "$CORE_OFFLINE_SCOPE" == "changed" ]]; then
+  _scope_total=${#SUITE_DEFS[@]}
+  if _core_offline_scope_changed_select; then
+    SUITE_DEFS=(${SCOPE_SELECTED_DEFS[@]+"${SCOPE_SELECTED_DEFS[@]}"})
+    printf -- '[CORE-OFFLINE] scope=changed running %d of %d suites (base=%s, %d changed files, %d unmapped)\n' \
+      "${#SUITE_DEFS[@]}" "$_scope_total" "$SCOPE_BASE_DESC" "$SCOPE_CHANGED_COUNT" "$SCOPE_UNMAPPED_COUNT"
+    _scope_reason="-"
+  else
+    printf -- '[CORE-OFFLINE] scope=changed running %d of %d suites (base=%s, %d changed files, %d unmapped -> full-set fallback: %s)\n' \
+      "${#SUITE_DEFS[@]}" "$_scope_total" "$SCOPE_BASE_DESC" "$SCOPE_CHANGED_COUNT" "$SCOPE_UNMAPPED_COUNT" "$SCOPE_FALLBACK_REASON"
+    _scope_reason="$SCOPE_FALLBACK_REASON"
+  fi
+  printf -- '[CORE-OFFLINE] SCOPE_RESULT selected=%d total=%d base=%s changed=%d unmapped=%d reason=%s\n' \
+    "${#SUITE_DEFS[@]}" "$_scope_total" "$SCOPE_BASE_DESC" "$SCOPE_CHANGED_COUNT" "$SCOPE_UNMAPPED_COUNT" "$_scope_reason"
+  if [[ -n "${LEADV2_CORE_OFFLINE_SCOPE_DUMP:-}" ]]; then
+    for _e in ${SUITE_DEFS[@]+"${SUITE_DEFS[@]}"}; do
+      printf -- '[CORE-OFFLINE] SCOPE_SELECTED %s\n' "${_e%%|||*}"
+    done
+    exit 0
+  fi
+  unset _scope_total _scope_reason _e
 fi
 
 _core_offline_run_entry() {
@@ -640,7 +1039,7 @@ if [[ "$LEADV2_SUITE_SHARDS" -le 1 ]]; then
       _core_offline_run_entry "${SUITE_DEFS[_i]}"
     done
   else
-    for _entry in "${SUITE_DEFS[@]}"; do
+    for _entry in ${SUITE_DEFS[@]+"${SUITE_DEFS[@]}"}; do
       _core_offline_run_entry "$_entry"
     done
   fi
