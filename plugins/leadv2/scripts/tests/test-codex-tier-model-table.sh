@@ -252,6 +252,29 @@ else
   fail "g5: unregistered pair not refused: $BAD_OUT"
 fi
 
+# A1-CODEX-TIERS-A3: check() must accept EVERY registered codex model, not
+# first-row-wins -- under the old scalar canonical, part B's three-model
+# matrix would make check("codex", "gpt-5.6-sol") refuse (first codex row is
+# luna/volume), vetoing exactly the models part A made launchable.
+CHK_OUT="$(LEADV2_ROUTE_ARBITER_ROUTING_YAML="$FIXTURE_YAML" python3 - "$REGISTRY_PY" <<'PYEOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("lr", sys.argv[1])
+lr = importlib.util.module_from_spec(spec); spec.loader.exec_module(lr)
+for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+    assert lr.check("codex", m) == "ok", (m, lr.check("codex", m))
+assert lr.check("codex", "gpt-5.5") == "refuse"
+assert lr.check("fable", "sonnet") == "refuse"
+assert lr.check("haiku", "haiku") == "ok"
+print("fixture-ok")
+PYEOF
+)" && pass "g5: check() accepts every registered codex model (3-model fixture)"   || fail "g5: multi-model check() broken on fixture: $CHK_OUT"
+LIVE_CHK="$(python3 "$REGISTRY_PY" --check --arm codex --model gpt-6-astra 2>&1)"
+if [[ "$LIVE_CHK" == "ok" ]]; then
+  pass "g5: check() codex/gpt-6-astra ok on live all-astra matrix (no widening)"
+else
+  fail "g5: live-matrix check wrong: $LIVE_CHK"
+fi
+
 # ════════════════════════════════════════════════════════════════════════════
 # Group 6 — embedded negative controls (E2E-KILLRATE-01)
 # ════════════════════════════════════════════════════════════════════════════

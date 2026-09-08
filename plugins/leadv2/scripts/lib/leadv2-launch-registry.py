@@ -314,13 +314,24 @@ _FAMILY_BUILDERS = {
 _CLAUDE_ARMS = ("haiku", "sonnet", "opus", "fable")
 
 
-def _canonical_model(arm, matrix_rows):
+def _canonical_models(arm, matrix_rows):
+    """Every canonical "arm launches as itself" model literal for `arm`, as a
+    tuple. Claude family: the arm name IS the --model value
+    (claude-subsession.sh:124). Codex (A1-CODEX-TIERS-A3): every model the
+    matrix carries on a codex row, NARROWED to pairs this registry can wire
+    (CODEX_MODEL_TIERS) -- with three per-tier codex models the old
+    first-row-wins scalar answered check("codex", "gpt-5.6-sol")=refuse, so
+    the refusal helper would have vetoed exactly the models part A made
+    launchable once part B's matrix rows land."""
     if arm in _CLAUDE_ARMS:
-        return arm
+        return (arm,)
+    models = []
     for row in matrix_rows:
         if row.get("arm") == arm and row.get("provider") == "codex":
-            return row.get("model")
-    return None
+            m = row.get("model")
+            if m and (m, row.get("tier")) in CODEX_MODEL_TIERS and m not in models:
+                models.append(m)
+    return tuple(models)
 
 
 def check(arm, model, routing_yaml=None):
@@ -333,10 +344,10 @@ def check(arm, model, routing_yaml=None):
     docstring) so no verdict can be made either way.
     """
     matrix_rows = load_capability_matrix(routing_yaml)
-    canonical = _canonical_model(arm, matrix_rows)
-    if canonical is None:
+    canonical = _canonical_models(arm, matrix_rows)
+    if not canonical:
         return "not_applicable"
-    return "ok" if model == canonical else "refuse"
+    return "ok" if model in canonical else "refuse"
 
 
 def lookup(kind, role, arm, task_class, routing_yaml=None):
