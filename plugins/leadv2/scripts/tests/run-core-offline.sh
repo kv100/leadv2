@@ -765,6 +765,14 @@ _scope_changed_file_select() { # <repo-relative changed file>
     stem="gitignore"
   elif [[ "$cf" == "tests/run-all.sh" ]]; then
     stem="run-all.sh"
+  elif [[ "$cf" == "tests/known-red-suites.txt" ]]; then
+    # B2-GATE-BUDGET-4: the allow-list is a legit lane write target; without
+    # this case every allow-list edit was structurally unmappable -> full-set
+    # fallback (95 suites) for a one-line comment change (measured on this
+    # very lane before the fix). Suites self-declare the
+    # `known-red-suites(.txt)` triggers (see
+    # plugins/leadv2/tests/test-gate-reaches-a-verdict-inside-budget.sh).
+    stem="known-red-suites.txt"
   else
     case "$cf" in
       plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/scripts/*.py|plugins/leadv2/hooks/*.sh) ;;
@@ -975,6 +983,64 @@ if [[ "$CORE_OFFLINE_SCOPE" == "changed" ]]; then
   unset _scope_total _scope_reason _scope_verdict _e
 fi
 
+# --- B2-GATE-BUDGET-4: budget-mode known-red skip ----------------------------
+# tests/run-all.sh forwards LEADV2_CORE_OFFLINE_SKIP_KNOWN_RED=1 in its
+# BUDGET scopes (--scope changed / changed-since, i.e. the close gate and PR
+# CI) together with the allow-list path. Under that request, allow-listed
+# labels (`core:<label>` rows of $LEADV2_CORE_OFFLINE_KNOWN_RED_FILE) are
+# SKIPPED here with one [CORE-OFFLINE] KNOWN-RED-SKIP: <name> line per
+# dropped suite (run-all relays them as [KNOWN-RED-SKIP]); their failure
+# classification was already non-blocking downstream, what they cost inside
+# a 900s close-gate budget is TIME (measured 2026-09-09:
+# lane-truth-batch-01 = 151s red inside this runner). Allow-listed suites
+# are never dropped from runs entirely: without the request (bare
+# invocation, --scope all — the nightly full sweep) every suite executes
+# exactly as before, and a label that PASSES such a full run is surfaced by
+# run-all as [KNOWN-RED-GONE-GREEN] — the seam that keeps the allow-list
+# shrinking instead of becoming permanent.
+# DECLARED NEGATIVE CONTROL (E2E-KILLRATE-01, this lane's third), applied by
+# leadv2-mutation-control.sh to the marker line INSIDE the function body
+# (never top level — a top-level insert reddens every suite for the wrong
+# reason):
+#   M3 skip-mut-1: drop the budget-scope gate (skip whenever the env is
+#      present, even in a bare / --scope all run) ->
+#      test-core-offline-known-red-skip.sh case 2 goes red: a bare
+#      invocation still must execute allow-listed suites — that is the
+#      "still executed somewhere" half of the contract.
+KNOWN_RED_SKIPPED=0
+_core_offline_skip_requested() { # rc0 iff the budget-mode skip was requested
+  # The wrapper enforces the "still executed somewhere" contract itself:
+  # only a --scope changed run may skip. An env leak into a bare or --scope
+  # all invocation (the nightly full sweep — the ONE place allow-listed
+  # suites still execute) must not silently skip them.
+  [[ "$CORE_OFFLINE_SCOPE" == "changed" ]] || return 1 # skip-mut-1 marker: budget scope gates the skip
+  [[ "${LEADV2_CORE_OFFLINE_SKIP_KNOWN_RED:-}" == "1" \
+     && -n "${LEADV2_CORE_OFFLINE_KNOWN_RED_FILE:-}" \
+     && -f "${LEADV2_CORE_OFFLINE_KNOWN_RED_FILE}" ]]
+}
+if _core_offline_skip_requested; then
+  _kr_list="$(grep -vE '^[[:space:]]*(#|$)' "${LEADV2_CORE_OFFLINE_KNOWN_RED_FILE}" 2>/dev/null \
+    | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//')"
+  _kr_kept=()
+  for _kr_entry in ${SUITE_DEFS[@]+"${SUITE_DEFS[@]}"}; do
+    _kr_name="${_kr_entry%%|||*}"
+    if printf '%s\n' "${_kr_list}" | grep -qxF "core:${_kr_name}"; then
+      printf -- '[CORE-OFFLINE] KNOWN-RED-SKIP: %s\n' "$_kr_name" >&2
+      KNOWN_RED_SKIPPED=$((KNOWN_RED_SKIPPED + 1))
+    else
+      _kr_kept+=("${_kr_entry}")
+    fi
+  done
+  SUITE_DEFS=(${_kr_kept[@]+"${_kr_kept[@]}"})
+  printf -- '[CORE-OFFLINE] known-red skipped=%d (budget mode: still executed by --scope all / bare runs)\n' "$KNOWN_RED_SKIPPED" >&2
+  if [[ ${#SUITE_DEFS[@]} -eq 0 ]]; then
+    printf -- '[CORE-OFFLINE] suites passed=0 failed=0 missing=0 known_red_skipped=%d verdict=nothing_to_run reason=known_red_skip_emptied_selection repo=%s\n' \
+      "$KNOWN_RED_SKIPPED" "$REPO_ROOT"
+    exit 0
+  fi
+fi
+unset _kr_list _kr_kept _kr_entry _kr_name 2>/dev/null || true
+
 _core_offline_run_entry() {
   local entry="$1" name rest cmd_str
   name="${entry%%|||*}"
@@ -1110,5 +1176,5 @@ else
   done < <(grep -h 'SHARD_RESULT' "${SHARD_LOGS[@]}")
 fi
 
-printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
+printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d known_red_skipped=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$KNOWN_RED_SKIPPED" "$REPO_ROOT"
 (( FAIL == 0 && MISSING == 0 ))
