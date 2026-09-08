@@ -110,8 +110,8 @@ run_case() {
   PIDS=()
   if [[ "$rc" != 0 && "$rc" != 5 ]]; then tail -5 "$d/close.log"; fi
 }
-run_case fable_late fable live
 run_case fable_exited fable dead
+run_case fable_late fable live
 run_case fable_heartbeat_only fable heartbeat
 run_case fable_stale_heartbeat fable stale
 run_case fable_finalizer fable finalizer
