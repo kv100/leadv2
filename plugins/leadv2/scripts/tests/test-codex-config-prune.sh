@@ -121,6 +121,7 @@ with tempfile.TemporaryDirectory(prefix='codex-config-fixture-') as tmp:
 
     # A fake header inside a multiline string must never become a section.
     text = 'description = """\n[projects.\"/fake-header\"]\n# string content\n"""\n'
+    text += 'matrix = [\n[1, 2],\n[3, 4]\n]\n'
     text += stanza(live) + 'note = \'\'\'\n[projects."/fake-literal"]\n\'\'\'\n'
     text += stanza(dead) + '[projects.' + json.dumps(str(dead)) + '.nested]\nvalue=1 # nested comment\n'
     cfg.write_text(text)

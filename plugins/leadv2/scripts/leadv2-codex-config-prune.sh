@@ -19,7 +19,7 @@ import time
 import tomllib
 
 
-def scan_line(line, quote):
+def scan_line(line, quote, depth=0):
     """Find comments and carry multiline TOML string state across lines."""
     i = 0
     while i < len(line):
@@ -36,13 +36,17 @@ def scan_line(line, quote):
             else:
                 i += 1
         elif line[i] == '#':
-            return quote, i
+            return quote, i, depth
         elif line[i] in "\"'":
             quote = line[i] * (3 if line.startswith(line[i] * 3, i) else 1)
             i += len(quote)
         else:
+            if line[i] in '[{':
+                depth += 1
+            elif line[i] in ']}':
+                depth -= 1
             i += 1
-    return quote, None
+    return quote, None, depth
 
 
 def sections(text):
@@ -50,9 +54,10 @@ def sections(text):
     result = []
     current = {'keys': (), 'lines': []}
     quote = None
+    depth = 0
     for line in text.splitlines(keepends=True):
-        starts_header = quote is None and line.lstrip().startswith('[')
-        quote, comment = scan_line(line, quote)
+        starts_header = quote is None and depth == 0 and line.lstrip().startswith('[')
+        quote, comment, depth = scan_line(line, quote, depth)
         if starts_header:
             header = line[:comment].strip() if comment is not None else line.strip()
             node = tomllib.loads(header)
@@ -73,7 +78,7 @@ def comments_only(lines):
     kept = []
     quote = None
     for line in lines:
-        quote, comment = scan_line(line, quote)
+        quote, comment, _ = scan_line(line, quote)
         if comment is not None:
             # Full-line comments and whitespace remain byte-identical; an inline
             # comment on a removed setting becomes a standalone comment.
