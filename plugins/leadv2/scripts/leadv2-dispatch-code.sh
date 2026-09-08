@@ -2603,8 +2603,13 @@ print(','.join(sorted(arm for arm in arms if
                           for row in r.load_capability_matrix())))))
 PYREG
 )" || {
-    emit decision "arm_refused task=${_sig8} reason=launch_registry_unavailable kind=$2"
-    return 1
+    # Unknown is not an empty allowlist. Keep the legacy hardcoded ladder
+    # available to every caller (arbiter, adoption, fallback tail); downstream
+    # quota, trust and adapter checks still apply. Discard partial query output.
+    _arms="glm,codex,sonnet"
+    emit decision "launchable_seam task=${_sig8} source=legacy kind=$2 reason=launch_registry_unavailable fallback=${_arms}"
+    printf '%s' "${_arms}"
+    return 0
   }
   emit decision "launchable_seam task=${_sig8} source=registry kind=$2"
   printf '%s' "${_arms}"
@@ -2740,11 +2745,11 @@ _normalize_v2_arm() {  # <v2_arm_id> -> stdout: launcher arm id
   esac
 }
 
-# Drop any id in candidate_arms that is not in DISPATCHABLE_BUILD_ARMS.
+# Drop any id in candidate_arms that is not in the computed launchable set.
 # Shared by both v1 (ladder-derived) and v2 (resolver-derived) candidate
 # chains so the retirement of an arm (dispatch:false / commented-out) is
-# enforced identically on both paths -- never a second hand-kept exclusion
-# list. Mutates the caller's candidate_arms array in place.
+# enforced identically on both paths, with the legacy set used when the
+# registry query fails. Mutates the caller's candidate_arms array in place.
 # Optional third arg (ROUTER-V2-BYPASSES-ARM-LADDER-FILTER-01): the v2
 # chain-adoption SITE that called in (initial|quota_filter|quota_gate). Key
 # order is unchanged, site= is only APPENDED, so existing greps for
@@ -2767,7 +2772,7 @@ _filter_arms_to_dispatchable() {  # <sig8> <router_label:v1|v2> [site]
     if [[ "${_keep}" == "1" ]]; then
       _kept+=("${_id}")
     else
-      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} router=${_router} reason=not_in_DISPATCHABLE_BUILD_ARMS${_site:+ site=${_site}}"
+      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} router=${_router} reason=not_in_launchable_arms${_site:+ site=${_site}}"
     fi
   done
   candidate_arms=("${_kept[@]}")
