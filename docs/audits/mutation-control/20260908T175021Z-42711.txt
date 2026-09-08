@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-scope-changed-is-deterministic.sh
+file=tests/run-all.sh
+anchor=s|^    return 1  # scope-changed-refusal$|    printf HEAD~1; return 0  # scope-changed-mut-2|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: case2 expected rc=2 refusal, got rc=0: run-all: FATAL no_base_ref (--scope changed: neither 'main' nor 'origin/main' gives a merge-base against HEAD, and no valid checkpoint applies) — refusing rather than silently degrading to HEAD~1..HEAD; a selection made from the last commit alone is plausible and wrong (SCOPE-CHANGED-DEGRADES-TO-THE-LAST-COMMIT-01). Fix the base ref or ask --scope all.
+diff_hash=696bbe34ca2003e7fac08aa4eec80f33c859d5ee6546c6dc0e3dfae570b2c98d
+lane_diff_hash=15ad6b6f6e7c85952a65c478b28d97082d2058462197330fc971be77a0fef2ca

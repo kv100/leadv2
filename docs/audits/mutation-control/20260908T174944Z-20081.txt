@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-scope-changed-is-deterministic.sh
+file=tests/run-all.sh
+anchor=s|if \[\[ "${SCOPE}" == "changed-since" \]\]; then   # scope-changed-mut-1 anchor|if true; then|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: case1 run2 selection differs from run1 (state leaked):
+diff_hash=a94c026daddd32da07231b20601b4d235e75be5522882799b7128a995857da76
+lane_diff_hash=15ad6b6f6e7c85952a65c478b28d97082d2058462197330fc971be77a0fef2ca
