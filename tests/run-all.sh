@@ -674,9 +674,21 @@ for suite in ${SUITES[@]+"${SUITES[@]}"}; do
     # --scope changed is not evidence of a full run), and never without the
     # suites-passed summary (a FATAL — lock timeout, harness crash — never
     # ran the suites and must not mint a false gone-green).
-    if grep -q '^\[CORE-OFFLINE\] suites passed=' "${suite_log}" 2>/dev/null \
+    # The "own" lines are POSITIONAL, not any-match: the wrapper prints its
+    # SCOPE_RESULT BEFORE running suites, so its own is the FIRST one in the
+    # transcript; a nested suite inside the run can only print later. The
+    # wrapper prints its summary after everything, so its own is the LAST
+    # suites-passed line AND must follow the last SCOPE_RESULT (a nested
+    # test's transcript containing verdict=full_set_fallback + its own
+    # suites-passed line once minted 14 false gone-greens from a 13-of-95
+    # narrowed run — measured on this lane's own gate run 2026-09-09).
+    _ra_own_scope="$(grep -E '^\[CORE-OFFLINE\] SCOPE_RESULT ' "${suite_log}" 2>/dev/null | head -1)"
+    _ra_last_sr_ln="$(grep -nE '^\[CORE-OFFLINE\] SCOPE_RESULT ' "${suite_log}" 2>/dev/null | tail -1 | cut -d: -f1)"
+    _ra_last_sum_ln="$(grep -nE '^\[CORE-OFFLINE\] suites passed=' "${suite_log}" 2>/dev/null | tail -1 | cut -d: -f1)"
+    if [[ -n "${_ra_last_sum_ln}" \
+          && ( -z "${_ra_last_sr_ln}" || "${_ra_last_sum_ln}" -gt "${_ra_last_sr_ln}" ) ]] \
        && { [[ "${core_scope_arg}" == "all" ]] \
-            || grep -qE '^\[CORE-OFFLINE\] SCOPE_RESULT .* verdict=full_set_fallback' "${suite_log}" 2>/dev/null; }; then
+            || grep -q 'verdict=full_set_fallback' <<<"${_ra_own_scope}"; }; then
       while IFS= read -r _ra_gg; do
         [[ -n "${_ra_gg}" ]] || continue
         if ! grep -qF -- "[CORE-OFFLINE] FAILED: ${_ra_gg}" "${suite_log}" 2>/dev/null \

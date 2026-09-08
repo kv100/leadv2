@@ -91,6 +91,18 @@ fi
 if [[ "${FAKE_CORE_OFFLINE_MODE:-}" == "narrow" ]]; then
   printf -- '[CORE-OFFLINE] SCOPE_RESULT selected=1 total=9 base=main@deadbeef changed=1 unmapped=0 verdict=selected reason=-\n'
 fi
+if [[ "${FAKE_CORE_OFFLINE_MODE:-}" == "fallback" ]]; then
+  printf -- '[CORE-OFFLINE] SCOPE_RESULT selected=9 total=9 base=main@deadbeef changed=1 unmapped=1 verdict=full_set_fallback reason=unmapped_files (cannot prove the diff is covered)\n'
+fi
+if [[ "${FAKE_CORE_OFFLINE_NESTED_FALLBACK:-0}" == "1" ]]; then
+  # A nested suite inside this run simulated a wrapper invocation that fell
+  # open to the full set — printed AFTER the wrapper's own SCOPE_RESULT and
+  # BEFORE the wrapper's own summary, exactly as in the real gate transcript
+  # that minted 14 false gone-greens from a 13-of-95 narrowed run
+  # (B2-GATE-BUDGET-4 gate run 2026-09-09).
+  printf -- '[CORE-OFFLINE] SCOPE_RESULT selected=95 total=95 base=main@feedface changed=1 unmapped=1 verdict=full_set_fallback reason=unmapped_files (nested test transcript)\n'
+  printf -- '[CORE-OFFLINE] suites passed=3 failed=0 missing=0 repo=nested-fixture\n'
+fi
 printf -- '[CORE-OFFLINE] suites passed=%d failed=%d missing=0 repo=fake\n' "$((1-n))" "$n"
 [[ "${FAKE_CORE_OFFLINE_HANG:-0}" == "1" ]] && sleep "${FAKE_CORE_OFFLINE_HANG_S:-30}"
 (( n == 0 ))
@@ -247,6 +259,34 @@ if [[ $RC -eq 0 ]] && ! grep -q '^\[SUITE-TIMEOUT\] plugins/leadv2/scripts/tests
   pass "(9) --scope all wrapper NOT ceiling-killed despite ceiling=3s (nightly long-run property kept; rc=$RC)"
 else
   fail "(9) scope=all wrapper wrongly ceilinged; rc=$RC out=
+$OUT"
+fi
+
+# ── case 10: a NESTED transcript line claiming full_set_fallback must NOT
+# mint gone-green in a narrowed run. Reproduces the real gate transcript
+# (2026-09-09): the wrapper ran 13 of 95 (verdict=selected), a nested test
+# suite inside it printed its own SCOPE_RESULT verdict=full_set_fallback +
+# its own suites-passed line, and 14 allow-listed labels were falsely
+# declared gone-green ("remove from tests/known-red-suites.txt") from a run
+# that never executed them. Allow-list still holds KNOWN_ONE from case 3/5.
+FAKE_ENV_OUT="$TMP/env10"; rm -f "$TMP/env10"
+run_it LEADV2_RUN_ALL_SUITE_TIMEOUT_S=60 FAKE_CORE_OFFLINE_MODE=narrow FAKE_CORE_OFFLINE_NESTED_FALLBACK=1 FAKE_ENV_OUT="$TMP/env10"
+if [[ $RC -eq 0 ]] && ! grep -q 'KNOWN-RED-GONE-GREEN' <<<"$OUT"; then
+  pass "(10) nested full_set_fallback transcript line mints NO gone-green from a narrowed run (rc=$RC)"
+else
+  fail "(10) false gone-green from nested transcript; rc=$RC out=
+$OUT"
+fi
+
+# ── case 11: the wrapper's OWN failed-open fallback still mints gone-green
+# (the fix must not over-tighten: a genuine full-set run — asked or fell
+# open — remains the allow-list's only shrink path).
+FAKE_ENV_OUT="$TMP/env11"; rm -f "$TMP/env11"
+run_it LEADV2_RUN_ALL_SUITE_TIMEOUT_S=60 FAKE_CORE_OFFLINE_MODE=fallback FAKE_ENV_OUT="$TMP/env11"
+if [[ $RC -eq 0 ]] && grep -q '^\[KNOWN-RED-GONE-GREEN\] core:KNOWN_ONE — passed a full-set run' <<<"$OUT"; then
+  pass "(11) wrapper's OWN full_set_fallback still surfaces gone-green (rc=$RC)"
+else
+  fail "(11) own-fallback gone-green lost; rc=$RC out=
 $OUT"
 fi
 
