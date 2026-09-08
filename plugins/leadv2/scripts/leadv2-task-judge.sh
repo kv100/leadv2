@@ -368,15 +368,35 @@ print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
   [[ -n "${raw}" ]] || { _fail "empty_output"; return 1; }
 
   # `claude -p --output-format json` wraps the assistant's answer in an
-  # envelope under `.result`; the model may still fence it in ```json. Pull
-  # the envelope apart, then pull the first {...} object out of the result.
+  # envelope under `.result`; the model may still fence it in ```json, or
+  # precede/follow it with prose. Pull the envelope apart, then pull the
+  # first COMPLETE, balanced {...} object out of the result.
   # Two-stage on purpose (JUDGE-REVIVAL-01): claude already succeeded above,
   # so a failure here is an envelope/parse problem, never an invoke problem —
   # the old single $(claude | python) pipeline folded both into one rc and
   # mislabelled parse failures as invoke failures.
+  #
+  # JUDGE-ENVELOPE-PARSE-FAILS-A-QUARTER-OF-THE-TIME-01: the prior extractor
+  # was `re.search(r'\{.*\}', result_text, re.DOTALL)` -- greedy from the
+  # FIRST '{' to the LAST '}' anywhere in the whole reply. Any brace character
+  # in surrounding prose after a valid JSON object (a code-fence's own text
+  # never contains one, but a sentence like "adjust the {} shape" does) makes
+  # the match span past the real object and json.loads raises "Extra data" --
+  # a correctly-formed answer misreported as envelope_parse. Live-captured
+  # sample (redacted, this task's probe) reproduced it: a fenced JSON object
+  # followed by one clause containing a bare '{}' broke the greedy match while
+  # the object itself was perfectly valid. Fixed by scanning for the first
+  # '{' whose braces balance (string-aware, so a brace inside a JSON string
+  # value never miscounts depth) and only accepting it once it parses; on
+  # failure the scan resumes from the NEXT '{' rather than giving up, so
+  # leading prose before the real object is also tolerated. A reply with no
+  # balanced, parseable object anywhere (truncated mid-write, pure prose, a
+  # refusal) still finds nothing and still fails envelope_parse -- being
+  # permissive about the WRAPPER must not become permissive about the
+  # CONTENT.
   local parsed=""
   parsed="$(printf '%s' "${raw}" | python3 -c "
-import json, re, sys
+import json, sys
 
 raw = sys.stdin.read()
 try:
@@ -388,13 +408,49 @@ if env.get('is_error'):
 result_text = env.get('result', '')
 if not isinstance(result_text, str):
     sys.exit(1)
-m = re.search(r'\{.*\}', result_text, re.DOTALL)
-if not m:
+
+# EXTRACT-BEGIN (test-judge-parses-its-own-answer.sh mutates only between
+# EXTRACT-BEGIN/EXTRACT-END; never at top level)
+def first_balanced_object(text):
+    n = len(text)
+    search_from = 0
+    while True:
+        start = text.find('{', search_from)
+        if start == -1:
+            return None
+        depth = 0
+        in_str = False
+        esc = False
+        j = start
+        while j < n:
+            c = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == '\\\\':
+                    esc = True
+                elif c == '\"':
+                    in_str = False
+            else:
+                if c == '\"':
+                    in_str = True
+                elif c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start:j + 1]
+                        try:
+                            return json.loads(candidate)
+                        except Exception:
+                            break
+            j += 1
+        search_from = start + 1
+
+est = first_balanced_object(result_text)
+if est is None or not isinstance(est, dict):
     sys.exit(1)
-try:
-    est = json.loads(m.group(0))
-except Exception:
-    sys.exit(1)
+# EXTRACT-END
 est['estimate_v'] = 1
 est['estimate_id'] = sys.argv[1]
 est['estimate_source'] = 'judge'
