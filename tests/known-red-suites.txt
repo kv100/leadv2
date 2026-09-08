@@ -19,6 +19,17 @@
 # THIS LIST MAY ONLY SHRINK. tests/known-red-guard.sh fails the build if the
 # entry count grows relative to the base branch. To add a suite here, remove
 # one first, or get sign-off outside this task's scope — do not just widen it.
+#
+# B2-GATE-BUDGET-4 (2026-09-09): under --scope changed / changed-since (the
+# close gate and PR CI — the BUDGET paths), tests/run-all.sh asks
+# run-core-offline.sh to SKIP these suites entirely
+# (LEADV2_CORE_OFFLINE_SKIP_KNOWN_RED=1; skipped labels are relayed as
+# [KNOWN-RED-SKIP] lines). They are still EXECUTED by --scope all (the
+# nightly full sweep) and by a bare run-core-offline.sh invocation, and a
+# `core:` label that PASSES a full-set run is surfaced by run-all as
+# [KNOWN-RED-GONE-GREEN] — that is the signal to remove the entry here: the
+# skip would otherwise hide a suite that quietly went green, and the list
+# would become permanent.
 
 core:landed-at-spawn (no terminal=landed at spawn; target repo keying)  # plugins/leadv2/scripts/tests/test-landed-at-spawn.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
 core:dispatch arm vocabulary (kimi retirement)  # plugins/leadv2/scripts/tests/test-dispatch-arm-vocabulary.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01

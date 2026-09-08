@@ -60,6 +60,8 @@ esac
 PASS=0
 FAIL=0
 KNOWN=0
+KNOWN_RED_SKIPPED=0
+GONE_GREEN=0
 declare -a SUITES=()
 declare -a FAILED_REL=()
 
@@ -87,8 +89,87 @@ ALLOWLIST="${ROOT}/tests/known-red-suites.txt"
 CORE_OFFLINE_REL="plugins/leadv2/scripts/tests/run-core-offline.sh"
 
 is_known_red() { # <id>
+  # known-red-mut-1 marker: the allow-list decision every classification consumes
   [[ -f "${ALLOWLIST}" ]] || return 1
   grep -qxF "$1" <(grep -vE '^[[:space:]]*(#|$)' "${ALLOWLIST}" | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//')
+}
+
+# ── B2-GATE-BUDGET-4: per-suite ceiling + known-red out of the close budget ──
+# Re-measured on this lane 2026-09-09: one synchronous status-surface wrapper
+# call costs ~48s under load, the bash32 suite makes several of them (~321s
+# total, green), and test-lane-truth-batch-01 alone is ~355s (red, allow-
+# listed). A gate selection containing them cannot finish inside the 900s
+# close-gate budget, so the gate's only possible terminal was rc=124 /
+# verdict=timeout — which is not a verdict. Two mechanisms here, both
+# fail-toward-verdict:
+#   1. per-suite ceiling: a suite that would eat the whole budget is killed
+#      and NAMED — "[SUITE-TIMEOUT] X exceeded Ns" is a verdict a gate can
+#      act on; rc=124-for-everything is not.
+#   2. known-red nested suites leave the BUDGET path only (--scope changed /
+#      changed-since): run-all asks run-core-offline.sh to skip allow-listed
+#      labels (LEADV2_CORE_OFFLINE_SKIP_KNOWN_RED=1 + the allow-list path;
+#      the wrapper relays [CORE-OFFLINE] KNOWN-RED-SKIP: lines, re-emitted
+#      below as [KNOWN-RED-SKIP]). They are NOT dropped from runs entirely:
+#      --scope all (the nightly full sweep) and a bare wrapper invocation
+#      still execute every allow-listed suite, and a label that PASSES a
+#      full-set run is surfaced as [KNOWN-RED-GONE-GREEN] — the allow-list
+#      may only shrink, and this is the seam that keeps it shrinking.
+#
+# DECLARED NEGATIVE CONTROLS (E2E-KILLRATE-01), applied by
+# leadv2-mutation-control.sh to the marker lines INSIDE the function bodies
+# below (never at top level — a top-level insert reddens every suite for the
+# wrong reason and reads as a pass):
+#   M1 ceiling-mut-1: disable the ceiling (always 0) ->
+#      plugins/leadv2/tests/test-gate-reaches-a-verdict-inside-budget.sh
+#      case 1 goes red: the hanging stub suite is never killed, no
+#      [SUITE-TIMEOUT] line, run-all exits 0 instead of 1.
+#   M2 known-red-mut-1: is_known_red accepts everything -> case 2 goes red:
+#      a NOT-allow-listed failing nested suite no longer blocks the run —
+#      the always-green-gate defect, reintroduced.
+_suite_ceiling_s() { # -> seconds one suite may run; 0 disables the ceiling
+  local v="${LEADV2_RUN_ALL_SUITE_TIMEOUT_S:-600}"
+  case "${v}" in ''|*[!0-9]*) v=600 ;; esac
+  printf '%s' "${v}" # ceiling-mut-1 marker: the effective ceiling, after validation
+}
+# Standalone portable timeout with timeout(1) semantics (124 on kill): prefer
+# gtimeout/timeout when present, else the process-group sleep+kill watcher
+# leadv2-builder-selfcheck.sh uses. Deliberately NOT sourced from the plugin
+# tree: run-all must run standalone in scratch fixture repos
+# (test-known-red-allowlist-nested-match.sh copies only this file).
+_run_all_timeout_run() { # <timeout_s> <logfile> -- <cmd...> -> rc (124 on kill)
+  local timeout_s="$1" logfile="$2"; shift 2
+  [[ "${1:-}" == "--" ]] && shift
+  local rc=0
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "${timeout_s}" "$@" > "${logfile}" 2>&1; rc=$?
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout "${timeout_s}" "$@" > "${logfile}" 2>&1; rc=$?
+  else
+    local pid watcher
+    set -m
+    { "$@" >"${logfile}" 2>&1 & } 2>/dev/null
+    pid=$!
+    set +m
+    ( sleep "${timeout_s}"
+      kill -0 "${pid}" 2>/dev/null || exit 0
+      kill -TERM -"${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
+      sleep 2
+      kill -KILL -"${pid}" 2>/dev/null || kill -KILL "${pid}" 2>/dev/null || true
+    ) >/dev/null 2>&1 </dev/null &
+    watcher=$!
+    wait "${pid}" 2>/dev/null; rc=$?
+    kill -TERM "${watcher}" 2>/dev/null || true
+    wait "${watcher}" 2>/dev/null || true
+    (( rc > 128 )) && rc=124
+  fi
+  return "${rc}"
+}
+# Budget modes only: changed (close gate / PR CI) and changed-since
+# (incremental CI) hand the wrapper the known-red skip. --scope all (the
+# nightly full sweep) executes every allow-listed suite — that is where
+# red->green transitions surface via [KNOWN-RED-GONE-GREEN].
+core_offline_budget_skip_env() { # -> rc0 iff the wrapper should skip known-red suites
+  [[ "${SCOPE}" != "all" ]]
 }
 # Non-stem suite mappings live in EXTRA_SUITE_MAP below (string rows, one per
 # line, "<stem>:<suite>"). The PHASE-DISCIPLINE-01 array form was migrated into
@@ -535,6 +616,7 @@ fi
 for suite in ${SUITES[@]+"${SUITES[@]}"}; do
   printf '[RUN] %s\n' "${suite}"
   suite_log=""
+  _ra_ceiling="$(_suite_ceiling_s)"
   if [[ "${suite}" == "${ROOT}/${CORE_OFFLINE_REL}" || "${suite}" == "${ROOT}/.claude/scripts/tests/run-core-offline.sh" ]]; then
     # Capture the wrapper transcript so the [CORE-OFFLINE] FAILED: labels can
     # be classified below, then stream it verbatim — ci-gate.sh re-parses the
@@ -547,12 +629,95 @@ for suite in ${SUITES[@]+"${SUITES[@]}"}; do
     core_scope_arg="$(core_offline_scope_arg)"
     printf 'run-all: delegating scope=%s to %s\n' "${core_scope_arg}" "${suite#"${ROOT}/"}"
     suite_log="$(mktemp "${TMPDIR:-/tmp}/run-all-core-offline.XXXXXX")"
-    bash "${suite}" --scope "${core_scope_arg}" >"${suite_log}" 2>&1
+    # The wrapper is a CONTAINER of suites, not a suite: under --scope all it
+    # is DESIGNED to run long (the nightly full sweep, CI budget 120 min) and
+    # it is the one place allow-listed suites still execute — ceilinging it
+    # there would kill the gone-green surface. Budget scopes only.
+    if core_offline_budget_skip_env; then
+      _ra_wrapper_ceiling="$(_suite_ceiling_s)"
+    else
+      _ra_wrapper_ceiling=0
+    fi
+    _ra_ceiling="${_ra_wrapper_ceiling}"
+    # B2-GATE-BUDGET-4: budget modes (changed/changed-since) additionally ask
+    # the wrapper to skip allow-listed known-red nested suites — their
+    # classification was already non-blocking (round 3), what they cost is
+    # TIME inside the 900s close-gate budget. `env` (not a shell prefix on a
+    # function call — that would leak the var past the call in bash) scopes
+    # the request to this one invocation.
+    if core_offline_budget_skip_env && [[ -f "${ALLOWLIST}" ]]; then
+      _run_all_timeout_run "${_ra_ceiling}" "${suite_log}" -- \
+        env LEADV2_CORE_OFFLINE_SKIP_KNOWN_RED=1 \
+            LEADV2_CORE_OFFLINE_KNOWN_RED_FILE="${ALLOWLIST}" \
+            bash "${suite}" --scope "${core_scope_arg}"
+    else
+      _run_all_timeout_run "${_ra_ceiling}" "${suite_log}" -- \
+        bash "${suite}" --scope "${core_scope_arg}"
+    fi
     rc=$?
     cat "${suite_log}"
+    # Relay the wrapper's budget-mode skips loudly — attributable silence,
+    # never a quiet drop. (Only budget-mode runs emit these; a wrapper too
+    # old to honor the env prints none and nothing changes for it.)
+    while IFS= read -r _ra_sk; do
+      [[ -n "${_ra_sk}" ]] || continue
+      printf '[KNOWN-RED-SKIP] core:%s — skipped in budget mode (scope=%s); still executed by --scope all (nightly full sweep)\n' "${_ra_sk}" "${SCOPE}"
+      KNOWN_RED_SKIPPED=$((KNOWN_RED_SKIPPED + 1))
+    done < <(grep -E '^\[CORE-OFFLINE\] KNOWN-RED-SKIP: ' "${suite_log}" 2>/dev/null | sed -E 's/^\[CORE-OFFLINE\] KNOWN-RED-SKIP: //')
+    # B2-GATE-BUDGET-4 red->green surfacing: in a FULL-set run (--scope all,
+    # or a narrowed run that failed open to the full set) every allow-listed
+    # label had its chance to run — one absent from FAILED/MISSING/SKIP
+    # lines PASSED. Say so, so the allow-list cannot become permanent (it may
+    # only shrink). Full-set is decided from what run-all ITSELF asked for
+    # plus the wrapper's own verdict line — never from the mere absence of a
+    # SCOPE_RESULT line (a truncated or foreign transcript under
+    # --scope changed is not evidence of a full run), and never without the
+    # suites-passed summary (a FATAL — lock timeout, harness crash — never
+    # ran the suites and must not mint a false gone-green).
+    # The "own" lines are POSITIONAL, not any-match: the wrapper prints its
+    # SCOPE_RESULT BEFORE running suites, so its own is the FIRST one in the
+    # transcript; a nested suite inside the run can only print later. The
+    # wrapper prints its summary after everything, so its own is the LAST
+    # suites-passed line AND must follow the last SCOPE_RESULT (a nested
+    # test's transcript containing verdict=full_set_fallback + its own
+    # suites-passed line once minted 14 false gone-greens from a 13-of-95
+    # narrowed run — measured on this lane's own gate run 2026-09-09).
+    _ra_own_scope="$(grep -E '^\[CORE-OFFLINE\] SCOPE_RESULT ' "${suite_log}" 2>/dev/null | head -1)"
+    _ra_last_sr_ln="$(grep -nE '^\[CORE-OFFLINE\] SCOPE_RESULT ' "${suite_log}" 2>/dev/null | tail -1 | cut -d: -f1)"
+    _ra_last_sum_ln="$(grep -nE '^\[CORE-OFFLINE\] suites passed=' "${suite_log}" 2>/dev/null | tail -1 | cut -d: -f1)"
+    if [[ -n "${_ra_last_sum_ln}" \
+          && ( -z "${_ra_last_sr_ln}" || "${_ra_last_sum_ln}" -gt "${_ra_last_sr_ln}" ) ]] \
+       && { [[ "${core_scope_arg}" == "all" ]] \
+            || grep -q 'verdict=full_set_fallback' <<<"${_ra_own_scope}"; }; then
+      while IFS= read -r _ra_gg; do
+        [[ -n "${_ra_gg}" ]] || continue
+        if ! grep -qF -- "[CORE-OFFLINE] FAILED: ${_ra_gg}" "${suite_log}" 2>/dev/null \
+           && ! grep -qF -- "[CORE-OFFLINE] MISSING: ${_ra_gg}" "${suite_log}" 2>/dev/null \
+           && ! grep -qF -- "[CORE-OFFLINE] SKIP: ${_ra_gg}" "${suite_log}" 2>/dev/null \
+           && ! grep -qF -- "[CORE-OFFLINE] KNOWN-RED-SKIP: ${_ra_gg}" "${suite_log}" 2>/dev/null; then
+          printf '[KNOWN-RED-GONE-GREEN] core:%s — passed a full-set run; remove the entry from tests/known-red-suites.txt (the list may only shrink)\n' "${_ra_gg}"
+          GONE_GREEN=$((GONE_GREEN + 1))
+        fi
+      done < <(grep -vE '^[[:space:]]*(#|$)' "${ALLOWLIST}" 2>/dev/null | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//' | sed -n 's/^core://p')
+    fi
   else
-    bash "${suite}"
-    rc=$?
+    if [[ "${_ra_ceiling}" -gt 0 ]]; then
+      suite_log="$(mktemp "${TMPDIR:-/tmp}/run-all-suite.XXXXXX")"
+      _run_all_timeout_run "${_ra_ceiling}" "${suite_log}" -- bash "${suite}"
+      rc=$?
+      cat "${suite_log}"
+    else
+      bash "${suite}"
+      rc=$?
+    fi
+  fi
+  # B2-GATE-BUDGET-4: rc=124 from the ceiling is a NAMED, per-suite verdict —
+  # printed before classification so a killed wrapper can never be laundered
+  # into [KNOWN-RED] by the partial transcript it managed to emit first.
+  if [[ ${rc} -eq 124 ]]; then
+    _ra_rel="${suite#"${ROOT}/"}"
+    [[ "${_ra_rel}" == "${suite}" ]] && _ra_rel="${suite}"
+    printf '[SUITE-TIMEOUT] %s exceeded %ss ceiling (killed by run-all; counted as a blocking failure with a named cause)\n' "${_ra_rel}" "${_ra_ceiling}"
   fi
   if [[ ${rc} -eq 0 ]]; then
     printf '[PASS] %s\n' "${suite}"
@@ -565,7 +730,11 @@ for suite in ${SUITES[@]+"${SUITES[@]}"}; do
   rel="${suite#"${ROOT}/"}"
   [[ "${rel}" == "${suite}" ]] && rel="${suite}"   # outside ROOT → absolute
   classified=0
-  if [[ -n "${suite_log}" ]]; then
+  # rc=124 (ceiling kill) is exempt from classification on purpose: a killed
+  # wrapper's partial transcript cannot prove the un-run remainder was all
+  # allow-listed — the old "zero parsed FAILED -> blocking fail-closed" rule
+  # extended to "killed -> blocking, named" (B2-GATE-BUDGET-4).
+  if [[ -n "${suite_log}" && ${rc} -ne 124 ]]; then
     declare -a KNOWN_NAMES=() UNEXPECTED_NAMES=()
     while IFS= read -r name; do
       [[ -n "${name}" ]] || continue
@@ -611,9 +780,9 @@ if [[ ${FAIL} -gt 0 ]]; then
   done
 fi
 
-if [[ ${KNOWN} -gt 0 ]]; then
-  printf 'run-all: %d passed, %d failed, %d known-red (allow-listed, non-blocking), scope=%s\n' \
-    "${PASS}" "${FAIL}" "${KNOWN}" "${SCOPE}"
+if [[ ${KNOWN} -gt 0 || ${KNOWN_RED_SKIPPED} -gt 0 || ${GONE_GREEN} -gt 0 ]]; then
+  printf 'run-all: %d passed, %d failed, %d known-red (allow-listed, non-blocking), %d known-red-skipped (budget mode, still run by --scope all), %d gone-green (remove from allow-list), scope=%s\n' \
+    "${PASS}" "${FAIL}" "${KNOWN}" "${KNOWN_RED_SKIPPED}" "${GONE_GREEN}" "${SCOPE}"
 else
   printf 'run-all: %d passed, %d failed, scope=%s\n' "${PASS}" "${FAIL}" "${SCOPE}"
 fi
