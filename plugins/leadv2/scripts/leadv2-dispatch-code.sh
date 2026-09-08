@@ -4286,6 +4286,114 @@ _apply_kimi_admission() { # <mission> <sig8> <writes_csv> <kimi_fit>; mutates ca
   emit decision "kimi_skipped reason=${KIMI_ADMISSION_REASON:-chars_over} task=${sig8} chars=${#mission} writes=${KIMI_ADMISSION_WRITES:-0} prepass=${KIMI_ADMISSION_PREPASS:-0}"
 }
 
+# _uw_norm_write <raw> -> normalised path on stdout
+# B5-HANDOFF-WRITESET: byte-for-byte mirror of leadv2-dispatch-product-close.sh's
+# _pc_norm_write (REVIEW-GATE-INFRA-01 round 2 F3) — the ONLY reason this is a
+# copy rather than a shared lib is that product-close cannot be sourced from
+# dispatch-code.sh; the two grammars must accept and reject the same shapes or a
+# write set admitted here is bounced there (the exact defect this guard exists
+# to catch early). test-handoff-only-write-set-is-refused-early.sh asserts the
+# equivalence on the live files, so a one-sided edit reddens a suite.
+_uw_norm_write() {  # <raw> -> normalised path on stdout
+  local w="$1"
+  w="${w#"${w%%[![:space:]]*}"}"; w="${w%"${w##*[![:space:]]}"}"
+  case "${w}" in
+    */\*\*) w="${w%/\*\*}" ;;
+    */\*) w="${w%/\*}" ;;
+  esac
+  w="${w%/}"
+  printf '%s' "${w}"
+}
+
+# _undiffable_writes_guard <sig8> <writes_csv> <founder_task_id> <source> -> 0 ok, 1 refused
+# B5-HANDOFF-WRITESET (PRE-WAVES-PLAN row B5): a write set whose every entry is
+# under docs/leadv2/ or docs/handoff/ is mechanically undiffable — both trees are
+# hard-excluded from the close gate's scope diff, so the lane's ONLY possible
+# terminal is the refused:undiffable_write_set bounce pc_precheck_writes raises
+# (leadv2-dispatch-product-close.sh:2103). Until now that predicate ran only at
+# lane close — i.e. AFTER the arm was selected, the reservation taken, the lane
+# worktree created and the worker's model turn paid for (observed ~25s
+# post-spawn on two recon/design lanes in one day, 2026-09-08). The predicate is
+# a pure function of the write-set CSV, so it is raised HERE at dispatch time,
+# at the same pre-spawn structural slot as the writeset_* refusals (L
+# :951: no ledger row, no reservation, no spawn can precede a refusal), under
+# the SAME ledger cause the close gate writes (routing.yaml's failure-memory
+# allow-list already files undiffable_write_set as a pre-spawn refusal, never
+# the arm's fault — this guard makes that comment true).
+# A report/recon lane's honest shape already exists (REPORT-ONLY-GATE-01):
+# declare --lane-deliverable 'report:<path>' (or a LANE_DELIVERABLE: mission
+# line) and carry NO handoff path in --writes — the close gate then certifies
+# the report itself (pc_scope_diff's kind=report branch). MIXED sets are NOT
+# refused: close proceeds with the handoff entries as an additive `undiffable:`
+# key and diffs the surviving paths (pc_precheck_writes F1). Nothing is widened:
+# a lane with no reviewable path and no report declaration still has nothing
+# for the review gate to certify, and this refusal says so before paying for it.
+#
+# DECLARED NEGATIVE CONTROLS (E2E-KILLRATE-01), applied by
+# leadv2-mutation-control.sh to the marker lines INSIDE this function's body:
+#   b5-mut-1: refuse nothing (unconditional return 0) -> the symptom returns:
+#      test-handoff-only-write-set-is-refused-early.sh case 1 reddens (dispatch
+#      proceeds, worker paid for, no refusal exists).
+#   b5-mut-2: refuse everything (good_n forced to 0) -> case 2 reddens: a
+#      write set WITH a reviewable path must never be refused — a gate that
+#      refuses all lanes is not a gate.
+_undiffable_writes_guard() {
+  local sig8="$1" writes_csv="$2" founder_task_id="$3" ws_source="$4"
+  local w bad_n=0 good_n=0
+  local -a _uw_raw=() bad_paths=()
+  # b5-mut-1: an all-handoff set must be refused here, never passed downstream
+  # b5-mut-2: a set with any reviewable path must reach the spawn path
+  [[ -n "${writes_csv}" ]] || return 0
+  IFS=',' read -r -a _uw_raw <<< "${writes_csv}"
+  for w in "${_uw_raw[@]}"; do
+    w="$(_uw_norm_write "${w}")"
+    [[ -z "${w}" ]] && continue
+    case "${w}" in
+      docs/leadv2|docs/leadv2/*|docs/handoff|docs/handoff/*)
+        bad_paths+=("${w}"); bad_n=$((bad_n + 1))
+        ;;
+      *)
+        good_n=$((good_n + 1))
+        ;;
+    esac
+  done
+  [[ ${bad_n} -gt 0 && ${good_n} -eq 0 ]] || return 0
+  local joined=""
+  joined="$(_uw_join_capped "${bad_paths[@]}")"
+  emit decision "dispatch_refused reason=undiffable_write_set task=${sig8} stage=pre_spawn source=${ws_source} paths=${joined} writes=${writes_csv} remedy=report_deliverable_or_reviewable_path"
+  _dl_note "${sig8}" refused undiffable_write_set "paths=${joined}" "${founder_task_id}"
+  printf 'LEADV2_DISPATCH_REFUSED: undiffable_write_set\n'
+  log_err "dispatch refused: the declared write set has NO reviewable path (reason=undiffable_write_set)"
+  log_err "  writes: ${writes_csv}"
+  if [[ -n "${LANE_DELIVERABLE_DECL:-}" ]]; then
+    log_err "  remedy: drop these docs/leadv2|docs/handoff paths from --writes -- the report is"
+    log_err "          already certified via the deliverable (${LANE_DELIVERABLE_DECL}); an empty"
+    log_err "          --writes plus that deliverable declaration is the report-lane shape"
+  else
+    log_err "  remedy (report-only lane): declare the deliverable and drop these paths from --writes:"
+    log_err "    --lane-deliverable 'report:docs/handoff/<task>/report.md'"
+    log_err "    (or a 'LANE_DELIVERABLE: report:<path>' line in the mission)"
+    log_err "  remedy (diff lane): add at least one reviewable path (outside docs/leadv2, docs/handoff)"
+    log_err "    to --writes alongside them"
+  fi
+  return 1
+}
+
+# _uw_join_capped <n...> -> first 5 comma-joined + "+N more" on stdout
+# B5-HANDOFF-WRITESET: mirrors product-close's _pc_join_capped cap (R1
+# unbounded-list-is-its-own-leak) so the refusal line and the close gate's
+# review-gate.md path lists agree on their budget.
+_uw_join_capped() {  # <n...> -> capped comma-joined list on stdout
+  local items=("$@")
+  local n=${#items[@]} out="" i cap=5
+  for ((i = 0; i < n && i < cap; i++)); do
+    [[ -n "${out}" ]] && out="${out},${items[$i]}"
+    [[ -z "${out}" ]] && out="${items[$i]}"
+  done
+  (( n > cap )) && out="${out},+$((n - cap)) more"
+  printf '%s' "${out}"
+}
+
 # _lane_writes_guard <sig8> <row_writes> <have_prepass:0|1> -> 0 ok, 1 park
 # H6 (LANDING-BLOCKER-R2): one call site per architect_prepass exit path, including the
 # ARCHITECT_GATE kill-switch and the provably_one_file early return -- neither may dispatch
@@ -7946,6 +8054,16 @@ cmd_resolve() {
       emit decision "lane_deliverable task=${sig8} status=ignored reason=unknown_kind decl=${_ld_decl}"
     fi
   fi
+  # B5-HANDOFF-WRITESET: refuse an all-handoff/all-leadv2 write set BEFORE anything is
+  # paid for -- before the placement pin, the ensure block, any registry row, ledger row,
+  # reservation or spawn (the same ordering _resolve_pinned_placement documents at :951).
+  # Covers the row-declared and CLI --writes shapes; the prepass/mission-text-derived
+  # shapes are re-checked at the second call site below, after architect_prepass fills
+  # lane_writes. Refusal family + exit code mirror the writeset_* refusals.
+  if ! _undiffable_writes_guard "${sig8}" "${lane_writes}" "${founder_task_id}" \
+       "$([[ -n "${lane_writes}" ]] && printf 'cli_or_row' || printf 'empty')"; then
+    exit 2
+  fi
   # BURN-GOVERNOR-01: 24h local token-burn gate, runs FIRST -- before the placement pin,
   # before the ensure block, before any reservation/terminal/spawn (architect prepass
   # §1.2 D2). Refuses (exit 6) only on verdict=hard and LEADV2_BURN_OVERRIDE!=1.
@@ -8385,6 +8503,17 @@ $(cat "${_pp_file}")
 ===== ORIGINAL MISSION (context only; the design above wins on any conflict) =====
 ${mission}"
     fi
+  fi
+
+  # B5-HANDOFF-WRITESET second call site: lane_writes can have been FILLED here by the
+  # architect prepass's own LANE_WRITES: line or the mission-text harvest above — a
+  # derived set that is all-handoff is exactly as undiffable as a declared one, and the
+  # lane must still refuse before the registry refresh, any arm reservation and any
+  # spawn (the EXIT trap releases the registered row, same as the writeset_overlap
+  # refusal a few lines below).
+  if ! _undiffable_writes_guard "${sig8}" "${lane_writes}" "${founder_task_id}" \
+       "$([[ -n "${lane_writes}" ]] && printf 'prepass_or_mission' || printf 'empty')"; then
+    exit 2
   fi
 
   # LANE-WRITESET-REGISTRY-01 step 4: lane_writes is now fully resolved (row/
