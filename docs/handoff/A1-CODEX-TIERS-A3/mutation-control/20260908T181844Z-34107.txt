@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-codex-tier-model-table.sh
+file=plugins/leadv2/scripts/codex-task.sh
+anchor=s/_chain=(gpt-5.6-sol gpt-5.6-terra gpt-6-astra)/_chain=(gpt-6-astra)/;s/_chain=(gpt-5.6-terra gpt-6-astra)/_chain=(gpt-6-astra)/;s/_chain=(gpt-5.6-luna gpt-6-astra)/_chain=(gpt-6-astra)/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: g1: tier=top resolution line missing 'gpt-5.6-sol/high': [codex-task] tier=top -> model=gpt-6-astra effort=high (sub=task)
+diff_hash=92920797064f190ea9e2c79e0e5659e7b770fdcc80dc84f215faac4391adb916
+lane_diff_hash=6de530beed51e403300020194ffb5f6258db9ab53aa95ba952c72a0623654688
