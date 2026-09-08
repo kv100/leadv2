@@ -66,9 +66,9 @@ emit() { printf '%s\\n' "$*" >&2; }
 kind=code; task_class=standard
 '''
     rc, out, err = run(['bash', '-c', preamble + '_arm_launchable_arms t code', 'test', str(seam)], root)
-    check('failed query status becomes usable fallback', rc, 0)
-    check('failed query fallback VALUE (partial stdout discarded)', out, 'glm,codex,sonnet')
-    check('failure diagnostic names fallback source', 'source=legacy' in err and 'reason=launch_registry_unavailable' in err, True)
+    check('registry outage status becomes usable fallback', rc, 0)
+    check('registry outage fallback VALUE (partial stdout discarded)', out, 'glm,codex,sonnet')
+    check('degraded diagnostic names fallback source', 'source=legacy' in err and 'reason=launch_registry_unavailable' in err, True)
 
     # This value assertion precedes telemetry assertions: deleting a capable
     # arm while preserving a nonempty chain must fail even if another launches.
