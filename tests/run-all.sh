@@ -4,10 +4,11 @@
 # product gates (leadv2-dispatch-product-close.sh, leadv2-phase8-e2e-gate.sh) execute.
 #
 # It does NOT author new suites — it drives the plugin's own curated offline regression
-# runner (.claude/scripts/tests/run-core-offline.sh) plus, on `--scope changed`, any
-# test-*.sh whose stem matches a changed file's stem under plugins/leadv2/scripts/.
+# runner (.claude/scripts/tests/run-core-offline.sh) plus, on `--scope changed` or
+# `--scope changed-since`, any test-*.sh whose stem matches a changed file's stem under
+# plugins/leadv2/scripts/ (see scope_changed_anchor below for the two range semantics).
 #
-# usage: tests/run-all.sh [--scope changed|all]
+# usage: tests/run-all.sh [--scope changed|changed-since|all]
 # exit 0: every selected suite passed
 # exit 1: at least one suite failed
 # exit 2: bad usage
@@ -44,7 +45,7 @@ while [[ $# -gt 0 ]]; do
     --scope=*)
       SCOPE="${1#--scope=}"; shift ;;
     -h|--help)
-      echo "usage: tests/run-all.sh [--scope changed|all]" >&2
+      echo "usage: tests/run-all.sh [--scope changed|changed-since|all]" >&2
       exit 0 ;;
     *)
       echo "run-all: unknown argument: $1" >&2
@@ -52,8 +53,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 case "${SCOPE}" in
-  changed|all) ;;
-  *) echo "run-all: --scope must be changed|all (got '${SCOPE}')" >&2; exit 2 ;;
+  changed|changed-since|all) ;;
+  *) echo "run-all: --scope must be changed|changed-since|all (got '${SCOPE}')" >&2; exit 2 ;;
 esac
 
 PASS=0
@@ -118,7 +119,17 @@ is_known_red() { # <id>
 core_offline_scope_arg() { # -> the --scope value to hand to run-core-offline.sh
   # scope-mut-1: forward the value run-all itself was given
   # scope-mut-2: never a value other than what run-all itself was given
-  printf '%s' "${SCOPE}"
+  # B6-SCOPE-CHANGED: changed-since is run-all's OWN incremental mode — the
+  # nested runner deliberately has no incremental stamp (its narrowed set IS
+  # the whole gate; skipping already-tested commits there would green on
+  # partial coverage, see the comment above its _core_offline_scope_changed_
+  # select). run-core-offline accepts only changed|all, so it always gets the
+  # branch-anchored 'changed' selection.
+  if [[ "${SCOPE}" == "changed-since" ]]; then
+    printf '%s' "changed"
+  else
+    printf '%s' "${SCOPE}"
+  fi
 }
 
 add_suite() { # <path>
@@ -261,71 +272,129 @@ if [[ "${LEADV2_RUN_ALL_LIST_TRIGGERS:-0}" == "1" ]]; then
   exit 0
 fi
 
-if [[ "${SCOPE}" == "all" ]]; then
-  while IFS= read -r f; do add_suite "$f"; done < <(
-    find "${ROOT}/plugins/leadv2/scripts/tests" "${ROOT}/.claude/scripts/tests" "${ROOT}/plugins/leadv2/tests" "${ROOT}/tests" \
-      -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort
-  )
-else
-  # Union uncommitted diff with the lane range NOT YET SEEN by a prior run of
-  # this script (round-4, HOOK-OUTPUT-CAP-PLUGIN-01): a plain merge-base
-  # anchor (round-3) unions in the WHOLE `<merge-base>..HEAD` range on every
-  # invocation forever — every already-committed, already-tested commit on
-  # the lane re-selects its suite on every future unrelated commit, growing
-  # monotonically with lane length. Persist the last-checked SHA per git-dir
-  # (worktree-scoped, so concurrent lanes never share the file) and diff from
-  # THAT instead of the merge-base once it exists. First run on a lane (no
-  # state file yet) still falls back to the merge-base, so a docs-only HEAD
-  # with unrelated dirt still selects the lane's own suite (round-3's win).
-  changed="$(git -C "${ROOT}" diff --name-only HEAD 2>/dev/null)"
-  _base_ref=""
+# ── changed-scope range resolution (B6-SCOPE-CHANGED) ──────────────────────
+# SCOPE-CHANGED-IS-STATEFUL-AND-A-SECOND-RUN-LIES-01 +
+# SCOPE-CHANGED-DEGRADES-TO-THE-LAST-COMMIT-01: --scope changed used to pick
+# its diff range from the per-git-dir checkpoint written by the PREVIOUS run
+# (so the same question twice gave different answers — a correctly registered
+# suite could look unregistered on the second run), and with no checkpoint
+# and no resolvable main/origin/main it silently degraded to HEAD~1..HEAD —
+# the last commit only, a plausible wrong answer on any multi-commit branch.
+# Both lies are fixed by resolving the range through ONE function with two
+# named semantics the caller chooses explicitly:
+#   changed       -> "what does this branch change": <merge-base>..HEAD plus
+#                    the uncommitted diff. STATELESS — the checkpoint is
+#                    neither read nor written, so the same question twice is
+#                    the same answer, residue or no residue.
+#   changed-since -> "what changed since the last changed-since run": the
+#                    checkpoint anchor when one exists, merge-base fallback
+#                    on the first run, HEAD recorded after. The old default
+#                    (round-4, HOOK-OUTPUT-CAP-PLUGIN-01: a plain merge-base
+#                    anchor re-selects every already-tested lane commit on
+#                    every future unrelated commit), kept — not deleted —
+#                    behind an explicit flag because repeated incremental
+#                    gate runs on one lane are its legitimate use.
+# run-core-offline.sh deliberately has NO incremental mode (see the comment
+# above its _core_offline_scope_changed_select): its narrowed set IS the
+# whole gate, so skipping already-tested commits there would green on
+# partial coverage.
+#
+# DECLARED NEGATIVE CONTROLS (E2E-KILLRATE-01), applied by
+# leadv2-mutation-control.sh to the marker lines INSIDE scope_changed_
+# anchor's body:
+#   M1 scope-changed-mut-1: make the checkpoint visible under --scope changed
+#      again (lie (a) reintroduced) -> test-scope-changed-is-deterministic.sh
+#      case 1 goes RED: the second --scope changed run selects fewer suites
+#      than the first, selected-set equality fails.
+#   M2 scope-changed-mut-2: degrade an unresolvable base back to HEAD~1..HEAD
+#      (lie (b) reintroduced) -> case 2 goes RED: rc=0 with a selected set
+#      instead of rc=2 + the named no_base_ref refusal.
+# A top-level insert is NOT a valid control for this suite: it reddens every
+# suite invocation for the wrong reason and reads as a pass.
+scope_changed_anchor() { # -> prints <range-start>; rc 1 + named reason on refusal
+  local _base_ref="" _merge_base="" _anchor=""
   for _cand in main origin/main; do
     if git -C "${ROOT}" rev-parse --verify "${_cand}" >/dev/null 2>&1; then
       _base_ref="${_cand}"
       break
     fi
   done
-  _merge_base=""
   if [[ -n "${_base_ref}" ]]; then
     _merge_base="$(git -C "${ROOT}" merge-base HEAD "${_base_ref}" 2>/dev/null || true)"
   fi
+  _anchor="${_merge_base}"
+  # scope-changed-mut-1: the checkpoint is deliberately visible ONLY to
+  # --scope changed-since. Under --scope changed this guard stays closed —
+  # that closed guard IS the fix for the second-run lie: residue from an
+  # earlier run must not change the answer.
+  if [[ "${SCOPE}" == "changed-since" ]]; then   # scope-changed-mut-1 anchor
+    local _git_dir _state_file _saved=""
+    _git_dir="$(git -C "${ROOT}" rev-parse --git-dir 2>/dev/null || true)"
+    _state_file=""
+    if [[ -n "${_git_dir}" ]]; then
+      case "${_git_dir}" in
+        /*) : ;;
+        *) _git_dir="${ROOT}/${_git_dir}" ;;
+      esac
+      _state_file="${_git_dir}/leadv2-run-all-last-checked-sha"
+    fi
+    if [[ -n "${_state_file}" && -f "${_state_file}" ]]; then
+      _saved="$(cat "${_state_file}" 2>/dev/null || true)"
+      if [[ -n "${_saved}" ]] && ! git -C "${ROOT}" rev-parse --verify "${_saved}^{commit}" >/dev/null 2>&1; then
+        _saved=""
+      fi
+    fi
+    if [[ -n "${_saved}" ]]; then
+      _anchor="${_saved}"
+    fi
+  fi
+  if [[ -z "${_anchor}" ]]; then
+    # scope-changed-mut-2: a selection answer without a resolvable base would
+    # be plausible and wrong — the old code fell through to HEAD~1..HEAD here.
+    echo "run-all: FATAL no_base_ref (--scope ${SCOPE}: neither 'main' nor 'origin/main' gives a merge-base against HEAD, and no valid checkpoint applies) — refusing rather than silently degrading to HEAD~1..HEAD; a selection made from the last commit alone is plausible and wrong (SCOPE-CHANGED-DEGRADES-TO-THE-LAST-COMMIT-01). Fix the base ref or ask --scope all." >&2
+    return 1  # scope-changed-refusal
+  fi
+  printf '%s\n' "${_anchor}"
+}
+
+# Best-effort checkpoint advance — ONLY under --scope changed-since. A write
+# failure must never fail the test run; tmp+mv keeps concurrent invocations
+# in the same worktree from reading a half-written file. --scope changed
+# never writes it: its answer must not leave residue that moves a later
+# run's goalposts (the other half of the same row).
+scope_changed_checkpoint_record() {
+  [[ "${SCOPE}" == "changed-since" ]] || return 0
+  local _git_dir _state_file _head_sha
   _git_dir="$(git -C "${ROOT}" rev-parse --git-dir 2>/dev/null || true)"
-  _state_file=""
-  if [[ -n "${_git_dir}" ]]; then
-    case "${_git_dir}" in
-      /*) : ;;
-      *) _git_dir="${ROOT}/${_git_dir}" ;;
-    esac
-    _state_file="${_git_dir}/leadv2-run-all-last-checked-sha"
+  [[ -n "${_git_dir}" ]] || return 0
+  case "${_git_dir}" in
+    /*) : ;;
+    *) _git_dir="${ROOT}/${_git_dir}" ;;
+  esac
+  _state_file="${_git_dir}/leadv2-run-all-last-checked-sha"
+  _head_sha="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "${_head_sha}" ]] || return 0
+  printf '%s\n' "${_head_sha}" > "${_state_file}.tmp.$$" 2>/dev/null \
+    && mv -f "${_state_file}.tmp.$$" "${_state_file}" 2>/dev/null
+}
+
+if [[ "${SCOPE}" == "all" ]]; then
+  while IFS= read -r f; do add_suite "$f"; done < <(
+    find "${ROOT}/plugins/leadv2/scripts/tests" "${ROOT}/.claude/scripts/tests" "${ROOT}/plugins/leadv2/tests" "${ROOT}/tests" \
+      -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort
+  )
+else
+  # Union the uncommitted diff with the range scope_changed_anchor resolved.
+  # B6-SCOPE-CHANGED: deterministic merge-base anchor for --scope changed,
+  # checkpoint anchor for --scope changed-since, and a named refusal (exit 2)
+  # — never a quiet HEAD~1..HEAD — when no anchor resolves.
+  changed="$(git -C "${ROOT}" diff --name-only HEAD 2>/dev/null)"
+  if ! _range_start="$(scope_changed_anchor)"; then
+    exit 2   # the named refusal reason is already on stderr
   fi
-  _range_start=""
-  if [[ -n "${_state_file}" && -f "${_state_file}" ]]; then
-    _range_start="$(cat "${_state_file}" 2>/dev/null || true)"
-    if [[ -n "${_range_start}" ]] && ! git -C "${ROOT}" rev-parse --verify "${_range_start}^{commit}" >/dev/null 2>&1; then
-      _range_start=""
-    fi
-  fi
-  if [[ -z "${_range_start}" ]]; then
-    _range_start="${_merge_base}"
-  fi
-  if [[ -n "${_range_start}" ]]; then
-    changed="${changed}
+  scope_changed_checkpoint_record
+  changed="${changed}
 $(git -C "${ROOT}" diff --name-only "${_range_start}..HEAD" 2>/dev/null)"
-  elif git -C "${ROOT}" rev-parse HEAD~1 >/dev/null 2>&1; then
-    changed="${changed}
-$(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
-  fi
-  # Record this run's HEAD as "checked" so a future clean-HEAD run only sees
-  # what's newly dirty, not the whole lane range again. Best-effort (a
-  # write failure must never fail the test run) — tmp+mv keeps concurrent
-  # invocations in the same worktree from reading a half-written file.
-  if [[ -n "${_state_file}" ]]; then
-    _head_sha="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || true)"
-    if [[ -n "${_head_sha}" ]]; then
-      printf '%s\n' "${_head_sha}" > "${_state_file}.tmp.$$" 2>/dev/null \
-        && mv -f "${_state_file}.tmp.$$" "${_state_file}" 2>/dev/null
-    fi
-  fi
   if [[ -n "${changed}" ]]; then
     while IFS= read -r cf; do
       # A changed test suite must select itself even when its matching

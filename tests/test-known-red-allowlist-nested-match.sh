@@ -54,6 +54,10 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 SCRATCH="$TMP/repo"
 git init -q "$SCRATCH" 2>/dev/null
+# B6-SCOPE-CHANGED: run-all now REFUSES --scope changed when no base ref
+# resolves (scope_changed_anchor) — pin the init branch to main so the
+# fixture has one regardless of the machine's init.defaultBranch.
+git -C "$SCRATCH" branch -m main 2>/dev/null
 mkdir -p "$SCRATCH/tests" "$SCRATCH/plugins/leadv2/scripts/tests"
 
 cp "$RUN_ALL" "$SCRATCH/tests/run-all.sh"

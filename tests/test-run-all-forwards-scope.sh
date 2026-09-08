@@ -66,6 +66,7 @@ STUB
   chmod +x "${FIX}/plugins/leadv2/scripts/tests/run-core-offline.sh"
   ( cd "${FIX}" \
       && git init -q \
+      && git branch -m main \
       && git add -A \
       && git -c user.email=t@local -c user.name=t commit -qm base -q ) >/dev/null 2>&1
 }
