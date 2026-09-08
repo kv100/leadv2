@@ -88,6 +88,19 @@ def comments_only(lines):
     return ''.join(kept)
 
 
+def rewrite_header(lines, real):
+    """Re-key a surviving [projects."..."] table's header to its resolved path.
+
+    Only the header line's quoted key changes; any inline comment or trailing
+    newline on that line, and every other line in the table, is untouched.
+    """
+    header = lines[0]
+    quote, comment, _ = scan_line(header, None)
+    suffix = header[comment:] if comment is not None else ('\n' if header.endswith('\n') else '')
+    new_header = '[projects.' + json.dumps(real, ensure_ascii=False) + ']' + suffix
+    return ''.join([new_header] + lines[1:])
+
+
 def path_exists(path):
     try:
         os.stat(path)
@@ -108,6 +121,7 @@ def prune(text, data):
     if set(projects) - explicit:
         raise ValueError('inline/dotted project definitions unsupported; config left untouched')
     removed = set()
+    renames = {}
     live = {}
     dead = duplicates = conflicts = 0
     for path, policy in projects.items():
@@ -123,14 +137,23 @@ def prune(text, data):
     for real, paths in live.items():
         # Prefer the physical spelling. Never discard a differing live policy.
         winner = real if real in paths else paths[0]
+        collapsed = False
         for path in paths:
             if path != winner:
                 if projects[path] == projects[winner]:
                     removed.add(path)
                     duplicates += 1
+                    collapsed = True
                 else:
                     conflicts += 1
-    output = ''.join(comments_only(p['lines'])
+        # Only re-key the survivor when a duplicate spelling actually collapsed
+        # into it; a bare conflict must leave the config byte-identical.
+        if collapsed and winner != real:
+            renames[winner] = real
+    output = ''.join(rewrite_header(p['lines'], renames[p['keys'][1]])
+                     if len(p['keys']) == 2 and p['keys'][0] == 'projects'
+                     and p['keys'][1] in renames
+                     else comments_only(p['lines'])
                      if len(p['keys']) >= 2 and p['keys'][0] == 'projects'
                      and p['keys'][1] in removed else ''.join(p['lines'])
                      for p in parts)
