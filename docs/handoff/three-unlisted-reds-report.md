@@ -466,3 +466,36 @@ at=2026-09-08T11:00:15Z
 }
 [TEST-SAFETY] tripwire OK: /private/tmp/three-unlisted-reds.GjAMnE/repo/plugins/leadv2/scripts/leadv2-lane-liveness.sh unchanged (md5 acb0ac43e7e6b38bcbca8671cdb0e9c8 before and after)
 ```
+
+### tests/run-all.sh --scope changed — raw output
+
+```sh
+timeout --kill-after=10s 180s bash tests/run-all.sh --scope changed
+# timeout returned 124; this is NOT a passing gate.
+```
+
+```text
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/a49cbf1665d4/plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: delegating scope=changed to plugins/leadv2/scripts/tests/run-core-offline.sh
+[CORE-OFFLINE] scope=changed running 0 of 95 suites (base=main@34e9fefa05, 0 changed files, 0 unmapped)
+[CORE-OFFLINE] SCOPE_RESULT selected=0 total=95 base=main@34e9fefa05 changed=0 unmapped=0 verdict=nothing_to_run reason=no_relevant_changed_files
+[CORE-OFFLINE] suites passed=0 failed=0 missing=0 verdict=nothing_to_run reason=no_relevant_changed_files repo=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/a49cbf1665d4
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/a49cbf1665d4/plugins/leadv2/scripts/tests/run-core-offline.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/a49cbf1665d4/tests/test-status-surface-bash32.sh
+== T1: /bin/bash -n on the renderer ==
+  ok   - renderer parses clean under bash 3.2
+== T2: /bin/bash -n on the wrapper ==
+  ok   - wrapper parses clean under bash 3.2
+== T2b: /bin/bash -n on the broad-status composer ==
+  ok   - broad-status composer parses clean under bash 3.2
+== T3: env -i minimal PATH (the actual SwiftBar launch shape) renders lanes ==
+changed_scope_rc=124
+```
+
+The core runner selected zero relevant suites, but the top-level runner also selected the always-run `tests/test-status-surface-bash32.sh`. Its three initial syntax checks passed; T3 (minimal-PATH live status rendering) did not finish within the 180-second outer bound. The invocation has terminated. No broad-green claim is made, and no additional verification process is pending.
+
+### Final lane status
+
+Evidence checkpoint commit: `6cbf80f3`. This final report update records the completed timeout result. The report is the only changed/committed file; the three suites and production remain unchanged. The lane is NOT ready for a repair approval or a green close. It needs a corrected write set covering the actual tracked suite/production paths and resolution of the divergent main `.claude/scripts` deployment copy. No merge or push was performed.
+
+BLOCKED: required production/test paths are outside LANE_WRITES; the changed-scope gate also timed out at status-surface T3 (rc=124).
