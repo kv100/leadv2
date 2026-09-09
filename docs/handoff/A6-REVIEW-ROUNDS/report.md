@@ -119,9 +119,8 @@ $ LEADV2_RUN_ALL_LIST_TRIGGERS=1 bash tests/run-all.sh | grep review-rounds-scal
 ## Negative controls (E2E-KILLRATE-01) — both run, both red
 
 Declared in the suite header, applied by `leadv2-mutation-control.sh` to
-lines INSIDE function bodies, artifacts under
-`docs/handoff/A6-REVIEW-ROUNDS/mutation-control/` (force-added past the
-`docs/handoff/*/*` blanket ignore):
+lines INSIDE function bodies. The current artifacts below are force-added
+past the `docs/handoff/*/*` blanket ignore:
 
 ```
 $ bash plugins/leadv2/scripts/leadv2-mutation-control.sh \
@@ -135,14 +134,15 @@ control-1 exit=0
 ```
 
 - **M1 `a6-mut-1`** (force the ceiling to 1 regardless of complexity — the
-  row's symptom) — artifact `mutation-control/20260909T001316Z-16007.txt`:
-  baseline_rc=0, suite RED (`FAIL: env_scale_complex: rc=1, expected
-  handed-off rc0`), exit 0.
+  row's symptom) — artifact `mutation-control/20260909T010207Z-99508.txt`:
+  baseline_rc=0, mutated_rc=1, suite RED (`FAIL: env_scale_complex: rc=1,
+  expected handed-off rc0`).
 - **M2 `a6-mut-2`** (`if (( round >= ceiling ))` -> `>= 0` — the follow-up
   round unreachable, a round-1 finding terminating like a clean lane) —
-  artifact `mutation-control/20260909T001329Z-17643.txt`: baseline_rc=0,
-  suite RED (same first red line), exit 0. Both artifacts carry
-  `lane_diff_hash=2624046a…`, binding them to committed `481893a7`.
+  artifact `mutation-control/20260909T010244Z-11207.txt`: baseline_rc=0,
+  mutated_rc=1, suite RED (same first red line). Both artifacts carry
+  `lane_diff_hash=29571dc5…`, binding them to the committed code plus this
+  report before the artifact paths themselves were added.
 
 ## Falsification set
 
@@ -185,18 +185,44 @@ pass=7 fail=0
 SUITE GREEN
 ```
 
-Changed-scope runner (`bash tests/run-all.sh --scope changed`): see the
-verbatim verdict block in the next section.
+Changed-scope runner (`bash tests/run-all.sh --scope changed`) exited 0. Its
+raw stdout was unusually sparse, so selection was also independently dumped
+from the exact delegated runner; it selected the new A6 suite (51 of 95
+suites) from `main@2062d2ed22` with 2 changed code files and no unmapped
+files.
 
 ## run-all --scope changed verdict
 
 (RUN_ALL_VERDICT)
 
-## Diff
+```
+$ timeout 600 bash tests/run-all.sh --scope changed
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/A6-REVIEW-ROUNDS/plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: delegating scope=changed to plugins/leadv2/scripts/tests/run-core-offline.sh
+
+$ timeout 300 env LEADV2_CORE_OFFLINE_SCOPE_DUMP=1 bash plugins/leadv2/scripts/tests/run-core-offline.sh --scope changed
+[CORE-OFFLINE] scope=changed running 51 of 95 suites (base=main@2062d2ed22, 2 changed files, 0 unmapped)
+[CORE-OFFLINE] SCOPE_RESULT selected=51 total=95 base=main@2062d2ed22 changed=2 unmapped=0 verdict=selected reason=-
+[CORE-OFFLINE] SCOPE_SELECTED plugins/leadv2/tests/test-review-rounds-scale-with-complexity.sh
+```
+
+The deterministic pre-review gate passed the two applicable mechanical
+checks. Its report/paste checks were skipped because no machine-readable task
+brief is present under this lane's handoff directory:
 
 ```
-(main...HEAD diffstat pasted at commit time)
+$ bash plugins/leadv2/scripts/lib/leadv2-dod-gate.sh "$PWD" "$PWD/docs/handoff/A6-REVIEW-ROUNDS" /tmp/a6-main-head.diff /tmp/a6-dod-gate.md
+# dod-gate report — 2026-09-09T01:04:56Z
+
+dod_skip check=report_not_required
+dod_skip check=paste_not_required reason=no_brief
+dod_pass check=suite_registration
+dod_pass check=runtime_state
 ```
+
+## Diff
+
+The post-commit `main...HEAD` diffstat is recorded with the commit handoff.
 
 ## Row disposition
 

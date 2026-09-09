@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-review-rounds-scale-with-complexity.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+anchor=s|if (( round >= ceiling )); then|if (( round >= 0 )); then|
+baseline_rc=0
+mutated_rc=1
+red_line=  FAIL: env_scale_complex: rc=1, expected handed-off rc0
+diff_hash=065eb4b9a86a5dd1e61673aba115cfa279495fc61ab913f73bb9769f536c2f2b
+lane_diff_hash=29571dc5bda5b38434fe4b88aa3a589778c364ec1dad3ffc14543c5223f957d1
