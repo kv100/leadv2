@@ -129,3 +129,45 @@ MUTATION-CONTROL ok suite=plugins/leadv2/tests/test-merged-worktree-sweep-is-bou
 ```
 
 The full immutable artifacts are committed under `docs/reference/mutation-control/`.
+
+## Final falsification set
+
+`bash -n` passed for both changed shell files. The focused suite was green:
+
+```text
+PASS: budget fixture hook exits 0
+PASS: SessionStart budget <1s (0.25377321243286133s)
+PASS: default path does not invoke orphan checkpoint
+PASS: registered lane branch is merged into main
+PASS: registered lane is clean
+PASS: registered lane has a real lane path
+PASS: registered lane metadata is old
+PASS: registered-lane hook exits 0
+PASS: registered lane survives sweep
+PASS: merged-worktree-sweep bounded (9 assertions)
+```
+
+The repository changed-scope runner was given a foreground 180-second bound.
+It selected the sweep suite and the repository shell-syntax check successfully,
+then returned red only because an unrelated status-surface suite crossed its
+own 120-second suite ceiling. Its raw terminal output was:
+
+```text
+changed_scope_rc=1
+[CORE-OFFLINE] scope=changed running 2 of 95 suites (base=main@1e95dde2de, 2 changed files, 0 unmapped)
+[CORE-OFFLINE] all plugin shell syntax
+[CORE-OFFLINE] SHARD_RESULT idx=0 pass=1 fail=0 missing=0
+[CORE-OFFLINE] plugins/leadv2/tests/test-merged-worktree-sweep-is-bounded.sh (scope-selected ad-hoc)
+PASS: merged-worktree-sweep bounded (9 assertions)
+[CORE-OFFLINE] SHARD_RESULT idx=1 pass=1 fail=0 missing=0
+[CORE-OFFLINE] suites passed=2 failed=0 missing=0 known_red_skipped=0 repo=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/SESSION-START-COST
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/SESSION-START-COST/plugins/leadv2/scripts/tests/run-core-offline.sh
+[SUITE-TIMEOUT] tests/test-status-surface-bash32.sh exceeded 120s ceiling (killed by run-all; counted as a blocking failure with a named cause)
+[FAIL] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/SESSION-START-COST/tests/test-status-surface-bash32.sh
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/SESSION-START-COST/tests/test-status-surface-single-lead.sh
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/SESSION-START-COST/tests/test-status-surface-fast-names.sh
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/SESSION-START-COST/plugins/leadv2/tests/test-merged-worktree-sweep-is-bounded.sh
+Failures (blocking):
+  - tests/test-status-surface-bash32.sh
+run-all: 4 passed, 1 failed, scope=changed
+```
