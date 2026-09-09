@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-writeset-admits-an-audit-lane.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=/tmp/wr-mut/wr-mut-2.patch
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: caseA exemption decision is loud (reason=report_deliverable)
+diff_hash=79070a4f82369586ac48095fa2c35fa8b90fb8c53a619bb837d73017a68cc38c
+lane_diff_hash=27ff3b678a105d3cafabdc74c7d4003e6c624c7493a782d96dac17766247845d

@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-fg-dispatch-guard-reads-the-command.sh
+file=plugins/leadv2/hooks/leadv2-block-fg-dispatch.sh
+anchor=/tmp/wr-mut/h-mut-2.patch
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: exec blocked: direct guarded path -- rc=0 err=
+diff_hash=2297acc350c442e1ccb1e6f032a31b85a827fd4af927888af672b08c6707b40d
+lane_diff_hash=27ff3b678a105d3cafabdc74c7d4003e6c624c7493a782d96dac17766247845d
