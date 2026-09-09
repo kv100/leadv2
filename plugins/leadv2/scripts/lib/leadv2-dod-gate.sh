@@ -14,6 +14,12 @@
 #   exit 2 = undetermined (a hard check's own input was unreadable/missing —
 #            never a false pass, never a false fail)
 #   exit 3 = usage error
+#   exit 4 = checks PASSED but the report was not persisted to out_md
+#            (D-8, WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01: rc used to be 0
+#            while dod-gate.md never landed; 2 was already taken by
+#            "undetermined", so the not-persisted verdict gets 4). The body
+#            is still printed (stdout + stderr) and a trailing
+#            `dod_report wrote=<0|1> path=...` stdout line says which.
 # Check (e) is report-only and NEVER affects the exit code — see §4/CHALLENGE-14
 # in architect-v2.md.
 #
@@ -621,7 +627,7 @@ _dod_check_e() {
 
 # ---------------------------------------------------------------------------
 lv2_dod_gate_run() {
-  if [[ $# -ne 4 ]]; then
+  if [[ $# -ne 4 || -z "$4" ]]; then
     printf 'Usage: lv2_dod_gate_run <repo_root> <task_dir> <diff_file> <out_md>\n' >&2
     return 3
   fi
@@ -661,11 +667,21 @@ lv2_dod_gate_run() {
   # (the same muteness as REVIEW-GATE-IS-MUTE-01, produced by this gate's own
   # code). ${body} is already fully assembled in memory, so print it
   # unconditionally regardless of whether the artifact file write succeeds.
-  mkdir -p "$(dirname "${out_md}")" 2>/dev/null || true
-  printf '%s\n' "${body}" > "${tmp_out}"
-  if mv -f "${tmp_out}" "${out_md}" 2>/dev/null || cp -f "${tmp_out}" "${out_md}" 2>/dev/null; then
-    :
+  # D-8: each step is now tracked, so the failure mode fix-round-2 papered
+  # over with `|| true` (report never persisted) is named on the trailing
+  # dod_report line and costs rc 4 when the verdict was a pass.
+  local report_written=0 report_reason=""
+  if ! mkdir -p "$(dirname "${out_md}")" 2>/dev/null; then
+    report_reason="mkdir"
+  elif ! printf '%s\n' "${body}" > "${tmp_out}" 2>/dev/null; then
+    report_reason="write"
+  elif mv -f "${tmp_out}" "${out_md}" 2>/dev/null || cp -f "${tmp_out}" "${out_md}" 2>/dev/null; then
+    report_written=1
   else
+    report_reason="mv"
+  fi
+  if [[ ${report_written} -eq 0 ]]; then
+    rm -f "${tmp_out}" 2>/dev/null || true
     # Out dir still unwritable after mkdir -p (read-only mount, race). stdout
     # below already carries the real cause; also emit on stderr per
     # fix-round-2 finding 2's explicit ask, so a caller inspecting stderr
@@ -674,12 +690,19 @@ lv2_dod_gate_run() {
   fi
 
   printf '%s\n' "${body}"
+  # Trailing machine line (parser-inert: readers key off ^dod_fail/^dod_skip).
+  if [[ ${report_written} -eq 1 ]]; then
+    printf 'dod_report wrote=1 path=%s\n' "${out_md}"
+  else
+    printf 'dod_report wrote=0 path=%s reason=%s\n' "${out_md}" "${report_reason:-unknown}"
+  fi
 
   if [[ ${overall_fail} -eq 1 ]]; then
     return 1
   elif [[ ${overall_undetermined} -eq 1 ]]; then
     return 2
   fi
+  [[ ${report_written} -eq 1 ]] || return 4
   return 0
 }
 

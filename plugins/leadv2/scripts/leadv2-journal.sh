@@ -21,9 +21,16 @@
 #
 # Falls back to the pre-fix per-checkout layout only if leadv2-state-path.sh
 # is missing or errors -- a worker must never be left unable to write.
+#
+# rc vocabulary (WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01 J-4): 0 ok; 1 usage;
+# 2 write_failed (mkdir or the append itself refused -- the journal line was
+# NOT written). The ERR trap that used to force every failure to exit 0 is
+# gone: a journal that did not land must say so. Every current caller wraps
+# the call in `|| true` (census in the lane report), so rc 2 is loud, not
+# fatal; the [leadv2-journal] ERROR line is the signal that survives the
+# swallow. Read verbs (tail/path) still exit 0 on an absent journal file.
 
 set -euo pipefail
-trap 'exit 0' ERR
 
 SCRIPT_NAME="leadv2-journal"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -106,9 +113,10 @@ case "$MODE" in
       *) TYPE="note" ;;
     esac
 
-    mkdir -p "$TASK_DIR"
+    mkdir -p "$TASK_DIR" 2>/dev/null || { log_err "write_failed=1 path=$TASK_DIR reason=mkdir"; exit 2; }
     UTC_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf -- '- %s [%s] %s\n' "$UTC_ISO" "$TYPE" "$TEXT" >> "$JOURNAL_FILE"
+    printf -- '- %s [%s] %s\n' "$UTC_ISO" "$TYPE" "$TEXT" >> "$JOURNAL_FILE" 2>/dev/null \
+      || { log_err "write_failed=1 path=$JOURNAL_FILE reason=append"; exit 2; }
     ;;
   tail)
     N="${1:-10}"

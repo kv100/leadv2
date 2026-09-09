@@ -250,8 +250,22 @@ record_result() {
     lv2_refuse_test_write "leadv2-freepool-gate.sh" "${FREEPOOL_STATE_FILE}" "LEADV2_FREEPOOL_STATE_DIR"
     return 3
   fi
-  _ensure_state_file
-  python3 - "${FREEPOOL_STATE_FILE}" "${ok}" "${latency_s}" <<'PYEOF' 2>/dev/null || true
+  # WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01 (F-2): validate in bash before the
+  # heredoc — float("nan") parses and "1,5" raises inside python, and the old
+  # `2>/dev/null || true` turned either into rc 0 with the state file
+  # untouched: the rolling window silently lost a record. rc 2 + a counted
+  # line now; the state file is left exactly as it was.
+  if ! [[ "${latency_s}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    printf '[freepool-record] wrote=0 reason=bad_latency value=%s\n' "${latency_s}" >&2
+    return 2
+  fi
+  # _ensure_state_file under `main record` runs with set -e live: an unwritable
+  # state dir used to die here with bash's raw redirect error (unnamed rc 1).
+  # Part of the same F-2 contract: name it and return 2.
+  _ensure_state_file \
+    || { printf '[freepool-record] wrote=0 reason=state_write_error path=%s\n' "${FREEPOOL_STATE_FILE}" >&2; return 2; }
+  local _fr_out="" _fr_rc=0
+  _fr_out="$(python3 - "${FREEPOOL_STATE_FILE}" "${ok}" "${latency_s}" <<'PYEOF'
 import json, sys, time
 
 path, ok, latency_s = sys.argv[1], sys.argv[2] == "1", float(sys.argv[3])
@@ -267,7 +281,15 @@ with open(tmp, "w") as f:
     json.dump(data, f)
 import os
 os.replace(tmp, path)
+print("%d" % len(data["results"]))
 PYEOF
+)" || _fr_rc=$?
+  if [[ "${_fr_rc}" -ne 0 ]]; then
+    printf '[freepool-record] wrote=0 reason=state_write_error path=%s\n' "${FREEPOOL_STATE_FILE}" >&2
+    return 2
+  fi
+  printf '[freepool-record] wrote=1 results=%s path=%s\n' "${_fr_out}" "${FREEPOOL_STATE_FILE}"
+  return 0
 }
 
 main() {
