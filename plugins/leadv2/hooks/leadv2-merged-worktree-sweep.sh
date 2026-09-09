@@ -89,33 +89,39 @@ _SWEEP_LOG="${TMPDIR:-/tmp}/leadv2-sweep.$(id -u).log"
 
 lv2_wt_protect_prime "${ROOT}"
 
-# D4-NO-PATH-LOSES-WORK-01 / D9: checkpoint-then-sweep is load-bearing. This
-# MUST run before the removal loop below ever inspects a worktree — a lane
-# whose worker already died mid-edit gets its dirty tree turned into a
-# durable (ORPHAN) commit (or quarantined to orphan-quarantine/<lane>) here,
-# BEFORE the "merged and clean" / "dead+empty" checks below could otherwise
-# discard it (the exact discard-then-remove class of incident b413968c
-# closed for the pre-existing sweep criteria; this sweeper is external to
-# every worker's process tree, so it also survives a SIGKILL that the
-# in-process checkpointers cannot). Never fatal to the sweep itself.
-ORPHAN_CHECKPOINT_BIN="${SCRIPT_DIR}/../scripts/leadv2-orphan-checkpoint.sh"
-if [[ -f "${ORPHAN_CHECKPOINT_BIN}" ]]; then
-  bash "${ORPHAN_CHECKPOINT_BIN}" --project-root "${ROOT}" >/dev/null 2>&1 || true
-fi
+# SessionStart is a latency-critical hook.  The orphan checkpointer walks every
+# lane and can perform recovery commits; that work is useful, but it is not a
+# prerequisite for deciding whether a *clean* merged worktree can be removed.
+# Run it from its dedicated periodic/manual path, not on every session start.
+#
+# This opt-in exists only as a reversible diagnostic escape hatch.  It is OFF
+# by default, and the mutation control for this function proves that a slow
+# checkpointer cannot silently return to the critical path.
+run_orphan_checkpoint_if_requested() {
+  local orphan_checkpoint_bin
+  [[ "${LEADV2_SESSION_START_ORPHAN_CHECKPOINT:-0}" == "1" ]] || return 0 # session-start-orphan-mut-1
+  orphan_checkpoint_bin="${LEADV2_ORPHAN_CHECKPOINT_BIN:-${SCRIPT_DIR}/../scripts/leadv2-orphan-checkpoint.sh}"
+  [[ -f "${orphan_checkpoint_bin}" ]] || return 0
+  bash "${orphan_checkpoint_bin}" --project-root "${ROOT}" >/dev/null 2>&1 || true
+}
+run_orphan_checkpoint_if_requested
 
 # L1b: the age floor is a pass-level setting — hoisted out of the loop so the
 # summary reports the RESOLVED floor, not a loop-local left over from whatever
 # iteration happened to run last.
 min_age="${LEADV2_SWEEP_MIN_AGE_S:-1800}"
 
-# Only lane worktrees, and only ones that still exist on disk.
-while IFS= read -r wt; do
-  [[ -n "${wt}" ]] || continue
+# Only lane worktrees, and only ones that still exist on disk.  Keeping this
+# in a function makes the safety gate an executable seam: its mutation control
+# can prove that a registered lane would otherwise be removed.
+sweep_one_worktree() {
+  local wt="$1"
+  [[ -n "${wt}" ]] || return 0
   case "${wt}" in
     */.claude/worktrees/*) ;;
-    *) continue ;;
+    *) return 0 ;;
   esac
-  [[ -d "${wt}" ]] || continue
+  [[ -d "${wt}" ]] || return 0
 
   # SWEEPER-LANE-SAFETY-01: protection BEFORE any other criterion. rc 1-4
   # (registered / arm-open / live pid / young) skip SILENTLY apart from one
@@ -139,14 +145,14 @@ while IFS= read -r wt; do
         "$(basename "${wt}")" "${LV2_WT_PROTECT_REASON:-unreadable}" >&2
       _PROTECT_ERR_SHOWN=1
     fi
-    continue
+    return 0
   fi
 
   # Unmerged work stays, and is named so a human can decide.
   ahead="$(git -C "${wt}" rev-list --count "${BASE}..HEAD" 2>/dev/null || echo 0)"
   if [[ "${ahead}" != "0" ]]; then
     KEPT_AHEAD=$((KEPT_AHEAD + 1)); KEPT_NAMES+=("$(basename "${wt}") (+${ahead})")
-    continue
+    return 0
   fi
 
   # NEWBORN GUARD (2026-08-24): a worktree `git worktree add` just created is
@@ -176,7 +182,7 @@ while IFS= read -r wt; do
       age=$(( now_epoch - created_epoch ))
       if (( age < min_age )); then
         KEPT_YOUNG=$((KEPT_YOUNG + 1)); KEPT_NAMES+=("$(basename "${wt}") (young ${age}s)")
-        continue
+        return 0
       fi
     fi
   fi
@@ -215,7 +221,7 @@ while IFS= read -r wt; do
   if [[ -n "${real_dirt}" ]]; then
     # Genuine uncommitted work always wins. Never --force from here.
     KEPT_DIRTY=$((KEPT_DIRTY + 1)); KEPT_NAMES+=("$(basename "${wt}") (dirty)")
-    continue
+    return 0
   fi
 
   # Merged, protected-none, and nothing dirty but the plugin's own regenerated
@@ -235,7 +241,7 @@ while IFS= read -r wt; do
     END { exit found ? 0 : 1 }
   '; then
     KEPT_DIRTY=$((KEPT_DIRTY + 1)); KEPT_NAMES+=("$(basename "${wt}") (locked)")
-    continue
+    return 0
   fi
   # The discard list is bookkeeping-only:
   #   * tracked orchestration paths are restored from HEAD (index + worktree);
@@ -277,9 +283,11 @@ while IFS= read -r wt; do
   else
     KEPT_DIRTY=$((KEPT_DIRTY + 1)); KEPT_NAMES+=("$(basename "${wt}") (dirty)")
   fi
-done < <(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+}
 
-git worktree prune >/dev/null 2>&1 || true
+while IFS= read -r wt; do
+  sweep_one_worktree "${wt}"
+done < <(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
 
 if (( REMOVED > 0 || KEPT_AHEAD > 0 || KEPT_DIRTY > 0 || KEPT_YOUNG > 0 )); then
   printf '[leadv2-merged-worktree-sweep] removed %d merged lane worktree(s)' "${REMOVED}" >&2

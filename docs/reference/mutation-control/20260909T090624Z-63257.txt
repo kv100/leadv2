@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-merged-worktree-sweep-is-bounded.sh
+file=plugins/leadv2/hooks/leadv2-merged-worktree-sweep.sh
+anchor=s@if lv2_worktree_protected "${ROOT}" "${wt}"; then@if true; then # sweep-protection-mut-1@
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: registered lane was removed
+diff_hash=6c53318c8305b585533f3fc6be45246c1d4f4260ee71676229596e2be2017751
+lane_diff_hash=ad18d2a65e6683532115a4c35d1759f03bd4091c2edf0da9b5e769f58f799e6e
