@@ -8,6 +8,14 @@
 # Run: bash plugins/leadv2/scripts/tests/test-continuation-guard.sh
 # run-all-triggers: leadv2-continuation-guard
 #
+# DECLARED NEGATIVE CONTROLS (E2E-KILLRATE-01), applied with
+# plugins/leadv2/scripts/leadv2-mutation-control.sh only inside the hook's
+# Python-function body. Both must make this suite red:
+#   M1 measured-probe: `s|            if btype == '\''tool_use'\'':|            if False:  # cg-mut-measured-probe: ignore completed probes|`
+#      -> Case 3b fails because a completed read-only Bash probe blocks.
+#   M2 silent-guard: `s|^    has_tool_call = False$|    has_tool_call = True  # cg-mut-silent-guard: silently stopped turns pass|`
+#      -> Case 1 fails because a no-tool silent stop no longer blocks.
+#
 # SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
 # marker and matched no name convention, so `run-all.sh --scope changed`
 # never selected it — it could only ever run under `--scope all`. The
@@ -42,8 +50,9 @@ trap cleanup EXIT
 setup_fixture() {
   local active_yaml_content="$1"
   local closed_state="$2"
+  local tmp_base="${LEADV2_TEST_TMPDIR:-${TMPDIR:-/tmp}}"
 
-  TMPROOT="$(mktemp -d)"
+  TMPROOT="$(mktemp -d "${tmp_base%/}/leadv2-continuation-guard.XXXXXX")"
   FIXTURE_ROOT="$TMPROOT/project"
   FIXTURE_SENTINEL_DIR="$TMPROOT/sentinels"
 
@@ -125,6 +134,12 @@ is_allow() {
   echo "$1" | python3 -c 'import sys,json; d=json.loads(sys.stdin.read()); exit(0 if d.get("decision")!="block" else 1)' 2>/dev/null
 }
 
+block_reason_contains() {
+  [[ -n "$1" ]] || return 1
+  printf '%s' "$1" | python3 -c 'import json, sys; exit(0 if sys.argv[1] in json.loads(sys.stdin.read()).get("reason", "") else 1)' \
+    "$2" 2>/dev/null
+}
+
 ACTIVE_YAML_OPEN='sessions:
   - task_id: TEST-TASK-01
     phase: build'
@@ -141,10 +156,10 @@ ACTIVE_YAML_CLOSED='sessions:
   write_transcript '[]' "Ответ на вопрос основателя."
   run_hook "" "false"
 
-  if is_block "$HOOK_OUT"; then
-    pass "Case 1: blocks on silent-stop with active task"
+  if is_block "$HOOK_OUT" && block_reason_contains "$HOOK_OUT" "emit only the missing line; do not restate anything already said"; then
+    pass "Case 1: blocks on silent-stop with non-repeating recovery instruction"
   else
-    fail "Case 1: should block on silent-stop with active task (got: $HOOK_OUT)"
+    fail "Case 1: should block on silent-stop with non-repeating recovery instruction (got: $HOOK_OUT)"
   fi
 }
 
@@ -175,6 +190,22 @@ ACTIVE_YAML_CLOSED='sessions:
     pass "Case 3: allows when git commit Bash used"
   else
     fail "Case 3: should allow when git commit used (got: $HOOK_OUT)"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# Case 3b (E2E-KILLRATE-01): measured turn + read-only Bash probe → ALLOW.
+# The guard detects a quiet stop, not whether the completed work mutated state.
+# ════════════════════════════════════════════════════════════════════════════
+{
+  setup_fixture "$ACTIVE_YAML_OPEN" "open"
+  write_transcript '[{"type":"tool_use","name":"Bash","input":{"command":"git status --short && git log -1 --oneline"}}]' "Проверил состояние лейна: изменений нет."
+  run_hook "" "false"
+
+  if is_allow "$HOOK_OUT"; then
+    pass "Case 3b: allows measured read-only Bash probe"
+  else
+    fail "Case 3b: should allow measured read-only Bash probe (got: $HOOK_OUT)"
   fi
 }
 
