@@ -34,6 +34,18 @@
 set -euo pipefail
 
 : "${LEADV2_TASK_ID:?LEADV2_TASK_ID must be set}"
+
+# --allow-main-regression (LANE-MERGE-SILENTLY-REVERTS-MAIN-01): deliberate
+# override of the merged-tree regression gate below. Prints the full list of
+# what the merge would revert on main, then merges anyway.
+ALLOW_MAIN_REGRESSION=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --allow-main-regression) ALLOW_MAIN_REGRESSION=1 ;;
+    *) printf 'leadv2-deploy-merge: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+  esac
+  shift
+done
 CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 
 # ── path resolution (same as the rest of the plugin — leadv2-helpers.sh) ────
@@ -120,22 +132,65 @@ git pull --ff-only origin main || {
 }
 
 # LANE-MERGE-SILENTLY-REVERTS-MAIN-01: last check before the irreversible
-# merge. A rebase above (if BEHIND>0) normally already carries main's
-# post-fork content forward, but this is the final backstop regardless of
-# how TASK_BRANCH got here -- refuse rather than silently drop a file the
-# task branch never touched.
-MERGE_SAFETY_GATE="${SCRIPT_DIR}/leadv2-merge-safety-gate.sh"
-if [[ -x "$MERGE_SAFETY_GATE" ]]; then
-  GATE_OUT="$("$MERGE_SAFETY_GATE" "$(pwd)" "$TASK_BRANCH" main 2>&1)" && GATE_RC=0 || GATE_RC=$?
-  if [[ "$GATE_RC" -eq 1 ]]; then
-    printf '%s\n' "$GATE_OUT" >&2
-    write_blocker "merge-safety-gate refused: lane deletes file(s) it never touched -- merge main into the lane, then retry"
-    exit 1
-  elif [[ "$GATE_RC" -ge 2 ]]; then
-    printf '%s\n' "$GATE_OUT" >&2
-    write_blocker "merge-safety-gate errored (rc=${GATE_RC}) -- see log"
+# merge. The branch-vs-main file list LIES (`main..branch` shows main's
+# newer files as deletions); only the diff of the tree the merge would
+# actually LAND answers. A path that diff changes while no lane commit ever
+# named it is the merge silently reverting main on a file the lane never
+# touched -- the exact shape of the five 2026-09-03 incidents (clean merge,
+# exit 0, no conflict, another lane's file gone; the worst would have
+# dropped a 221-line suite). Probe it, refuse it.
+#
+# Discriminator: `git log --name-only` emits no patch for merge commits, so
+# content that only ever reached the lane via its own mid-flight merge of
+# main and was then dropped by a wholesale conflict resolution stays
+# unnamed -- exactly the accidental revert. A lane whose own commit deleted
+# its own file still lands: that commit names the path. Residual, known: a
+# revert baked into a REBASE-replayed commit names the path and is trusted
+# (the replay is indistinguishable from a deliberate edit at this point).
+#
+# Replaces the previous `[[ -x leadv2-merge-safety-gate.sh ]]` call, which
+# never fired: the gate was committed 100644, so the -x guard silently
+# skipped it on every run (a gate that exists only in the commit message).
+lv2_probe_main_regressions() {
+  # $1 = default branch, $2 = lane branch.
+  # rc 0 = clean; rc 1 = regression (reverted paths on stdout); rc 2 = probe
+  # error (merge-tree conflict or git failure -- cannot verify, refuse).
+  local default_branch="$1" lane_branch="$2"
+  local merged_tree
+  if ! merged_tree="$(git merge-tree --write-tree "$default_branch" "$lane_branch" 2>/dev/null)"; then
+    printf 'leadv2-deploy-merge: merge-tree probe conflicted/failed for %s into %s\n' \
+      "$lane_branch" "$default_branch" >&2
+    return 2
+  fi
+  local lane_named merged_changed reverted
+  lane_named="$(git log --name-only --no-renames --pretty=format: "${default_branch}..${lane_branch}" 2>/dev/null | sort -u | grep -v '^$' || true)"
+  merged_changed="$(git diff --name-only --no-renames "$default_branch" "$merged_tree" | sort -u | grep -v '^$' || true)"
+  [[ -z "$merged_changed" ]] && return 0
+  # Paths the merge would change that no lane commit ever named.
+  reverted="$(comm -13 <(printf '%s\n' "$lane_named") <(printf '%s\n' "$merged_changed"))"
+  if [[ -n "$(printf '%s' "$reverted" | tr -d '[:space:]')" ]]; then
+    printf '%s\n' "$reverted"
+    return 1
+  fi
+  return 0
+}
+
+PROBE_RC=0
+REGRESSION_FILES="$(lv2_probe_main_regressions main "$TASK_BRANCH")" || PROBE_RC=$?
+if [[ "$PROBE_RC" -eq 1 ]]; then
+  if [[ "$ALLOW_MAIN_REGRESSION" -eq 1 ]]; then
+    printf '[ALLOW-MAIN-REGRESSION] proceeding; this merge REVERTS on main (files the lane never touched):\n' >&2
+    printf '%s\n' "$REGRESSION_FILES" | sed 's/^/  /' >&2
+  else
+    printf '[MERGE_REFUSED] merging %s would revert file(s) on main the lane never touched:\n' "$TASK_BRANCH" >&2
+    printf '%s\n' "$REGRESSION_FILES" | sed 's/^/  /' >&2
+    printf 'FIX: merge main into the lane (or rebase it), then retry; pass --allow-main-regression to override deliberately.\n' >&2
+    write_blocker "merge refused: lane would revert main file(s) it never touched: $(printf '%s' "$REGRESSION_FILES" | tr '\n' ' ')"
     exit 1
   fi
+elif [[ "$PROBE_RC" -ge 2 ]]; then
+  write_blocker "main-regression probe errored (rc=${PROBE_RC}) -- refusing to merge unverified"
+  exit 1
 fi
 
 git merge --ff-only "$TASK_BRANCH" || {
@@ -143,6 +198,26 @@ git merge --ff-only "$TASK_BRANCH" || {
   write_blocker "ff-only merge failed — rebase task branch first"
   exit 1
 }
+
+# RECORD-THE-LANDING-DONT-INFER-IT-01 (531da1c7d042): landed-ness is WRITTEN,
+# not derived. A rebase + conflict resolution rewrites the lane's bytes, so
+# the strict blob/patch-id slitness test can only see 1 lane of 6 after the
+# fact (measured 2026-09-06) -- and it must NOT be weakened. The one who
+# lands records it instead: Landed-lane/Landed-branch trailers on the commit
+# that actually lands. Under --ff-only the landed commit IS the lane tip, so
+# amend it (idempotent on retries) BEFORE the push.
+LANDED_BODY="$(git log -1 --format=%B)"
+if ! grep -qxF "Landed-lane: ${LEADV2_TASK_ID}" <<<"$LANDED_BODY"; then
+  LANDED_MSG_FILE="$(mktemp)"
+  if [[ -n "$(printf '%s' "$LANDED_BODY" | tr -d '[:space:]')" ]]; then
+    printf '%s\n\nLanded-lane: %s\nLanded-branch: %s\n' \
+      "${LANDED_BODY%$'\n'}" "$LEADV2_TASK_ID" "$TASK_BRANCH" > "$LANDED_MSG_FILE"
+  else
+    printf 'Landed-lane: %s\nLanded-branch: %s\n' "$LEADV2_TASK_ID" "$TASK_BRANCH" > "$LANDED_MSG_FILE"
+  fi
+  git commit --amend --no-edit -F "$LANDED_MSG_FILE" >/dev/null
+  rm -f "$LANDED_MSG_FILE"
+fi
 git push origin main
 COMMIT=$(git rev-parse HEAD)
 
