@@ -4,17 +4,33 @@
 
 On 2026-09-09, a safe reproduction set `LEADV2_SWEEP_MIN_AGE_S=2147483647`,
 so it could not remove a worktree, and ran the hook with xtrace enabled. The
-trace reached this invocation before entering the per-worktree loop and did
-not advance for the measurement interval:
+trace reached this invocation before entering the per-worktree loop:
 
 ```text
 +... leadv2-merged-worktree-sweep.sh:105: bash .../leadv2-orphan-checkpoint.sh --project-root /Users/kostiantyn.vlasenko/Projects/persona-engine
 ```
 
-The stalled line is the orphan checkpoint call, not `git status` or the
-per-worktree `git worktree list` check. The original hook did not reach its
-first loop iteration during the probe, so it supplied no evidence that it had
-removed any worktree in that run.
+The direct safe probe took 544.46 seconds before that child returned; no
+per-worktree trace record appeared after the checkpoint invocation. Its raw
+tail was:
+
+```text
+... leadv2-merged-worktree-sweep.sh:103: bash .../leadv2-orphan-checkpoint.sh --project-root .../persona-engine
+real 544.46
+user 262.05
+sys 202.79
+```
+
+The original hook did not reach its first loop iteration during the probe, so
+it supplied no evidence that it had removed any worktree in that run. After
+the change, the same safe probe completed its actual hook body in 3.50 seconds
+and its xtrace invocation exited 0:
+
+```text
+real 3.50
+user 0.78
+sys 1.18
+```
 
 ## Decision
 
@@ -40,3 +56,25 @@ clean, old, registered linked worktree and proves it survives. The two
 negative controls mutate only function-body guards: re-enabling the checkpoint
 makes the budget assertion red; bypassing `lv2_worktree_protected` makes the
 registered-lane assertion red.
+
+### Green output
+
+```text
+PASS: budget fixture hook exits 0
+PASS: SessionStart budget <1s (0.40061426162719727s)
+PASS: default path does not invoke orphan checkpoint
+PASS: registered-lane hook exits 0
+PASS: registered lane survives sweep
+PASS: merged-worktree-sweep bounded (5 assertions)
+leadv2-merged-worktree-sweep:plugins/leadv2/tests/test-merged-worktree-sweep-is-bounded.sh
+hooks.json:plugins/leadv2/tests/test-merged-worktree-sweep-is-bounded.sh
+```
+
+### leadv2-mutation-control.sh red output
+
+```text
+MUTATION-CONTROL ok suite=plugins/leadv2/tests/test-merged-worktree-sweep-is-bounded.sh file=plugins/leadv2/hooks/leadv2-merged-worktree-sweep.sh red_line=FAIL: SessionStart exceeded 1s (2.476357936859131s)
+MUTATION-CONTROL ok suite=plugins/leadv2/tests/test-merged-worktree-sweep-is-bounded.sh file=plugins/leadv2/hooks/leadv2-merged-worktree-sweep.sh red_line=FAIL: registered lane was removed
+```
+
+The full immutable artifacts are committed under `docs/reference/mutation-control/`.
