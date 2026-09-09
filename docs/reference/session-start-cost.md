@@ -57,15 +57,66 @@ negative controls mutate only function-body guards: re-enabling the checkpoint
 makes the budget assertion red; bypassing `lv2_worktree_protected` makes the
 registered-lane assertion red.
 
+## Round 2: the reported `if false` control did not bypass protection
+
+The registered fixture was already a genuine removal candidate. Before the
+hook runs, the suite now independently proves that `registered` is merged into
+`main`, clean, under `.claude/worktrees/`, and has old linked-worktree
+metadata. The hook is invoked with `LEADV2_SWEEP_MIN_AGE_S=0`, so the age
+floor cannot be the reason it survives.
+
+The lead's literal mutation, replacing the guard with `if false; then`, is
+not a protection-removal mutation in this hook. `lv2_worktree_protected`
+returns zero only for a worktree that is *not* protected; nonzero means a
+protection applies. The hook's nonzero branch logs the protection and executes
+`return 0`. With `if false`, Bash takes exactly that branch (`prc=1`) and
+returns before the merged/clean/removal checks. It therefore protects every
+lane, including the fixture, whether or not the active registry is present.
+
+The direct mutation-control run is green for that reason:
+
+```text
+leadv2-mutation-control: snapshot=head_plus_declared declared=2 excluded_dirty=1
+MUTATION-CONTROL mutant_survived suite=plugins/leadv2/tests/test-merged-worktree-sweep-is-bounded.sh file=plugins/leadv2/hooks/leadv2-merged-worktree-sweep.sh
+PASS: budget fixture hook exits 0
+PASS: SessionStart budget <1s (0.2524228096008301s)
+PASS: default path does not invoke orphan checkpoint
+PASS: registered lane branch is merged into main
+PASS: registered lane is clean
+PASS: registered lane has a real lane path
+PASS: registered lane metadata is old
+PASS: registered-lane hook exits 0
+PASS: registered lane survives sweep
+PASS: merged-worktree-sweep bounded (9 assertions)
+```
+
+For a real safety-bypass control, the condition must instead be forced true:
+`if true; then`. That selects the zero-success path and reaches
+`git worktree remove`; the fixture is removed and the suite is red. The
+committed `leadv2-mutation-control.sh` artifact under
+`docs/reference/mutation-control/` records that red result. This is the same
+semantic control used in round 1, now preceded by explicit removal-candidate
+assertions.
+
+Consequently, no honest fixture change can make the literal `if false`
+mutation red: it exits before the fixture's removal eligibility is consulted.
+Changing the hook merely to satisfy that mutation would weaken or obscure the
+fail-closed safety contract. The safety control does bind: the valid forced-
+success bypass removes the candidate, while the real guard keeps it.
+
 ### Green output
 
 ```text
 PASS: budget fixture hook exits 0
-PASS: SessionStart budget <1s (0.40061426162719727s)
+PASS: SessionStart budget <1s (0.28009700775146484s)
 PASS: default path does not invoke orphan checkpoint
+PASS: registered lane branch is merged into main
+PASS: registered lane is clean
+PASS: registered lane has a real lane path
+PASS: registered lane metadata is old
 PASS: registered-lane hook exits 0
 PASS: registered lane survives sweep
-PASS: merged-worktree-sweep bounded (5 assertions)
+PASS: merged-worktree-sweep bounded (9 assertions)
 leadv2-merged-worktree-sweep:plugins/leadv2/tests/test-merged-worktree-sweep-is-bounded.sh
 hooks.json:plugins/leadv2/tests/test-merged-worktree-sweep-is-bounded.sh
 ```

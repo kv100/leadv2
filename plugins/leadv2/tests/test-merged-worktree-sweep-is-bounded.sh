@@ -82,6 +82,25 @@ sessions:
     worktree: ${lane}
 YAML
 touch -t 202001010000 "${lane}" "$(git -C "${lane}" rev-parse --git-dir)/gitdir" 2>/dev/null || true
+
+# Census the removal preconditions separately from the guard assertion.  This
+# prevents a safety test from passing because the fixture was never enumerated
+# or because a different criterion short-circuited before removal.  The hook
+# run below disables the age floor deliberately, matching the strongest
+# protection-bypass mutation control.
+git -C "${guard_repo}" merge-base --is-ancestor registered main && \
+  pass 'registered lane branch is merged into main' || fail 'registered lane branch is not merged into main'
+[[ -z "$(git -C "${lane}" status --porcelain)" ]] && \
+  pass 'registered lane is clean' || fail 'registered lane is dirty'
+case "${lane}" in
+  "${guard_repo}"/.claude/worktrees/*) pass 'registered lane has a real lane path' ;;
+  *) fail 'registered lane is outside .claude/worktrees' ;;
+esac
+python3 - "$(git -C "${lane}" rev-parse --git-dir)/gitdir" <<'PY'
+import os, sys
+raise SystemExit(0 if os.stat(sys.argv[1]).st_mtime < 1600000000 else 1)
+PY
+[[ $? == 0 ]] && pass 'registered lane metadata is old' || fail 'registered lane metadata is young'
 run_hook "${guard_repo}" "${checkpoint}" >/dev/null; guard_rc=$?
 [[ "${guard_rc}" == 0 ]] && pass 'registered-lane hook exits 0' || fail "registered-lane hook rc=${guard_rc}"
 [[ -d "${lane}" ]] && pass 'registered lane survives sweep' || fail 'registered lane was removed'
