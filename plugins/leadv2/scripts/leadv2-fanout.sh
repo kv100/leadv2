@@ -1728,12 +1728,12 @@ launch_via_dispatch_code() {
     2)
       log "single-worker funnel: task=${tid} refused by dispatch-code.sh as a duplicate task-signature -- releasing claim, not launched this run (see dispatch ledger)"
       leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
-      [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1
+      [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1 || true
       ;;
     3)
       log "single-worker funnel: task=${tid} resolved to arm=opus (requires lead judgment, dispatch-code.sh never auto-dispatches it) -- releasing claim and falling back to full-cycle launch so the task is not silently dropped"
       leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
-      [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1
+      [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1 || true
       _fanout_launch_full_cycle "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key"
       ;;
     6)
@@ -1744,13 +1744,13 @@ launch_via_dispatch_code() {
       # fallback is deliberately suppressed for rc=6, unlike every other refusal above.
       log "single-worker funnel: task=${tid} refused by dispatch-code.sh's burn gate (24h local token burn over hard cap) -- releasing claim, task parked to burn-deferred.jsonl, NOT falling back to full-cycle (that would upgrade a token-saving refusal into the most expensive launch path)"
       leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
-      [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1
+      [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1 || true
       _fanout_write_lane_terminal "$tid" parked "burn_hard_24h" ""
       ;;
     *)
       log_error "single-worker funnel: task=${tid} dispatch-code.sh failed (rc=${dc_rc}) -- releasing claim and falling back to full-cycle launch so the founder-picked task is not silently dropped"
       leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
-      [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1
+      [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1 || true
       _fanout_launch_full_cycle "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key"
       ;;
   esac
