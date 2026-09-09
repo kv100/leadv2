@@ -544,6 +544,11 @@ leadv2_select_claude_profile() {
     cands="$(printf '%s' "$sel" | sed -n 's/.*candidates=\([0-9][0-9]*\).*/\1/p')"
     cred="$(printf '%s' "$sel" | sed -n 's/.*[[:space:]]cred=\([^[:space:]]*\).*/\1/p')"
     identity="$(printf '%s' "$sel" | sed -n 's/.*[[:space:]]identity=\([^[:space:]]*\).*/\1/p')"
+    # W1-BALANCER-COVERS-EVERY-ARM-01 §1.3: the selector's demoted= field
+    # names the dispatching session's own account (present only when a
+    # registry row matched it). Riding the same log line keeps "was the arm
+    # kept off the lead's window" measurable from claude-profile.log alone.
+    demoted="$(printf '%s' "$sel" | sed -n 's/.*[[:space:]]demoted=\([^[:space:]]*\).*/\1/p')"
     cred_kind=unknown
     case "$cred" in
       keychain:?*)
@@ -553,6 +558,11 @@ leadv2_select_claude_profile() {
       file:/*) cred_kind=file ;;
     esac
     line_log="[claude-profile] selected=${label} score=${score} source=${src} candidates=${cands:-?} cred_kind=${cred_kind} identity=${identity:-unknown/na}"
+    # §1.3: appended ONLY when the selector actually demoted a registry row
+    # (the dispatching session's own account) -- absent means "no demotion in
+    # play", which keeps the line byte-identical for every legacy caller and
+    # the suites that pin its shape.
+    [[ -n "${demoted:-}" ]] && line_log="${line_log} demoted=${demoted}"
     # NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-ACCOUNT-01: defense-in-depth, not
     # the primary enforcement (the selector already refuses on a mismatch) --
     # a request answered by a DIFFERENT label than asked for is the exact
