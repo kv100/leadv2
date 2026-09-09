@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-review-rounds-scale-with-complexity.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+anchor=s|return 0  # a6-mut-1: forced-collapse anchor.*|_PC_CEILING=1|
+baseline_rc=0
+mutated_rc=1
+red_line=  FAIL: env_scale_complex: rc=1, expected handed-off rc0
+diff_hash=fee3ceab7881d2d97f8f11460acefdc47b0710bebaa8a4676930dc8ece813771
+lane_diff_hash=29571dc5bda5b38434fe4b88aa3a589778c364ec1dad3ffc14543c5223f957d1
