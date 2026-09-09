@@ -2150,6 +2150,24 @@ pc_precheck_writes() {
     esac
   done
   if [[ ${good_n} -eq 0 && ${bad_n} -gt 0 ]]; then
+    # WRITESW-AUDIT-EXEMPT mirror (GUARDS-REFUSE-REAL-WORK, row 63848744ac73):
+    # dispatch-code's _undiffable_writes_guard admits a doc-only set on a lane
+    # that declared a validated report: deliverable; keying the SAME exemption
+    # here keeps the two ends honest — otherwise the admitted audit/design lane
+    # pays for its worker and then bounces exactly where B5 moved the bounce
+    # FROM. The kind=report branch below certifies the declared document file
+    # itself (report_missing / report_too_thin / the unscoped_lane_work
+    # laundering probes), so voiding the diff scope mirrors the empty-writes
+    # report lane above and nothing escapes judgement. No declaration ->
+    # _pc_kind stays unset -> the bounce below stands for a diff lane with
+    # nothing reviewable to certify.
+    if [[ "${_pc_kind:-}" == "report" ]]; then
+      local joined_x
+      joined_x="$(_pc_join_capped "${bad_paths[@]}")"
+      emit decision "write_set_undiffable_exempt task=${TASK} reason=report_deliverable paths=${joined_x} writes=${WRITES_CSV} deliverable=${LANE_DELIVERABLE}"
+      _PC_SCOPE_WRITES_CSV=""
+      return 0
+    fi
     local joined
     joined="$(_pc_join_capped "${bad_paths[@]}")"
     printf 'status: blocked\nreason: undiffable_write_set\npaths: %s\n' "${joined}" > "${HANDOFF}/review-gate.md"

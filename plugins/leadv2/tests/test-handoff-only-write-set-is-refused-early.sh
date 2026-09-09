@@ -16,9 +16,11 @@
 #   worker adapter NEVER RAN (capture file absent) + the dispatch ledger holds
 #   NO reservation row ("state":"pending"|"confirmed") for the task -- the
 #   honest form of "no arm reservation exists".
-# Case 1b REMEDY (report lane): with a report: deliverable declared, the
-#   refusal names the deliverable path as the certified channel and tells the
-#   caller to drop the handoff paths from --writes (REPORT-ONLY-GATE-01 shape).
+# Case 1b EXEMPTION (report lane): with a report: deliverable declared, the
+#   doc-only write set is ADMITTED (WRITESW-AUDIT-EXEMPT, 2026-09-09) -- the
+#   audit/design lane's document IS the deliverable the close gate certifies;
+#   pre-exemption this shape was refused with a "drop the paths" remedy, which
+#   forced the docs/reference/ workaround of row 63848744ac73.
 # Case 2 GUARD: a write set that DOES contain a reviewable path is NOT
 #   refused -- the dispatcher launches the worker adapter (rc==0, model
 #   asserted, reservation row PRESENT in the ledger: the negative instrument's
@@ -193,14 +195,16 @@ printf 'PID=%s LABEL=fixture SESSION_ID=fixture\\n' "$HANDOFF_WRITESET_HARNESS_P
     check('case1 NO arm reservation exists (no pending/confirmed ledger row)',
           reservation_rows(r1) == [], str(reservation_rows(r1)))
 
-    # ── Case 1b (remedy, report lane): deliverable-aware message ────────────
-    r1b = dispatch_case('c1b-remedy', 'docs/handoff/dispatch-hws1b/report.md',
+    # ── Case 1b (exemption, report lane): declared doc-only set dispatches ───
+    r1b = dispatch_case('c1b-exempt', 'docs/handoff/dispatch-hws1b/report.md',
                         deliverable='report:docs/handoff/dispatch-hws1b/report.md')
-    check('case1b still refused (combo is undiffable at close today)', r1b['rc'] == 2, f"rc={r1b['rc']}")
-    check('case1b remedy names the deliverable as the certified channel',
-          'already certified via the deliverable' in r1b['err'])
-    check('case1b remedy tells the caller to drop the handoff paths',
-          'drop' in r1b['err'] and 'docs/leadv2|docs/handoff' in r1b['err'])
+    check('case1b declared report lane with doc-only writes dispatches (rc==0)',
+          r1b['rc'] == 0, f"rc={r1b['rc']}")
+    check('case1b exemption decision present (reason=report_deliverable)',
+          any('write_set_undiffable_exempt' in ln and 'reason=report_deliverable' in ln
+              for ln in r1b['combined'].splitlines()))
+    check('case1b worker launched (capture exists)', '--model' in r1b['argv'])
+    check('case1b no undiffable refusal', 'undiffable_write_set' not in r1b['combined'])
 
     # ── Case 2 (guard): a reviewable path present -> NOT refused ────────────
     r2 = dispatch_case('c2-guard', 'docs/handoff/dispatch-hws2/report.md,src/fixture.py')
