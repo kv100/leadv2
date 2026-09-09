@@ -319,7 +319,7 @@ main() {
       --suite-timeout=*) SUITE_TIMEOUT="${1#--suite-timeout=}"; shift ;;
       --log-dir) [[ $# -ge 2 ]] || _slv_fatal "--log-dir needs a value"; LOG_DIR="$2"; shift 2 ;;
       --log-dir=*) LOG_DIR="${1#--log-dir=}"; shift ;;
-      -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      -h|--help) awk 'NR==1{next} !/^#/{exit} {sub(/^# ?/,""); print}' "${BASH_SOURCE[0]}"; exit 0 ;;
       *)
         if [[ -z "${LANE_ID}" ]]; then LANE_ID="$1"; shift; else
           _slv_fatal "unknown argument: $1"
