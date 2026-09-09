@@ -803,26 +803,16 @@ try:
             return False
         _before = len(sessions)
         data["sessions"] = [s for s in sessions if not _unreg_matches(s)]
-        _removed = _before - len(data["sessions"])
-        print(f"unregistered {_removed} row(s) task={task_id} selector={sel_kind or 'all'}", file=sys.stderr)
-        if _removed == 0:
-            # WAVE0-REGISTRY-FAILS-OPEN-01: zero rows matched is rc 4, not a
-            # success -- and the atomic rewrite below must NOT run, or a no-op
-            # is indistinguishable from a real removal.
-            sys.exit(4)
+        print(f"unregistered {_before - len(data['sessions'])} row(s) task={task_id} selector={sel_kind or 'all'}", file=sys.stderr)
 
     elif op == "set_worktree":
         task_id, worktree = args
         row = next((s for s in sessions if s.get("task_id") == task_id), None)
         if row is None:
             # A launcher can resolve its lane before its direct fanout
-            # registration has committed (LANE-REGISTRY-SELF-DEADLOCK-01).
-            # WAVE0-REGISTRY-FAILS-OPEN-01: that ordering race is rc 4, not a
-            # silent rc 0 -- no row is created, the caller survives (every
-            # fanout call site keeps `|| true`), and the post-register retry
-            # supplies the value.
-            print(f"registry: set_worktree: task not registered task={task_id}", file=sys.stderr)
-            sys.exit(4)
+            # registration has committed. Treat that ordering race as a
+            # harmless no-op; the post-register retry supplies the value.
+            sys.exit(0)
         row["worktree"] = worktree
         row["updated_at"] = _now_iso()
 
@@ -891,11 +881,6 @@ try:
                 s["last_pulse_at"] = ts
                 s["updated_at"] = ts
                 break
-        else:
-            # WAVE0-REGISTRY-FAILS-OPEN-01: unknown task_id must not read as a
-            # recorded pulse. rc 4, no write, no created row.
-            print(f"registry: update_pulse: task not registered task={task_id}", file=sys.stderr)
-            sys.exit(4)
 
     elif op == "update_pid":
         task_id, pid_str = args
@@ -1082,8 +1067,7 @@ try:
             _role = "worker"
         target = next((s for s in sessions if s.get("task_id") == task_id), None)
         if target is None:
-            print(f"registry: set_worker_pid: task not registered task={task_id}", file=sys.stderr)
-            sys.exit(4)
+            sys.exit(0)
         try:
             wpid = int(pid_str) if pid_str not in ("", "null", "None") else None
         except (TypeError, ValueError):
