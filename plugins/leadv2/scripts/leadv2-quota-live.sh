@@ -17,6 +17,12 @@
 #   leadv2-quota-live.sh glm|codex|anthropic   # that bucket's JSON only
 #   leadv2-quota-live.sh --no-cache [report|json|<bucket>]   # bypass cache
 #
+#   Per-model (GLM) and per-tier (Codex) granularity rides inside each bucket's
+#   JSON under models/tiers (W1-QUOTA-DAEMON-01 part A); the aggregate provider
+#   keys are unchanged for existing readers. When the always-live daemon
+#   (leadv2-quota-daemon.py) is running, each read is served from its snapshot
+#   (part B) -- same TTL rule, no login per request.
+#
 # Env (see leadv2-quota-read.py header for the full list):
 #   LEADV2_QUOTA_READ  override path to the python helper (tests)
 #   LEADV2_QUOTA_TTL_GLM/CODEX/ANTHROPIC  cache TTLs (default 60/120/300 s)
@@ -59,6 +65,17 @@ fmt_glm() {
   sw=$(printf '%s' "$j" | python3 -c 'import sys,json;w=json.load(sys.stdin).get("weekly") or {};print("%s%% (resets %s)"%(w.get("pct","?"),(w.get("reset_iso") or "?")[:19]))' 2>/dev/null)
   binding=$(printf '%s' "$j" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("binding_window") or "unknown")' 2>/dev/null)
   printf -- 'GLM (z.ai, %s):  5h=%s | weekly=%s | binding=%s\n' "$lvl" "$s5" "$sw" "$binding"
+  printf '%s' "$j" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+for name, m in sorted((d.get("models") or {}).items()):
+    a = m.get("attributed") or {}
+    f5 = a.get("five_hour") or {}
+    wk = a.get("weekly") or {}
+    print("  glm model %-14s attributed 5h=%s%% weekly=%s%% (share %s%%, %s)" % (
+        name, f5.get("utilization_pct"), wk.get("utilization_pct"),
+        f5.get("share_pct"), f5.get("basis")))
+' 2>/dev/null
 }
 
 fmt_codex() {
@@ -73,6 +90,14 @@ fmt_codex() {
   reset=$(printf '%s' "$j" | python3 -c 'import sys,json;w=(json.load(sys.stdin).get("windows") or [{}])[0];print((w.get("reset_iso") or "?")[:19])' 2>/dev/null)
   cred=$(printf '%s' "$j" | python3 -c 'import sys,json;c=json.load(sys.stdin).get("credits") or {};print("yes" if c.get("has_credits") else "NONE (balance %s)"%c.get("balance"))' 2>/dev/null)
   printf -- 'Codex (%s):      %s | resets %s | credits: %s\n' "$plan" "$pct" "$reset" "$cred"
+  printf '%s' "$j" | python3 -c '
+import sys, json
+t = json.load(sys.stdin).get("tiers") or {}
+if t:
+    first = next(iter(t.values()))
+    print("  codex tiers %s share one account window (shape=%s, shared_account_pool=%s)" % (
+        "/".join(sorted(t)), first.get("window_shape"), first.get("shared_account_pool")))
+' 2>/dev/null
 }
 
 fmt_anthropic() {
