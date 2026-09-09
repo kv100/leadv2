@@ -1943,21 +1943,59 @@ _pc_arm_advance() {
 # the §3 unknown default 2 (deeper, never shallower -- design §3: "This
 # defaults the ENTIRE population to standard depth until complexity confidence
 # improves").
-_pc_review_round_ceiling() { # -> stdout: 1|2|3
+# A6-REVIEW-ROUNDS (2026-09-09): the ceiling must be STABLE and AUDITED
+# across the successor close gates a retry loop creates. Measured on the only
+# live lane that ever consumed a retry round (persona-engine dispatch-2f652446,
+# journals 2026-09-08): round 1 resolved ceiling=3 from the dispatcher-threaded
+# env, but the advance-arm successor close gate runs WITHOUT that env
+# (LEADV2_DISPATCH_REVIEW_ROUNDS is threaded at exactly one site,
+# leadv2-dispatch-code.sh's spawn_product_close) and the journal fallback
+# reads the successor's own project journal, where no complexity_gate_applied
+# line exists (the dispatcher journaled it into the DISPATCHING project's
+# state) -- so round 2 silently resolved the §3 default 2 and a complex lane
+# exhausted its budget a round early, with no journal line naming why 2. Two
+# properties, both visible in the journal:
+#   STICKY -- the first resolution is written once to
+#     ${HANDOFF}/.review-round-ceiling and read FIRST by every later close
+#     gate for the lane: the budget can no longer change mid-loop in either
+#     direction, whatever env or journal a successor gate sees.
+#   NAMED -- every review_round_retry / review_round_exhausted line now
+#     carries ceiling_source=marker|env|journal|default. A §3 default is a
+#     NAMED outcome, never an unremarked number, and can now only be resolved
+#     by a lane's FIRST close gate -- the marker pins every later one.
+# Sets globals _PC_CEILING / _PC_CEILING_SRC instead of printing stdout: the
+# source must survive into the caller's journal line, and a $( ) subshell
+# would drop it.
+_pc_review_round_ceiling() { # -> sets _PC_CEILING (1|2|3), _PC_CEILING_SRC
+  _PC_CEILING=2; _PC_CEILING_SRC="default"
+  local sticky="${HANDOFF}/.review-round-ceiling" v=""
+  if [[ -f "${sticky}" ]]; then
+    v="$(sed -n 's/^\([1-3]\)$/\1/p' "${sticky}" 2>/dev/null | head -n1)"
+    if [[ "${v}" =~ ^[1-3]$ ]]; then
+      _PC_CEILING="${v}"; _PC_CEILING_SRC="marker"
+      return 0
+    fi
+  fi
   local ceiling="${LEADV2_DISPATCH_REVIEW_ROUNDS:-}"
-  if [[ ! "${ceiling}" =~ ^[1-3]$ ]]; then
-    ceiling="$(bash "${JOURNAL_BIN}" tail "dispatch-${TASK}" 100000 2>/dev/null | \
+  if [[ "${ceiling}" =~ ^[1-3]$ ]]; then
+    _PC_CEILING="${ceiling}"; _PC_CEILING_SRC="env"
+  else
+    v="$(bash "${JOURNAL_BIN}" tail "dispatch-${TASK}" 100000 2>/dev/null | \
       grep -F "complexity_gate_applied task=${TASK} " | tail -1 | \
       sed -n 's/.*review_rounds=\([1-3]\).*/\1/p')"
+    if [[ "${v}" =~ ^[1-3]$ ]]; then
+      _PC_CEILING="${v}"; _PC_CEILING_SRC="journal"
+    fi
   fi
-  [[ "${ceiling}" =~ ^[1-3]$ ]] || ceiling=2
-  printf '%s' "${ceiling}"
+  return 0  # a6-mut-1: forced-collapse anchor (suite control 1 rewrites this line)
 }
 
 # Rounds-consumed persistence: .review-round in the task's own HANDOFF dir, the
 # same per-task marker discipline as .arm-advanced-<arm> above (write-once per
 # successful handoff -- a respawn that dies before its close gate never
-# consumes budget). LEADV2_REVIEW_ROUND_RETRY=0 restores the pre-gate
+# consumes budget). A6-REVIEW-ROUNDS adds the sibling .review-round-ceiling
+# (write-once on first RESOLUTION, before any exhaustion check): the lane's
+# budget is pinned to one auditable number for every close gate that follows. LEADV2_REVIEW_ROUND_RETRY=0 restores the pre-gate
 # single-pass refusal byte-for-byte (same kill-switch contract as
 # LEADV2_ARM_ADVANCE / LEADV2_BUILDER_SELFCHECK).
 # <failed-csv> -> rc0: a rebuild round was handed off (caller sets
@@ -1970,7 +2008,18 @@ _pc_review_round_retry() {
     return 1
   fi
   local ceiling round marker="${HANDOFF}/.review-round"
-  ceiling="$(_pc_review_round_ceiling)"
+  local sticky="${HANDOFF}/.review-round-ceiling"
+  _pc_review_round_ceiling
+  ceiling="${_PC_CEILING}"
+  # A6-REVIEW-ROUNDS: pin the resolved ceiling once, on the first close gate
+  # that resolves it -- every successor close gate (advance-arm handoff,
+  # respawn) then reads the marker first, so a lost env var or an unreadable
+  # journal can never change the lane's budget mid-loop. Written BEFORE the
+  # exhaustion check so even an immediately-exhausted first gate pins the
+  # lane's auditable number.
+  if [[ ! -f "${sticky}" ]]; then
+    printf '%s\n' "${ceiling}" > "${sticky}" 2>/dev/null || true
+  fi
   round=1
   if [[ -f "${marker}" ]]; then
     round="$(cat "${marker}" 2>/dev/null | tr -dc '0-9')"
@@ -1978,7 +2027,7 @@ _pc_review_round_retry() {
     round=$(( round + 1 ))
   fi
   if (( round >= ceiling )); then
-    emit decision "review_round_exhausted task=${TASK} round=${round} ceiling=${ceiling} reason=selfcheck_failed"
+    emit decision "review_round_exhausted task=${TASK} round=${round} ceiling=${ceiling} ceiling_source=${_PC_CEILING_SRC} reason=selfcheck_failed"
     return 1
   fi
   local mission_file="${LEADV2_DISPATCH_LANE_MISSION:-}"
@@ -1989,7 +2038,7 @@ _pc_review_round_retry() {
     emit decision "review_round_retry_skipped task=${TASK} round=${round} reason=no_mission_file"
     return 1
   fi
-  emit decision "review_round_retry task=${TASK} round=${round} ceiling=${ceiling} reason=selfcheck_failed failed=${1:-}"
+  emit decision "review_round_retry task=${TASK} round=${round} ceiling=${ceiling} ceiling_source=${_PC_CEILING_SRC} reason=selfcheck_failed failed=${1:-}"
   # Same re-dispatch shape as _pc_arm_advance -- but anchored on the CURRENT arm
   # (advance-arm's chain suffix starts at the anchor, so the content-failed arm
   # is re-offered to the arbiter rather than skipped past): the verdict was
@@ -2001,7 +2050,7 @@ _pc_review_round_retry() {
     printf '%s\n' "${round}" > "${marker}" 2>/dev/null || true
     return 0
   fi
-  emit decision "review_round_retry_failed task=${TASK} round=${round} ceiling=${ceiling} reason=advance_arm_refused"
+  emit decision "review_round_retry_failed task=${TASK} round=${round} ceiling=${ceiling} ceiling_source=${_PC_CEILING_SRC} reason=advance_arm_refused"
   return 1
 }
 
