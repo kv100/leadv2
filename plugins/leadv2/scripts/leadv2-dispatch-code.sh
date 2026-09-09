@@ -57,12 +57,17 @@
 #      ever relaunches the work). By DEFAULT (kill switch LEADV2_DISPATCH_SPAWN=0 / flag
 #      --no-spawn) this script now actually LAUNCHES the resolved worker and returns
 #      immediately with its handle: arm=glm -> `glm-coder.sh bg` (detaches via its own
-#      setsid+disown, prints a run-id); arm=sonnet -> `claude-subsession.sh` without
-#      --wait (setsid_wrapper+exec detaches the backgrounded `claude` process itself,
-#      SD-SONNET-ARM-DETACH-01, prints PID+SESSION_ID, exits immediately). Both
+#      setsid+disown, prints a run-id); every Claude build arm the launch registry
+#      admits (the spawn case covers sonnet|haiku|opus|fable since c4ea2afb; the
+#      registry itself decides which of those are launchable for this kind/role) ->
+#      `claude-subsession.sh` without --wait (setsid_wrapper+exec detaches the
+#      backgrounded `claude` process itself, SD-SONNET-ARM-DETACH-01, prints
+#      PID+SESSION_ID, exits immediately), and each such spawn journals a
+#      `claude_profile arm=<arm> selected=<label>|- reason=<why>` decision line
+#      (W1-BALANCER-COVERS-EVERY-ARM-01 §1.1) so profile selection is provable per
+#      arm, never silently skipped. Both
 #      launchers already own "detach, never block the caller" -- this script does not
-#      duplicate that logic, only calls it. arm=opus is never spawned (lead judgment,
-#      unchanged). A `worker_spawned by=router model=<arm> task=<sig8> handle=<h>` line is
+#      duplicate that logic, only calls it. A `worker_spawned by=router model=<arm> task=<sig8> handle=<h>` line is
 #      journaled/emitted so a spawn is never silent.
 #
 # SCOPE NOTES (what this P1 deliberately does NOT do — later design phases)
@@ -3813,7 +3818,9 @@ _dispatch_confirm_locked() {  # <file> <token> <handle> -> rc0 confirmed; rc1 wr
       new="${ln/\"state\":\"pending\"/\"state\":\"confirmed\"}"
       # DISPATCH-OUTCOME-LEDGER-01: persist the launcher handle on the row so a later
       # dispatch of the SAME sig can resolve this row's liveness/evidence outcome (doc
-      # block item 8). Only glm/sonnet/codex confirms carry a handle; opus never spawns.
+      # block item 8). Every spawning arm carries a handle (glm/kimi/freepool/codex
+      # run-ids and jobIds; the sonnet|haiku|opus|fable case's subsession PID since
+      # c4ea2afb) -- the old "opus never spawns" claim predates the four-arm case.
       if [[ -n "${handle}" ]]; then
         new="${new%\}}"
         new="${new},\"handle\":\"${handle}\"}"
@@ -6344,6 +6351,15 @@ after a review verdict, Agent(subagent_type="fork") to apply the fix -- it alrea
 the findings, and the mission in context.
 CONTRACT_EOF
   mission="${_DELEGATION_CONTRACT}"$'\n\n'"${mission}"
+  # W1-BALANCER-COVERS-EVERY-ARM-01 §1.1: --requested-profile targets the
+  # Anthropic account registry, so it can only ever apply to a Claude arm.
+  # On every other arm it used to be dropped in silence -- the header at
+  # cmd_resolve's flag parse called that "WARN-only" but no warn existed.
+  # Journal the drop: a pin the caller believes was applied and wasn't is
+  # exactly the silent-defect class this dispatch journals its way out of.
+  if [[ -n "${requested_profile:-}" && ! "${arm}" =~ ^(sonnet|haiku|opus|fable)$ ]]; then
+    emit decision "claude_profile_pin_dropped by=router arm=${arm} task=${sig8} reason=pin_targets_claude_arms_only requested=${requested_profile}"
+  fi
   case "${arm}" in
     glm|glm-flash)
       # GLM-53-FLASH-ARM-01: glm-flash is the same launcher (glm-coder.sh) on
@@ -6648,6 +6664,33 @@ CONTRACT_EOF
         emit decision "spawn_failed by=router model=${arm} task=${sig8} handle=${handle} reason=not_live cause=${_cause}"
         log_err "spawn(${arm}) pid=${pid} is not alive -- treating as launch failure; first stream lines: ${_cause}"
         return 1
+      fi
+      # W1-BALANCER-COVERS-EVERY-ARM-01 §1.1 (founder 2026-09-09: «балансировщик
+      # обязан заработать до того, как мы возьмём сотни новых задач»): EVERY
+      # Claude arm (sonnet|haiku|opus|fable -- whichever the launch registry
+      # admits for this kind/role) must leave a dispatch-journal line naming
+      # the profile the selector picked for IT. Without this line "the arm was
+      # balanced" is unverifiable from the dispatch surface -- the §1 evidence
+      # for the gap was this file's own STALE comment claiming sonnet-only
+      # threading while the spawn case had covered all four arms since
+      # c4ea2afb (2026-09-08). Transport reuse, not a second one: the selector
+      # already journals its pick to the handoff claude-profile.log via
+      # LEADV2_CLAUDE_PROFILE_JOURNAL (claude-subsession.sh wires it, and the
+      # pick predates the handle line the spawn above already returned on), so
+      # this reads THAT file. An absent selection line is itself journaled
+      # (gate off / single-profile / selector inert) -- never silently skipped.
+      local _cp_log _cp_line
+      _cp_log="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/claude-profile.log"
+      _cp_line="$(grep -E '\[claude-profile\] (selected=|single-profile fallback)' "${_cp_log}" 2>/dev/null | tail -1)"
+      if [[ -n "${_cp_line}" ]]; then
+        _cp_line="$(printf '%s\n' "${_cp_line}" | sed -e 's/^[^ ]* \[claude-profile\] //' -e 's/^\[claude-profile\] //')"
+        if [[ "${_cp_line}" == "single-profile fallback" ]]; then
+          emit decision "claude_profile arm=${arm} task=${sig8} selected=- reason=single_profile_fallback"
+        else
+          emit decision "claude_profile arm=${arm} task=${sig8} ${_cp_line}"
+        fi
+      else
+        emit decision "claude_profile arm=${arm} task=${sig8} selected=- reason=no_selection_line (multiprofile gate off, selector inert, or log unwritten)"
       fi
       # LANE-REGISTRY-SELF-DEADLOCK-01 Defect 1: stamp the WORKER's pid + birth
       # onto this lane's active.yaml row, AFTER the spawn is proven live. The
@@ -7864,15 +7907,17 @@ cmd_resolve() {
   local arm_pool_cli=""
   # NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-ACCOUNT-01 (founder, via Leadmain,
   # 2026-09-07): symmetric to --requested-arm, one layer down -- pins the
-  # sonnet arm to a specific Anthropic account LABEL (registry:
+  # dispatched Claude arm to a specific Anthropic account LABEL (registry:
   # ~/.claude/state/leadv2/claude-profiles.tsv) instead of letting
   # leadv2-claude-profile-select.sh balance across all of them. The
   # balancer is not broken (measured: it correctly follows lower
   # utilisation); the gap is that nothing lets a caller override it for a
-  # specific dispatch. Threaded only into the sonnet arm (the only arm that
-  # runs through claude-subsession.sh / the profile selector); ignored,
-  # WARN-only, on every other arm. Empty (the default) is byte-identical to
-  # today's behaviour.
+  # specific dispatch. Threaded into EVERY Claude arm (the spawn case's
+  # sonnet|haiku|opus|fable rows all forward --requested-profile since
+  # c4ea2afb); on every non-Claude arm the pin cannot apply, and the drop is
+  # JOURNALED as claude_profile_pin_dropped (W1-BALANCER-COVERS-EVERY-ARM-01
+  # §1.1) -- the old "ignored, WARN-only" text described a warn that never
+  # existed. Empty (the default) is byte-identical to today's behaviour.
   local requested_profile=""
   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0 lane_deliverable=""
   local -a phase_waivers=()

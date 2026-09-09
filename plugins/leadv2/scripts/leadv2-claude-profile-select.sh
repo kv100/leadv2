@@ -52,6 +52,19 @@
 #                                   config dir whose token health is warned
 #                                   about (hermetic tests; default
 #                                   ${CLAUDE_CONFIG_DIR:-$HOME/.claude})
+#   LEADV2_CLAUDE_PROFILE_DEMOTE_DIR  W1-BALANCER-COVERS-EVERY-ARM-01 §1.3:
+#                                   the config dir of the session DOING the
+#                                   dispatching (the lead's own account).
+#                                   The registry row whose config_dir equals
+#                                   it is DEMOTED to last in the ranking --
+#                                   never excluded: the lead's spend lands in
+#                                   its window with lag, so the probe reads
+#                                   that account as freer than it is, and a
+#                                   dispatched arm must not land on it while
+#                                   any other candidate exists. Default
+#                                   ${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+#                                   (inherited from the spawning session);
+#                                   `off`/`none`/`-` disables demotion.
 #
 # Registry format (TSV, blank lines and #-comments ignored):
 #   label<TAB>config_dir<TAB>credential_source(optional)<TAB>expect(optional)
@@ -333,6 +346,19 @@ if [[ -n "$REQUESTED_PROFILE" ]]; then
   DIGESTS=("${DIGESTS[$_req_idx]}")
 fi
 
+# --- session-profile demotion (W1-BALANCER-COVERS-EVERY-ARM-01 §1.3) --------
+# The account the DISPATCHING session (usually the lead) is already burning
+# looks freer than it is: its own spend reaches the probe's window with lag,
+# so a dispatched arm can land on the exact account its caller is exhausting.
+# The row whose config_dir equals the session's config dir is demoted to LAST
+# in the ranking (see pick.py's tier ordering) -- demoted, never excluded, so
+# a single live account keeps working and a confirmed-cooling sibling still
+# loses to it. Computed BEFORE the probe loop; carried as the 7th recs column.
+DEMOTE_DIR="${LEADV2_CLAUDE_PROFILE_DEMOTE_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+case "$DEMOTE_DIR" in
+  ""|off|none|-) DEMOTE_DIR="" ;;
+esac
+
 # --- alarm file (2b: TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01) -----------------
 # Persistent, single well-known path -- NOT a handoff log. Written atomically
 # (mktemp + mv) on detect, rm -f on a clean run. No email, no token, no digest
@@ -434,6 +460,9 @@ i=0
 while (( i < n )); do
   label="${LABELS[$i]}"; dir="${DIRS[$i]}"; cred="${SOURCES[$i]}"; identity="${IDENTITIES[$i]}"
   digest="${DIGESTS[$i]}"
+  # §1.3: 7th column -- demote flag for the dispatching session's own slot.
+  demote=0
+  [[ -n "$DEMOTE_DIR" && "$dir" == "$DEMOTE_DIR" ]] && demote=1
   i=$((i + 1))
   # Quota bucket keying is by IDENTITY, not by the operator-chosen label --
   # two labels resolving to the same real account must share one quota
@@ -484,19 +513,19 @@ while (( i < n )); do
       rm -f "$cooldown_file" "$cooldown_cred_file" 2>/dev/null || true
     else
       warn "WARN: profile label=${label} cooling down after a recent live probe failure; skipping this round (reason=confirmed_live_failure until=${cooldown_until} remaining_s=$(( cooldown_until - $(date +%s) )))"
-      printf '%s\t%s\t%s\t-\t%s\t1\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+      printf '%s\t%s\t%s\t-\t%s\t1\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
       continue
     fi
   fi
   remaining=$(( deadline - $(date +%s) ))
   if (( remaining < 1 )); then
     warn "WARN: profile probe budget exhausted; unprobed entries score unknown"
-    printf '%s\t%s\t%s\t-\t%s\t0\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+    printf '%s\t%s\t%s\t-\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
     continue
   fi
   out="$(mktemp "${TMPDIR:-/tmp}/claude-profile-probe.XXXXXX")"
   if [[ -z "$out" ]]; then
-    printf '%s\t%s\t%s\t-\t%s\t0\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+    printf '%s\t%s\t%s\t-\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
     continue
   fi
   err="${out}.err"
@@ -525,7 +554,7 @@ while (( i < n )); do
   fi
   json="$(cat "$out" 2>/dev/null)"; rm -f "$out" "$err"
   if [[ "$rc" -ne 0 || -z "$json" ]]; then
-    printf '%s\t%s\t%s\t-\t%s\t0\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+    printf '%s\t%s\t%s\t-\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
     continue
   fi
   completed=$((completed + 1))
@@ -567,7 +596,7 @@ sys.exit(0 if (isinstance(account, dict) and account.get('status') != 'ok' and a
     warn "WARN: profile label=${label} live probe failed; cooling down ${COOLDOWN_S}s (reason=confirmed_live_failure cred=${digest} until=${cooldown_deadline})"
   fi
   b64="$(printf '%s' "$json" | base64 | tr -d '\n')"
-  printf '%s\t%s\t%s\t%s\t%s\t0\n' "$label" "$dir" "$cred" "$b64" "$identity" >> "$recs"
+  printf '%s\t%s\t%s\t%s\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$b64" "$identity" "$demote" >> "$recs"
 done
 
 # Every probe hung/crashed => no signal at all => single_profile (T8), not a
