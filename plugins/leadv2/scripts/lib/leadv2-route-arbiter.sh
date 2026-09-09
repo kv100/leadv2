@@ -120,13 +120,36 @@ route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   # build work; `full` is the flip FP-04's quality gate will make. Env seam for
   # tests/hermeticity: LEADV2_ROUTE_ARBITER_FREEPOOL_CONFIG.
   freepool_config="${LEADV2_ROUTE_ARBITER_FREEPOOL_CONFIG:-${here}/../config/freepool-arm.yaml}"
+  # W1-FORECAST-THE-SPEND-01 hermeticity — the read-direction twin of
+  # TESTS-POLLUTE-REAL-JOURNAL-01. The forecast reads the SHARED events
+  # journal, so a suite that did not stub it was getting the host's live p90
+  # durations injected into its fixtures: measured 2026-09-09, three green
+  # cases in test-route-arbiter.sh flipped (glm/glm-flash/sonnet acquired
+  # arm_excluded=...:forecast from the real journal's 3.61h/5.52h p90s) and a
+  # fourth died mid-suite when the forecast refusal's rc hit `set -e`. A test
+  # subtree is exactly what lib/leadv2-test-context.sh already detects for the
+  # WRITERS of shared state; the reader degrades the same way: in a test
+  # context with no explicit LEADV2_ROUTE_ARBITER_EVENTS_JOURNAL the forecast
+  # gets NO journal (journal_unavailable -> no refusal), never the host's
+  # live one. An explicit override always wins — the forecast suites set it.
+  # Production never sits under a */tests/ runner, so the live path is
+  # byte-for-byte the old one.
+  _ra_evt_journal="${LEADV2_ROUTE_ARBITER_EVENTS_JOURNAL:-}"
+  if [[ -z "${_ra_evt_journal}" ]]; then
+    source "${here}/lib/leadv2-test-context.sh" 2>/dev/null || true
+    if command -v lv2_test_context >/dev/null 2>&1 && lv2_test_context; then
+      _ra_evt_journal=""
+    else
+      _ra_evt_journal="${HOME}/.claude/cache/leadv2-events/leadv2.jsonl"
+    fi
+  fi
   ROUTE_ARBITER_SELF_REV="${_self_rev}" \
   ROUTE_ARBITER_ROLE="$role" ROUTE_ARBITER_DESCRIPTOR="$descriptor" \
   ROUTE_ARBITER_QUOTA="$quota_json" ROUTE_ARBITER_FREEPOOL_RC="$free_rc" \
   ROUTE_ARBITER_FREEPOOL_REASON="${free_reason}" \
   ROUTE_ARBITER_STATE_FILE="${LEADV2_ROUTE_ARBITER_STATE_FILE:-${TMPDIR:-/tmp}/leadv2-route-arbiter-last-arm}" \
   ROUTE_ARBITER_FAILURE_LEDGER="${LEADV2_ROUTE_ARBITER_FAILURE_LEDGER:-${HOME}/.claude/leadv2-state/leadv2/dispatch-ledger.jsonl}" \
-  ROUTE_ARBITER_EVENTS_JOURNAL="${LEADV2_ROUTE_ARBITER_EVENTS_JOURNAL:-${HOME}/.claude/cache/leadv2-events/leadv2.jsonl}" \
+  ROUTE_ARBITER_EVENTS_JOURNAL="${_ra_evt_journal}" \
   python3 - "$routing" <<'PY'
 import json, os, re, sys, tempfile, math
 # ROUTE-ARBITER-DIES-SILENTLY-ON-LINUX-01 (2026-09-05). These four loads shared one
@@ -564,6 +587,11 @@ def window_reset(name, window):
 # SOME of its windows. Printed on the decision line; never consulted by the
 # routing choice, so this records the fact without changing any outcome.
 _partial_windows={}
+# W1-FORECAST-THE-SPEND-01 store: every READABLE window per provider, filled
+# by util() beside _partial_windows. The binding (worst-pct) window alone
+# cannot answer "does the next task fit" -- the 5h window can be the tighter
+# container while weekly binds on pct -- so the forecast below needs them all.
+_allwin={}
 def util(provider):
     # T17 fix-round (C3): a provider whose probe is broken/unknown must be
     # PESSIMISTIC (maximally capped), never the cheapest-looking arm. The old
@@ -654,6 +682,13 @@ def util(provider):
     # UNKNOWN_PROBE_PENALTY, so this cannot resurrect the `all_arms_capped`
     # deaths -- it only stops a silent provider from outranking a measured one.
     if best_pct is None: return dict(empty, pct=100.0, unknown=True)
+    # W1-FORECAST-THE-SPEND-01: stash every window whose pct was READABLE
+    # (same skip rule as the binding loop above) for the spend forecast.
+    _aw=[]
+    for _n,_w in windows.items():
+        _p2=num((_w or {}).get(pct_key))
+        if _p2 is not None: _aw.append((_n,_p2,_w))
+    if _aw: _allwin.setdefault(provider,_aw)
     h,period,basis=window_reset(best_name,best_window)
     # ARBITER-QUOTA-IS-A-CLIFF-NOT-A-GRADIENT-01: carry the BINDING window's
     # usable_now (remaining percentage-points per hour, produced upstream by
@@ -668,6 +703,162 @@ def near_reset_wait(provider):
     info=_uraw[provider]; h=info.get('hours_to_reset'); period=info.get('period_hours')
     if h is None or period is None: return False
     return h <= (period * WAIT_FRACTION_OF_PERIOD)
+# W1-FORECAST-THE-SPEND-01 (founder order 2026-09-09, PRE-WAVES-PLAN §1.4):
+# the arbiter read the windows (util/window_reset/near_reset_wait above) but
+# never asked whether the task it is about to dispatch FITS what is left --
+# at util=59% it dispatched work able to push the five-hour window past 100%
+# before its reset (live 2026-09-09: util_claude=59 reset_claude=54.48h_live,
+# weekly binding, the 5h window free to be overdrawn). This block adds the
+# missing half: an EXPECTED SPEND, compared against the REMAINDER of every
+# readable window of the candidate provider -- every window, not just the
+# binding one, because that live case is a NON-binding window being the
+# dangerous one.
+#
+# The estimate is MEASURED, never a free-hand constant:
+#   expected_hours = p90 of wall-clock spawn->terminal durations of that
+#     provider's arms, read from the SAME events journal failure memory
+#     already reads (ROUTE_ARBITER_EVENTS_JOURNAL: worker_spawned/
+#     worker_terminal rows; live 2026-09-09: claude n=189 p90=5.52h,
+#     glm n=196 p90=3.61h, codex n=51 p90=6.46h). Below FORECAST_MIN_ROWS
+#     joined rows there is no basis and the check is skipped LOUDLY
+#     (forecast_basis=no_history): refusing dispatch on zero evidence is not
+#     a forecast. An explicit descriptor `expected_hours` (a caller that
+#     knows better, a pinned long task, or a test) overrides the journal
+#     (basis=descriptor).
+# The window translation is a definition, not a constant: a rolling window
+# of period P sustains exactly 100/P pct-points per hour (burn more on
+# average and it is over the window forever), so a task expected to run H
+# hours costs H/P*100 pct-points of that window at the sustainable rate --
+# H=3h is 60 pct-points of a 5h window and 1.8 of a 168h one. The
+# descriptor's size/duration_class/write_set_files ride as provenance tokens
+# only: journal rows carry no class and no write-set, so keying the estimate
+# on them would be a guess dressed as a measurement.
+# Fit rule: forecast <= remainder on EVERY readable window. A failing window
+# whose own reset is within WAIT_FRACTION_OF_PERIOD of ITS OWN period reuses
+# the existing wait-vs-switch rule (0.5h for a 5h window, 16.8h for codex's
+# single weekly window per CODEX-TIER-100-NO-BURST-WINDOW-01) and the
+# provider WAITS (stays eligible, wait_applied=) instead of switching; a far
+# reset switches (stage `forecast`); when every eligible arm fails the fit
+# the arbiter refuses loudly: rc=3, reason=forecast_exceeds_window, naming
+# the window, its remainder and the forecast. Rollback is one flag:
+# LEADV2_ARBITER_SPEND_FORECAST=0.
+FORECAST_ON=os.environ.get('LEADV2_ARBITER_SPEND_FORECAST','1')!='0'
+FORECAST_MIN_ROWS=3
+def _arm_to_provider(a):
+    # Same prefix families leadv2-cost-flush.sh's _cost_provider_for_model
+    # already maps -- derived, not reinvented.
+    a=str(a or '').lower()
+    if a.startswith(('opus','sonnet','haiku','fable','claude')): return 'claude'
+    if a.startswith('glm'): return 'glm'
+    if a.startswith(('codex','gpt')): return 'codex'
+    return None
+def _journal_durations():
+    # -> ({provider: [hours...]}, status ok|unavailable). A terminal is
+    # attributed to the LAST spawn of its task at or before it -- the same
+    # attribution rule read_failure_memory uses: one journal, one rule.
+    evt=os.environ.get('ROUTE_ARBITER_EVENTS_JOURNAL') or ''
+    import datetime
+    def _ts(s):
+        try: return datetime.datetime.strptime(s,'%Y-%m-%dT%H:%M:%SZ')
+        except Exception: return None
+    try:
+        by_task={}; terms=[]
+        with open(evt) as _f:
+            for _l in _f:
+                try: r=json.loads(_l)
+                except Exception: continue
+                k=r.get('kind')
+                if k=='worker_spawned':
+                    by_task.setdefault(str(r.get('task') or ''),[]).append((str(r.get('ts') or ''), str(r.get('arm') or '')))
+                elif k=='worker_terminal':
+                    terms.append((str(r.get('ts') or ''), str(r.get('task') or '')))
+    except Exception:
+        return {}, 'unavailable'
+    for _lst in by_task.values(): _lst.sort()
+    terms.sort()
+    out={}
+    for tts,task in terms:
+        _lst=by_task.get(task) or []
+        prev=None
+        for sts,arm in _lst:
+            if sts<=tts: prev=(sts,arm)
+            else: break
+        if prev is None: continue
+        t,s=_ts(tts),_ts(prev[0])
+        if t is None or s is None: continue
+        h=(t-s).total_seconds()/3600.0
+        if h<0 or h>=720: continue   # clock garbage or a wedged week: neither is a forecast
+        p=_arm_to_provider(prev[1])
+        if p: out.setdefault(p,[]).append(h)
+    return out,'ok'
+def _p90(xs):
+    xs=sorted(xs)
+    if not xs: return None
+    return xs[max(0,int(math.ceil(0.9*len(xs)))-1)]
+_fc_durs={}; _fc_jstat='off'
+if FORECAST_ON: _fc_durs,_fc_jstat=_journal_durations()
+_fc_cache={}
+def _expected_hours_for(provider):
+    if provider in _fc_cache: return _fc_cache[provider]
+    _e=num(d.get('expected_hours'))
+    if _e is not None and _e>0:
+        r=(_e,'descriptor')
+    elif _fc_jstat=='unavailable':
+        r=(None,'journal_unavailable')
+    elif _fc_jstat!='ok':
+        r=(None,'no_history')
+    else:
+        xs=(_fc_durs.get(provider) or [])
+        if len(xs)>=FORECAST_MIN_ROWS:
+            r=(_p90(xs),'journal:provider=%d'%len(xs))
+        else:
+            al=[_h for _v in _fc_durs.values() for _h in _v]
+            r=(_p90(al),'journal:all=%d'%len(al)) if len(al)>=FORECAST_MIN_ROWS else (None,'no_history')
+    _fc_cache[provider]=r
+    return r
+_forecast_view={}; _forecast_block={}; _forecast_wait=[]; _forecast_skipped={}
+def _forecast_check(provider):
+    # One view per provider: the estimate's hours+basis, every failing
+    # window, the worst of them, and whether ALL failures reset soon (the
+    # wait rule needs every failing window near -- a far failure is not
+    # rescued by a near one).
+    if provider not in _allwin: return None
+    hours,basis=_expected_hours_for(provider)
+    if hours is None: return {'hours':None,'basis':basis,'fails':[],'worst':None,'near_all':False}
+    fails=[]
+    for name,pct,w in _allwin[provider]:
+        h,period,_why=window_reset(name,w)
+        if period is None or period<=0:
+            _forecast_skipped[provider]='unknown_period:%s'%name
+            continue
+        fc=hours/period*100.0
+        rem=100.0-pct
+        if fc > rem:  # fit-vs-remainder (W1-FORECAST-THE-SPEND-01 mutation anchor)
+            fails.append({'window':name,'remaining':rem,'forecast':fc,'hours':hours,
+                          'period':period,
+                          'near':(h is not None and h<=period*WAIT_FRACTION_OF_PERIOD)})
+    worst=None
+    for f in fails:
+        if worst is None or (f['forecast']-f['remaining'])>(worst['forecast']-worst['remaining']): worst=f
+    return {'hours':hours,'basis':basis,'fails':fails,'worst':worst,
+            'near_all':bool(fails) and all(f['near'] for f in fails)}
+def _forecast_refuse():
+    # The loud refusal: names the window, its remainder and the forecast that
+    # exceeded it. rc=3 is the caller's hard-refusal code (the same code
+    # all_arms_capped uses) -- a task that fits no arm's window must not fall
+    # open to a ladder that would dispatch it anyway.
+    _p,_w=sorted(_forecast_block.items(), key=lambda kv: -(kv[1]['forecast']-kv[1]['remaining']))[0]
+    _record('refuse','none','none','forecast_exceeds_window')
+    print('arm=refuse model=none tier=none reason=forecast_exceeds_window kind=%s window=%s remaining=%.1fpct forecast=%.1fpct forecast_hours=%.2fh forecast_basis=%s chain= %s%s%s%s%s' % (kind,_w['window'],_w['remaining'],_w['forecast'],_w['hours'],_forecast_view[_p]['basis'],ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
+    raise SystemExit(3)
+if FORECAST_ON:
+    for _p in ('glm','codex','claude'):
+        _v=_forecast_check(_p)
+        if _v is None: continue
+        _forecast_view[_p]=_v
+        if _v['fails']:
+            _forecast_block[_p]=_v['worst']
+            if _v['near_all']: _forecast_wait.append(_p)
 # FP-08 fix-round (M1): the floor keys on the RAW --task-class, not the
 # SIZE_MAP-folded bucket. trivial|light ("simple") fold into the 'standard'
 # matrix cell for CAPABILITY lookups but must stay freepool-eligible, and
@@ -720,6 +911,10 @@ def over_ceiling(provider):
 # provider that is over ceiling with a FAR reset is unaffected: still capped,
 # still switches, exactly today's behaviour.
 _waited=[p for p in ('glm','codex','claude') if over_ceiling(p) and near_reset_wait(p)]
+# W1-FORECAST-THE-SPEND-01: a forecast-blocked provider whose every failing
+# window resets within WAIT_FRACTION_OF_PERIOD of its own period waits too --
+# same token, same semantics, one wait rule rather than a second one.
+_waited += [p for p in _forecast_wait if p not in _waited]
 def capped(provider):
     # ARBITER-REMEMBERS-FAILURES-01 edit B (founder 2026-09-05): `unknown` is a
     # THIRD state, never a synonym for "busy". util() already returns pct=100.0
@@ -785,7 +980,8 @@ _fit=[c for c in cells if mkind in c.get('kinds',[]) and size in c.get('sizes',[
 # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01 (2026-09-07): the two-valued
 # _arm_excluded map (untrusted|not_allowed) is replaced by an ordered stage
 # list, one entry per matrix arm that fits kind/size -- not_in_pool,
-# not_launchable, untrusted, capped, failure_memory, price_ratio -- joined
+# not_launchable, untrusted, capped, forecast, failure_memory, price_ratio --
+# joined
 # with '+' when several apply, so an operator reads "never eligible" vs
 # "never tested" vs "tested and lost" off one line:
 #   not_in_pool    -- outside the hard set (arm_pool), the caller's policy
@@ -815,7 +1011,7 @@ def _pool_contains(arm):
     if requested_arm and arm==requested_arm: return True
     if allowed is not None: return arm in allowed
     return any(c.get('pool_default',True) is not False for c in _arm_cells.get(arm,[]))
-_STAGE_ORDER=['not_in_pool','not_launchable','untrusted','capped','failure_memory','price_ratio']
+_STAGE_ORDER=['not_in_pool','not_launchable','untrusted','capped','forecast','failure_memory','price_ratio']
 _stages={}
 def _stage_add(arm,stage):
     _s=_stages.setdefault(arm,[])
@@ -824,11 +1020,20 @@ for _a in _arm_cells:
     if not _pool_contains(_a): _stage_add(_a,'not_in_pool')
     if launchable is not None and _a not in launchable: _stage_add(_a,'not_launchable')
     if require_trusted and not any(c.get('protected',False) for c in _arm_cells[_a]): _stage_add(_a,'untrusted')
+# W1-FORECAST-THE-SPEND-01: the fit verdict is its own typed stage -- a
+# forecast-blocked provider with a far reset is switched away exactly like a
+# capped one, and a pinned request for such an arm is refused by the pin
+# block below through the very same _stages it already consults.
+if FORECAST_ON:
+    for _a in _arm_cells:
+        _pv=next((c.get('provider') for c in _arm_cells[_a]),None)
+        if _forecast_block.get(_pv) and _pv not in _forecast_wait:
+            _stage_add(_a,'forecast')
 def _excl_render():
     # Rendered in the canonical stage order regardless of the order stages
     # were appended in (failure_memory is evaluated before capped, but the
     # token contract is: not_in_pool, not_launchable, untrusted, capped,
-    # failure_memory, price_ratio).
+    # forecast, failure_memory, price_ratio).
     if not _stages: return ''
     return ' arm_excluded=%s' % ','.join('%s:%s' % (a,'+'.join(sorted(_stages[a],key=_STAGE_ORDER.index))) for a in sorted(_stages))
 capable=[c for c in _fit if c.get('arm') not in _stages]
@@ -1062,7 +1267,7 @@ if requested_arm:
     # requested_arm_incapable is RESERVED for the one case where it is true --
     # this kind/size has NO capability_matrix cell for the arm at all. Every
     # other refusal names the exact stage that removed it (not_in_pool,
-    # not_launchable, untrusted, capped, failure_memory), so the operator
+    # not_launchable, untrusted, capped, forecast, failure_memory), so the operator
     # reads WHICH filter fired off the one line, and a perfectly capable arm
     # is never again called incapable.
     if requested_arm not in _arm_cells:
@@ -1090,12 +1295,32 @@ if not _fit or not (_bound_pool & set(_arm_cells)):
     print('arm=refuse model=none tier=none reason=no_capable_cell kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
     raise SystemExit(68)
 if not capable:
+    # W1-FORECAST-THE-SPEND-01: a pool the fit check emptied ALONE is a real
+    # capacity refusal -- pool_empty would dress it up as a vocabulary gap.
+    # Scope: _arm_cells is the WHOLE matrix (freepool carries not_in_pool and
+    # no forecast stage of its own), so the all() must range over the BOUND
+    # pool -- the arms this dispatch actually asked for. Measured: with the
+    # all() over _arm_cells, case (a) of test-route-arbiter-spend-forecast.sh
+    # could never reach the loud refusal because freepool:not_in_pool always
+    # failed the conjunction first.
+    _fc_pool=_bound_pool & set(_arm_cells)
+    if FORECAST_ON and _forecast_block and _fc_pool and \
+            all('forecast' in _stages.get(_a,[]) for _a in _fc_pool):
+        _forecast_refuse()
     _record('refuse','none','none','pool_empty_all_excluded')
     print('arm=refuse model=none tier=none reason=pool_empty_all_excluded kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
     raise SystemExit(68)
 ok=[c for c in capable if not capped(c.get('provider'))]
 for _cap_a in sorted({c.get('arm') for c in capable if capped(c.get('provider'))}):
     _stage_add(_cap_a,'capped')
+# W1-FORECAST-THE-SPEND-01: the fit filter runs AFTER the capped filter so a
+# capped-empty pool keeps its exact all_arms_capped meaning; an arm the fit
+# removed alone is named by its stage, and a pool the fit emptied alone gets
+# the loud forecast refusal instead of a silent fall-open to the ladder.
+if FORECAST_ON and _forecast_block:
+    _ok_fc=[c for c in ok if not (_forecast_block.get(c.get('provider')) and c.get('provider') not in _forecast_wait)]
+    if _ok_fc: ok=_ok_fc
+    elif ok: _forecast_refuse()
 if requested_arm:
     ok=[c for c in ok if c.get('arm')==requested_arm]
 if not ok:
@@ -1424,6 +1649,29 @@ else:
     _w_remaining='%.1f' % (100.0 - _w_info['pct'])
 _w_reset=('%.2fh' % _w_info['hours_to_reset']) if _w_info.get('hours_to_reset') is not None else 'n/a'
 _quota = ' remaining=%s reset_in=%s reset_basis=%s' % (_w_remaining, _w_reset, _w_info.get('reset_basis','n/a'))
+# W1-FORECAST-THE-SPEND-01: the winner's own forecast rides the decision
+# line -- what was expected, from which basis, against which window's
+# remainder. Absent entirely when the check is off
+# (LEADV2_ARBITER_SPEND_FORECAST=0); a loud forecast_basis=no_history /
+# journal_unavailable when on but without a basis -- the third value, never a
+# silent zero.
+_forecast_tok=''
+if FORECAST_ON:
+    _wp=w.get('provider')
+    if _wp in _forecast_view:
+        _v=_forecast_view[_wp]
+        if _v['hours'] is None:
+            _forecast_tok=' forecast_basis=%s'%_v['basis']
+        else:
+            _forecast_tok=' forecast_hours=%.2fh forecast_basis=%s'%(_v['hours'],_v['basis'])
+            if _v['worst'] is not None:
+                _forecast_tok+=' forecast_window=%s forecast_remaining=%.1fpct forecast_pct=%.1fpct'%(_v['worst']['window'],_v['worst']['remaining'],_v['worst']['forecast'])
+                if _wp in _forecast_wait: _forecast_tok+=' forecast_wait=1'
+    else:
+        _forecast_tok=' forecast_basis=no_windows'
+    _ws=num(d.get('write_set_files'))
+    if _ws is not None: _forecast_tok+=' forecast_ws=%g'%_ws
+    _forecast_tok+=' forecast_class=%s/%s'%(size,duration_class)
 _wait = (' wait_applied=%s' % ','.join(_waited)) if _waited else ''
 # FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01: name ANY gate refusal on the
 # decision line itself -- this line is what the dispatcher journals verbatim
@@ -1457,7 +1705,7 @@ _fit_tok = (' complexity_source=%s conf=%.1f req_eff=%.1f fit_mode=%s fit_pick=%
              ','.join('%s:%d' % (c['arm'], fit_bucket(c)) for c in ok),
              (' cap_default=%s' % ','.join(sorted(set(_cap_defaulted)))) if _cap_defaulted else '',
              (' complexity_unmapped=%s' % complexity_unmapped) if complexity_unmapped else ''))
-print('arm=%s kind=%s model=%s tier=%s effort=%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok))
+print('arm=%s kind=%s model=%s tier=%s effort=%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok))
 PY
 }
 
