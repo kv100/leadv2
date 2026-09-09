@@ -4322,8 +4322,14 @@ _uw_norm_write() {  # <raw> -> normalised path on stdout
 # the arm's fault — this guard makes that comment true).
 # A report/recon lane's honest shape already exists (REPORT-ONLY-GATE-01):
 # declare --lane-deliverable 'report:<path>' (or a LANE_DELIVERABLE: mission
-# line) and carry NO handoff path in --writes — the close gate then certifies
-# the report itself (pc_scope_diff's kind=report branch). MIXED sets are NOT
+# line) — the close gate then certifies the report itself (pc_scope_diff's
+# kind=report branch). WRITESW-AUDIT-EXEMPT (row 63848744ac73): since
+# 2026-09-09 such a DECLARED lane may also carry its docs/handoff paths IN
+# --writes — the write set naming the deliverable is honest scope, not
+# laundering (the pre-exemption remedy of emptying --writes, or moving the
+# deliverable to docs/reference/, was the workaround the row was filed
+# against). pc_precheck_writes carries the same exemption keyed on the same
+# declaration, so the admitted lane is not bounced at close. MIXED sets are NOT
 # refused: close proceeds with the handoff entries as an additive `undiffable:`
 # key and diffs the surviving paths (pc_precheck_writes F1). Nothing is widened:
 # a lane with no reviewable path and no report declaration still has nothing
@@ -4337,6 +4343,12 @@ _uw_norm_write() {  # <raw> -> normalised path on stdout
 #   b5-mut-2: refuse everything (good_n forced to 0) -> case 2 reddens: a
 #      write set WITH a reviewable path must never be refused — a gate that
 #      refuses all lanes is not a gate.
+#   wr-mut-1: exemption disabled (the wr-exempt if never fires) ->
+#      test-writeset-admits-an-audit-lane.sh case A reddens: the declared
+#      audit lane is refused again — the exact defect of row 63848744ac73.
+#   wr-mut-2: refusal dropped (unconditional return 0, same edit shape as
+#      b5-mut-1) -> test-writeset-admits-an-audit-lane.sh case B reddens: the
+#      undeclared build lane dispatches with nothing certifiable.
 _undiffable_writes_guard() {
   local sig8="$1" writes_csv="$2" founder_task_id="$3" ws_source="$4"
   local w bad_n=0 good_n=0
@@ -4358,6 +4370,26 @@ _undiffable_writes_guard() {
     esac
   done
   [[ ${bad_n} -gt 0 && ${good_n} -eq 0 ]] || return 0
+  # WRITESW-AUDIT-EXEMPT (GUARDS-REFUSE-REAL-WORK, row 63848744ac73): the set is
+  # doc-only, but a lane that DECLARED a validated report: deliverable is the
+  # audit/design shape -- its deliverable IS the document, and the close gate's
+  # kind=report branch certifies that file (exists, substantive, no code
+  # laundering, reviewed against the mission), so the doc-only write set is the
+  # honest scope and the lane must dispatch; forcing the deliverable outside
+  # docs/handoff (the 2026-09-08 docs/reference/ move) was a workaround, not a
+  # shape. LANE_DELIVERABLE_DECL is resolved and validated once in cmd_resolve
+  # before both call sites (:8046); the re-parse here stays fail-closed (lib
+  # missing -> :696 stub returns 1 -> refusal stands). A build lane that quietly
+  # produced nothing reviewable has NO declaration and is still refused below --
+  # that is the case this guard exists to catch, and it still fires.
+  # wr-mut-1: a DECLARED lane's doc-only set must be admitted here, pre-spawn
+  # wr-mut-2: an UNDECLARED doc-only set must still be refused below
+  if [[ -n "${LANE_DELIVERABLE_DECL:-}" ]] && lv2_deliverable_parse "${LANE_DELIVERABLE_DECL}" >/dev/null; then  # wr-exempt
+    local joined_x=""
+    joined_x="$(_uw_join_capped "${bad_paths[@]}")"
+    emit decision "write_set_undiffable_exempt task=${sig8} reason=report_deliverable stage=pre_spawn source=${ws_source} paths=${joined_x} writes=${writes_csv} deliverable=${LANE_DELIVERABLE_DECL}"
+    return 0
+  fi
   local joined=""
   joined="$(_uw_join_capped "${bad_paths[@]}")"
   emit decision "dispatch_refused reason=undiffable_write_set task=${sig8} stage=pre_spawn source=${ws_source} paths=${joined} writes=${writes_csv} remedy=report_deliverable_or_reviewable_path"
@@ -4365,17 +4397,13 @@ _undiffable_writes_guard() {
   printf 'LEADV2_DISPATCH_REFUSED: undiffable_write_set\n'
   log_err "dispatch refused: the declared write set has NO reviewable path (reason=undiffable_write_set)"
   log_err "  writes: ${writes_csv}"
-  if [[ -n "${LANE_DELIVERABLE_DECL:-}" ]]; then
-    log_err "  remedy: drop these docs/leadv2|docs/handoff paths from --writes -- the report is"
-    log_err "          already certified via the deliverable (${LANE_DELIVERABLE_DECL}); an empty"
-    log_err "          --writes plus that deliverable declaration is the report-lane shape"
-  else
-    log_err "  remedy (report-only lane): declare the deliverable and drop these paths from --writes:"
-    log_err "    --lane-deliverable 'report:docs/handoff/<task>/report.md'"
-    log_err "    (or a 'LANE_DELIVERABLE: report:<path>' line in the mission)"
-    log_err "  remedy (diff lane): add at least one reviewable path (outside docs/leadv2, docs/handoff)"
-    log_err "    to --writes alongside them"
-  fi
+  log_err "  remedy (audit/design lane): declare the document deliverable -- the docs-only"
+  log_err "    write set then dispatches (write_set_undiffable_exempt) and the close gate"
+  log_err "    certifies the document itself:"
+  log_err "    --lane-deliverable 'report:docs/handoff/<task>/report.md'"
+  log_err "    (or a 'LANE_DELIVERABLE: report:<path>' line in the mission)"
+  log_err "  remedy (diff lane): add at least one reviewable path (outside docs/leadv2, docs/handoff)"
+  log_err "    to --writes alongside them"
   return 1
 }
 
