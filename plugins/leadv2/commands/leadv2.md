@@ -73,7 +73,12 @@ Full decision procedure + anti-patterns: `${CLAUDE_PLUGIN_ROOT}/docs/model-effor
 The zero-Claude-quota ladder applies to build/review work, not Phase 2 planning. Per
 `PLANNER-MODELS-DECISION-01`, planning is model-pinned: Opus/`high` for Standard and
 Fable/`xhigh` for Heavy, with Codex at the matching `standard`/`top` tier as a second brain.
-GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
+No arm is barred by doctrine. GLM is a full-capability arm (`capability: 4` in
+`config/leadv2-routing.yaml` `router_v2.capability_matrix`, `kinds: [code, docs, review,
+plan, audit, safety]`) and may take plan, architect, and synthesis roles like any other —
+founder order 2026-09-09, GLM-DOES-EVERYTHING-01, superseding the old build-only line.
+The arbiter decides by cheapest-capable; on `kind=plan` GLM (cost 1) beats fable (cost 8)
+at the same capability, and that is the intended outcome, not a fallback.
 
 | Role | Model | Effort | Spawn | When |
 |---|---|---|---|---|
@@ -84,7 +89,7 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 | developer / postgres-pro / frontend-developer / devops-engineer | Sonnet | `medium` | Agent tool | Interactive build, deploy, fix rounds |
 | security-auditor | Sonnet | `high` | Agent tool | Phase 5 if auth/RLS/secrets/webhook |
 | Explore / classify / commit | Haiku | `low` | Agent tool | Pre-Plan graph discovery, aggregation, commits |
-| **GLM-5.2 / Kimi (build-only)** | glm-5.2 / kimi | prompt-level | `glm-coder.sh bg` / `kimi-coder.sh bg` + Monitor | Bulk transforms, implementation, and mass audits only. Never planning, architecture, synthesis, or safety judgment. |
+| **GLM / Kimi** | glm-5.3 / kimi | prompt-level | `glm-coder.sh bg` / `kimi-coder.sh bg` + Monitor | Any `kind` the capability matrix admits — code, docs, review, plan, audit, safety. GLM is `capability: 4`, the same rung as fable and opus, at cost 1. Founder order 2026-09-09 (GLM-DOES-EVERYTHING-01). |
 | Codex (plan/review/bug-hunt) | GPT-5.6 | `standard` / `top` tier (Heavy) | `leadv2-codex-planner.sh` / `codex-task.sh` | Phase 2 same-tier second brain: `standard` alongside Opus, `top` alongside Fable; also Phase 5 + root-cause. Requires active ChatGPT login. |
 
 ---
@@ -147,7 +152,7 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 1.5` BEFORE executing.
 
 ## Phase 2: PLAN - parallel brain triad
-- Trigger: `leadv2-router.sh --phase plan` -> parallel co-authors: `Agent(architect, opus/high for Standard; fable/xhigh for Heavy)` + `leadv2-codex-planner.sh --tier standard|top` at the matching tier + `Agent(critic, sonnet; opus for Heavy/safety-touched)` -> synthesize with the same Opus/Fable architect model and effort into context.yaml. GLM/Kimi are build-only and never admitted here. | Exit: context.yaml has decisions[], off_limits[], plan.steps[], risk summary
+- Trigger: `leadv2-router.sh --phase plan` -> parallel co-authors: `Agent(architect, opus/high for Standard; fable/xhigh for Heavy)` + `leadv2-codex-planner.sh --tier standard|top` at the matching tier + `Agent(critic, sonnet; opus for Heavy/safety-touched)` -> synthesize with the same Opus/Fable architect model and effort into context.yaml. GLM is admitted here on the same terms as any other capable arm (GLM-DOES-EVERYTHING-01, founder 2026-09-09) and wins `kind=plan` on cost when the arbiter runs. | Exit: context.yaml has decisions[], off_limits[], plan.steps[], risk summary
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 2` BEFORE executing.
 
 ## Phase 3: GATE 1 - the only gate
