@@ -7,11 +7,11 @@
 #
 # This hook fires on Stop: if an active task exists (active.yaml sessions
 # non-empty, or LEADV2_TASK_ID env with no phase8-passed.flag) AND the ending
-# turn made zero state-changing tool calls, it BLOCKS once with a message
+# turn made no tool calls, it BLOCKS once with a message
 # naming the active task + its phase and demanding either:
-#   (a) a state-changing call / dispatched worker / armed watcher this turn, or
-#   (b) an explicit final line "работа продолжается: <что ждём>" /
-#       "задача закрыта: <артефакт>".
+#   (a) a tool call / dispatched worker / armed watcher this turn, or
+#   (b) only the missing continuation/close line — never a restatement of
+#       already-rendered text.
 #
 # Kill switch: LEADV2_CONTINUATION_GUARD=0.
 # Loop safety: never blocks twice in a row for the same turn — uses
@@ -89,7 +89,7 @@ fi
 #   active_task: bool    — an active, non-closed leadv2 task exists
 #   task_id: str         — the task id (for the block message)
 #   phase: str           — the task's current phase
-#   has_action: bool     — the ending turn made ≥1 state-changing tool call
+#   has_tool_call: bool  — the ending turn made ≥1 tool call
 #   has_continuation: bool — final text contains an explicit continuation/close line
 VERDICT="$(python3 - "$CWD" "$TRANSCRIPT" <<'PYEOF' 2>/dev/null || true
 import sys, os, json, re
@@ -177,35 +177,10 @@ if not active:
 
 if not active:
     print(json.dumps({"active_task": False, "task_id": "", "phase": "",
-                      "has_action": False, "has_continuation": False}))
+                      "has_tool_call": False, "has_continuation": False}))
     sys.exit(0)
 
 # ── 2. Turn reconstruction (same logic as promise-guard) ──────────────────
-ACTION_TOOL_NAMES = {'Edit', 'MultiEdit', 'Write', 'NotebookEdit',
-                     'Agent', 'Workflow', 'SendMessage', 'Monitor',
-                     'TaskCreate', 'TaskUpdate'}
-ACTION_BASH_RE = re.compile(
-    r'git\s+(?:commit|push|add|tag)'
-    r'|leadv2-dispatch-code'
-    r'|leadv2-fanout'
-    r'|[A-Za-z0-9_-]*-task\.sh'
-    r'|glm-coder\.sh'
-    r'|leadv2-.*\.sh'
-    r'|systemctl\s+(?:restart|start|enable)'
-    r'|sed\s+-i'
-    r'|\b(?:mv|cp|tee|touch|mkdir|install)\b'
-    r'|>>?\s*\S',
-    re.UNICODE)
-
-def is_action_tool(name, bash_cmd=None):
-    if name.startswith('Task'):
-        return True
-    if name in ACTION_TOOL_NAMES:
-        return True
-    if name == 'Bash' and bash_cmd:
-        return bool(ACTION_BASH_RE.search(bash_cmd))
-    return False
-
 # Read transcript. T16 §6 (LEAD-FINAL-FIXES-01) fast path: the verdict only
 # ever evaluates records AFTER the last real user turn, but this used to
 # parse the ENTIRE transcript — every Stop of every session in a repo with
@@ -255,7 +230,7 @@ records, _truncated = _load_records(jsonl_path)
 if records is None:
     # fail-open: cannot read transcript -> never block
     print(json.dumps({"active_task": True, "task_id": task_id, "phase": phase,
-                      "has_action": False, "has_continuation": False}))
+                      "has_tool_call": False, "has_continuation": False}))
     sys.exit(0)
 if _truncated and not any(is_real_user_turn(r) for r in records):
     # the whole current turn sits above the window — re-read the full file
@@ -282,23 +257,24 @@ for i in range(len(records) - 1, -1, -1):
 
 turn_records = [r for r in records[boundary + 1:] if r.get('type') == 'assistant']
 
-has_action = False
-final_text_parts = []
-
-for rec in turn_records:
-    content = (rec.get('message', {}) or {}).get('content', [])
-    if not isinstance(content, list):
-        continue
-    for block in content:
-        if not isinstance(block, dict):
+def ending_turn_has_tool_call(records):
+    has_tool_call = False
+    for rec in records:
+        content = (rec.get('message', {}) or {}).get('content', [])
+        if not isinstance(content, list):
             continue
-        btype = block.get('type')
-        if btype == 'tool_use':
-            name = block.get('name', '') or ''
-            inp  = block.get('input', {}) or {}
-            cmd  = inp.get('command', '') if isinstance(inp, dict) else ''
-            if is_action_tool(name, cmd if isinstance(cmd, str) else None):
-                has_action = True
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get('type')
+            if btype == 'tool_use':
+                # A completed probe is work: the guard detects a quiet stop, not
+                # merely a lack of mutations (CONTINUATION-GUARD-DOUBLES-01).
+                has_tool_call = True
+    return has_tool_call
+
+has_tool_call = ending_turn_has_tool_call(turn_records)
+final_text_parts = []
 
 # Final text = text blocks of the LAST assistant record
 if turn_records:
@@ -322,7 +298,7 @@ print(json.dumps({
     "active_task": True,
     "task_id": task_id,
     "phase": phase,
-    "has_action": has_action,
+    "has_tool_call": has_tool_call,
     "has_continuation": has_continuation,
 }, ensure_ascii=False))
 PYEOF
@@ -340,21 +316,21 @@ except Exception:
 print("yes" if d.get("active_task") else "no")
 print(d.get("task_id", "") or "")
 print(d.get("phase", "") or "")
-print("yes" if d.get("has_action") else "no")
+print("yes" if d.get("has_tool_call") else "no")
 print("yes" if d.get("has_continuation") else "no")
 ' 2>/dev/null || true)"
 
 ACTIVE_TASK="$(printf '%s' "$VF" | sed -n '1p')"
 TASK_ID_OUT="$(printf '%s' "$VF" | sed -n '2p')"
 PHASE_OUT="$(printf '%s' "$VF" | sed -n '3p')"
-HAS_ACTION="$(printf '%s' "$VF" | sed -n '4p')"
+HAS_TOOL_CALL="$(printf '%s' "$VF" | sed -n '4p')"
 HAS_CONTINUATION="$(printf '%s' "$VF" | sed -n '5p')"
 
 # No active task → pass through.
 [[ "$ACTIVE_TASK" == "yes" ]] || exit 0
 
-# Had a state-changing tool call → pass through.
-[[ "$HAS_ACTION" == "yes" ]] && exit 0
+# Had a tool call → pass through. A measured/reported turn is not silent.
+[[ "$HAS_TOOL_CALL" == "yes" ]] && exit 0
 
 # Ended with an explicit continuation/close line → pass through.
 [[ "$HAS_CONTINUATION" == "yes" ]] && exit 0
@@ -371,11 +347,10 @@ phase_str = (" (фаза: %s)" % phase) if phase else ""
 
 reason = (
     "CONTINUATION-GUARD: активная задача %s%s ещё не закрыта, "
-    "но этот ход не сделал ни одного state-changing вызова "
-    "(Edit / Write / Bash-commit / Agent / Monitor).\n\n"
+    "но этот ход не сделал ни одного вызова инструмента.\n\n"
     " Silence ≠ done. Сделайте одно из двух:\n"
     "  (a) сделайте вызов сейчас (dispatch / edit / watcher), или\n"
-    "  (b) напишите финальной строкой:\n"
+    "  (b) emit only the missing line; do not restate anything already said:\n"
     '      "работа продолжается: <что ждём>" или\n'
     '      "задача закрыта: <артефакт>"\n'
     % (task_id, phase_str)
