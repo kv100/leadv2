@@ -59,15 +59,14 @@ router_v2:
   active_account: max_20x
 
   # usable_now is remaining percentage-points per hour, not percent used.
-  headroom_weights:
-    - min_usable_now: 8
-      weight: 1.0
-    - min_usable_now: 2
-      weight: 0.7
-    - min_usable_now: 0
-      weight: 0.4
-    - min_usable_now: null
-      weight: 0.2
+  # W1-GRANULARITY-CONTINUOUS-HEADROOM-01 (founder, 2026-09-10): the
+  # headroom weights STEP TABLE that lived here is DELETED. The weight is now
+  # one monotone clipped-linear ramp of usable_now inside the arbiter
+  # (lib/leadv2-route-arbiter.sh, _headroom_ramp): w(u) = 0.2 + 0.8*min(u,8)/8,
+  # same edges the table had (1.0 at u>=8, 0.2 floor). Not configurable on
+  # purpose: the table quantised a continuous input into four baskets and the
+  # third basket swallowed nearly the whole range -- three providers priced
+  # identically while their runways differed.
 
   # ── Quota ceilings, founder decision 2026-08-02 ───────────────────────────
   # Two ceilings per provider: ordinary work, and a HIGHER one for review, because

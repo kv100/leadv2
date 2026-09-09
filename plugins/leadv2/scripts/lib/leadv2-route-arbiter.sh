@@ -1411,23 +1411,33 @@ def complexity_penalty(c):
 # capability floor (+100), so an unmeasured arm loses to nothing except a
 # deliberately floored one.
 UNKNOWN_PROBE_PENALTY=50.0
-# ARBITER-QUOTA-IS-A-CLIFF-NOT-A-GRADIENT-01 (founder request, 2026-09-05).
-# Quota was a CLIFF: under the ceiling every arm competed on cost alone, over it
-# the arm vanished, and how much runway was left before reset never entered the
-# price at all -- utilisation sat in the sort key only as a TIE-BREAK, i.e. it
-# spoke only when two arms cost exactly the same. config/leadv2-routing.yaml has
-# carried router_v2.headroom_weights the whole time and this file never read it
-# (measured 2026-09-05: grep -c headroom_weights = 0 here, 1 in the yaml the
-# arbiter itself loads, with quota_ceilings=2/1 as the non-zero control).
+# ARBITER-QUOTA-IS-A-CLIFF-NOT-A-GRADIENT-01 (founder request, 2026-09-05),
+# W1-GRANULARITY-CONTINUOUS-HEADROOM-01 (founder order 2026-09-10, PRE-WAVES-PLAN
+# §1.6: "the buckets ARE the dumbness"). The gradient started life (2026-09-05)
+# as the router_v2.headroom_weights STEP TABLE -- four rows whose third
+# (min_usable_now: 0 -> 0.4) swallowed almost the whole range: the live arbiter
+# line on 2026-09-10 read headroom_priced=claude:0.4,codex:0.4,glm:0.4, three
+# providers in ONE basket, the gradient blind between them, raw cost deciding.
+# The inputs were continuous all along and ecost already divided by the weight,
+# so the table quantised information that arrived unquantised -- it added no
+# intelligence, it threw away the runway number. It is now ONE monotone bounded
+# ramp inside headroom_weight, and the config key is deleted (a live config
+# carrying a dead key is a lie to the reader):
 #
-# The semantics are NOT invented here. `usable_now` is remaining percentage-points
-# per HOUR (leadv2-quota-read.py:135), and the rows are read exactly as
-# leadv2-router-v2.py:110-128 reads them: highest satisfied min_usable_now wins.
-# There the weight MULTIPLIES a quality score under argmax; here cost is
-# MINIMISED, so the same weight DIVIDES the base cost. Less runway per hour =>
-# effectively dearer. At EQUAL headroom every weight is equal, so the previous
-# ordering is preserved by construction -- this only separates arms that the
-# cliff could not tell apart.
+#     weight(u) = 0.2 + 0.8 * min(u, 8) / 8        (u = usable_now)
+#
+# a clipped linear ramp: w(0)=0.2, w(8)=1.0, flat 1.0 above 8, held at the 0.2
+# floor for degenerate u<0. The EDGES are the table's edges (1.0 and 0.2), so
+# behaviour at the extremes does not move; between them there are no steps. The
+# ramp passes exactly 0.4 at u=2 -- the weight the old 0-row handed to the
+# entire [0,2) range -- so a hand burning 1.9/h now prices 0.39, not 0.4.
+#
+# The semantics the table encoded are kept: `usable_now` is remaining
+# percentage-points per HOUR (leadv2-quota-read.py:135); there (router-v2,
+# argmax) the weight MULTIPLIES a quality score, here (argmin) the same weight
+# DIVIDES the base cost -- less runway per hour => effectively dearer. At EQUAL
+# headroom every weight is equal, so the pre-gradient ordering is preserved by
+# construction.
 #
 # Deliberately narrow, and the narrowness is the safety argument:
 #   * only the arm's own `cost` is scaled. The freepool capability floor, the
@@ -1439,27 +1449,36 @@ UNKNOWN_PROBE_PENALTY=50.0
 #   * a readable provider with no usable_now field also keeps 1.0 -- a metadata
 #     gap is not evidence of scarcity -- but it is NAMED (headroom_unknown=), per
 #     the standing rule that unknown is a third value and must be loud.
+#   * an unmetered account is charged the ramp's floor, w(0)=0.2: configured
+#     matrix cost at the least generous point of the ramp, no fabricated
+#     usage/reset rate, no unknown penalty -- exactly the 0.2 the table's null
+#     row used to hand out. As before, it is applied silently to the price and
+#     named loudly elsewhere (claude_account_state=unmetered,
+#     claude_priced_from=configured_allowance_conservative), never journalled
+#     into headroom_priced.
+#   * CONTINUITY ONLY RANKS, IT NEVER REFUSES (§1.6 boundary, half the
+#     assignment). Ceilings (over_ceiling), the near-reset wait, the
+#     kill-switch, protected exclusions and the forecast refusal are cliffs
+#     BEFORE this gradient ever runs, and they stay cliffs: a human must be able
+#     to predict a refusal without running the arbiter. Smoothness is confined
+#     to the ranking key.
 # Rollback is one flag: LEADV2_ARBITER_HEADROOM_GRADIENT=0 restores the cliff.
-_HEADROOM_ROWS=sorted([r for r in ((data.get('router_v2') or {}).get('headroom_weights') or [])
-                       if isinstance(r,dict) and r.get('weight') is not None and r.get('min_usable_now') is not None],
-                      key=lambda r: float(r['min_usable_now']), reverse=True)
-_HEADROOM_ON=(os.environ.get('LEADV2_ARBITER_HEADROOM_GRADIENT','1')!='0') and bool(_HEADROOM_ROWS)
+_HEADROOM_W_MIN=0.2; _HEADROOM_W_MAX=1.0; _HEADROOM_U_SAT=8.0
+_HEADROOM_ON=(os.environ.get('LEADV2_ARBITER_HEADROOM_GRADIENT','1')!='0')
 _headroom_unknown={}; _headroom_priced={}
-def _hw_row(un):
-    for row in _HEADROOM_ROWS:
-        try:
-            if un >= float(row['min_usable_now']): return float(row['weight'])
-        except (TypeError, ValueError): continue
-    try: return float(_HEADROOM_ROWS[-1]['weight'])
-    except (TypeError, ValueError, KeyError, IndexError): return 1.0
+def _headroom_ramp(un):
+    # One formula, both clips explicit: monotone non-decreasing, bounded
+    # [_HEADROOM_W_MIN, _HEADROOM_W_MAX], no steps. Mutation control: a stepped
+    # basket re-introduced here must redden the separation case of
+    # tests/test-headroom-continuous.sh.
+    _u=min(un,_HEADROOM_U_SAT)
+    return max(_HEADROOM_W_MIN, min(_HEADROOM_W_MAX, _HEADROOM_W_MIN + (_HEADROOM_W_MAX-_HEADROOM_W_MIN)*_u/_HEADROOM_U_SAT))
 def headroom_weight(provider):
     if not _HEADROOM_ON: return 1.0
     if _uraw[provider].get('account_state')=='unmetered':
-        # Configured matrix cost, charged at the least generous configured
-        # allowance weight. No fabricated usage/reset rate or unknown penalty.
-        weights=[float(r['weight']) for r in (data.get('router_v2', {}).get('headroom_weights') or [])
-                 if isinstance(r,dict) and num(r.get('weight')) is not None and 0 < float(r['weight']) <= 1]
-        return min(weights) if weights else 1.0
+        # Configured matrix cost, charged at the least generous point of the
+        # ramp (its floor). No fabricated usage/reset rate or unknown penalty.
+        return _HEADROOM_W_MIN
     if unk.get(provider):
         _headroom_unknown[provider]='probe'; return 1.0
     un=usable.get(provider)
@@ -1468,7 +1487,7 @@ def headroom_weight(provider):
     try: un=float(un)
     except (TypeError, ValueError):
         _headroom_unknown[provider]='unreadable'; return 1.0
-    _w=_hw_row(un)
+    _w=_headroom_ramp(un)
     if _w != 1.0: _headroom_priced[provider]=_w
     return _w
 def ecost(c):
