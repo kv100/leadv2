@@ -60,7 +60,7 @@ trap cleanup EXIT INT TERM
 # shared control plane (TESTS-POLLUTE-REAL-JOURNAL-01, shared-sink memory):
 # every fixture below re-pins LEADV2_PROJECT_ROOT/LEADV2_STATE_ROOT itself,
 # but the CLAUDE_* rungs sit ABOVE those, so they must go.
-unset CLAUDE_PROJECT_ROOT CLAUDE_PROJECT_DIR 2>/dev/null
+unset CLAUDE_PROJECT_ROOT CLAUDE_PROJECT_DIR PROJECT_ROOT LEADV2_PROJECT_ROOT 2>/dev/null
 
 # <tree-root> -> a writable throwaway copy of the whole scripts dir (APFS
 # clonefile via cp -c where available -- cheap; plain copy otherwise).
