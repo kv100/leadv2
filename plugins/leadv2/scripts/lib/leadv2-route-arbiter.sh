@@ -128,7 +128,7 @@ route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   ROUTE_ARBITER_FAILURE_LEDGER="${LEADV2_ROUTE_ARBITER_FAILURE_LEDGER:-${HOME}/.claude/leadv2-state/leadv2/dispatch-ledger.jsonl}" \
   ROUTE_ARBITER_EVENTS_JOURNAL="${LEADV2_ROUTE_ARBITER_EVENTS_JOURNAL:-${HOME}/.claude/cache/leadv2-events/leadv2.jsonl}" \
   python3 - "$routing" <<'PY'
-import json, os, sys, tempfile, math
+import json, os, re, sys, tempfile, math
 # ROUTE-ARBITER-DIES-SILENTLY-ON-LINUX-01 (2026-09-05). These four loads shared one
 # `except Exception: raise SystemExit(2)`, and a bare SystemExit(int) prints NOTHING:
 # rc=2 with zero bytes on stdout AND stderr. That is indistinguishable from a crash,
@@ -143,17 +143,292 @@ import json, os, sys, tempfile, math
 # into a sentence naming which input could not be read. rc stays 2 -- callers already
 # treat it as the fail-open-to-ladder signal (leadv2-dispatch-code.sh arbiter_broken)
 # and changing it would change routing behaviour, which this fix must not do.
+#
+# 2026-09-09 second half of the same row: naming the dependency still left every
+# arbiter-dependent CI suite (Linux) unable to route -- a loud refusal is better
+# than a mute one, but it is still a refusal. PyYAML is now OPTIONAL: when it is
+# missing, a strict stdlib YAML-SUBSET loader takes over (parse-or-refuse, never
+# guess -- it raises on any construct outside the subset instead of approximating
+# it). Both shipped configs (leadv2-routing.yaml, freepool-arm.yaml) are inside
+# the subset; a future config that grows anchors/aliases/block-scalars gets a
+# LOUD yaml_subset_unsupported naming the line, and installing python3-yaml
+# restores full PyYAML. LEADV2_ROUTE_ARBITER_YAML_LOADER pins the choice:
+# auto (default; PyYAML if importable, else subset) | pyyaml (demand the real
+# dependency; pyyaml_missing stays a hard rc=2) | stdlib (force the subset even
+# when PyYAML is present -- the differential-test seam that keeps the two
+# loaders byte-identical on the real configs).
 def _fatal(reason, detail, hint=''):
     sys.stderr.write('[route-arbiter] FATAL rc=2 reason=%s detail=%s%s\n'
                      % (reason, detail, (' hint=%s' % hint) if hint else ''))
     raise SystemExit(2)
+
+
+class _YamlSubsetError(ValueError):
+    pass
+
+
+def _strip_comment(line):
+    # '#' at start or after whitespace, OUTSIDE quotes. Both shipped configs
+    # are verified to contain no '#' inside quoted scalars, so quote tracking
+    # here is exact for them and conservative (refuses nothing valid) for
+    # anything else that reaches this loader.
+    q = None
+    for i, ch in enumerate(line):
+        if q:
+            if ch == q:
+                q = None
+        elif ch in ('"', "'"):
+            q = ch
+        elif ch == '#' and (i == 0 or line[i - 1] in (' ', '\t')):
+            return line[:i]
+    return line
+
+
+def _plain_scalar(tok, where):
+    tok = tok.strip()
+    if tok == '':
+        raise _YamlSubsetError('%s: empty scalar' % where)
+    if tok[0] in ('"', "'"):
+        if len(tok) < 2 or tok[-1] != tok[0] or tok[0] in tok[1:-1]:
+            raise _YamlSubsetError('%s: unsupported quoted scalar %r' % (where, tok))
+        return tok[1:-1]
+    if tok[0] in '{[,':
+        raise _YamlSubsetError('%s: stray flow punctuation %r' % (where, tok))
+    if tok in ('null', '~'):
+        return None
+    if tok == 'true':
+        return True
+    if tok == 'false':
+        return False
+    if re.match(r'^-?\d+$', tok):
+        return int(tok)
+    if re.match(r'^-?(\d+\.\d*|\.\d+)$', tok):
+        return float(tok)
+    for i, ch in enumerate(tok):
+        # ':' is legal inside a plain scalar (urls) only when NOT followed by
+        # space/EOL; ': ' here means an inline map we do not support.
+        if ch == ':' and (i + 1 == len(tok) or tok[i + 1] == ' '):
+            raise _YamlSubsetError('%s: unsupported inline mapping %r' % (where, tok))
+        if ch in '{}[]':
+            raise _YamlSubsetError('%s: flow punctuation in plain scalar %r' % (where, tok))
+    return tok
+
+
+def _split_flow(s, where):
+    # top-level commas of a flow construct body (nesting/quotes respected)
+    parts, depth, q, cur = [], 0, None, []
+    for ch in s:
+        if q:
+            cur.append(ch)
+            if ch == q:
+                q = None
+        elif ch in ('"', "'"):
+            q = ch
+            cur.append(ch)
+        elif ch in '[{':
+            depth += 1
+            cur.append(ch)
+        elif ch in ']}':
+            depth -= 1
+            cur.append(ch)
+        elif ch == ',' and depth == 0:
+            parts.append(''.join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    if q is not None or depth != 0:
+        raise _YamlSubsetError('%s: unbalanced flow construct %r' % (where, s))
+    if cur or parts:
+        parts.append(''.join(cur))
+    return parts
+
+
+def _flow_value(s, where):
+    s = s.strip()
+    if s == '':
+        raise _YamlSubsetError('%s: empty flow item' % where)
+    if s[0] == '{' and s[-1] == '}':
+        d = {}
+        inner = s[1:-1].strip()
+        if inner == '':
+            return d
+        for item in _split_flow(inner, where):
+            if ':' not in item:
+                raise _YamlSubsetError('%s: flow map item without colon %r' % (where, item))
+            k, v = item.split(':', 1)
+            k = k.strip()
+            if not re.match(r'^[A-Za-z0-9_.-]+$', k):
+                raise _YamlSubsetError('%s: non-plain flow key %r' % (where, k))
+            v = v.strip()
+            d[k] = _flow_value(v, where) if v else None
+        return d
+    if s[0] == '[' and s[-1] == ']':
+        inner = s[1:-1].strip()
+        if inner == '':
+            return []
+        return [_flow_value(p, where) for p in _split_flow(inner, where)]
+    return _plain_scalar(s, where)
+
+
+def _map_entry(content, ln):
+    # 'key: value' / 'key:' -> (key, rest); refuses quoted/flow keys (the
+    # shipped configs use none) and everything else loudly.
+    q = None
+    for i, ch in enumerate(content):
+        if q:
+            if ch == q:
+                q = None
+        elif ch in ('"', "'"):
+            q = ch
+        elif ch == ':' and (i + 1 == len(content) or content[i + 1] == ' '):
+            key = content[:i].strip()
+            if not re.match(r'^[A-Za-z0-9_.-]+$', key):
+                raise _YamlSubsetError('line %d: unsupported key %r' % (ln, key))
+            return key, content[i + 1:].strip()
+    raise _YamlSubsetError('line %d: not a map entry %r' % (ln, content))
+
+
+def _parse_map(lines, idx, indent):
+    out = {}
+    i = idx
+    while i < len(lines):
+        ind, content, ln = lines[i]
+        if ind < indent:
+            break
+        if ind > indent:
+            raise _YamlSubsetError('line %d: unexpected indent under mapping' % ln)
+        if content.startswith('- ') or content == '-':
+            raise _YamlSubsetError('line %d: list item where mapping entry expected' % ln)
+        key, rest = _map_entry(content, ln)
+        if rest == '':
+            # block value on deeper lines, or a same-indent list (legal YAML,
+            # used by model_rank:), else null
+            if i + 1 < len(lines) and lines[i + 1][0] > ind:
+                out[key], i = _parse_block(lines, i + 1, lines[i + 1][0])
+                continue
+            if i + 1 < len(lines) and lines[i + 1][0] == ind \
+                    and (lines[i + 1][1] == '-' or lines[i + 1][1].startswith('- ')):
+                out[key], i = _parse_list(lines, i + 1, ind)
+                continue
+            out[key] = None
+            i += 1
+            continue
+        if rest[0] in ('&', '*', '!', '|', '>') or rest == '<<:' or rest.startswith('<<:'):
+            raise _YamlSubsetError('line %d: unsupported construct %r (anchors/aliases/tags/block scalars/merge keys are outside the subset)' % (ln, rest))
+        if rest[0] in ('{', '['):
+            out[key] = _flow_value(rest, 'line %d' % ln)
+            i += 1
+            continue
+        out[key] = _plain_scalar(rest, 'line %d' % ln)
+        i += 1
+    return out, i
+
+
+def _parse_list(lines, idx, indent):
+    out = []
+    i = idx
+    while i < len(lines):
+        ind, content, ln = lines[i]
+        if ind < indent or not (content.startswith('- ') or content == '-'):
+            break
+        if ind > indent:
+            raise _YamlSubsetError('line %d: unexpected indent under sequence' % ln)
+        rest = '' if content == '-' else content[2:].strip()
+        if rest == '':
+            if i + 1 < len(lines) and lines[i + 1][0] > ind:
+                _v, i = _parse_block(lines, i + 1, lines[i + 1][0])
+                out.append(_v)
+            else:
+                out.append(None)
+                i += 1
+        elif rest[0] in ('"', "'") or rest[0] in '{[':
+            # quoted/flow item -- no inline map possible
+            out.append(_flow_value(rest, 'line %d' % ln))
+            i += 1
+        else:
+            try:
+                key, vrest = _map_entry(rest, ln)
+            except _YamlSubsetError:
+                out.append(_flow_value(rest, 'line %d' % ln))
+                i += 1
+                continue
+            if vrest == '' and not (i + 1 < len(lines) and lines[i + 1][0] >= ind + 2):
+                out.append(None)
+                i += 1
+                continue
+            # '- key: value' -- a mapping item; its continuation lines sit at
+            # the column where the key starts (ind + 2). Synthesize the first
+            # entry at that indent and let _parse_map own the rest.
+            lines[i] = (ind + 2, rest, ln)
+            val, i = _parse_map(lines, i, ind + 2)
+            out.append(val)
+    return out, i
+
+
+def _parse_block(lines, idx, indent):
+    if lines[idx][1] == '-' or lines[idx][1].startswith('- '):
+        return _parse_list(lines, idx, indent)
+    return _parse_map(lines, idx, indent)
+
+
+def _stdlib_yaml_loads(text):
+    lines = []
+    for n, raw in enumerate(text.split('\n'), 1):
+        lead = raw[:len(raw) - len(raw.lstrip(' '))]
+        if '\t' in lead:
+            raise _YamlSubsetError('line %d: tab in indentation' % n)
+        line = _strip_comment(raw).rstrip()
+        if not line.strip():
+            continue
+        ind = len(line) - len(line.lstrip(' '))
+        content = line.strip()
+        if content in ('---', '...'):
+            raise _YamlSubsetError('line %d: multi-document marker %r' % (n, content))
+        lines.append((ind, content, n))
+    if not lines:
+        return None
+    val, idx = _parse_block(lines, 0, lines[0][0])
+    if idx != len(lines):
+        raise _YamlSubsetError('line %d: unexpected content after top-level block' % lines[idx][2])
+    return val
+
+
+class _Lv2StdlibYaml(object):
+    # Drop-in for the two yaml.safe_load call sites below. PARSE-OR-REFUSE:
+    # anything outside the verified subset raises _YamlSubsetError with the
+    # line number -- this loader never approximates a construct.
+    __name__ = 'leadv2-stdlib-yaml-subset'
+
+    @staticmethod
+    def safe_load(fh):
+        return _stdlib_yaml_loads(fh.read())
+
+
+_loader_mode = (os.environ.get('LEADV2_ROUTE_ARBITER_YAML_LOADER') or 'auto').strip().lower()
+if _loader_mode not in ('auto', 'pyyaml', 'stdlib'):
+    _fatal('yaml_loader_mode_invalid',
+           "LEADV2_ROUTE_ARBITER_YAML_LOADER='%s' (expected auto|pyyaml|stdlib)" % _loader_mode)
+_pyyaml_err = None
 try:
-    import yaml
+    import yaml as _pyyaml_mod
 except Exception as _e:
-    _fatal('pyyaml_missing', '%s: %s' % (type(_e).__name__, _e),
-           'install PyYAML (apt: python3-yaml, pip: pyyaml). macOS python3 ships it, a bare linux image does not.')
+    _pyyaml_mod = None
+    _pyyaml_err = _e
+if _loader_mode == 'pyyaml' and _pyyaml_mod is None:
+    _fatal('pyyaml_missing', '%s: %s' % (type(_pyyaml_err).__name__, _pyyaml_err),
+           'install PyYAML (apt: python3-yaml, pip: pyyaml), or leave LEADV2_ROUTE_ARBITER_YAML_LOADER unset to allow the stdlib subset loader.')
+if _pyyaml_mod is None or _loader_mode == 'stdlib':
+    if _pyyaml_mod is None:
+        sys.stderr.write('[route-arbiter] NOTE: PyYAML unavailable (%s: %s) -- strict stdlib YAML-subset loader active (parse-or-refuse). Install python3-yaml to restore full PyYAML.\n'
+                         % (type(_pyyaml_err).__name__, _pyyaml_err))
+    yaml = _Lv2StdlibYaml
+else:
+    yaml = _pyyaml_mod
 try:
     data=yaml.safe_load(open(sys.argv[1])) or {}
+except _YamlSubsetError as _e:
+    _fatal('yaml_subset_unsupported', '%s path=%s' % (_e, (sys.argv[1] if len(sys.argv) > 1 else '<none>')),
+           'this routing yaml uses constructs beyond the stdlib subset; install PyYAML (apt: python3-yaml, pip: pyyaml) to read it')
 except Exception as _e:
     _fatal('routing_yaml_unreadable', '%s: %s path=%s' % (type(_e).__name__, _e, (sys.argv[1] if len(sys.argv) > 1 else '<none>')))
 try:

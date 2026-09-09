@@ -93,6 +93,27 @@
 #   PROJECT_ROOT        — repo root override (for the symlink step only;
 #                         defaults to `git rev-parse --show-toplevel` of cwd)
 
+# ── STATE-PATH-RESOLVER-FAILS-OPEN-UNDER-ZSH-01 (2026-09-09) ────────────────
+# This file locates ITSELF via BASH_SOURCE[0] (SCRIPT_DIR, below) to find its
+# sibling leadv2-portable-lock.sh. Sourced from zsh (or any no-file-backing
+# context), BASH_VERSION/BASH_SOURCE do not exist: the deref either crashes on
+# `set -u` ("BASH_SOURCE[0]: parameter not set", rc 127 — a refusal wearing a
+# misleading diagnostic that names a missing portable-lock, not the real
+# cause) or, when the caller's cwd happens to sit next to a file named
+# leadv2-portable-lock.sh, "resolves" SCRIPT_DIR to the CALLER'S CWD and keeps
+# going. Measured 2026-09-04, the sourced-from-zsh shape ultimately handed
+# callers the repo-relative <repo>/docs/leadv2/active.yaml instead of the live
+# control-plane path, removed nothing, and returned rc=0 — a wrong-root
+# outcome indistinguishable from success. Root resolution must REFUSE CLOSED,
+# never guess: determine the shell and the script-location source explicitly;
+# no BASH_SOURCE means no resolution, not a cwd-shaped guess. The guard sits
+# BEFORE `set -euo pipefail` so a refused source also leaves the caller's
+# shell options untouched.
+if [[ -z "${BASH_VERSION:-}" || -z "${BASH_SOURCE[0]:-}" ]]; then
+  printf -- '[leadv2-state-path] ABORT rc=4 reason=not_file_backed_bash: this resolver locates itself via BASH_SOURCE[0], which is unset here (BASH_VERSION=%s). Under zsh/eval-sourcing there is no way to determine the directory of this script, so every path it resolves would be rooted at an unrelated cwd — the silent wrong-root failure this guard removes. Refusing to guess. Execute it instead: `bash leadv2-state-path.sh <name>` (the registry does exactly that), or source it from a real bash file context.\n' "${BASH_VERSION:-<unset>}" >&2
+  return 4 2>/dev/null || exit 4
+fi
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
