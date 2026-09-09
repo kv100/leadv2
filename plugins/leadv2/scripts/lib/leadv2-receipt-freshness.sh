@@ -50,7 +50,12 @@ _leadv2_receipt_log() {
   printf -- '[receipt-freshness] %s\n' "$msg" >&2
 }
 
-# Verdict + action in one call: returns 0 (STALE: renamed, proceed) / 1 (HONOUR).
+# Verdict + action in one call:
+#   rc 0 = STALE and the receipt WAS renamed aside (proceed);
+#   rc 1 = HONOUR (receipt is valid proof, unchanged — do not run);
+#   rc 2 = STALE but the rename FAILED — the receipt was NOT moved
+#          (WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01 R-1: the rename is the
+#          artifact; its rc used to be swallowed).
 leadv2_receipt_is_stale() {
   local task_id="${1:?task_id required}"
   local receipt_path="${2:?receipt_path required}"
@@ -117,18 +122,22 @@ PYEOF
     return 1
   fi
 
-  # STALE: rename (never delete), then return 0 so the caller proceeds. A rename
-  # failure (read-only dir) is non-fatal — the guard's purpose is to UNBLOCK the
-  # run, not to manage files; return 0 regardless and log the failure.
+  # STALE: rename (never delete), then return 0 so the caller proceeds.
+  # R-1: the rename IS the artifact this guard produces — a read-only
+  # completions dir used to report "handled" (rc 0) while the stale receipt
+  # stayed in place. rc 2 + renamed=0 now. Known consequence (runners are
+  # off-limits in this lane): the three runner call sites test
+  # `if ! leadv2_receipt_is_stale`, so rc 2 reads as HONOUR — fail-closed
+  # (the task stays complete, no double-run) and loud, never silent. LEAD_
+  # ACTION recorded in the lane report: runners should treat rc 2 as
+  # "stale, proceed".
   local stamp dest
   stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || printf 'unknown')"
   dest="${receipt_path}.stale-${stamp}"
   if mv -f "$receipt_path" "$dest" 2>/dev/null; then
-    _leadv2_receipt_log "$log_file" \
-      "stale receipt (task re-queued) — ignoring + renaming to ${dest##*/}"
-  else
-    _leadv2_receipt_log "$log_file" \
-      "stale receipt (task re-queued) — ignoring; rename to ${dest##*/} failed (read-only?); proceeding"
+    _leadv2_receipt_log "$log_file" "renamed=1 dest=${dest##*/} (stale receipt renamed aside, task re-queued)"
+    return 0
   fi
-  return 0
+  _leadv2_receipt_log "$log_file" "renamed=0 reason=rename_failed dest=${dest}"
+  return 2
 }

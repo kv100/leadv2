@@ -110,10 +110,17 @@ leadv2_brain_read_class() {
 # stamp (a re-classified re-entry should see its own new class here).
 leadv2_brain_write_yaml() {
   local root="$1" task_id="$2" cls="$3" src="$4" estimate="$5" phases="$6" reason="$7"
-  [[ -n "${task_id}" ]] || return 0
+  # WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01 (B-5): an empty task_id has no
+  # address to write to -- brain.yaml cannot exist. Used to `return 0`
+  # silently; now rc 2 + a counted line so the caller's log names it.
+  if [[ -z "${task_id}" ]]; then
+    printf '[brain] wrote=0 reason=empty_task_id\n' >&2
+    return 2
+  fi
   [[ -n "${estimate}" ]] || estimate='{}'
   local dir="${root}/docs/handoff/${task_id}" tmp
-  mkdir -p "${dir}" 2>/dev/null || return 1
+  mkdir -p "${dir}" 2>/dev/null \
+    || { printf '[brain] wrote=0 reason=mkdir path=%s\n' "${dir}/brain.yaml" >&2; return 1; }
   tmp="${dir}/.brain.$$.tmp"
   local complexity risk_class work_kind subsystems duration_class estimate_source
   complexity="$(python3 -c 'import json,sys
@@ -149,8 +156,11 @@ except Exception: print("")' <<<"${estimate}" 2>/dev/null)"
     printf '  duration_class: %s\n' "${duration_class}"
     printf '  estimate_source: %s\n' "${estimate_source}"
     printf 'recorded_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "${tmp}" 2>/dev/null || { rm -f "${tmp}" 2>/dev/null; return 1; }
-  mv -f "${tmp}" "${dir}/brain.yaml" 2>/dev/null || { rm -f "${tmp}" 2>/dev/null; return 1; }
+  } > "${tmp}" 2>/dev/null || { rm -f "${tmp}" 2>/dev/null; printf '[brain] wrote=0 reason=write path=%s\n' "${dir}/brain.yaml" >&2; return 1; }
+  mv -f "${tmp}" "${dir}/brain.yaml" 2>/dev/null || { rm -f "${tmp}" 2>/dev/null; printf '[brain] wrote=0 reason=mv path=%s\n' "${dir}/brain.yaml" >&2; return 1; }
+  # B-5: stderr, not stdout -- stdout here is the dispatcher's journaling
+  # context (emit() lines) and stays clean.
+  printf '[brain] wrote=1 path=%s\n' "${dir}/brain.yaml" >&2
   return 0
 }
 
