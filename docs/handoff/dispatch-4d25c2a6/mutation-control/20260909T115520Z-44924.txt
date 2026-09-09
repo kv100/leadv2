@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-writeset-admits-an-audit-lane.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=/tmp/wr-mut/wr-mut-1.patch
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: caseA declared audit lane dispatches (rc==0) -- rc=2
+diff_hash=7428d13a0c6e99693bacc5a815ba682cafe6aee62aae95f4c405883014cef077
+lane_diff_hash=27ff3b678a105d3cafabdc74c7d4003e6c624c7493a782d96dac17766247845d

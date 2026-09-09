@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-fg-dispatch-guard-reads-the-command.sh
+file=plugins/leadv2/hooks/leadv2-block-fg-dispatch.sh
+anchor=/tmp/wr-mut/h-mut-1.patch
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: mention allowed: plain quoted mention (the row text) -- rc=2 err=[leadv2-block-fg-dispatch] BLOCKED
+diff_hash=2f84f0c9d03436157a684ebda7f4a71f6890657f7be773dd38397e14804017e1
+lane_diff_hash=27ff3b678a105d3cafabdc74c7d4003e6c624c7493a782d96dac17766247845d
