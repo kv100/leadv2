@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-all-triggers: leadv2-workflow-step leadv2-workflow-receipt.schema.json
+# run-all-triggers: leadv2-workflow-step leadv2-workflow-receipt.schema.json workflow-step-receipt
 # E2E-KILLRATE-01: receipt truth must survive two body-local mutations.
 set -euo pipefail
 
