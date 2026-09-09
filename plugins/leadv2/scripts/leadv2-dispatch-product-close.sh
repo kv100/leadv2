@@ -85,6 +85,12 @@ _LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
 [[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
 if [[ -f "${_LANE_GUARD_SH}" ]]; then
   source "${_LANE_GUARD_SH}"
+  # LANE-TERMINAL-ROW: set only when the real guard lib loaded. The else
+  # branch's fail-closed lv2_lane_dirty stub (return 0 = dirty) is the right
+  # direction for gating but the WRONG direction for crash-time work
+  # evidence -- without this flag it would stamp dead_with_unlanded_work on
+  # every crashed empty lane in a consumer repo with no lib/ copy.
+  _PC_LANE_GUARD_OK=1
 else
   # Unknown guard state is unsafe at close: it must fail closed, never allow
   # the later terminal funnel to call a dirty lane clean.
@@ -135,6 +141,11 @@ command -v lv2_worker_reason >/dev/null 2>&1 || lv2_worker_reason() { :; }
 # bare pid would recycle across days/reboots and could be misread as the same attempt.
 _PC_ATTEMPT_EPOCH="$(date +%s 2>/dev/null || printf '0')"
 _PC_ATTEMPT="${TASK}-${_PC_ATTEMPT_EPOCH}-$$"
+# Capture the dispatcher-supplied lane root before the rest of this large
+# close gate finishes its setup. A TERM/INT/HUP can arrive after traps are
+# installed but before the later normal-path `_lane_root` resolution; the
+# crash classifier must still be able to identify committed work then.
+_PC_CRASH_LANE_ROOT="${LEADV2_LANE_WORK_ROOT:-}"
 # wave2 round2 finding 4: records the INTENDED terminal state BEFORE attempting the
 # write, not just after. `|| true` below is deliberate -- a downstream review verdict
 # must never fail this script just because ledger IO hiccuped -- but that also meant a
@@ -255,7 +266,19 @@ _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
   # defaults — rows are byte-identical to pre-change for every non-report path.
   [[ -n "${4:-}" ]] && _PC_TERMINAL_COMMIT="$4"
   [[ -n "${5:-}" ]] && _PC_TERMINAL_DELIVERABLE="$5"
-  [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || return 0
+  # LANE-TERMINAL-ROW (2026-09-09): the journal's dispatch_terminal row used
+  # to be written ONLY inside the ledger binary's write_terminal, and only on
+  # its rc=0 -- so a ledger outage (TERMINAL_LEDGER=0, a missing binary, a
+  # lock-wait timeout, a disk hiccup) left the lane's journal permanently
+  # silent even though THIS process was alive and knew the verdict. Three
+  # lanes finished mergeable work on 2026-09-09 and none of them said so in
+  # its journal. The journal row now has an owner right here: after the
+  # ledger attempt, _pc_journal_terminal_once appends the dispatch_terminal
+  # row directly -- but only when the journal does not already carry one
+  # (the ledger's own rc=0 append counts; presence, not rc-echo, is the
+  # truth), so the healthy-ledger path stays byte-identical and the row
+  # count stays exactly one.
+  if [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]]; then
   # wave2 round3 finding 3 / LOW-2: _PC_ATTEMPT (qualified <sig8>-<epoch>-<pid>, not a bare
   # pid) is stable across BOTH this explicit call and the EXIT trap's own idempotent retry
   # of the same _PC_TERMINAL_* state (see _pc_exit_handler) -- the ledger's attempt-token
@@ -267,6 +290,66 @@ _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
   # display_name-or-founder fallback is redundant here but harmless (never empty when
   # founder isn't either).
   bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${_PC_TERMINAL_EVIDENCE}" "${_PC_ATTEMPT}" "${LANE_NAME}" "${_PC_TERMINAL_COMMIT:-none}" "${_PC_TERMINAL_DELIVERABLE:-unknown}" "${_wr}" >/dev/null 2>&1 9>&- || true
+  fi
+  _pc_journal_terminal_once "$1" "$2" "${_PC_TERMINAL_EVIDENCE}"
+}
+# LANE-TERMINAL-ROW (2026-09-09): the journal half of the terminal-row
+# guarantee. _dl_note is the single funnel every terminal verdict passes
+# through -- explicit branches and the EXIT trap's idempotent retry alike --
+# so this is the one place the row can be owned by the process that is still
+# alive at the end. Presence-check-then-append, never rc-echo: the ledger
+# binary's own journal append is fail-open (`|| true` inside write_terminal),
+# so the only reliable "already written" signal is the row itself. The row
+# shape is exactly what the ledger writes (dispatch_terminal task=<sig8>
+# terminal=... cause=... plus free-form trailing keys), so every existing
+# parser -- leadv2-lane-watch.sh, leadv2-lane-pulse-watch.sh,
+# leadv2-skill-rollup.sh -- reads it unchanged. Once per process
+# (_PC_TERMINAL_JOURNALED): the trap's retry must never append a second row,
+# whatever the ledger did.
+_pc_journal_terminal_once() {  # <terminal> <cause> [<evidence>]
+  [[ "${_PC_TERMINAL_JOURNALED:-0}" == "0" ]] || return 0
+  _PC_TERMINAL_JOURNALED=1
+  [[ -f "${JOURNAL_BIN}" ]] || return 0
+  # The trailing space is load-bearing: the ledger's dispatch_terminal_dedup
+  # receipt rows must NOT satisfy this check, or a dedup'd retry would look
+  # like a landed row and the backstop would wrongly stay silent.
+  if bash "${JOURNAL_BIN}" tail "dispatch-${TASK}" 100000 2>/dev/null \
+     | grep -qF "dispatch_terminal task=${TASK} "; then
+    return 0
+  fi
+  bash "${JOURNAL_BIN}" append "dispatch-${TASK}" decision \
+    "dispatch_terminal task=${TASK} terminal=$1 cause=$2${3:+ $3}" >/dev/null 2>&1 || true
+}
+# LANE-TERMINAL-ROW deliverable 2: a close process that dies WITHOUT reaching
+# an explicit verdict must not erase the one fact the lead most needs -- did
+# the worker leave work behind? A flat `dead` is what made the lead answer
+# `abandon` on three lanes whose work was finished and mergeable (2026-09-09):
+# reading the row, a human could not tell "crashed, nothing to salvage" from
+# "crashed, work is sitting in the worktree ready to review". The enum
+# already has the distinguishing word -- dead_with_unlanded_work, the sweep's
+# own rescue state (leadv2-dispatch-ledger.sh header) -- so this probe reuses
+# it rather than inventing a parallel vocabulary. Prints
+# state<US>cause<US>evidence with the ledger's own \x1f field-separator
+# idiom, for the EXIT trap's _dl_note call. Fail-open to plain dead on every
+# miss: an unreadable worktree must cost precision, never truthfulness.
+_pc_crash_terminal() {  # -> stdout: <state><x1f><cause><x1f><evidence>
+  local root="${_lane_root:-${_PC_CRASH_LANE_ROOT:-}}" head_ct="" sha=""
+  if [[ -n "${root}" && -d "${root}" ]] && lv2_lane_root_is_own_worktree "${root}" 2>/dev/null; then
+    head_ct="$(git -C "${root}" log -1 --format=%ct 2>/dev/null || true)"
+    sha="$(git -C "${root}" rev-parse --short HEAD 2>/dev/null || true)"
+    # Work = a commit younger than this process's own start (the lane anchor
+    # predates the spawn; the worker's commits do not) or dirty bytes. The
+    # dirty leg trusts lv2_lane_dirty only when the real guard lib sourced
+    # (_PC_LANE_GUARD_OK above). _PC_ATTEMPT_EPOCH is captured once at
+    # startup, before any trap can fire.
+    if { [[ "${head_ct}" =~ ^[0-9]+$ ]] && [[ "${_PC_ATTEMPT_EPOCH}" =~ ^[1-9][0-9]*$ ]] \
+         && (( head_ct >= _PC_ATTEMPT_EPOCH )); } \
+       || { [[ "${_PC_LANE_GUARD_OK:-0}" == "1" ]] && lv2_lane_dirty "${root}" 2>/dev/null; }; then
+      printf 'dead_with_unlanded_work\x1fcrashed_unfinished\x1fsource=exit_trap commit=%s' "${sha:-unknown}"
+      return 0
+    fi
+  fi
+  printf 'dead\x1fcrashed_unfinished\x1fsource=exit_trap'
 }
 # Test seam for the consumer-symlink farm: source through the terminal writer
 # so the suite exercises the real close funnel without starting e2e/review.
@@ -339,7 +422,17 @@ _pc_exit_handler() {
   if [[ -n "${_PC_TERMINAL_STATE}" ]]; then
     _dl_note "${_PC_TERMINAL_STATE}" "${_PC_TERMINAL_CAUSE}" "${_PC_TERMINAL_EVIDENCE}" >/dev/null 2>&1 || true
   else
-    _dl_note dead crashed_unfinished "exit_trap" >/dev/null 2>&1 || true
+    # LANE-TERMINAL-ROW: no explicit verdict was ever recorded -- a genuine
+    # crash, an unbound-variable abort, or a TERM/INT/HUP converted to exit
+    # by the traps above. The fallback state now comes from
+    # _pc_crash_terminal so the row distinguishes "died, work is ready to
+    # salvage" from "died, nothing there": the 2026-09-09 defect was the
+    # lead answering `abandon` on the first kind because the row could not
+    # tell them apart.
+    local _pc_crash_row _pc_cr_st _pc_cr_ca _pc_cr_ev
+    _pc_crash_row="$(_pc_crash_terminal 2>/dev/null || true)"
+    IFS=$'\x1f' read -r _pc_cr_st _pc_cr_ca _pc_cr_ev <<<"${_pc_crash_row}"
+    _dl_note "${_pc_cr_st:-dead}" "${_pc_cr_ca:-crashed_unfinished}" "${_pc_cr_ev:-source=exit_trap}" >/dev/null 2>&1 || true
   fi
   # N-5 D3: once the review phase is entered (_PC_REVIEW_ENTERED=1, set right after the
   # REVIEW_ON kill-switch check), review-gate.md must exist on EVERY exit path -- a crash
