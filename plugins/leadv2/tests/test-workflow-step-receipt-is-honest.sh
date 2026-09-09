@@ -54,6 +54,25 @@ assert all(k in r for k in ("admitted_W","admitted_R","actual_steps","actual_rou
 '
 }
 
+# assert_blocked_retention <ledger-path> <workflow-run-id>
+# The workflow rate reads this append-only ledger, not run-step stdout.  Select
+# the terminal receipt by its run ID so an earlier valid receipt cannot mask a
+# dropped blocked outcome from this run.
+assert_blocked_retention() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+ledger, workflow_run_id = sys.argv[1:]
+with open(ledger) as f:
+    receipts = [json.loads(line) for line in f if line.strip()]
+matches = [r for r in receipts if r["workflow_run_id"] == workflow_run_id]
+assert matches, (workflow_run_id, receipts)
+receipt = matches[-1]
+assert receipt["terminal_status"] == "blocked_control_plane", receipt
+assert receipt["shape_realized"] is False, receipt
+assert all(k in receipt for k in ("admitted_W", "admitted_R", "actual_steps", "actual_rounds")), receipt
+PY
+}
+
 # Green baseline: observed actual rounds differ from the admitted shape.
 round_receipt="$(run_step "${STEP}" "${round_request}")"
 if printf '%s' "${round_receipt}" | assert_round_not_realized; then
@@ -112,12 +131,40 @@ fi
 # receipt with the non-clean terminal status.
 blocked_receipt="$(run_step "${STEP}" "${blocked_request}")"
 if printf '%s' "${blocked_receipt}" | assert_blocked_denominator; then
-  pass 'guard: blocked control-plane outcome retains a terminal denominator receipt'
+  pass 'guard: blocked control-plane stdout carries a terminal denominator receipt'
 else
   fail 'guard: blocked control-plane outcome was omitted or misclassified'
 fi
+if assert_blocked_retention "${TMP}/receipts.jsonl" "wf-blocked"; then
+  pass 'guard: blocked control-plane outcome is retained in the terminal denominator ledger'
+else
+  fail 'guard: blocked control-plane outcome was absent or misclassified in the terminal denominator ledger'
+fi
 
-# Red negative control 2.  This body-local mutation silently drops the blocked
+# Red negative control 2.  The lead's 2a mutation is body-local to
+# _lws_persist_receipt: it silently drops every non-completed receipt from the
+# ledger while leaving stdout intact.  A new run ID proves the assertion cannot
+# be satisfied by the genuine blocked receipt above.
+cp "${STEP}" "${TMP}/mutated-drop-retention.sh"
+python3 - "${TMP}/mutated-drop-retention.sh" <<'PY'
+import sys
+p=sys.argv[1]
+s=open(p).read()
+needle='  ledger="$(leadv2_workflow_step_receipts_ledger)"\n'
+assert s.count(needle) == 1
+drop='  [[ "$1" == *\'"terminal_status":"completed"\'* ]] || return 0\n'
+open(p, 'w').write(s.replace(needle, needle + drop))
+PY
+retention_control_request="${blocked_request/wf-blocked/wf-blocked-retention-control}"
+mutated_retention_receipt="$(run_step "${TMP}/mutated-drop-retention.sh" "${retention_control_request}")"
+if printf '%s' "${mutated_retention_receipt}" | assert_blocked_denominator \
+  && ! assert_blocked_retention "${TMP}/receipts.jsonl" "wf-blocked-retention-control" 2>/dev/null; then
+  pass 'red control: retained-ledger drop mutation failed the blocked denominator assertion'
+else
+  fail 'red control: retained-ledger drop mutation stayed green'
+fi
+
+# Red negative control 3.  This body-local mutation silently drops the blocked
 # outcome before the JSON receipt is emitted.  The denominator assertion must
 # fail on the empty output.
 cp "${STEP}" "${TMP}/mutated-drop.sh"
