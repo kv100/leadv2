@@ -2020,11 +2020,21 @@ except Exception:
 # one place. Caught by case (e) on 2026-09-05 -- the case that catches it is the
 # one that was ALREADY red for its own older reason, so the suite stayed green.
 _route_arm_source_suffix() { # <landed> <arbiter_pick>
-  local landed="$1" pick="$2" n=0 last=""
+  local landed="$1" pick="$2" n=0 last="" _dp
   [[ -z "${pick}" || "${landed}" == "${pick}" ]] && return 0
-  if declare -p attempted >/dev/null 2>&1; then
+  # W1-ARBITER-BYPASSED-ON-DISPATCH-01 (live :2026 crash, 2026-09-10): the
+  # old `declare -p attempted` guard succeeds for an array that is DECLARED
+  # but never assigned (:8849 `local -a candidate_arms attempted`), and bash
+  # 5.x under `set -u` then dies on ${#attempted[@]} with `attempted:
+  # unbound variable` -- measured: 5.3.9 (first `bash` on PATH, so the
+  # `#!/usr/bin/env bash` shebang resolves there) crashes on that state,
+  # 3.2.57 survives every state; both die on fully-unset with no guard at
+  # all. The guard must prove element zero EXISTS before ANY expansion:
+  # declare -p's own rendering names [0]= exactly when it does, so an unset,
+  # declared-unassigned or empty array is never expanded on any bash.
+  if _dp="$(declare -p attempted 2>/dev/null)" && [[ "${_dp}" == *'([0]='* ]]; then
     n=${#attempted[@]}
-    (( n > 0 )) && last="${attempted[n-1]}"
+    last="${attempted[n-1]}"
   fi
   printf ' arbiter_pick=%s arm_source=ladder_fallback depth=%s after=%s' \
     "${pick}" "${n}" "${last:-unexplained}"
@@ -2063,6 +2073,53 @@ _arm_exception_bump() {
       # (leadv2-broad-status.sh) parses only count= and last_reason=.
       printf 'sig8=%s reason=%s ts=%s\n' "${sig8}" "${reason}" "$(date -u +%s)"
     } >"${path}.tmp" && mv "${path}.tmp" "${path}"
+  ) 9>"${path}.lock"
+  true
+}
+
+# W1-ARBITER-BYPASSED-ON-DISPATCH-01 (2026-09-10): fail-open to the ladder is
+# the right posture when the arbiter faults -- work must not stop -- but it was
+# invisible in aggregate: nothing counted how often the production resolve went
+# AROUND the arbiter, so all §1 arbiter-side behaviour (1.1 balancing, 1.4
+# forecast, 1.6 granularity) could be dead in prod while green in suites. One
+# row per task signature per day (a retried dispatch of the same task does not
+# double-count), same day-file + flock + count= shape as _arm_exception_bump
+# above; counted at the two main worker-resolve fail-open sites only
+# (arbiter fault, arbiter chain not dispatchable). Recovery-path fail-opens
+# (bench-fallback, exit76, arm-advance) keep their own reason tokens and stay
+# uncounted here: they are consequences of a resolve that already happened.
+# Prints the running day count so the arbiter_broken line can carry it.
+_arb_fail_open_count() { # <sig8> <detail> -> stdout: day count incl. this event
+  local sig8="$1" detail="$2"
+  local day="${_LEADV2_ARB_FO_DAY:-$(date -u +%Y%m%d)}"
+  local path=""
+  if [[ -f "${STATE_PATH_BIN}" ]]; then
+    path="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${STATE_PATH_BIN}" ".arbiter-fail-open-${day}" 2>/dev/null || true)"
+  fi
+  [[ -n "${path}" ]] || path="${PROJECT_ROOT}/docs/leadv2/.arbiter-fail-open-${day}"
+  mkdir -p "$(dirname "${path}")" 2>/dev/null || { printf '0'; return 0; }
+  (
+    lv2_lock_wait "${path}.lock" 10 || { printf '0'; exit 0; }
+    local count=0 seen=0 row
+    if [[ -r "${path}" ]]; then
+      count="$(sed -n 's/^count=//p' "${path}" | head -1)"
+      [[ "${count}" =~ ^[0-9]+$ ]] || count=0
+      while IFS= read -r row; do
+        [[ "${row}" == "sig8=${sig8} "* ]] && { seen=1; break; }
+      done <"${path}"
+    fi
+    if [[ "${seen}" != "1" ]]; then
+      count=$((count + 1))
+      {
+        printf 'count=%s\n' "${count}"
+        printf 'last_detail=%s\n' "${detail}"
+        if [[ -r "${path}" ]]; then
+          grep '^sig8=' "${path}" 2>/dev/null
+        fi
+        printf 'sig8=%s %s ts=%s\n' "${sig8}" "${detail}" "$(date -u +%s)"
+      } >"${path}.tmp" && mv "${path}.tmp" "${path}"
+    fi
+    printf '%s' "${count}"
   ) 9>"${path}.lock"
   true
 }
@@ -2598,29 +2655,68 @@ print(" ".join(sorted(m.DISPATCHABLE_BUILD_ARMS)))
 # Registry-backed launchability for Claude/Codex. GLM/freepool keep their
 # existing adapters: the Python registry explicitly leaves those out of scope.
 _arm_launchable_arms() {  # <sig8> <kind> -> stdout: csv of launchable arm ids
-  local _sig8="$1" _arms
-  _arms="$(python3 - "${SCRIPT_DIR}/lib/leadv2-launch-registry.py" "$2" "${task_class:-standard}" <<'PYREG'
+  local _sig8="$1" _arms _out _rc _map_line
+  # W1-ARBITER-BYPASSED-ON-DISPATCH-01 (2026-09-10, live b0ec3b03): this seam
+  # was queried with kind=plugin -- a kind in NO capability_matrix row -- so
+  # lookup() answered arm_not_capable_for_kind for every arm and the seam
+  # printed an EMPTY csv with rc=0. The empty list reached the arbiter as
+  # launchable_arms=[] (a list, never None) and the arbiter staged every arm
+  # not_launchable -> pool_empty_all_excluded -> fail_open_to_ladder: the arm
+  # was picked by the legacy ladder while the arbiter itself was healthy
+  # (it coerces the same kind to 'code' via kind_unmapped). Two guards, both
+  # inside this one seam -- no second resolver, no second ladder:
+  #   1. vocabulary: a kind outside the matrix's own kinds vocabulary is
+  #      queried as 'code' -- the SAME fail-open coercion the arbiter applies
+  #      at its kind_unmapped line; the matrix itself is the vocabulary, so
+  #      this cannot drift from it. The remap is journalled (kind_mapped=).
+  #   2. contract: an EMPTY answer is not a routing verdict -- no kind has an
+  #      empty launchable set -- it is seam degradation, same legacy fail-open
+  #      posture as an unavailable registry, under its own reason token
+  #      (registry_empty_answer). The arbiter's capability_matrix filter still
+  #      binds on top, so a fallback set can only widen the auction, never
+  #      admit an arm the matrix itself refuses.
+  # The kind_mapped marker rides stdout ABOVE the csv; stderr is discarded.
+  _out="$(python3 - "${SCRIPT_DIR}/lib/leadv2-launch-registry.py" "$2" "${task_class:-standard}" <<'PYREG' 2>/dev/null
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("launch_registry", sys.argv[1])
 r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
 kind, task_class = sys.argv[2:]
-arms = {row['arm'] for row in r.load_capability_matrix()}
+matrix = r.load_capability_matrix()
+arms = {row['arm'] for row in matrix}
+known_kinds = {k for row in matrix for k in (row.get('kinds') or [])}
+query_kind = kind if kind in known_kinds else 'code'
+if query_kind != kind:
+    print('kind_mapped=%s->%s' % (kind, query_kind))
 legacy = r._dispatchable_arm_sets()[0] & {'glm', 'glm-flash', 'freepool'}
-print(','.join(sorted(arm for arm in arms if
-    r.lookup(kind, 'developer', arm, task_class).get('ok') or
-    (arm in legacy and any(row.get('arm') == arm and kind in row.get('kinds', [])
-                          for row in r.load_capability_matrix())))))
+out = sorted(arm for arm in arms if
+    r.lookup(query_kind, 'developer', arm, task_class).get('ok') or
+    (arm in legacy and any(row.get('arm') == arm and query_kind in row.get('kinds', [])
+                          for row in matrix)))
+if not out:
+    sys.exit(42)
+print(','.join(out))
 PYREG
-)" || {
+)"; _rc=$?
+  _map_line=""
+  if [[ "${_out}" == kind_mapped=* ]]; then
+    _map_line="${_out%%$'\n'*}"
+    _out="${_out#*$'\n'}"
+  fi
+  if [[ ${_rc} -ne 0 || -z "${_out}" ]]; then
     # Unknown is not an empty allowlist. Keep the legacy hardcoded ladder
     # available to every caller (arbiter, adoption, fallback tail); downstream
     # quota, trust and adapter checks still apply. Discard partial query output.
     _arms="glm,codex,sonnet"
-    emit decision "launchable_seam task=${_sig8} source=legacy kind=$2 reason=launch_registry_unavailable fallback=${_arms}"
+    if [[ ${_rc} -eq 42 || -z "${_out}" ]]; then
+      emit decision "launchable_seam task=${_sig8} source=legacy kind=$2${_map_line:+ ${_map_line}} reason=registry_empty_answer fallback=${_arms}"
+    else
+      emit decision "launchable_seam task=${_sig8} source=legacy kind=$2 reason=launch_registry_unavailable fallback=${_arms}"
+    fi
     printf '%s' "${_arms}"
     return 0
-  }
-  emit decision "launchable_seam task=${_sig8} source=registry kind=$2"
+  fi
+  _arms="${_out}"
+  emit decision "launchable_seam task=${_sig8} source=registry kind=$2${_map_line:+ ${_map_line}}"
   printf '%s' "${_arms}"
 }
 
@@ -8913,7 +9009,7 @@ exit is treated as an incident."
   # ladder above remain a deliberately fail-open fallback for an arbiter fault.
   local -a _pre_arb_candidate_arms=("${candidate_arms[@]}")
   if declare -F route_arbiter >/dev/null 2>&1; then
-    local _arb_desc _arb_out _arb_rc _arb_arm _arb_chain _arb_reason _arb_util _arb_tier _arb_model _arb_floor_applied _arb_floor_reason
+    local _arb_desc _arb_out _arb_rc _arb_arm _arb_chain _arb_reason _arb_util _arb_tier _arb_model _arb_floor_applied _arb_floor_reason _arb_fo_n
     # T17 fix-round (H2): protected/safety/ui_judgment reach the arbiter ONLY
     # through --protected/--safety/--ui-judgment CLI flags, which no real
     # caller passes (same no-writers shape as T19) -- so every arbiter-routed
@@ -9042,7 +9138,8 @@ exit is treated as an incident."
         emit decision "route_resolved by=arbiter role=worker arm=${arm} model=${_arb_model:-${arm}} tier=${RESOLVED_CODEX_TIER:-${_arb_tier:-standard}} effort=${RESOLVED_EFFORT} task=${sig8} reason=${reason} arbiter_pick=${_arb_arm} ${_arb_util}"
       else
         candidate_arms=("${_pre_arb_candidate_arms[@]}")
-        emit decision "arbiter_broken task=${sig8} rc=${_arb_rc} reason=fail_open_to_ladder note=chain_not_dispatchable arbiter_pick=${_arb_arm}"
+        _arb_fo_n="$(_arb_fail_open_count "${sig8}" "chain_not_dispatchable pick=${_arb_arm}")"
+        emit decision "arbiter_broken task=${sig8} rc=${_arb_rc} reason=fail_open_to_ladder note=chain_not_dispatchable fail_open_count=${_arb_fo_n} arbiter_pick=${_arb_arm}"
       fi
     elif [[ ${_arb_rc} -eq 3 && "${_arb_reason}" == all_arms_capped ]]; then
       emit decision "route_resolved by=arbiter role=worker arm=refuse task=${sig8} reason=all_arms_capped ${_arb_util}"
@@ -9066,7 +9163,8 @@ exit is treated as an incident."
       # through here too: a config drift is never a hard refusal, only a
       # fail-open to the ladder, same as any other arbiter fault.
       _arb_fault_fail_open_to_ladder="$(_arb_fault_detail "${_arb_out}")"
-        emit decision "arbiter_broken task=${sig8} rc=${_arb_rc} reason=fail_open_to_ladder ${_arb_fault_fail_open_to_ladder}"
+      _arb_fo_n="$(_arb_fail_open_count "${sig8}" "rc=${_arb_rc} ${_arb_fault_fail_open_to_ladder}")"
+        emit decision "arbiter_broken task=${sig8} rc=${_arb_rc} reason=fail_open_to_ladder fail_open_count=${_arb_fo_n} ${_arb_fault_fail_open_to_ladder}"
         _ROUTE_FAIL_OPEN=" after=fail_open arb_rc=${_arb_rc} ${_arb_fault_fail_open_to_ladder}"
     fi
   else
