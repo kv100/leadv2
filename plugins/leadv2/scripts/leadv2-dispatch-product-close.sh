@@ -4070,7 +4070,16 @@ else
     # occurrences in one day, caught only by a human running `git diff
     # --stat main..HEAD` by hand. Refuse before the merge, not after.
     _T11_MERGE_GATE="${SCRIPT_DIR}/leadv2-merge-safety-gate.sh"
-    if [[ -x "${_T11_MERGE_GATE}" ]] && ! _t11_gate_out="$("${_T11_MERGE_GATE}" "${ROOT}" "${_t11_branch}" "${_t11_default}" 2>&1)"; then
+    # Fail CLOSED on every leg: a missing gate file, a gate that cannot
+    # verify (rc 2), or a gate refusal (rc 1) all stop the merge. The old
+    # `[[ -x ]]` guard never fired -- the gate is committed 100644, so the
+    # executable-bit test skipped it on every run, and a missing gate
+    # fail-opened straight into `git merge` (a gate that existed only in
+    # the commit message).
+    if [[ ! -f "${_T11_MERGE_GATE}" ]]; then
+      _t11_merge_refused=1
+      printf 'T11 merge gate missing: %s -- refusing to merge unverified\n' "${_T11_MERGE_GATE}" >&2
+    elif ! _t11_gate_out="$(bash "${_T11_MERGE_GATE}" "${ROOT}" "${_t11_branch}" "${_t11_default}" 2>&1)"; then
       _t11_merge_refused=1
       printf '%s\n' "${_t11_gate_out}" >&2
     elif git -C "${ROOT}" merge --no-edit --no-ff "${_t11_branch}" >/tmp/t11-merge-"${TASK}".log 2>&1 \

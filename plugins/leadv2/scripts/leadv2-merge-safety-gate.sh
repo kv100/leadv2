@@ -1,108 +1,134 @@
 #!/usr/bin/env bash
 # leadv2-merge-safety-gate.sh — LANE-MERGE-SILENTLY-REVERTS-MAIN-01
 #
-# Refuses to land a lane whose merge into the default branch would delete a
-# file the lane's own commits never touched. Five measured occurrences on
-# 2026-09-03 -- all caught only because a human happened to run
+# Refuses to land a lane whose MERGE would delete or revert paths on the
+# default branch that no lane commit ever named. Five measured occurrences
+# on 2026-09-03 -- all caught only because a human happened to run
 # `git diff --stat main..HEAD` by hand before merging; the worst would have
 # silently dropped 221 lines of a production test suite another lane had
 # landed an hour earlier -- merge exit 0, no conflict, no warning.
 #
-# Discriminator (checked against all five measured cases + two negative
-# controls -- see tests/test-leadv2-merge-safety-gate.sh -- before trusting
-# it): a file that exists on the default branch's tip but is entirely absent
-# from the lane's tip is dangerous UNLESS the lane's own commits (base..lane)
-# are the ones that removed it. A lane that never touched the path can only
-# be missing it because the path did not exist yet when the lane forked --
-# the default branch grew it afterward, and the lane's tree simply never
-# had it. A lane whose own history mentions the path (its own `git rm`, or a
-# rename) is trusted: that deletion is the lane's decision and must still
-# land (item 3 of the brief) -- a false refusal here is exactly the failure
-# this gate must not introduce.
+# Incident mechanism (reproduced on git 2.50.1 before this discriminator
+# was trusted): a lane merges main mid-flight with a wholesale resolution
+# (`git merge -s ours main`). That merge commit carries main's ANCESTRY
+# but the lane's TREE, so every path main gained after the fork is now the
+# merge-base's content -- and the lane tip's absence of it reads as a
+# lane-side deletion. The eventual merge is clean, exits 0, and deletes
+# the path. `git log --name-only` emits no patch for merge commits, so no
+# lane commit ever NAMES the reverted path: that is exactly the shape this
+# gate refuses, and why the trust boundary is "named by a lane commit",
+# not "touched by the lane's tree diff" (a tree diff sees the wholesale
+# resolution as the lane's own edit and trusts it -- the 2026-09-03
+# incidents all passed that older check).
 #
-# Scope is deliberately restricted to full-file absence (--diff-filter=D
-# comparing the two branch TIPS), never a partial content edit: a file
-# merely MODIFIED by the default branch after the lane forked, on a path the
-# lane never touched, is what every ordinary lane looks like (the default
-# branch is always moving) -- flagging that would refuse nearly every merge.
-# Only a path that vanishes ENTIRELY from the lane's tree, on a path the
-# lane's own history never mentions, is the accidental-revert shape every
-# measured incident shares.
+# Discriminator (the only sound test -- branch-tip comparisons mislead):
+# compute the would-be merge TREE (`git merge-tree --write-tree`) and diff
+# IT against the default branch. A path that differs between the merge
+# result and the default branch, on a path no lane commit ever named, is a
+# main regression: the lane had no opinion on the path, so the merge
+# result should match the default branch byte-for-byte. A path a lane
+# commit DID name is the lane's decision and lands (an intended deletion
+# must never be refused). Residual, known: a revert baked into a
+# REBASE-replayed commit names the path and is trusted (the replay is
+# indistinguishable from a deliberate edit at this point).
 #
-# Usage:
+# Single source of truth: leadv2-deploy-merge.sh sources the core function
+# below (lv2_merge_tree_regressions); leadv2-land.sh and the product-close
+# T11 merge run this file's CLI. The discriminator lives HERE and nowhere
+# else -- a second copy is how the 2026-07-29 one-inode defect happened.
+#
+# Fail CLOSED: anything that prevents the check from running (missing
+# branch, no merge base, conflicted merge tree, git failure) refuses --
+# never assume clean.
+#
+# Usage (CLI):
 #   leadv2-merge-safety-gate.sh <repo_root> <lane_branch> [<default_branch>]
-# Exit codes:
-#   0 = safe to merge -- no undeclared deletions (or every deletion is the
-#       lane's own)
-#   1 = REFUSED -- see stderr for the file(s) and the one-line remedy
-#   2 = usage / git error (cannot resolve repo_root, branches, or merge-base)
+# Exit codes (CLI and core function agree):
+#   0 = safe to merge -- the merge tree regresses nothing on the default
+#       branch that the lane did not name itself
+#   1 = REFUSED -- offending paths on stdout (function) / named in the
+#       refusal block on stderr (CLI)
+#   2 = cannot verify -- fail closed, see stderr
 set -uo pipefail
 
-REPO_ROOT="${1:-}"
-LANE_BRANCH="${2:-}"
-DEFAULT_BRANCH="${3:-}"
+# ── core: the merged-tree discriminator (sourceable) ────────────────────────
+lv2_merge_tree_regressions() {
+  # $1 = repo_root, $2 = default_branch, $3 = lane_branch.
+  # Prints offending paths to stdout (one per line) when rc=1; diagnostics
+  # to stderr. rc 0 = clean; 1 = regression; 2 = cannot verify.
+  local repo_root="$1" default_branch="$2" lane_branch="$3"
+  local merged_tree lane_named merged_changed offenders
 
-if [[ -z "${REPO_ROOT}" || -z "${LANE_BRANCH}" ]]; then
-  printf 'Usage: %s <repo_root> <lane_branch> [<default_branch>]\n' "$(basename "$0")" >&2
-  exit 2
-fi
+  git -C "${repo_root}" rev-parse --verify --quiet "${default_branch}^{commit}" >/dev/null 2>&1 || {
+    printf 'leadv2-merge-safety-gate: cannot resolve default branch %s\n' "${default_branch}" >&2
+    return 2
+  }
+  git -C "${repo_root}" rev-parse --verify --quiet "${lane_branch}^{commit}" >/dev/null 2>&1 || {
+    printf 'leadv2-merge-safety-gate: cannot resolve lane branch %s\n' "${lane_branch}" >&2
+    return 2
+  }
+# bash-guard: allow
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=leadv2-branch-merged.sh
-source "${SCRIPT_DIR}/leadv2-branch-merged.sh"
+  # The would-be merge result. Any failure -- conflicted tree, no merge
+  # base (unrelated histories), git error -- is "cannot verify" (rc 2),
+  # never a pass.
+  if ! merged_tree="$(git -C "${repo_root}" merge-tree --write-tree "${default_branch}" "${lane_branch}" 2>/dev/null)" \
+     || [[ -z "${merged_tree}" ]]; then
+    printf 'leadv2-merge-safety-gate: cannot compute merge tree for %s into %s (conflict, no merge base, or git failure)\n' \
+      "${lane_branch}" "${default_branch}" >&2
+    return 2
+  fi
 
-if [[ -z "${DEFAULT_BRANCH}" ]]; then
-  DEFAULT_BRANCH="$(lv2_default_branch "${REPO_ROOT}")"
-fi
+  # Paths the lane's OWN commits name -- default..lane, patch-based, so
+  # merge commits contribute nothing (a wholesale -s ours resolution stays
+  # unnamed -- exactly the accidental-revert shape). This is the trust
+  # boundary: a named path is the lane's decision, named or not.
+  lane_named="$(git -C "${repo_root}" log --name-only --no-renames --pretty=format: \
+    "${default_branch}..${lane_branch}" 2>/dev/null | sort -u | grep -v '^$' || true)"
 
-git -C "${REPO_ROOT}" rev-parse --verify "${DEFAULT_BRANCH}" >/dev/null 2>&1 || {
-  printf 'leadv2-merge-safety-gate: cannot resolve default branch %s\n' "${DEFAULT_BRANCH}" >&2
-  exit 2
+  # Everything the merge result would change on the default branch.
+  merged_changed="$(git -C "${repo_root}" diff --name-only --no-renames \
+    "${default_branch}" "${merged_tree}" 2>/dev/null | sort -u | grep -v '^$' || true)"
+  [[ -z "${merged_changed}" ]] && return 0
+
+  # Changed by the merge, never named by the lane = main regression.
+  offenders="$(comm -13 <(printf '%s\n' "${lane_named}") <(printf '%s\n' "${merged_changed}"))"
+  if [[ -n "$(printf '%s' "${offenders}" | tr -d '[:space:]')" ]]; then
+    printf '%s\n' "${offenders}"
+    return 1
+  fi
+  return 0
 }
-git -C "${REPO_ROOT}" rev-parse --verify "${LANE_BRANCH}" >/dev/null 2>&1 || {
-  printf 'leadv2-merge-safety-gate: cannot resolve lane branch %s\n' "${LANE_BRANCH}" >&2
-  exit 2
-}
 
-BASE="$(git -C "${REPO_ROOT}" merge-base "${DEFAULT_BRANCH}" "${LANE_BRANCH}" 2>/dev/null || true)"
-if [[ -z "${BASE}" ]]; then
-  printf 'leadv2-merge-safety-gate: no merge-base between %s and %s\n' "${DEFAULT_BRANCH}" "${LANE_BRANCH}" >&2
-  exit 2
+# ── CLI (land.sh, product-close T11; deploy-merge sources the core above) ───
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  REPO_ROOT="${1:-}"
+  LANE_BRANCH="${2:-}"
+  DEFAULT_BRANCH="${3:-}"
+
+  if [[ -z "${REPO_ROOT}" || -z "${LANE_BRANCH}" ]]; then
+    printf 'Usage: %s <repo_root> <lane_branch> [<default_branch>]\n' "$(basename "$0")" >&2
+    exit 2
+  fi
+
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=leadv2-branch-merged.sh
+  source "${SCRIPT_DIR}/leadv2-branch-merged.sh"
+
+  if [[ -z "${DEFAULT_BRANCH}" ]]; then
+    # Unresolvable default -> empty -> the core's rev-parse refuses (rc 2).
+    DEFAULT_BRANCH="$(lv2_default_branch "${REPO_ROOT}" 2>/dev/null || true)"
+  fi
+
+  GATE_RC=0
+  OFFENDERS="$(lv2_merge_tree_regressions "${REPO_ROOT}" "${DEFAULT_BRANCH}" "${LANE_BRANCH}")" || GATE_RC=$?
+
+  if [[ "${GATE_RC}" -eq 1 ]]; then
+    printf 'MERGE_REFUSED: merging %s into %s would delete or revert %d path(s) present on %s that no lane commit ever named:\n' \
+      "${LANE_BRANCH}" "${DEFAULT_BRANCH}" "$(printf '%s\n' "${OFFENDERS}" | grep -c . || true)" "${DEFAULT_BRANCH}" >&2
+    printf '%s\n' "${OFFENDERS}" | sed 's/^/  /' >&2
+    printf 'FIX: merge %s into the lane with a REAL resolution (not -s ours), then retry.\n' "${DEFAULT_BRANCH}" >&2
+  fi
+  exit "${GATE_RC}"
 fi
-
-# Paths the lane's OWN commits touched -- base..lane, name-only. This is the
-# trust boundary: if the lane's own history mentions a path (edited it,
-# deleted it, renamed it), any resulting absence is the lane's decision.
-LANE_TOUCHED="$(git -C "${REPO_ROOT}" diff --name-only "${BASE}" "${LANE_BRANCH}" -- 2>/dev/null || true)"
-
-# Paths present on the default branch's tip that are entirely absent from
-# the lane's tip -- comparing TIPS, not base, so this is exactly what a
-# human running `git diff --stat main..HEAD` sees.
-DELETED="$(git -C "${REPO_ROOT}" diff --name-status --diff-filter=D "${DEFAULT_BRANCH}" "${LANE_BRANCH}" -- 2>/dev/null | cut -f2- || true)"
-
-OFFENDERS=""
-OFFENDER_COUNT=0
-if [[ -n "${DELETED}" ]]; then
-  while IFS= read -r path; do
-    [[ -n "${path}" ]] || continue
-    if ! grep -qxF "${path}" <<<"${LANE_TOUCHED}"; then
-      OFFENDERS="${OFFENDERS}${path}"$'\n'
-      OFFENDER_COUNT=$((OFFENDER_COUNT + 1))
-    fi
-  done <<<"${DELETED}"
-fi
-
-if [[ ${OFFENDER_COUNT} -eq 0 ]]; then
-  exit 0
-fi
-
-printf 'MERGE_REFUSED: lane %s would delete %d file(s) it never touched, currently present on %s:\n' \
-  "${LANE_BRANCH}" "${OFFENDER_COUNT}" "${DEFAULT_BRANCH}" >&2
-while IFS= read -r path; do
-  [[ -n "${path}" ]] || continue
-  lines="$(git -C "${REPO_ROOT}" show "${DEFAULT_BRANCH}:${path}" 2>/dev/null | wc -l | tr -d ' ')"
-  printf '  %s:1 (%s lines on %s, absent from %s, never touched by lane commits)\n' \
-    "${path}" "${lines}" "${DEFAULT_BRANCH}" "${LANE_BRANCH}" >&2
-done <<<"${OFFENDERS}"
-printf 'FIX: merge %s into the lane, then retry.\n' "${DEFAULT_BRANCH}" >&2
-exit 1
+# bash-guard: allow

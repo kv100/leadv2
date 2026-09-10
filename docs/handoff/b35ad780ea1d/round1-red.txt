@@ -1,0 +1,70 @@
+# round1-red.txt — LANE-MERGE-SILENTLY-REVERTS-MAIN-01 negative control
+# Mutation: 'return 0' inserted as the first statement of
+# lv2_merge_tree_regressions() in leadv2-merge-safety-gate.sh (gate says
+# clean unconditionally). Both suites below MUST be red; if either stays
+# green the gate is not actually under test.
+# Date: 2026-09-10T18:27:05Z, git git version 2.50.1 (Apple Git-155)
+
+$ bash plugins/leadv2/scripts/tests/test-merge-safety-reverts-main.sh
+FAIL - case 1: expected rc=1 naming fileX.txt, got rc=0: 
+ok - case 1: real merge exit 0 and fileX.txt really deleted (gate verdict matched git)
+FAIL - case 2: expected rc=1 naming both files, got rc=0: 
+ok - case 2: lane's own named file not flagged
+ok - case 3: real mid-flight merge flips the gate green (rc=0)
+FAIL - case 4: expected rc=2 for unrelated histories, got rc=0: 
+FAIL - case 5: expected rc=2, got rc=0: 
+ok - case 6a: deploy-merge sources the gate (single discriminator)
+ok - case 6b: deploy-merge probe delegates to the gate core
+ok - case 6c: leadv2-land runs the gate CLI (bash-invoked, no exec-bit dependency)
+ok - case 6d: product-close T11 runs the gate fail-closed (bash + missing-file refusal, no dead -x guard)
+--- 7 passed, 4 failed ---
+rc=1
+
+$ bash plugins/leadv2/scripts/tests/test-merge-does-not-regress-main.sh
+Merge made by the 'ours' strategy.
+FAIL - case 1: expected rc!=0 + MERGE_REFUSED naming fileX.txt, got rc=1: From /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.bhM9ljro6R/origin
+ * branch            main       -> FETCH_HEAD
+From /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.bhM9ljro6R/origin
+ * branch            main       -> FETCH_HEAD
+Already up to date.
+Updating da96e46..da3201f
+Fast-forward
+ fileX.txt     | 221 ----------------------------------------------------------
+ lane_file.txt |   1 +
+ 2 files changed, 1 insertion(+), 221 deletions(-)
+ delete mode 100644 fileX.txt
+ create mode 100644 lane_file.txt
+To /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.bhM9ljro6R/origin.git
+   da96e46..0b022d7  main -> main
+OK
+[migration-apply] no migrations in 0b022d7c30ec244aa225bf4d02079d70cb9e8a27 — no-op
+BLOCK: .claude/leadv2-overrides/deploy.sh not found — run leadv2-init or create it
+FAIL - case 1: merge-blocker.flag missing or wrong: 
+FAIL - case 1: origin/main moved or lost fileX.txt
+Merge made by the 'ours' strategy.
+FAIL - case 2: expected ALLOW-MAIN-REGRESSION list naming fileX.txt, got: From /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.GgQdMSjtOL/origin
+ * branch            main       -> FETCH_HEAD
+From /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.GgQdMSjtOL/origin
+ * branch            main       -> FETCH_HEAD
+Already up to date.
+Updating 4c4a7d6..6210d52
+Fast-forward
+ fileX.txt     | 221 ----------------------------------------------------------
+ lane_file.txt |   1 +
+ 2 files changed, 1 insertion(+), 221 deletions(-)
+ delete mode 100644 fileX.txt
+ create mode 100644 lane_file.txt
+To /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.GgQdMSjtOL/origin.git
+   4c4a7d6..4dd95b6  main -> main
+OK
+[migration-apply] no migrations in 4dd95b6d56343debd54bace8ce82ea3487ccca26 — no-op
+BLOCK: .claude/leadv2-overrides/deploy.sh not found — run leadv2-init or create it
+ok - case 2: proceeded past the gate (terminal deploy-override BLOCK, rc=1)
+ok - case 2: landed commit carries Landed-lane/Landed-branch trailers
+ok - case 2: override landed the lane AND really reverted fileX (honest override)
+ok - case 3: clean lane not refused
+ok - case 3: reached the terminal deploy-override BLOCK (rc=1)
+ok - case 3: fileX.txt SURVIVED the landing (no silent revert)
+ok - case 3: trailers on the clean landing too
+test-merge-does-not-regress-main: 7 passed, 4 failed
+rc=1
