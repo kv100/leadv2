@@ -52,3 +52,73 @@ The replacement test will:
 3. Demonstrate that mutating the zero-stop rule (e.g., setting ZERO_MAX=0 or removing zero-stop logic) causes the test to fail
 
 This approach maintains the backlog's purpose of preventing regressions while aligning with main's correct design decision.
+
+---
+
+# W18 root-dirty gate report
+
+## Reused mechanism
+
+`leadv2-dispatch-product-close.sh` now invokes `leadv2-land.sh --root-dirt-check`.
+That probe builds the prospective `git merge-tree --write-tree` result and
+uses the existing `land_in_write_set` predicate against its changed-path set;
+there is no second path-membership rule. `leadv2-land.sh:303` was confirmed to
+have the same unrelated-tracked-dirt defect and now calls that same probe after
+the throwaway landing tip is prepared. It no longer rewrites unrelated state
+files.
+
+## Real-root probe
+
+Raw output, 2026-09-10:
+
+```text
+dirty_total=746 tracked=2 untracked=744
+real_root_probe_rc=0
+docs/leadv2/.compact-freeze.md
+docs/leadv2/open-threads.md
+```
+
+The probe was run against the true primary root and this lane branch. It
+returned zero because neither tracked dirty path intersects this lane's
+prospective merged tree. No merge of the primary checkout was attempted by
+this worker lane.
+
+## Green focused runs
+
+```text
+# root-dirty-gate pass=7 fail=0
+# land-suite pass=76 fail=0
+```
+
+The root-dirty fixture covers tracked non-intersection (including a real
+merge), tracked intersection with the named path, untracked non-intersection,
+and an untracked path the merge would create.
+
+## Red mutation control
+
+Command:
+
+```text
+bash plugins/leadv2/scripts/leadv2-mutation-control.sh --live plugins/leadv2/scripts/tests/test-root-dirty-gate.sh plugins/leadv2/scripts/leadv2-land.sh 's@if land_in_write_set "${path}"; then@if [[ -n "$(git -C "${ROOT}" status --porcelain 2>/dev/null)" ]]; then@' docs/handoff/w18-root-dirty-gate
+```
+
+Raw output:
+
+```text
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-root-dirty-gate.sh file=plugins/leadv2/scripts/leadv2-land.sh red_line=FAIL - T1 tracked non-intersection permits merge (expected [0], got [1]) diff_hash=0861aa15e04290e1820f51b8158fe5499b5735a5c9f3b194f4b84338e26404bd lane_diff_hash=67bc494acbc1260d256d5526e8ec3c77d7deb74c524bc4da0aa439408bbe6ebb porcelain_clean=yes
+```
+
+The artifacts are under `docs/handoff/w18-root-dirty-gate/mutation-control/` and are ignored by the repository, so the final live proof can be present without entering the lane diff.
+
+## Changed-scope runner
+
+Raw bounded run after the fix:
+
+```text
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/9cf1390c197a/plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: delegating scope=changed to plugins/leadv2/scripts/tests/run-core-offline.sh
+changed_scope_rc=124
+```
+
+The runner was foregrounded with `timeout 600`; it exhausted that bound in
+`run-core-offline.sh` before a verdict. This is a timeout, not a green claim.
