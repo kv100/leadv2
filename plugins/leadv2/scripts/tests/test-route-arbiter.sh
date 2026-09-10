@@ -363,8 +363,10 @@ fi
 # codex and claude sit at the SAME 20% used: the cliff has nothing to separate
 # them and cost alone always picks codex (3) over sonnet (5). The ONLY variable
 # between the two runs is codex's remaining percentage-points per HOUR -- 20/h
-# (weight 1.0, cost stays 3) vs 0.5/h (weight 0.4 from router_v2.headroom_weights,
-# cost 3/0.4 = 7.5 > 5).
+# (weight 1.0, cost stays 3) vs 0.5/h (weight 0.25 from the continuous headroom
+# ramp, W1-GRANULARITY-CONTINUOUS-HEADROOM-01, cost 3/0.25 = 12 > 5). The ramp
+# replaced the router_v2.headroom_weights step table, so 0.25 is a point on a
+# line, not a basket: the same run at 1.5/h now prices differently.
 # The control is the point of the case, not decoration: at equal headroom the
 # choice must be the OLD one and the line must carry NO headroom_priced= token,
 # or what we built is a bias against codex rather than a gradient.
@@ -381,7 +383,7 @@ PY
 }
 starve="$(run "$(quota_headroom 0.5 20)" 1 '{"work_kind":"code","size":"standard","task":"t"}')"
 plenty="$(run "$(quota_headroom 20 20)" 1 '{"work_kind":"code","size":"standard","task":"t"}')"
-if [[ "$starve" == *'arm=sonnet '* && "$starve" == *'headroom_priced=codex:0.4'* \
+if [[ "$starve" == *'arm=sonnet '* && "$starve" == *'headroom_priced=codex:0.25'* \
       && "$plenty" == *'arm=codex '* && "$plenty" != *'headroom_priced='* ]]; then
   pass 'equal ceilings, different runway: the arm with hours left wins, and the price is named'
 else
