@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-mission-lint-contract.sh
+file=plugins/leadv2/scripts/leadv2-mission-lint.sh
+anchor=/tmp/mission-lint-disable-decision.patch
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: no approach heading -> expected rc=9 and named reason; rc=0; out=
+diff_hash=0e0fab572690db687cd5151ada6700dc7d0644e1fda12f7b31c7c43a70692ca1
+lane_diff_hash=9ad931ee6d680de23a0fcda5a324d96972f7b0159baae038047c66af63a8bbd4
+porcelain_clean=yes
+restored=yes
