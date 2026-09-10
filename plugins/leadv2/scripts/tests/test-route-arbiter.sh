@@ -9,7 +9,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ARBITER="${SCRIPTS_DIR}/lib/leadv2-route-arbiter.sh"
 ROUTING="${SCRIPTS_DIR}/../config/leadv2-routing.yaml"
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+# The sandboxed CI runner cannot create under macOS's inherited per-user
+# TMPDIR.  Keep the normal /tmp default but expose a narrow fixture-only seam.
+TMP_BASE="${LEADV2_TEST_TMPDIR:-/tmp}"
+TMP="$(mktemp -d "${TMP_BASE%/}/test-route-arbiter.XXXXXX")"; trap 'rm -rf "$TMP"' EXIT
 # W1-ARBITER-SUITE-THREE-RED-01 round 2 (lead correction 2026-09-10): every
 # run must self-identify WHICH arbiter bytes it sourced. The round-2 rejection
 # was measured, not guessed: the lead's acceptance mutation (collapse
@@ -58,6 +61,47 @@ print(json.dumps({'glm':{'status':'ok','five_hour':{'pct':g},'weekly':{'pct':g}}
 PY
 }
 run(){ LEADV2_ROUTE_ARBITER_ROUTING_YAML="$ROUTING" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state" ROUTE_TEST_QUOTA="$1" ROUTE_TEST_FREE_RC="${2:-0}" bash -c 'source "$0"; route_arbiter worker "$1"' "$ARBITER" "$3"; }
+
+# REFUSAL-REASON-EMITTER-IS-NOT-WHERE-GREP-FINDS-IT-01: a focused direct
+# probe for the acceptance mutation. It runs the real sourced function from
+# isolated copies, never an emulation of its Python body.
+if [[ "${LEADV2_ROUTE_ARBITER_FOCUS:-}" == "refusal-emitter" ]]; then
+  cat >"$TMP/refusal-emitter.yaml" <<'YML'
+router_v2:
+  quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  capability_matrix:
+    - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: false, sizes: [standard], kinds: [code]}
+YML
+  run_reason_probe(){ # <arbiter copy> <descriptor> -> stdout/stderr
+    LEADV2_ROUTE_ARBITER_ROUTING_YAML="$TMP/refusal-emitter.yaml" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state" ROUTE_TEST_QUOTA="$(quota 13 20 45)" ROUTE_TEST_FREE_RC=0 bash -c 'source "$0"; route_arbiter worker "$1"' "$1" "$2" 2>&1
+  }
+  DOCS_MUT="$TMP/refusal-docs-mut.sh"
+  POOL_MUT="$TMP/refusal-pool-mut.sh"
+  cp "$ARBITER" "$DOCS_MUT"; cp "$ARBITER" "$POOL_MUT"
+  python3 - "$DOCS_MUT" "$POOL_MUT" <<'PY'
+import sys
+for path, old, new in ((sys.argv[1], "refusal_reason='no_capable_cell'", "refusal_reason='emitter_probe_docs'"),
+                       (sys.argv[2], "refusal_reason='pool_empty_all_excluded'", "refusal_reason='emitter_probe_pool'")):
+    text = open(path).read()
+    n = text.count(old)
+    if n != 1:
+        raise SystemExit('%s anchor count=%d (expected 1)' % (old, n))
+    open(path, 'w').write(text.replace(old, new))
+PY
+  rm -f "$TMP/state"; docs_mut_out="$(run_reason_probe "$DOCS_MUT" '{"kind":"docs","size":"standard","protected":true}' || true)"
+  rm -f "$TMP/state"; pool_mut_out="$(run_reason_probe "$POOL_MUT" '{"kind":"code","size":"standard","protected":true}' || true)"
+  printf 'MUTATION docs: %s\nMUTATION code: %s\n' "$docs_mut_out" "$pool_mut_out"
+  if [[ "$docs_mut_out" == *'reason=emitter_probe_docs'* && "$docs_mut_out" != *'reason=no_capable_cell'* \
+     && "$pool_mut_out" == *'reason=emitter_probe_pool'* && "$pool_mut_out" != *'reason=pool_empty_all_excluded'* ]]; then
+    pass 'refusal reason source mutations change the direct docs and code outputs'
+  else
+    fail "refusal reason mutation did not reach direct output docs=$docs_mut_out | pool=$pool_mut_out"
+  fi
+  SUMMARY_PRINTED=1
+  printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
+  [[ "$FAIL" -eq 0 ]]
+  exit $?
+fi
 
 # (a) Codex capped: a capable non-Codex worker is selected, never parked.
 # GLM-53-FLASH-ARM-01: glm-flash (cost 0.4) is the expected winner among the
@@ -558,7 +602,6 @@ if [[ "$g7g" == *'reason=pool_empty_all_excluded'* && "$g7g" == *'arm_excluded=g
 else
   fail "refusal-dictionary policy=$g7g | vocabulary=$g7gc"
 fi
-
 
 # (g8) SONNET-WON-21-MEASURED-GLM-LINES-ON-0905-01, hole 1: a decision line names
 #      no version of anything, so a line cannot be tied to the code or the matrix

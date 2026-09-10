@@ -1291,8 +1291,11 @@ if requested_arm:
 # callers fail open to the ladder crash-fallback, unchanged.
 _bound_pool=arm_pool if arm_pool is not None else (allowed if allowed is not None else set(_arm_cells))
 if not _fit or not (_bound_pool & set(_arm_cells)):
-    _record('refuse','none','none','no_capable_cell')
-    print('arm=refuse model=none tier=none reason=no_capable_cell kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
+    # One reason source feeds both the durable record and the visible refusal.
+    # Keep them coupled: mutating the diagnosis must change either surface.
+    refusal_reason='no_capable_cell'
+    _record('refuse','none','none',refusal_reason)
+    print('arm=refuse model=none tier=none reason=%s kind=%s chain= %s%s%s%s%s' % (refusal_reason,kind,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
     raise SystemExit(68)
 if not capable:
     # W1-FORECAST-THE-SPEND-01: a pool the fit check emptied ALONE is a real
@@ -1307,8 +1310,10 @@ if not capable:
     if FORECAST_ON and _forecast_block and _fc_pool and \
             all('forecast' in _stages.get(_a,[]) for _a in _fc_pool):
         _forecast_refuse()
-    _record('refuse','none','none','pool_empty_all_excluded')
-    print('arm=refuse model=none tier=none reason=pool_empty_all_excluded kind=%s chain= %s%s%s%s%s' % (kind,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
+    # As above, one source prevents the record and the operator line drifting.
+    refusal_reason='pool_empty_all_excluded'
+    _record('refuse','none','none',refusal_reason)
+    print('arm=refuse model=none tier=none reason=%s kind=%s chain= %s%s%s%s%s' % (refusal_reason,kind,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
     raise SystemExit(68)
 ok=[c for c in capable if not capped(c.get('provider'))]
 for _cap_a in sorted({c.get('arm') for c in capable if capped(c.get('provider'))}):
