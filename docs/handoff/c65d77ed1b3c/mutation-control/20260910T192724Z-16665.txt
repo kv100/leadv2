@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh
+file=plugins/leadv2/scripts/leadv2-lane-salvage.sh
+anchor=s/conflict)                          return 3 ;;/conflict)                          return 0 ;;/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL - E1 conflict at first pick: rc=0 (want 3)
+diff_hash=04ef44d463ed5538ca69fd66d41eab663dd3c0db2bd3a9bc5d5d667408016228
+lane_diff_hash=24688b7e927b3a3e02ea72750226fd68d591b3b78bf59adff9621e14b6bace34
