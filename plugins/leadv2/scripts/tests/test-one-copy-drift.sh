@@ -52,6 +52,7 @@ run_check() { # <tmp> -> sets RC, OUT
     LEADV2_ONE_COPY_SCRIPTS_CANONICAL_ROOT="${tmp}/canonical/scripts" \
     LEADV2_ONE_COPY_AGENTS_SHARED_ROOT="${tmp}/shared/agents-shared" \
     LEADV2_ONE_COPY_AGENTS_CANONICAL_ROOT="${tmp}/canonical/agents" \
+    LEADV2_ONE_COPY_PROJECT_ROOTS=0 \
     LEADV2_ONE_COPY_EXCEPTIONS_FILE="${tmp}/exceptions.txt" \
     bash "${CONVERT}" --check 2>&1
   )"
@@ -82,15 +83,17 @@ else
 fi
 rm -rf "$tmp"
 
-# ── T3: divergent real copy, not on exception list -> DIVERGED, exit 0 ───
+# ── T3: divergent real copy, not on exception list -> DIVERGED, exit 1 ───
+# PLUGIN-SELF-SUFFICIENT-TENANTS-ONLY-DELTA-01: an undeclared copy now gates
+# whether identical or diverged (the 2026-07-29 defect was a diverged copy).
 tmp="$(mk_fixture)"
 printf 'echo canonical\n' > "${tmp}/canonical/scripts/foo.sh"
 printf 'echo shared-diverged\n' > "${tmp}/shared/leadv2-shared/scripts/foo.sh"
 run_check "$tmp"
-if [[ "$RC" -eq 0 ]] && grep -q 'DIVERGED:.*foo\.sh' <<<"$OUT"; then
-  pass "T3 divergent real copy, not exempted -> DIVERGED, exit 0"
+if [[ "$RC" -eq 1 ]] && grep -q 'DIVERGED:.*foo\.sh' <<<"$OUT"; then
+  pass "T3 divergent real copy, not exempted -> DIVERGED, exit 1"
 else
-  fail "T3 divergent real copy, not exempted -> DIVERGED, exit 0 (rc=${RC})"
+  fail "T3 divergent real copy, not exempted -> DIVERGED, exit 1 (rc=${RC})"
 fi
 rm -rf "$tmp"
 
