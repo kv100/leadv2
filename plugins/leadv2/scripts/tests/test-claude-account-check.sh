@@ -75,7 +75,7 @@ printf 'work\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-b" "$tmp/dir-b" >> "$RE
 run_check
 check_grep "$OUT" '^slot=personal .*account=\.\.aaa111 org=\.\.rg-aaa sub=max tier=default_claude_max_20x' 'T1a: personal slot line'
 check_grep "$OUT" '^slot=work .*account=\.\.bbb222 org=\.\.rg-bbb sub=team tier=default_claude_max_5x' 'T1b: work slot line'
-check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=2$' 'T1c: verdict line'
+check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=2 availability=unknown\(identity_only\)$' 'T1c: verdict names identity-only availability limit'
 [[ "$RC" -eq 0 ]] && pass "T1: exit 0" || fail "T1 exit" "rc=$RC"
 check_nogrep "$OUT$ERR" 'sk-ant' 'T1d: no token value ever printed'
 
@@ -106,7 +106,7 @@ mk_slot "$tmp/dir-h" team "acct-hhh222" "org-h" "default_claude_max_5x"
 printf 'personal\t%s\tkeychain:svc-personal\n' "$tmp/dir-g" > "$REG"
 printf 'work\t%s\tkeychain:svc-work\n' "$tmp/dir-h" >> "$REG"
 run_check "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=/no/such/security/binary"
-check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=unavailable\(no-keychain\)$' 'T4a: keychain-less verdict still resolves via accountUuid'
+check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=unavailable\(no-keychain\) availability=unknown\(identity_only\)$' 'T4a: keychain-less verdict still resolves via accountUuid'
 check_grep "$OUT" 'cred=unavailable\(no-keychain\)' 'T4b: per-slot cred field reads unavailable, not a value'
 [[ "$RC" -eq 0 ]] && pass "T4: exit 0 (missing keychain never forces INDETERMINATE)" || fail "T4 exit" "rc=$RC"
 
@@ -117,7 +117,7 @@ mk_slot "$tmp/dir-j" team "acct-jjj222" "org-j" "default_claude_max_5x"
 printf 'personal\t%s\tkeychain:svc-personal\n' "$tmp/dir-i" > "$REG"
 printf 'work\t%s\tkeychain:svc-work\n' "$tmp/dir-j" >> "$REG"
 run_check "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
-check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=2$' 'T5a: two distinct credential digests'
+check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=2 availability=unknown\(identity_only\)$' 'T5a: two distinct credential digests'
 check_nogrep "$OUT$ERR" 'sk-ant' 'T5b: no token value printed even with a live keychain stub'
 [[ "$RC" -eq 0 ]] && pass "T5: exit 0" || fail "T5 exit" "rc=$RC"
 
@@ -141,7 +141,7 @@ mk_slot "$tmp/dir-n" team "acct-nnn222" "org-two222" "default_claude_max_5x"
 printf 'personal\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-m" "$tmp/dir-m" > "$REG"
 printf 'work\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-n" "$tmp/dir-n" >> "$REG"
 run_check
-check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=2$' 'T7a: distinct accounts + distinct orgs stays TWO_BUCKETS'
+check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=2 availability=unknown\(identity_only\)$' 'T7a: distinct accounts + distinct orgs stays TWO_BUCKETS'
 [[ "$RC" -eq 0 ]] && pass "T7: exit 0" || fail "T7 exit" "rc=$RC"
 
 echo "=== T8: one slot's organizationUuid unresolved (-) -> TWO_BUCKETS, no spurious ORG_COLLAPSE ==="
@@ -151,8 +151,16 @@ mk_slot "$tmp/dir-p" team "acct-ppp222" "org-ppp999" "default_claude_max_5x"
 printf 'personal\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-o" "$tmp/dir-o" > "$REG"
 printf 'work\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-p" "$tmp/dir-p" >> "$REG"
 run_check
-check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=2$' 'T8a: unresolved org on one slot never triggers ORG_COLLAPSE'
+check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=2 availability=unknown\(identity_only\)$' 'T8a: unresolved org on one slot never triggers ORG_COLLAPSE'
 [[ "$RC" -eq 0 ]] && pass "T8: exit 0" || fail "T8 exit" "rc=$RC"
+
+echo "=== T9: one registered slot -> INDETERMINATE, never misreported as TWO_BUCKETS ==="
+mkdir -p "$tmp/dir-q"
+mk_slot "$tmp/dir-q" max "acct-qqq111" "org-q" "default_claude_max_20x"
+printf 'personal\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-q" "$tmp/dir-q" > "$REG"
+run_check
+check_grep "$ERR" '^VERDICT: INDETERMINATE reason=insufficient_slots slots=1$' 'T9a: one slot has no two-account conclusion'
+[[ "$RC" -eq 2 ]] && pass "T9: exit 2" || fail "T9 exit" "rc=$RC"
 
 printf '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
