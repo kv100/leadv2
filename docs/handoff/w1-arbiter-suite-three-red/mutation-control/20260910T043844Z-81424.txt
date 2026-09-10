@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-route-arbiter.sh
+file=plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+anchor=s/_record('refuse','none','none','no_capable_cell')/_record('refuse','none','none','pool_empty_all_excluded')/; s/reason=no_capable_cell kind=%s/reason=pool_empty_all_excluded kind=%s/
+baseline_rc=0
+mutated_rc=1
+red_line=PASS: broken glm probe (status!=ok) is fail-closed, never selected
+diff_hash=ee42dfea28cb783850e3a570498fbc4969561f3d13d933332c481be435c9299d
+lane_diff_hash=8ee2d113278b85bee79ac3d8e6fdcea28bae4dcd79ba7f34cceabb800c313a31
