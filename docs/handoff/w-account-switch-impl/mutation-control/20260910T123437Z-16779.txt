@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-account-switch.sh
+file=plugins/leadv2/scripts/leadv2-account-switch.sh
+anchor=/tmp/step0/verify-removed-rel.patch
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: case1 rc=0 (switched) -- rc=1 want=0
+diff_hash=def5870f88efaf71471bf5ffae8921086dbf2893f337172448c1add73cc0d7f6
+lane_diff_hash=aecdc6df3a78aba589aca2806039e053828954c10fb6a1b34f16bed45d620e55
