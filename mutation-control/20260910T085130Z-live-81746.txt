@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-route-arbiter.sh
+file=plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+anchor=s/refusal_reason='no_capable_cell'/refusal_reason='mutation_control_docs'/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=ABORT: suite exited rc=1 WITHOUT a summary after 0 assertion(s); last completed: (none yet -- died before the first assertion)
+diff_hash=a009f9cb9a1a28e1d3c6ec5b34ffe2859c7ada9cc73f641c6bbef54d0490d9cc
+lane_diff_hash=37558d8e6876673ce8ff5417bc36ec77d50b1dbda30a1505d605bc27e02b8372
+porcelain_clean=yes
+restored=yes
