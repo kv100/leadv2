@@ -110,6 +110,22 @@ $ bash plugins/leadv2/scripts/tests/test-claude-account-check.sh
 [TEST] Results: PASS=24 FAIL=0
 ```
 
+The repository changed-scope runner was executed in the foreground with its
+900-second cap.  It did not establish a patch failure: its core wrapper
+expanded to 95 suites because the committed report has no suite mapping, then
+hit its own 600-second per-suite ceiling amid unrelated sandbox-path failures.
+The runner's raw terminal verdict was:
+
+```text
+[CORE-OFFLINE] scope=changed running 95 of 95 suites ...
+[SUITE-TIMEOUT] plugins/leadv2/scripts/tests/run-core-offline.sh exceeded 600s ceiling
+[FAIL] .../plugins/leadv2/scripts/tests/run-core-offline.sh
+run_all_changed_rc=124
+```
+
+Focused changed-code evidence remains the two green suites above; the broad
+runner is red/timeout and is not represented as a passing verification.
+
 ## Mutation control
 
 The committed-diff-bound control restored the old quiet `same_account -> exit
