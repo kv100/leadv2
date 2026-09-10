@@ -10,6 +10,17 @@ SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ARBITER="${SCRIPTS_DIR}/lib/leadv2-route-arbiter.sh"
 ROUTING="${SCRIPTS_DIR}/../config/leadv2-routing.yaml"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+# W1-ARBITER-SUITE-THREE-RED-01 round 2 (lead correction 2026-09-10): every
+# run must self-identify WHICH arbiter bytes it sourced. The round-2 rejection
+# was measured, not guessed: the lead's acceptance mutation (collapse
+# no_capable_cell into pool_empty_all_excluded, lib:1294-1295) was applied to
+# the CANONICAL checkout while this suite -- then unmerged, live only in the
+# lane worktree at 893193cc -- sourced the lane's clean lib: SUMMARY
+# pass=27 fail=0, and nothing in the output could show the two halves had run
+# in different trees. One line closes the class: green and red artifacts
+# alike carry the sourced file's path and sha256 prefix, so a mutation
+# applied anywhere else is visible as a hash that did not move.
+printf 'arbiter_under_test=%s sha256=%s\n' "$ARBITER" "$(shasum -a 256 "$ARBITER" 2>/dev/null | awk '{print substr($1,1,16)}')"
 PASS=0; FAIL=0
 # ROUTE-ARBITER-SUITE-FLAKY-UNDER-CONCURRENCY-01: under `set -e` this suite could
 # exit mid-run printing NOTHING -- no SUMMARY, no case name, no line number -- and a
@@ -489,6 +500,10 @@ g7c="$(run_y "$TMP/untrusted-glm.yaml" "$(quota 13 20 45)" '{"kind":"code","size
 # the contract: a real vocabulary hole (kind=docs has no cell here) refuses
 # no_capable_cell and stays silent, so a green (g7) means both the cut-naming
 # and the hole-silence hold.
+# Round-2 negative control, lead-named (2026-09-10): collapsing the
+# no_capable_cell emit (lib:1294-1295) into pool_empty_all_excluded MUST
+# redden this case -- the hole half (g7h) loses its reason token. Verified
+# in-place on the lane lib; artifact in the task's mutation-control/.
 rm -f "$TMP/state"
 g7h="$(run_y "$TMP/untrusted-glm.yaml" "$(quota 13 20 45)" '{"kind":"docs","size":"standard"}' || true)"
 if [[ "$g7p" == *'arm=sonnet '* && "$g7p" == *'arm_excluded=glm:untrusted'* \
@@ -511,6 +526,10 @@ fi
 #      refusals must differ by the reason token itself -- a dispatch fail-open
 #      journal carries the reason alone (arb_reason=...), and the two
 #      diagnoses have opposite repairs (fix the policy vs fix the matrix).
+#      Round-2 negative control, lead-named (2026-09-10): the same collapse
+#      (lib:1294-1295 -> pool_empty_all_excluded) MUST redden this case on
+#      the vocabulary descriptor (g7gc): both descriptors would then agree
+#      on one token, which is exactly what this case exists to forbid.
 cat >"$TMP/untrusted-only.yaml" <<'YML'
 router_v2:
   quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
