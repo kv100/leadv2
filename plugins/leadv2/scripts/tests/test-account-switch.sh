@@ -7,7 +7,12 @@
 # (LEADV2_CLAUDE_PROFILE_PROBE stub) are all fixtures under mktemp -d.  The
 # probe stub is scenario-driven (per-label pct + reset iso) and can flip a
 # label to a confirmed live failure after N probings, which is what makes
-# the switch_not_taken case observable.
+# the switch_not_taken case observable.  It can also DROP a label to free
+# after N probings (a_drop_after), and the credential stub can model an
+# operator re-login mid-switch (SWITCH_TEST_A_RELOGIN: a different blob from
+# the moment the steering marker's .cred sidecar exists) -- together they
+# make the FIRST of the two switch_not_taken guards (next pick stays on the
+# OLD account, detail=next_pick_not_target) observable, case 8.
 #
 # run-all-triggers: leadv2-account-switch
 
@@ -59,7 +64,19 @@ cat > "$SECURITY_STUB" <<'SH'
 svc=""
 while [[ $# -gt 0 ]]; do case "$1" in -s) svc="$2"; shift 2 ;; *) shift ;; esac; done
 case "$svc" in
-  svc-a) printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture-a","subscriptionType":"max","expiresAt":%s}}' "${SWITCH_TEST_A_EXPIRES:?}" ;;
+  # SWITCH_TEST_A_RELOGIN (case 8 only): once the switch has armed a's
+  # steering marker (its .cred sidecar exists -- written AFTER the digest
+  # read, so the marker records the OLD blob), every later read returns a
+  # DIFFERENT blob: the operator re-logged into the exhausted account
+  # mid-switch, the PROBE-COOLDOWN-OUTLIVES-ITS-CONDITION-01 invalidation
+  # shape (sidecar digest != current digest -> steer deleted, account probes).
+  svc-a)
+    if [[ -n "${SWITCH_TEST_A_RELOGIN:-}" ]] \
+       && [[ -e "${SWITCH_TEST_TMP}/cache/identity-max_a_test/probe-cooldown-until.cred" ]]; then
+      printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture-a-relogged","subscriptionType":"max","expiresAt":%s}}' "${SWITCH_TEST_A_EXPIRES:?}"
+    else
+      printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture-a","subscriptionType":"max","expiresAt":%s}}' "${SWITCH_TEST_A_EXPIRES:?}"
+    fi ;;
   svc-b) printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture-b","subscriptionType":"max","expiresAt":%s}}' "${SWITCH_TEST_B_EXPIRES:?}" ;;
   *) exit 1 ;;
 esac
@@ -98,7 +115,8 @@ svc = os.environ.get("LEADV2_ANTHROPIC_ACTIVE_SERVICE", "")
 if not label:
     label = {"svc-a": "a", "svc-b": "b"}.get(svc, "")
 fail_after = scen.get("%s_flip_after" % label)
-if fail_after:
+drop_after = scen.get("%s_drop_after" % label)
+if fail_after or drop_after:
     cnt_path = os.path.join(os.environ.get("SWITCH_TEST_TMP", "/tmp"),
                             "probe-count-%s" % label)
     n = 0
@@ -110,9 +128,15 @@ if fail_after:
     n += 1
     with open(cnt_path, "w") as fh:
         fh.write(str(n))
-    if n >= int(fail_after):
+    if fail_after and n >= int(fail_after):
         scen["%s.five_hour_pct" % label] = "100"
         scen["%s.seven_day_pct" % label] = "100"
+    # drop = the label turns FREE from its Nth probing (not failed): the
+    # re-login-refreshed-account shape that makes the balancer legitimately
+    # go BACK to the old label on the observation run (case 8).
+    if drop_after and n >= int(drop_after):
+        scen["%s.five_hour_pct" % label] = scen.get("%s_drop_five" % label, "10")
+        scen["%s.seven_day_pct" % label] = scen.get("%s_drop_seven" % label, "5")
 def win(pct, reset):
     rem = max(0.0, 100.0 - float(pct))
     return {"pct": float(pct), "reset_iso": reset, "remaining_pct": rem,
@@ -275,6 +299,38 @@ check_grep "$OUT" 'DRY-RUN would switch a -> b' "case7 names the would-be switch
 check_nofile "$tmp/cache/identity-max_max_a_test/probe-cooldown-until" "case7 wrote no marker"
 NEXT="$(independent_pick)"
 check_grep "$NEXT" '^profile=b ' "case7 dry-run left ranking intact (b freer)"
+
+# =============================================================================
+log "== case 8: switch armed, but the NEXT pick stays on the OLD account -> FAILED (label guard, not the score guard)"
+# Shape: the marker is armed for a, then the operator re-logs into the
+# exhausted account (SWITCH_TEST_A_RELOGIN: new blob -> the selector's own
+# cooldown invalidation deletes the steer) AND the account reads FREE again
+# from its 3rd probing (a_drop_after=3: run A and run C still see 100; the
+# marker's own probe and the observation run see 10).  So the observation
+# run legitimately lands back on a with a NORMAL score (<100) -- the second
+# guard (target stopped being free) is silent, and ONLY the label guard can
+# catch it.  This is the fixture that distinguishes guard :357 from guard
+# :366; case 6 covers the other one.
+write_scenario 100 30
+printf 'a_drop_after=3\na_drop_five=10\na_drop_seven=5\n' >> "$SCEN"
+reset_cache
+mk_handoff a; H="$MK_HANDOFF_OUT"
+export_env "$H"
+export SWITCH_TEST_A_RELOGIN=1
+OUT="$(bash "$SWITCH_BIN" --handoff "$H" 2>&1)"; RC=$?
+unset SWITCH_TEST_A_RELOGIN
+check_rc "$RC" 5 "case8 rc=5 (switch_not_taken)"
+check_grep "$OUT" 'FAILED reason=switch_not_taken' "case8 names switch_not_taken"
+check_grep "$OUT" 'observed_next_pick=a' "case8 names the OBSERVED label (a)"
+check_grep "$OUT" 'expected=b' "case8 names the EXPECTED label (b)"
+if grep -q 'target stopped being free' <<<"$OUT"; then fail "case8 fired the LABEL guard, not the score guard" "stdout carries the guard-2 wording"; else pass "case8 fired the LABEL guard, not the score guard"; fi
+J8="$(cat "$H/account-switch.log" 2>/dev/null)"
+check_grep "$J8" 'reason=switch_not_taken observed=a expected=b detail=next_pick_not_target' "case8 journal: observed+expected+label-guard discriminator"
+if grep -q 'target_no_longer_free' <<<"$J8"; then fail "case8 journal has NO guard-2 marker" "found target_no_longer_free"; else pass "case8 journal has NO guard-2 marker"; fi
+check_grep "$J8" 'cooldown invalidated: credential fingerprint changed' "case8 failed via re-login cooldown invalidation (the mechanism itself)"
+# observation by the TEST, not the script's own claim: steer gone, a freest
+NEXT="$(independent_pick)"
+check_grep "$NEXT" '^profile=a ' "case8 INDEPENDENT next selector pick is a (steer gone)"
 
 # =============================================================================
 printf -- '[TEST] summary: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"

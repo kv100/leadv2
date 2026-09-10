@@ -356,7 +356,10 @@ OBSERVED_NEXT="$(printf '%s' "$SEL_E" | sed -n 's/^profile=\([a-z0-9][a-z0-9_-]*
 OBSERVED_SCORE="$(printf '%s' "$SEL_E" | sed -n 's/.*[[:space:]]score=\([0-9]*\).*/\1/p')"
 if [[ "$OBSERVED_NEXT" != "$TARGET_LABEL" ]]; then
   say "FAILED reason=switch_not_taken observed_next_pick=${OBSERVED_NEXT:-none} expected=$TARGET_LABEL -- the next selection did NOT move to the new account"
-  journal "FAILED reason=switch_not_taken observed=${OBSERVED_NEXT:-none} expected=$TARGET_LABEL marker_rc=$MARKER_RC"
+  # detail= names WHICH of the two switch_not_taken guards fired (the label
+  # guard here, target_no_longer_free below) -- without it the two refusals
+  # are indistinguishable in the journal.
+  journal "FAILED reason=switch_not_taken observed=${OBSERVED_NEXT:-none} expected=$TARGET_LABEL detail=next_pick_not_target marker_rc=$MARKER_RC"
   exit 5
 fi
 # The mirror shape of the same failure: the pick DID move, but the target
