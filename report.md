@@ -44,3 +44,27 @@ MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-phase-reco
 
 The committed probe artifact is
 `plugins/leadv2/scripts/tests/mutation-control/20260910T094646Z-live-42505.txt`.
+
+## Syntax and changed-scope runner
+
+```text
+$ bash -n plugins/leadv2/scripts/leadv2-phase-record.sh
+$ bash -n plugins/leadv2/scripts/tests/test-phase-record-class.sh
+$ bash -n tests/run-all.sh
+$ git diff --check
+exit=0
+
+$ timeout 60 bash tests/run-all.sh --scope changed
+[RUN] .../plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: delegating scope=changed to plugins/leadv2/scripts/tests/run-core-offline.sh
+exit=124
+
+$ timeout 240 bash tests/run-all.sh --scope changed
+[RUN] .../plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: delegating scope=changed to plugins/leadv2/scripts/tests/run-core-offline.sh
+exit=124
+```
+
+The focused regression and syntax checks are green. The repository wrapper
+never reached a suite result within either foreground bound; it is recorded as
+a timeout, not claimed as a passing changed-scope run.
