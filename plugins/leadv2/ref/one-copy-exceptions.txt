@@ -12,3 +12,27 @@
 agents/architect.md
 agents/critic.md
 agents/security-auditor.md
+#
+# PLUGIN-SELF-SUFFICIENT-TENANTS-ONLY-DELTA-01 (2026-09-10): --check now also
+# covers every live repo's .claude/<subroot> (subroots: scripts, agents, ref,
+# config, contracts; repo list from cross-repo-paths.yaml), keyed
+# "project/<repo-basename>/<subroot>/<relpath>" — same file, same vocabulary
+# as plugin-sync's project/ keys. Census 2026-09-10 (relative-path match,
+# caches excluded) found these undeclared copies; each is declared until
+# ported to a delta or converted. No shadow stays undeclared.
+#
+# leadv2-main-model.yaml diverges from canonical in ALL THREE live repos
+# (persona-engine, respiro-ios, m3-market): port to a .claude/leadv2-overrides/
+# delta or resync by hand, then retire the line.
+project/persona-engine/ref/leadv2-main-model.yaml
+project/respiro-ios/ref/leadv2-main-model.yaml
+project/m3-market/ref/leadv2-main-model.yaml
+# Identical contract copies in each repo's .claude/contracts/ — plain
+# --apply candidates: retire the line, then a founder-run --apply converts
+# the file to a symlink (one inode forever).
+project/persona-engine/contracts/leadv2-scorecard.schema.json
+project/persona-engine/contracts/leadv2-shadow-proposal.schema.json
+project/respiro-ios/contracts/leadv2-scorecard.schema.json
+project/respiro-ios/contracts/leadv2-shadow-proposal.schema.json
+project/m3-market/contracts/leadv2-scorecard.schema.json
+project/m3-market/contracts/leadv2-shadow-proposal.schema.json

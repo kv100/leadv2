@@ -1,11 +1,26 @@
 #!/usr/bin/env bash
-# leadv2-one-copy-convert.sh — PLUGIN-ONE-COPY-01 / APPLY-ONE-COPY-01
+# leadv2-one-copy-convert.sh — PLUGIN-ONE-COPY-01 / APPLY-ONE-COPY-01 /
+# PLUGIN-SELF-SUFFICIENT-TENANTS-ONLY-DELTA-01
 #
-# Converts the shared trees (~/.claude/leadv2-shared/scripts,
-# ~/.claude/agents-shared) from real copies into per-file symlinks pointing
-# at this canonical repo, so "fix once in ~/Projects/leadv2" is actually true
-# on disk. Reversible: --revert restores real copies from the backup this
-# script makes before touching anything.
+# Invariant: the plugin is self-sufficient from its own tree; a tenant may
+# supply only a DECLARED delta. Locally that means one inode (a commit to
+# main IS the deploy); a tenant tree holding an undeclared REAL copy of a
+# plugin-owned file is the 2026-07-29 defect shape whether the copy is
+# identical or diverged. Converts the shared trees
+# (~/.claude/leadv2-shared/scripts, ~/.claude/agents-shared) from real
+# copies into per-file symlinks pointing at this canonical repo. Reversible:
+# --revert restores real copies from the backup this script makes before
+# touching anything.
+#
+# PLUGIN-SELF-SUFFICIENT-TENANTS-ONLY-DELTA-01 (2026-09-10): --check also
+# covers every live repo's .claude/<subroot> for the plugin subroots
+# (scripts, agents, ref, config, contracts). Repo list is read from the same
+# cross-repo-paths.yaml plugin-sync uses — never hardcoded (campaign-platform
+# was removed from it; hardcoding here would resurrect it). Every undeclared
+# real copy there is NAMED and fails the check. --apply stays scoped to the
+# two shared trees: its backup/revert machinery only covers those, so
+# project-root copies are reported, never converted here (retire the
+# exception line, then a founder-run --apply is the conversion path).
 #
 # HARD PRECONDITION: refuses to run --apply while LIVENESS-SELF-DESTRUCT-01
 # is open (leadv2-lane-liveness.sh overwrites itself when run --all --json).
@@ -13,12 +28,13 @@
 # HEAD instead of a disposable working copy. See architect prepass §0.
 #
 # Usage:
-#   leadv2-one-copy-convert.sh --check           # dry-run: report only, exit 1 on REGRESSION/BADLINK
-#   leadv2-one-copy-convert.sh --apply           # convert (refuses if precondition unmet)
+#   leadv2-one-copy-convert.sh --check           # gate: report only, exit 1 on REGRESSION/BADLINK/DIVERGED/ROTTEN-EXCEPTION
+#   leadv2-one-copy-convert.sh --apply           # convert shared trees (refuses if precondition unmet)
 #   leadv2-one-copy-convert.sh --revert          # restore real copies from the newest backup's manifest
 #
-# Exit codes: 0 = clean/converted, 1 = violations found (--check) or refused
-# (--apply precondition unmet), 2 = usage error.
+# Exit codes: 0 = clean/converted, 1 = violations found (--check: an
+# undeclared real copy — REGRESSION/DIVERGED — a BADLINK, or a ROTTEN
+# exception line) or refused (--apply precondition unmet), 2 = usage error.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,14 +47,70 @@ EXCEPTIONS_FILE="${LEADV2_ONE_COPY_EXCEPTIONS_FILE:-${CANONICAL_ROOT}/plugins/le
 # tests/test-one-copy-drift.sh can point --check at a disposable scratch
 # fixture instead of the real ~/.claude shared trees (TEST-DESTROYS-
 # PRODUCTION-SCRIPT-01 containment pattern — see that test's own comment).
-# Root-key naming (root_key_for) still matches on the LAST path segments
-# (".../agents-shared", ".../leadv2-shared/scripts"), so a scratch fixture
-# must name its leaf directories the same way for the exception list to key
-# correctly; only the prefix is overridable.
+# Root-key naming matches on the LAST path segments (".../agents-shared",
+# ".../leadv2-shared/scripts"), so a scratch fixture must name its leaf
+# directories the same way for the exception list to key correctly; only the
+# prefix is overridable.
+#
+# PLUGIN-SELF-SUFFICIENT-TENANTS-ONLY-DELTA-01: a ROOTS entry is
+# "<key>|<tenant-root>|<canonical-root>|<scope>". scope=apply pairs (the two
+# shared trees) are backed up by --apply and convertible; scope=check pairs
+# (each live repo's .claude/<subroot>) are reported by --check and NEVER
+# converted — the backup tar covers the shared trees only. The "scripts"
+# pair is a DEAD ROOT: no readers since 2026-09-06 (everything under it is
+# already a symlink; nothing executes from it). It stays because plugin-sync
+# (b) still produces it and --revert manifests key on it — --check names it
+# DEAD on every run so its "coverage" is never mistaken for live coverage.
+CROSS_REPO_CONFIG="${LEADV2_ONE_COPY_CROSS_REPO_CONFIG:-${HOME}/.claude/leadv2-shared/cross-repo-paths.yaml}"
+PROJECT_ROOTS_ENABLED="${LEADV2_ONE_COPY_PROJECT_ROOTS:-1}"
+PROJECT_SUBROOTS="scripts agents ref config contracts"
+
 declare -a ROOTS=(
-  "${LEADV2_ONE_COPY_SCRIPTS_SHARED_ROOT:-${HOME}/.claude/leadv2-shared/scripts}|${LEADV2_ONE_COPY_SCRIPTS_CANONICAL_ROOT:-${CANONICAL_ROOT}/plugins/leadv2/scripts}"
-  "${LEADV2_ONE_COPY_AGENTS_SHARED_ROOT:-${HOME}/.claude/agents-shared}|${LEADV2_ONE_COPY_AGENTS_CANONICAL_ROOT:-${CANONICAL_ROOT}/plugins/leadv2/agents}"
+  "scripts|${LEADV2_ONE_COPY_SCRIPTS_SHARED_ROOT:-${HOME}/.claude/leadv2-shared/scripts}|${LEADV2_ONE_COPY_SCRIPTS_CANONICAL_ROOT:-${CANONICAL_ROOT}/plugins/leadv2/scripts}|apply"
+  "agents|${LEADV2_ONE_COPY_AGENTS_SHARED_ROOT:-${HOME}/.claude/agents-shared}|${LEADV2_ONE_COPY_AGENTS_CANONICAL_ROOT:-${CANONICAL_ROOT}/plugins/leadv2/agents}|apply"
 )
+
+# Live repo roots come from cross-repo-paths.yaml (same registry plugin-sync
+# reads). A repo listed there but without .claude/<subroot> on disk is a
+# skip, never a refusal; a missing config file downgrades to shared-roots-
+# only scanning with one WARN.
+declare -a REPO_NAMES=() REPO_PATHS=()
+load_repo_roots() {
+  REPO_NAMES=(); REPO_PATHS=()
+  if [[ ! -f "$CROSS_REPO_CONFIG" ]]; then
+    log "WARN: cross-repo config not found at $CROSS_REPO_CONFIG — repo .claude trees not scanned"
+    return 0
+  fi
+  local raw name="" val
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    if [[ "$raw" =~ ^[[:space:]]{2}([^[:space:]#][^:]*):[[:space:]]*$ ]]; then
+      name="${BASH_REMATCH[1]}"
+    elif [[ "$raw" =~ ^[[:space:]]{4}path:[[:space:]]*(.+)$ ]]; then
+      val="${BASH_REMATCH[1]}"
+      val="${val%%#*}"
+      val="${val#\"}"; val="${val%\"}"
+      val="${val#\'}"; val="${val%\'}"
+      val="${val%"${val##*[![:space:]]}"}"
+      if [[ -n "$name" && -n "$val" ]]; then
+        val="${val/#\~/$HOME}"
+        REPO_NAMES+=("$name"); REPO_PATHS+=("$val")
+      fi
+      name=""
+    fi
+  done < "$CROSS_REPO_CONFIG"
+}
+
+append_project_roots() {
+  [[ "$PROJECT_ROOTS_ENABLED" == "1" ]] || return 0
+  load_repo_roots
+  local i sub
+  for i in "${!REPO_NAMES[@]}"; do
+    for sub in $PROJECT_SUBROOTS; do
+      ROOTS+=("project/${REPO_NAMES[$i]}/${sub}|${REPO_PATHS[$i]}/.claude/${sub}|${CANONICAL_ROOT}/plugins/leadv2/${sub}|check")
+    done
+  done
+}
+append_project_roots
 
 MODE=""
 case "${1:-}" in
@@ -50,23 +122,33 @@ esac
 
 log() { printf '[one-copy] %s\n' "$1"; }
 
+# Build-artifact caches are excluded from comparison by an EXPLICIT list: a
+# __pycache__ shadow is not tenant drift (10 of 11 persona-engine
+# "divergences" in the 2026-09-10 census were caches hiding the 3 real
+# shadows). Lane worktrees under .claude/ are disposable per-task checkouts —
+# scanning them would red the gate for every concurrent lane in every repo.
+CACHE_PRUNE_DIRS="__pycache__ .mypy_cache .pytest_cache .ruff_cache .tox node_modules"
+PROJECT_PRUNE_DIRS="worktrees"
+
 # is_skip <relpath> -> 0 if this path is a known shared-only, never-linked entry
 is_skip() {
   case "$1" in
-    docs/*|node_modules/*|__pycache__/*|*/__pycache__/*|.mypy_cache/*|*/.mypy_cache/*) return 0 ;;
+    docs/*|node_modules/*|__pycache__/*|*/__pycache__/*|.mypy_cache/*|*/.mypy_cache/*|.DS_Store|*/.DS_Store) return 0 ;;
     *) return 1 ;;
   esac
 }
 
-# root_key_for <shared_root> -> "agents" | "scripts" | "unknown"
-# Matches the ROOTS pairing so the exception list can key on a stable,
-# repo-portable "<root-key>/<relpath>" string instead of an absolute path.
-root_key_for() {
-  case "$1" in
-    */agents-shared) printf 'agents' ;;
-    */leadv2-shared/scripts) printf 'scripts' ;;
-    *) printf 'unknown' ;;
-  esac
+# enumerate_root_files <tenant-root> [extra-prune-names...] -> NUL-separated
+# regular files AND symlinks, with the explicit cache list always pruned.
+enumerate_root_files() {
+  local root="$1"; shift
+  local n names="${CACHE_PRUNE_DIRS} $*" args=() first=1
+  for n in $names; do
+    [[ $first -eq 0 ]] && args+=(-o)
+    first=0
+    args+=(-name "$n")
+  done
+  find "$root" \( "${args[@]}" \) -prune -o \( -type f -o -type l \) -print0 2>/dev/null
 }
 
 # root_key_to_subpath <root-key> -> path under ~/.claude for that root
@@ -104,19 +186,26 @@ is_exception() {
   return 1
 }
 
-# enumerate_pairs -> prints "shared_root<TAB>canonical_root<TAB>relpath" for
-# every regular file OR symlink under each shared root (D1: -type f alone is
-# blind to symlinks, so a converted tree enumerates as empty and cmd_check's
-# `linked` counter is permanently 0 — see architect prepass §1 D1).
+# enumerate_pairs <scope> -> prints "key<TAB>tenant_root<TAB>canonical_root<TAB>relpath"
+# for every regular file OR symlink under each root of that scope ("all"
+# covers every pair — what --check needs; "apply" only the convertible
+# shared trees). D1: -type f alone is blind to symlinks, so a converted tree
+# enumerates as empty and cmd_check's `linked` counter is permanently 0 —
+# see architect prepass §1 D1. Project-scope roots additionally prune lane
+# worktrees (disposable per-task checkouts).
 enumerate_pairs() {
-  local pair shared_root canonical_root f relpath
+  local want="$1" pair rest key shared_root canonical_root scope extra f relpath
   for pair in "${ROOTS[@]}"; do
-    shared_root="${pair%%|*}"; canonical_root="${pair#*|}"
+    key="${pair%%|*}"; rest="${pair#*|}"
+    shared_root="${rest%%|*}"; rest="${rest#*|}"
+    canonical_root="${rest%%|*}"; scope="${rest##*|}"
+    [[ "$want" == "apply" && "$scope" != "apply" ]] && continue
+    if [[ "$scope" == "check" ]]; then extra="$PROJECT_PRUNE_DIRS"; else extra=""; fi
     [[ -d "$shared_root" ]] || continue
     while IFS= read -r -d '' f; do
       relpath="${f#"${shared_root}"/}"
-      printf '%s\t%s\t%s\n' "$shared_root" "$canonical_root" "$relpath"
-    done < <(find "$shared_root" \( -path "*/node_modules" -o -path "*/__pycache__" -o -path "*/.mypy_cache" \) -prune -o \( -type f -o -type l \) -print0)
+      printf '%s\t%s\t%s\t%s\n' "$key" "$shared_root" "$canonical_root" "$relpath"
+    done < <(enumerate_root_files "$shared_root" $extra)
   done
 }
 
@@ -146,51 +235,147 @@ precondition_ok() {
 
 cmd_check() {
   load_exceptions
-  local linked=0 regression=0 badlink=0 expected_override=0 diverged=0 info=0
-  local shared_root canonical_root relpath canon_file shared_file root_key key
-  while IFS=$'\t' read -r shared_root canonical_root relpath; do
-    if is_skip "$relpath"; then info=$((info + 1)); continue; fi
+  local linked=0 regression=0 badlink=0 expected_override=0 diverged=0 info=0 rotten=0 unused=0
+  local key shared_root canonical_root relpath canon_file shared_file
+
+  # Per-root counters: every ROOTS entry gets ONE visibility line at the end,
+  # so nothing is guarded silently and an absent root shows files=0 rather
+  # than looking covered by omission. The scripts root's line carries the
+  # DEAD-ROOT marker every run (see the ROOTS declaration comment).
+  local -a RK=() RN=() RL=() RR=() RB=() RD=() RO=() RI=()
+  local pair rest k idx i
+  for pair in "${ROOTS[@]}"; do
+    k="${pair%%|*}"
+    RK+=("$k"); RN+=(0); RL+=(0); RR+=(0); RB+=(0); RD+=(0); RO+=(0); RI+=(0)
+  done
+  root_idx() { # <key> -> index into RK, or -1
+    local j
+    for j in "${!RK[@]}"; do [[ "${RK[$j]}" == "$1" ]] && { printf '%s' "$j"; return 0; }; done
+    printf '%s' -1
+  }
+  bump() { # <key> <counter-suffix> — counters are RK-indexed parallel arrays
+    local ix; ix="$(root_idx "$1")"; [[ "$ix" -lt 0 ]] && return 0
+    case "$2" in
+      n)  RN[$ix]=$(( ${RN[$ix]} + 1 )) ;;
+      l)  RL[$ix]=$(( ${RL[$ix]} + 1 )) ;;
+      r)  RR[$ix]=$(( ${RR[$ix]} + 1 )) ;;
+      b)  RB[$ix]=$(( ${RB[$ix]} + 1 )) ;;
+      d)  RD[$ix]=$(( ${RD[$ix]} + 1 )) ;;
+      o)  RO[$ix]=$(( ${RO[$ix]} + 1 )) ;;
+      i)  RI[$ix]=$(( ${RI[$ix]} + 1 )) ;;
+    esac
+  }
+
+  while IFS=$'\t' read -r key shared_root canonical_root relpath; do
+    if is_skip "$relpath"; then info=$((info + 1)); bump "$key" i; continue; fi
     canon_file="${canonical_root}/${relpath}"
     shared_file="${shared_root}/${relpath}"
     if [[ ! -e "$canon_file" && ! -L "$canon_file" ]]; then
-      info=$((info + 1))
+      # tenant-only file: no canonical twin means not a copy, not a violation
+      info=$((info + 1)); bump "$key" i
       continue
     fi
-    root_key="$(root_key_for "$shared_root")"
-    key="${root_key}/${relpath}"
+    bump "$key" n
 
     if [[ -L "$shared_file" ]]; then
       local target canon_resolved
       target="$(readlink -f "$shared_file" 2>/dev/null || true)"
       canon_resolved="$(readlink -f "$canon_file" 2>/dev/null || printf '%s' "$canon_file")"
       if [[ -z "$target" || "$target" != "$canon_resolved" ]]; then
-        badlink=$((badlink + 1))
+        badlink=$((badlink + 1)); bump "$key" b
         log "BADLINK: ${shared_file} -> ${target:-<dangling>} (expected: ${canon_resolved})"
       else
-        linked=$((linked + 1))
+        linked=$((linked + 1)); bump "$key" l
       fi
       continue
     fi
 
-    if is_exception "$key"; then
-      expected_override=$((expected_override + 1))
+    if is_exception "${key}/${relpath}"; then
+      expected_override=$((expected_override + 1)); bump "$key" o
       log "EXPECTED-OVERRIDE: ${shared_file} (declared)"
       if cmp -s "$shared_file" "$canon_file"; then
-        log "STALE-EXCEPTION: ${key} (identical to canonical — override no longer needed, consider deleting the exception-list line)"
+        log "STALE-EXCEPTION: ${key}/${relpath} (identical to canonical — override no longer needed, consider deleting the exception-list line)"
       fi
       continue
     fi
 
+    # An undeclared REAL copy of a plugin-owned file gates whether identical
+    # or diverged — the 2026-07-29 defect was a diverged copy that never
+    # received the fix the founder was told existed.
     if cmp -s "$shared_file" "$canon_file"; then
-      regression=$((regression + 1))
+      regression=$((regression + 1)); bump "$key" r
       log "REGRESSION: ${shared_file} is a real file, identical to canonical (${canon_file})"
     else
-      diverged=$((diverged + 1))
+      diverged=$((diverged + 1)); bump "$key" d
       log "DIVERGED: ${shared_file} differs from canonical (${canon_file}) — not on exception list"
     fi
-  done < <(enumerate_pairs)
-  log "tally: linked=${linked} regression=${regression} badlink=${badlink} expected_override=${expected_override} diverged=${diverged} info(shared-only or no-canonical-counterpart)=${info}"
-  [[ "$regression" -eq 0 && "$badlink" -eq 0 ]]
+  done < <(enumerate_pairs all)
+
+  # Exception-list hygiene. A line whose canonical twin has disappeared is
+  # rot and gates (otherwise the list becomes a graveyard). A line whose
+  # tenant side is gone or already a symlink guards nothing — advisory only.
+  # Only keys with a canonical mapping this guard defines are validated;
+  # plugin-sync's own vocabulary (project/<repo>/toplevel/..., plain
+  # .claude/scripts relpaths) is left to plugin-sync.
+  local e arest repo sub rel twin tenant
+  for e in "${EXCEPTIONS[@]:-}"; do
+    [[ -z "$e" ]] && continue
+    twin=""; tenant=""
+    case "$e" in
+      scripts/*)
+        rel="${e#scripts/}"
+        twin="${LEADV2_ONE_COPY_SCRIPTS_CANONICAL_ROOT:-${CANONICAL_ROOT}/plugins/leadv2/scripts}/${rel}"
+        tenant="${LEADV2_ONE_COPY_SCRIPTS_SHARED_ROOT:-${HOME}/.claude/leadv2-shared/scripts}/${rel}"
+        ;;
+      agents/*)
+        rel="${e#agents/}"
+        twin="${LEADV2_ONE_COPY_AGENTS_CANONICAL_ROOT:-${CANONICAL_ROOT}/plugins/leadv2/agents}/${rel}"
+        tenant="${LEADV2_ONE_COPY_AGENTS_SHARED_ROOT:-${HOME}/.claude/agents-shared}/${rel}"
+        ;;
+      project/*)
+        arest="${e#project/}"
+        repo="${arest%%/*}"; arest="${arest#*/}"
+        sub="${arest%%/*}"; rel="${arest#*/}"
+        case " $PROJECT_SUBROOTS " in
+          *" $sub "*) ;;
+          *) continue ;; # plugin-sync vocabulary — not ours to validate
+        esac
+        [[ "$rel" == "$arest" ]] && continue # no relpath under the subroot
+        twin="${CANONICAL_ROOT}/plugins/leadv2/${sub}/${rel}"
+        for i in "${!REPO_NAMES[@]}"; do
+          if [[ "${REPO_NAMES[$i]}" == "$repo" ]]; then
+            tenant="${REPO_PATHS[$i]}/.claude/${sub}/${rel}"
+            break
+          fi
+        done
+        ;;
+      *) continue ;;
+    esac
+    if [[ ! -e "$twin" && ! -L "$twin" ]]; then
+      rotten=$((rotten + 1))
+      log "ROTTEN-EXCEPTION: ${e} (canonical twin ${twin} no longer exists — prune the line)"
+      continue
+    fi
+    if [[ -n "$tenant" ]]; then
+      if [[ -L "$tenant" ]]; then
+        unused=$((unused + 1))
+        log "UNUSED-EXCEPTION: ${e} (tenant file is already a symlink — the override was converted; prune the line)"
+      elif [[ ! -e "$tenant" ]]; then
+        unused=$((unused + 1))
+        log "UNUSED-EXCEPTION: ${e} (no tenant file at ${tenant} — the line guards nothing)"
+      fi
+    fi
+  done
+
+  for i in "${!RK[@]}"; do
+    if [[ "${RK[$i]}" == "scripts" ]]; then
+      log "root ${RK[$i]}: files=${RN[$i]} linked=${RL[$i]} overrides=${RO[$i]} violations=$(( ${RR[$i]} + ${RB[$i]} + ${RD[$i]} )) info=${RI[$i]} [DEAD-ROOT: no readers since 2026-09-06; kept only as plugin-sync (b) target + --apply/--revert pairing]"
+    else
+      log "root ${RK[$i]}: files=${RN[$i]} linked=${RL[$i]} overrides=${RO[$i]} violations=$(( ${RR[$i]} + ${RB[$i]} + ${RD[$i]} )) info=${RI[$i]}"
+    fi
+  done
+  log "tally: linked=${linked} regression=${regression} badlink=${badlink} expected_override=${expected_override} diverged=${diverged} rotten_exceptions=${rotten} unused_exceptions=${unused} info(shared-only or no-canonical-counterpart)=${info}"
+  [[ "$regression" -eq 0 && "$badlink" -eq 0 && "$diverged" -eq 0 && "$rotten" -eq 0 ]]
 }
 
 cmd_apply() {
@@ -221,17 +406,18 @@ cmd_apply() {
 
   load_exceptions
 
+  # apply scope = the two shared trees ONLY. Project .claude roots are
+  # check-only: this backup below tars exactly leadv2-shared + agents-shared,
+  # so converting anything else here would be an unbacked cross-repo write.
   local converted=0 skipped=0 exempted=0
-  local shared_root canonical_root relpath canon_file shared_file root_key key
-  while IFS=$'\t' read -r shared_root canonical_root relpath; do
+  local key shared_root canonical_root relpath canon_file shared_file
+  while IFS=$'\t' read -r key shared_root canonical_root relpath; do
     if is_skip "$relpath"; then continue; fi
     canon_file="${canonical_root}/${relpath}"
     shared_file="${shared_root}/${relpath}"
     [[ -e "$canon_file" || -L "$canon_file" ]] || continue
     if [[ -L "$shared_file" ]]; then continue; fi
-
-    root_key="$(root_key_for "$shared_root")"
-    key="${root_key}/${relpath}"
+    key="${key}/${relpath}"
 
     # exception list is a hard skip BEFORE the cmp -s guard (belt-and-braces —
     # never depend on content-inequality alone to protect a founder override).
@@ -330,9 +516,14 @@ cmd_revert() {
     # per R2), since that is the only backup available. Warn loudly — a
     # concurrent later --apply's conversions are NOT distinguished here.
     log "WARN: no manifest for $latest — falling back to whole-tree restore (R2-scoped delete, full tar restore) for both shared roots"
-    local pair shared_root f target
+    # apply-scope pairs only: a repo .claude symlink into canonical is NOT
+    # this backup's to delete (the tar contains no project-root files, so
+    # deleting one here would never restore it).
+    local pair rest rest2 shared_root scope f target
     for pair in "${ROOTS[@]}"; do
-      shared_root="${pair%%|*}"
+      rest="${pair#*|}"; shared_root="${rest%%|*}"
+      rest2="${rest#*|}"; scope="${rest2##*|}"
+      [[ "$scope" != "apply" ]] && continue
       [[ -d "$shared_root" ]] || continue
       while IFS= read -r -d '' f; do
         target="$(readlink -f "$f" 2>/dev/null || true)"
