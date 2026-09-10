@@ -10,7 +10,7 @@
 # lib/leadv2-dod-gate.sh's check (b) mutation sub-check will accept.
 #
 # Usage:
-#   leadv2-mutation-control.sh <suite> <file> <sed-or-patch> [task_dir]
+#   leadv2-mutation-control.sh [--live] <suite> <file> <sed-or-patch> [task_dir]
 #     <suite>       path (repo-relative or absolute) to the target suite script
 #     <file>        path (repo-relative or absolute) to the file to mutate
 #     <sed-or-patch> either a sed(1) expression (applied via `sed -i`) or a
@@ -19,6 +19,21 @@
 #     [task_dir]    where to write mutation-control/<run-id>.txt; defaults to
 #                   $(pwd) if omitted (still under LANE_WRITES-owned dirs
 #                   only — the caller is responsible for passing the right one)
+#
+# Two modes (W-LEAD-LAST-MILE-01 §2):
+#   default        WORKER mode — mutates a scratch copy of the lane (this
+#                  tool's original contract; artifact accepted by
+#                  lib/leadv2-dod-gate.sh).
+#   --live         LEAD mode — applies the SAME mutation to the REAL file in
+#                  the lane checkout, proves the suite reds there, then
+#                  restores the file byte-identical and proves the repo's
+#                  `git status --porcelain` is byte-identical to the pre-run
+#                  snapshot (empty when the checkout was clean). A mutation
+#                  of a scratch copy proves nothing for the lead — that is
+#                  why this mode exists. Restoration is guaranteed by trap
+#                  on EVERY controlled exit, including TERM/INT/HUP mid-run
+#                  (kill); kill -9 is the one signal no trap can catch.
+#                  Artifact carries mode=live + porcelain_clean=yes.
 #
 # lane_diff_hash is computed HERE, never taken from the caller (fix-round-2
 # finding 1): it is sha256 of `git diff <base> HEAD` over ROOT's own committed
@@ -39,8 +54,11 @@
 # .git/worktrees/ and is prune-safe by construction.
 set -uo pipefail
 
+LIVE=0
+if [[ "${1:-}" == "--live" ]]; then LIVE=1; shift; fi
+
 if [[ $# -lt 3 || $# -gt 4 ]]; then
-  printf 'Usage: %s <suite> <file> <sed-or-patch> [task_dir]\n' "$0" >&2
+  printf 'Usage: %s [--live] <suite> <file> <sed-or-patch> [task_dir]\n' "$0" >&2
   exit 3
 fi
 
@@ -147,6 +165,132 @@ fi
 
 FILE_REL="${FILE_ABS#${ROOT}/}"
 SUITE_REL="${SUITE_ABS#${ROOT}/}"
+
+# ── LEAD mode: same mutation, REAL file, trap-guaranteed restore ────────────
+# Globals (NOT locals): the EXIT trap must see them even after this function
+# has returned, and set -u must not blow up inside the trap.
+LIVE_BACKUP=""; LIVE_OUT=""; LIVE_MUTATED=0; LIVE_CHILD=""
+
+_mc_live_restore() { # called from the EXIT trap — restore beats everything
+  if [[ "${LIVE_MUTATED:-0}" -eq 1 && -f "${LIVE_BACKUP}" && -f "${FILE_ABS}" ]]; then
+    cp -f "${LIVE_BACKUP}" "${FILE_ABS}"
+  fi
+  rm -f "${LIVE_BACKUP}" "${LIVE_OUT}" "${LIVE_OUT}.mut" 2>/dev/null
+}
+
+_mc_live_flow() {
+  local rc out red_line is_patch=0 run_dir porcelain_before porcelain_after
+  run_dir="$(dirname "${SUITE_ABS}")"
+  LIVE_OUT="$(mktemp "${TMPDIR:-/tmp}/leadv2-mutctl-live.XXXXXX")"
+  LIVE_BACKUP="$(mktemp "${TMPDIR:-/tmp}/leadv2-mutctl-live.XXXXXX")"
+  trap '_mc_live_restore' EXIT
+  # EXIT alone never fires on an untrapped TERM/INT/HUP (macOS bash 3.2);
+  # route them through exit() so the restore still runs. The suite child is
+  # killed FIRST so a foreground wait cannot defer the trap behind it.
+  trap '[[ -n "${LIVE_CHILD:-}" ]] && kill "${LIVE_CHILD}" 2>/dev/null; exit 143' TERM
+  trap '[[ -n "${LIVE_CHILD:-}" ]] && kill "${LIVE_CHILD}" 2>/dev/null; exit 130' INT
+  trap '[[ -n "${LIVE_CHILD:-}" ]] && kill "${LIVE_CHILD}" 2>/dev/null; exit 129' HUP
+
+  # baseline green in the REAL checkout — same order as scratch mode
+  ( cd "${run_dir}" && bash "${SUITE_ABS}" ) > "${LIVE_OUT}" 2>&1
+  rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    printf 'MUTATION-CONTROL control_not_applied mode=live reason=baseline_not_green baseline_rc=%s\n' "${rc}"
+    tail -20 "${LIVE_OUT}"
+    return 2
+  fi
+
+  porcelain_before="$(git -C "${ROOT}" status --porcelain 2>/dev/null | LC_ALL=C sort)"
+
+  # build/apply the mutant; only touch the real file once it differs
+  if head -5 "${MUTATION_ARG}" 2>/dev/null | grep -qE '^(--- |\+\+\+ )'; then is_patch=1; fi
+  if [[ ${is_patch} -eq 1 ]]; then
+    if ! patch -p1 --dry-run -d "${ROOT}" < "${MUTATION_ARG}" >/dev/null 2>&1; then
+      printf 'MUTATION-CONTROL control_not_applied mode=live reason=anchor_count\n'
+      return 2
+    fi
+    cp -f "${FILE_ABS}" "${LIVE_BACKUP}"; LIVE_MUTATED=1
+    patch -p1 -d "${ROOT}" < "${MUTATION_ARG}" >/dev/null 2>&1
+  else
+    sed -e "${MUTATION_ARG}" "${FILE_ABS}" > "${LIVE_OUT}.mut" 2>/dev/null
+    if [[ ! -s "${LIVE_OUT}.mut" && -s "${FILE_ABS}" ]]; then
+      printf 'MUTATION-CONTROL control_not_applied mode=live reason=anchor_count\n'
+      return 2
+    fi
+    if cmp -s "${FILE_ABS}" "${LIVE_OUT}.mut" 2>/dev/null; then
+      printf 'MUTATION-CONTROL control_not_applied mode=live reason=noop_edit\n'
+      return 2
+    fi
+    cp -f "${FILE_ABS}" "${LIVE_BACKUP}"; LIVE_MUTATED=1
+    cp -f "${LIVE_OUT}.mut" "${FILE_ABS}"
+  fi
+  if git -C "${ROOT}" diff --quiet -- "${FILE_REL}" 2>/dev/null; then
+    printf 'MUTATION-CONTROL control_not_applied mode=live reason=noop_edit\n'
+    return 2
+  fi
+
+  local mut_hash
+  mut_hash="$(git -C "${ROOT}" diff --no-ext-diff --binary --no-color -- "${FILE_REL}" 2>/dev/null \
+    | shasum -a 256 2>/dev/null | awk '{print $1}')"
+  if [[ -z "${mut_hash}" || "${mut_hash}" == e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ]]; then
+    printf 'MUTATION-CONTROL control_not_applied mode=live reason=empty_mutation_diff\n'
+    return 2
+  fi
+
+  # mutated run — backgrounded so a TERM reaches the parent's trap NOW,
+  # not after the suite exits on its own
+  ( cd "${run_dir}" && exec bash "${SUITE_ABS}" ) > "${LIVE_OUT}" 2>&1 &
+  LIVE_CHILD=$!
+  wait "${LIVE_CHILD}"; rc=$?
+  LIVE_CHILD=""
+  out="$(cat "${LIVE_OUT}")"
+  if [[ ${rc} -eq 0 ]]; then
+    printf 'MUTATION-CONTROL mutant_survived mode=live suite=%s file=%s\n' "${SUITE_REL}" "${FILE_REL}"
+    printf '%s\n' "${out}" | tail -20
+    return 1 # restore happens in the trap
+  fi
+
+  red_line="$(printf '%s\n' "${out}" | grep -iE 'fail|assert|error' | head -1)"
+  [[ -z "${red_line}" ]] && red_line="$(printf '%s\n' "${out}" | tail -1)"
+
+  # restore NOW on the happy path too; the trap is the crash net, not the plan
+  cp -f "${LIVE_BACKUP}" "${FILE_ABS}"
+  LIVE_MUTATED=0
+
+  porcelain_after="$(git -C "${ROOT}" status --porcelain 2>/dev/null | LC_ALL=C sort)"
+  if [[ "${porcelain_after}" != "${porcelain_before}" ]]; then
+    printf 'MUTATION-CONTROL restore_failed mode=live file=%s — porcelain differs from the pre-run snapshot\n' "${FILE_REL}"
+    diff <(printf '%s\n' "${porcelain_before}") <(printf '%s\n' "${porcelain_after}") | head -20
+    return 1
+  fi
+
+  local run_id mc_dir
+  run_id="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || echo run)-live-$$"
+  mc_dir="${TASK_DIR}/mutation-control"
+  mkdir -p "${mc_dir}" 2>/dev/null || true
+  {
+    printf 'suite=%s\n' "${SUITE_REL}"
+    printf 'file=%s\n' "${FILE_REL}"
+    printf 'anchor=%s\n' "${MUTATION_ARG}"
+    printf 'mode=live\n'
+    printf 'baseline_rc=0\n'
+    printf 'mutated_rc=%s\n' "${rc}"
+    printf 'red_line=%s\n' "${red_line}"
+    printf 'diff_hash=%s\n' "${mut_hash}"
+    printf 'lane_diff_hash=%s\n' "${LANE_DIFF_HASH}"
+    printf 'porcelain_clean=yes\n'
+    printf 'restored=yes\n'
+  } > "${mc_dir}/${run_id}.txt" 2>/dev/null
+
+  printf 'MUTATION-CONTROL ok mode=live suite=%s file=%s red_line=%s diff_hash=%s lane_diff_hash=%s porcelain_clean=yes\n' \
+    "${SUITE_REL}" "${FILE_REL}" "${red_line}" "${mut_hash}" "${LANE_DIFF_HASH}"
+  return 0
+}
+
+if [[ ${LIVE} -eq 1 ]]; then
+  _mc_live_flow
+  exit $?
+fi
 
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-mutctl.XXXXXX")"
 trap 'rm -rf "${SCRATCH}"' EXIT
