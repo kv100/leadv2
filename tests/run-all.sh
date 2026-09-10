@@ -285,6 +285,8 @@ leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-record-class.sh
 leadv2-dispatch-code:plugins/leadv2/tests/test-exclusion-stages.sh
 leadv2-route-arbiter:plugins/leadv2/tests/test-exclusion-stages.sh
 leadv2-routing.yaml:plugins/leadv2/tests/test-exclusion-stages.sh
+leadv2-workflow-step:plugins/leadv2/scripts/tests/test-workflow-step-runner.sh
+leadv2-launch-registry:plugins/leadv2/scripts/tests/test-workflow-step-runner.sh
 "
 
 # --- self-registration discovery (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01) ----
