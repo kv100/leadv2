@@ -13,7 +13,7 @@ one literal for `_record()` and another for `print(...)`. The two target paths
 now use one `refusal_reason` assignment, supplied to both surfaces. There is no
 second literal source for either `no_capable_cell` or `pool_empty_all_excluded`.
 
-## Direct mutation acceptance
+## Direct mutation evidence
 
 The focused, registered `test-route-arbiter.sh` copies the real arbiter,
 mutates each single-source assignment, sources that copy, and invokes
