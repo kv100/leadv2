@@ -1003,14 +1003,46 @@ for _c in _fit: _arm_cells.setdefault(_c.get('arm'),[]).append(_c)
 # boundary (cost policy is exactly what a pin exists to override) but never
 # the matrix, launchability, trust or budget.
 requested_arm=str(d.get('requested_arm') or '').strip()
+# BUILTIN-AGENT-SPAWN-DEADLOCK-01 (2026-09-10): two executor-truth inputs,
+# both opt-in per request -- absent, every line below behaves byte-identically.
+#
+# speakable_models -- the finite model enumeration the CALLER's execution tool
+# can physically pronounce (the built-in Agent tool: sonnet|opus|haiku|fable;
+# declared once in leadv2-spawn-arbiter-gate.sh, never a second yaml). A
+# decision naming a model outside that set cannot be executed, so under it the
+# default auction admits only arms with a speakable cell (pool_default still
+# applies -- speakability removes what the executor cannot run, it widens
+# nothing). freepool drops out here by itself: its only model,
+# freepool-default, is in nobody's speakable set. That is the RIGHT reason --
+# not a hardcoded arm exclusion (feedback_never_hardcode_arm_exclusion).
+speakable_raw=d.get('speakable_models')
+speakable=({str(m).strip() for m in speakable_raw if str(m).strip()} if isinstance(speakable_raw,list) else None)
+# requested_model -- a model-level pin (the spawn gate pins the model the
+# spawn itself asked for). Resolved to an arm through the FULL matrix, then
+# the existing requested_arm machinery runs unchanged: honoured or refused
+# honestly, never substituted. A model no arm carries refuses BY NAME (the
+# refusal is journalled below, once _record exists).
+requested_model=str(d.get('requested_model') or '').strip()
+_requested_model_unknown=False
+if requested_model and not requested_arm:
+    _m_arms=sorted({str(c.get('arm') or '') for c in cells if str(c.get('model') or '')==requested_model})
+    if _m_arms: requested_arm=_m_arms[0]
+    else: _requested_model_unknown=True
 arm_pool_raw=d.get('arm_pool')
 arm_pool=({str(a).strip() for a in arm_pool_raw if str(a).strip()} if isinstance(arm_pool_raw,list) else None)
 launchable_raw=d.get('launchable_arms')
 launchable=({str(a).strip() for a in launchable_raw if str(a).strip()} if isinstance(launchable_raw,list) else None)
 def _pool_contains(arm):
     if arm_pool is not None: return arm in arm_pool
-    if requested_arm and arm==requested_arm: return True
+    if requested_arm and arm==requested_arm:
+        # A pin overrides the policy boundary, never the executor's vocabulary:
+        # pinning an arm whose every model is unspeakable must refuse through
+        # the not_in_pool stage, not bypass the pool the caller declared.
+        if speakable is None or any(str(c.get('model') or '') in speakable for c in cells if c.get('arm')==arm):
+            return True
     if allowed is not None: return arm in allowed
+    if speakable is not None:
+        return any(str(c.get('model') or '') in speakable and c.get('pool_default',True) is not False for c in _arm_cells.get(arm,[]))
     return any(c.get('pool_default',True) is not False for c in _arm_cells.get(arm,[]))
 _STAGE_ORDER=['not_in_pool','not_launchable','untrusted','capped','forecast','failure_memory','price_ratio']
 _stages={}
@@ -1262,6 +1294,16 @@ def _record(arm, model, tier, reason):
 # auction) -- the negative-control half: asking for an arm on work it was
 # never declared capable of must fail, or "explicit choice" is actually
 # "obeys any request", which is worse than no path at all.
+# BUILTIN-AGENT-SPAWN-DEADLOCK-01: a pinned model NO arm carries is refused
+# BY NAME, journalled like every other refusal, before any auction can print
+# a decision for a different model. The substituted-decision shape ("you
+# asked for X, here is freepool-default") is exactly what this row kills:
+# freepool-default spent its whole life as the only answer the arbiter could
+# give a recon, and the Agent tool cannot pronounce it.
+if _requested_model_unknown:
+    _record('refuse','none','none','requested_model_unknown')
+    print('arm=refuse model=none tier=none reason=requested_model_unknown kind=%s requested_model=%s chain= %s%s%s%s%s' % (kind,requested_model,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
+    raise SystemExit(69)
 if requested_arm:
     # EXPLICIT-ARM-REQUEST-01 + POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01:
     # a pin is honoured or refused HONESTLY, never silently substituted.
