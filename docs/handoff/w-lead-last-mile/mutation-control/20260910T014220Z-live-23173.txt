@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-lane-finish.sh
+file=plugins/leadv2/scripts/leadv2-lane-finish.sh
+anchor=s/REFUSED step=%s/REFUSED stage=%s/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL - f1: refusal names the step (missing [REFUSED step=mutation] in [leadv2-lane-finish: STEP suite ok (suites/mc-fast.sh)
+diff_hash=7fdab6e5332ac4430e2b0a48f12ea7ed89a580f85a39f7924991b762dc4cae43
+lane_diff_hash=2ae4a9f7f54d93a4082c074abb9d2e878cc3fac34f04cf569c403e9217d27dd1
+porcelain_clean=yes
+restored=yes
