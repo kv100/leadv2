@@ -364,7 +364,7 @@ check_grep "$OUT" '^profile=- reason=same_account$' 'T14b: selector refuses the 
 [[ -f "$alarm" ]] && grep -q '"kind":"same_account"' "$alarm" \
   && pass "T14d: alarm file written on detect" || fail "T14d" "alarm=$([[ -f "$alarm" ]] && cat "$alarm" || echo MISSING)"
 check_nogrep "$(cat "$alarm" 2>/dev/null)" '@' 'T14e: alarm file carries no email'
-[[ "$RC" -eq 0 ]] && pass "T14: exit 0 (fail-open availability -- caller falls back to single-profile)" || fail "T14 exit" "rc=$RC"
+[[ "$RC" -eq 4 ]] && pass "T14: exit 4 (hard refusal; never a single-profile fallback)" || fail "T14 exit" "rc=$RC"
 
 echo "=== T21: same accountUuid, DIFFERING email case -> still caught (uuid beats string identity) ==="
 mkdir -p "$tmp/dir-uuid1" "$tmp/dir-uuid2"
@@ -377,7 +377,7 @@ run_select $(base_env) "STUB_SEEN=$tmp/seen" "LEADV2_CLAUDE_PROFILE_SECURITY_BIN
 check_grep "$ERR" 'WARN: same_account label=uuid1 label=uuid2 sub=team account=\.\.222333' 'T21a: uuid-keyed match reports the account-uuid tail'
 check_grep "$OUT" '^profile=- reason=same_account$' 'T21b: refused even though the two derived identities differ as strings'
 [[ ! -s "$tmp/seen" ]] && pass "T21c: no probe ran" || fail "T21c" "seen=$(cat "$tmp/seen")"
-[[ "$RC" -eq 0 ]] && pass "T21: exit 0" || fail "T21 exit" "rc=$RC"
+[[ "$RC" -eq 4 ]] && pass "T21: exit 4 (uuid collapse is a hard refusal)" || fail "T21 exit" "rc=$RC"
 
 echo "=== T15: label/expect vs derived identity -> WARN label_mismatch, bucket by identity ==="
 mkdir -p "$tmp/dir-mism"
@@ -401,24 +401,33 @@ check_grep "$ERR" 'WARN: registry line 1: identity_email_unresolved \(no readabl
 check_grep "$OUT" '^profile=nojson .*identity=pro/na' 'T16b: entry still selectable (fail-open)'
 [[ "$RC" -eq 0 ]] && pass "T16: exit 0" || fail "T16 exit" "rc=$RC"
 
-echo "=== T17: default token expired -> WARN default_token_expired, selection unchanged ==="
+echo "=== T17: default token expired -> visible alternate selection, never inherited fallback ==="
 mkdir -p "$tmp/dir-def-exp"
 mk_slot "$tmp/dir-def-exp" max "defexp@fixture.test" "$past_ms"
 printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env) "LEADV2_CLAUDE_PROFILE_DEFAULT_DIR=$tmp/dir-def-exp" \
   "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
-check_grep "$ERR" 'WARN: default_token_expired identity=max/defexp@fixture\.test -- fail-open' 'T17a: default_token_expired warn'
+check_grep "$ERR" 'WARN: default_token_expired identity=max/defexp@fixture\.test -- inherited fallback will refuse; probe-qualified profile required' 'T17a: default_token_expired makes fallback policy explicit'
 check_grep "$OUT" '^profile=alpha .*score=20 source=live' 'T17b: selection itself unchanged'
-[[ "$RC" -eq 0 ]] && pass "T17: exit 0" || fail "T17 exit" "rc=$RC"
+[[ "$RC" -eq 0 ]] && pass "T17: exit 0 (explicit probe-qualified alternative selected)" || fail "T17 exit" "rc=$RC"
 
-echo "=== T18: default credential absent -> WARN default_token_absent, fail-open ==="
+printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
+run_select $(base_env) "LEADV2_CLAUDE_PROFILE_DEFAULT_DIR=$tmp/dir-def-exp" \
+  "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
+check_grep "$OUT" '^profile=- reason=default_token_expired$' 'T17c: expired inherited credential refuses single-profile fallback'
+check_grep "$ERR" 'FATAL: default_token_expired -- refusing inherited single-profile fallback' 'T17d: refusal is explicit, not a quiet fallback'
+[[ "$RC" -eq 4 ]] && pass "T17: fallback exit 4" || fail "T17 fallback exit" "rc=$RC"
+
+echo "=== T18: default credential absent -> visible alternate selection, never inherited fallback ==="
 mkdir -p "$tmp/dir-def-empty"
+printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
+printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env) "LEADV2_CLAUDE_PROFILE_DEFAULT_DIR=$tmp/dir-def-empty" \
   "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
-check_grep "$ERR" 'WARN: default_token_absent \(inherited slot has no readable credential\) -- fail-open' 'T18a: default_token_absent warn'
+check_grep "$ERR" 'WARN: default_token_absent \(inherited slot has no readable credential\) -- inherited fallback will refuse' 'T18a: default_token_absent makes fallback policy explicit'
 check_grep "$OUT" '^profile=alpha ' 'T18b: selection proceeds'
-[[ "$RC" -eq 0 ]] && pass "T18: exit 0" || fail "T18 exit" "rc=$RC"
+[[ "$RC" -eq 0 ]] && pass "T18: exit 0 (explicit probe-qualified alternative selected)" || fail "T18 exit" "rc=$RC"
 
 echo "=== T19: WARN lines reach the journal (ISO-prefixed) ==="
 jr="$tmp/journal.log"; : > "$jr"
@@ -529,7 +538,7 @@ run_select $(base_env) "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
 check_grep "$ERR" 'WARN: registry line 2: expiresAt_stale label=same-stale identity=team/shared2@fixture\.test -- probing live anyway' 'T23a: the stale-looking sibling is warned about and KEPT, not dropped in the registry loop (D3)'
 check_grep "$ERR" 'WARN: same_account label=same-fresh label=same-stale sub=team account=' 'T23b: both slots reached the comparison and the pair is named -- the coverage hole stays closed'
 check_grep "$OUT" '^profile=- reason=same_account$' 'T23c: the documented incident response -- select nothing, so the caller keeps its inherited profile'
-[[ "$RC" -eq 0 ]] && pass "T23: exit 0" || fail "T23 exit" "rc=$RC"
+[[ "$RC" -eq 4 ]] && pass "T23: exit 4 (same-account is never a fallback)" || fail "T23 exit" "rc=$RC"
 
 # ============================================================================
 # T24 (TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01): mandatory pair control, both

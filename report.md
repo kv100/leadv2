@@ -1,124 +1,118 @@
-# PLUGIN-PAPERCUTS-01 Analysis Report
+# §3 — seamless Claude account switching
 
-## Decision: Main is right
+## Answers before code
 
-After analyzing the code and the deliberate design choice documented in the commit history, I conclude that **main is correct**: an unknown-reader pass must never stop the beat loop.
+### 1. Resume break point
 
-### Why Main's Decision is Correct
+`leadv2-session-runner.sh` is the lead retry path.  Its attempt-zero branch
+uses `--session-id`; every later attempt uses `--resume`, but the actual launch
+at lines 444–452 invokes `"$CLAUDE_BIN" "${claude_args[@]}"` directly.  It
+does not invoke `leadv2-claude-profile-select.sh` and does not set
+`CLAUDE_CONFIG_DIR`.  Therefore a global default-account switch between
+attempts changes the account used by the resumed lead session; worker
+subsession selection cannot repair it.
 
-The commit message explicitly states:
-> "That removal was deliberate: a loop that dies on reader-error passes goes quiet, and the silence this loop exists to prevent comes back. So `P1` asserts a contract that main removed on purpose."
-
-The fundamental purpose of the single-lead beat loop is to prevent founder-blindness - ensuring that when at least one lane is live, the founder receives regular status updates via `founder-status.md`. 
-
-If the loop were to stop on reader errors (when the heartbeat script fails to execute or returns unparseable output), we would create exactly the failure mode the loop is designed to prevent:
-- Monitor becomes blind (heartbeat errors)
-- Loop stops beating 
-- No updates to `founder-status.md`
-- Founder sees no new data and assumes everything is fine
-- Founder's blindness persists and worsens
-
-This is precisely what fix-round H4 sought to address, and why the `LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX` stop was intentionally removed.
-
-### Addressing Resource Concerns
-
-While the lane's concern about unbounded loops in test/dead environments is valid, main's version already includes appropriate bounds:
-1. **Hard lifetime cap** (`LEADV2_SINGLE_LEAD_BEAT_LOOP_MAX_S`, default 24 hours)
-2. **Project root monitoring** (exits if project root disappears)
-3. **Owner-based self-reap** from WATCHER-LIFECYCLE-LEAK-01 (when explicitly configured)
-
-These bounds ensure that even in permanently broken environments, the loop will not run indefinitely - it will either:
-- Exit when the project root is removed (test fixture teardown)
-- Self-reap when an owner process dies (if owner is explicitly set)
-- Hit the 24-hour lifetime cap as a final safety net
-
-The 24-hour cap is a reasonable balance: long enough to avoid prematurely stopping during transient monitor issues, but short enough to prevent permanent resource leaks in abandoned test environments.
-
-### The Flaw in P1's Assumption
-
-Test case P1 assumes that the loop should stop after `LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX` consecutive reader-error passes. This assumption is incorrect because:
-- It confuses "reader error" (temporary monitor blindness) with "permanently dead environment"
-- Implementing this stop would re-introduce the founder-blindness failure
-- The existing lifetime cap and project-root monitoring already provide sufficient bounds for test scenarios
-
-## Test Replacement Strategy
-
-Since P1 tests a retired contract, it must be replaced with a test case that validates main's actual contract:
-> "The loop stops on ZERO_MAX consecutive REAL zeros (where zero means heartbeat successfully parsed and reported zero live lanes), and does NOT stop on reader errors."
-
-The replacement test will:
-1. Verify the loop stops when presented with ZERO_MAX consecutive real zero lane counts
-2. Verify the loop continues running when presented with reader errors (unknown passes)
-3. Demonstrate that mutating the zero-stop rule (e.g., setting ZERO_MAX=0 or removing zero-stop logic) causes the test to fail
-
-This approach maintains the backlog's purpose of preventing regressions while aligning with main's correct design decision.
-
----
-
-# W18 root-dirty gate report
-
-## Reused mechanism
-
-`leadv2-dispatch-product-close.sh` now invokes `leadv2-land.sh --root-dirt-check`.
-That probe builds the prospective `git merge-tree --write-tree` result and
-uses the existing `land_in_write_set` predicate against its changed-path set;
-there is no second path-membership rule. `leadv2-land.sh:303` was confirmed to
-have the same unrelated-tracked-dirt defect and now calls that same probe after
-the throwaway landing tip is prepared. It no longer rewrites unrelated state
-files.
-
-## Real-root probe
-
-Raw output, 2026-09-10:
+Raw structural probe (2026-09-10):
 
 ```text
-dirty_total=746 tracked=2 untracked=744
-real_root_probe_rc=0
-docs/leadv2/.compact-freeze.md
-docs/leadv2/open-threads.md
+$ sed -n '402,415p;444,452p' plugins/leadv2/scripts/leadv2-session-runner.sh
+if [[ "$attempt" -eq 0 ]]; then
+  session_flag=(--session-id "$SESSION_ID")
+else
+  session_flag=(--resume "$SESSION_ID")
+fi
+...
+( cd "$PROJECT_ROOT" && \
+  "$CLAUDE_BIN" "${claude_args[@]}" ) >>"$LOGF" 2>&1
 ```
 
-The probe was run against the true primary root and this lane branch. It
-returned zero because neither tracked dirty path intersects this lane's
-prospective merged tree. No merge of the primary checkout was attempted by
-this worker lane.
+The resume boundary is consequently outside this lane's write set.  This lane
+does not alter `leadv2-session-runner.sh`.
 
-## Green focused runs
+### 2. Can a live session's credential switch without killing it?
+
+The process-scoped configuration mechanism is isolated: each child receives
+the `CLAUDE_CONFIG_DIR` value present at its own launch.  The repository's
+existing `claude-subsession.sh` integration test also launches a fake Claude
+child and proves the selected directory reaches that child (`I1`, recorded in
+the green transcript below).  The local two-launch probe was:
 
 ```text
-# root-dirty-gate pass=7 fail=0
-# land-suite pass=76 fail=0
+$ CLAUDE_CONFIG_DIR=/tmp/.../first bash -c 'printf "first config=%s\\n" "$CLAUDE_CONFIG_DIR"'
+first config=/tmp/.../first
+$ CLAUDE_CONFIG_DIR=/tmp/.../second bash -c 'printf "second config=%s\\n" "$CLAUDE_CONFIG_DIR"'
+second config=/tmp/.../second
 ```
 
-The root-dirty fixture covers tracked non-intersection (including a real
-merge), tracked intersection with the named path, untracked non-intersection,
-and an untracked path the merge would create.
+This proves process-environment isolation, not a provider claim about
+mid-request token replacement.  No live Claude session was redirected or
+stopped, and no Keychain record was read or written.  A running process keeps
+its inherited environment; start a new process under the other directory
+instead of changing the machine default.
 
-## Red mutation control
+### 3. How can the balancer know a free account without usage polling?
 
-Command:
+It cannot derive availability from identity.  The account checker now says so
+in machine-readable output: `availability=unknown(identity_only)`.  Its source
+contains neither a quota-reader invocation nor an HTTP URL, and its fixture
+run below used only local files.  A future balancer needs an account-scoped
+reservation/lease signal (or an explicit external meter); without one it must
+not label either account free.  That reservation design belongs in the
+off-limits route-arbiter path, so it was not invented in this lane.
 
 ```text
-bash plugins/leadv2/scripts/leadv2-mutation-control.sh --live plugins/leadv2/scripts/tests/test-root-dirty-gate.sh plugins/leadv2/scripts/leadv2-land.sh 's@if land_in_write_set "${path}"; then@if [[ -n "$(git -C "${ROOT}" status --porcelain 2>/dev/null)" ]]; then@' docs/handoff/w18-root-dirty-gate
+$ bash plugins/leadv2/scripts/tests/test-claude-account-check.sh
+[TEST] PASS: T1c: verdict names identity-only availability limit
+[TEST] PASS: T9a: one slot has no two-account conclusion
+[TEST] Results: PASS=24 FAIL=0
 ```
 
-Raw output:
+## Change
+
+`same_account` now returns `profile=- reason=same_account` with exit 4.  It
+cannot be mistaken for the selector's normal zero-exit single-profile
+fallback.  An expired or absent inherited credential also returns exit 4 only
+when the selector would otherwise fall back to that inherited slot.  A
+registry profile that succeeds its configured probe remains launchable, so a
+stale credential timestamp alone does not discard a proven working profile.
+
+The account check rejects registries with fewer than two valid slots and marks
+all successful two-slot verdicts as identity-only availability.
+
+## Falsification and verification
+
+Red run while the new T18 fixture accidentally retained only one registry row:
 
 ```text
-MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-root-dirty-gate.sh file=plugins/leadv2/scripts/leadv2-land.sh red_line=FAIL - T1 tracked non-intersection permits merge (expected [0], got [1]) diff_hash=0861aa15e04290e1820f51b8158fe5499b5735a5c9f3b194f4b84338e26404bd lane_diff_hash=67bc494acbc1260d256d5526e8ec3c77d7deb74c524bc4da0aa439408bbe6ebb porcelain_clean=yes
+[TEST] FAIL: T18b: selection proceeds -- no match for '^profile=alpha ' in: profile=- reason=default_token_absent
+[TEST] FAIL: T18 exit -- rc=4
+[TEST] Results: PASS=104 FAIL=2
 ```
 
-The artifacts are under `docs/handoff/w18-root-dirty-gate/mutation-control/` and are ignored by the repository, so the final live proof can be present without entering the lane diff.
-
-## Changed-scope runner
-
-Raw bounded run after the fix:
+After restoring the two-slot fixture, the focused selector suite was green:
 
 ```text
-[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/9cf1390c197a/plugins/leadv2/scripts/tests/run-core-offline.sh
-run-all: delegating scope=changed to plugins/leadv2/scripts/tests/run-core-offline.sh
-changed_scope_rc=124
+[TEST] PASS: T14: exit 4 (hard refusal; never a single-profile fallback)
+[TEST] PASS: T17c: expired inherited credential refuses single-profile fallback
+[TEST] PASS: T17d: refusal is explicit, not a quiet fallback
+[TEST] PASS: T18: exit 0 (explicit probe-qualified alternative selected)
+[TEST] PASS: T23: exit 4 (same-account is never a fallback)
+[TEST] Results: PASS=106 FAIL=0
+profile_select_rc=0
 ```
 
-The runner was foregrounded with `timeout 600`; it exhausted that bound in
-`run-core-offline.sh` before a verdict. This is a timeout, not a green claim.
+```text
+$ bash -n plugins/leadv2/scripts/leadv2-claude-profile-select.sh
+$ bash -n plugins/leadv2/scripts/leadv2-claude-account-check.sh
+$ bash -n plugins/leadv2/scripts/tests/test-claude-profile-select.sh
+$ bash -n plugins/leadv2/scripts/tests/test-claude-account-check.sh
+$ bash plugins/leadv2/scripts/tests/test-claude-account-check.sh
+[TEST] Results: PASS=24 FAIL=0
+```
+
+## Mutation control
+
+Pending committed-diff-bound artifact: this section is completed after the
+first commit by mutating the same-account exit back to zero and rerunning the
+focused suite.  The artifact and its raw output are added before the final
+commit.

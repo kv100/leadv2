@@ -16,10 +16,14 @@
 # lines are never echoed, so a path, service name, or email-shaped label
 # cannot leak through a warning.
 #
-# Fail-open, always: opt-out/unset, missing registry, <2 valid entries, a
-# malformed registry, or a probe budget that every probe consumed end in
-# `profile=- reason=single_profile` (or silence) + exit 0 — the caller then
-# leaves CLAUDE_CONFIG_DIR untouched and the lane runs exactly as before.
+# Fail-open only for an otherwise healthy inherited profile: opt-out/unset,
+# missing registry, <2 valid entries, a malformed registry, or a probe budget
+# that every probe consumed end in `profile=- reason=single_profile` + exit 0.
+# A known-expired/absent inherited credential is different: silently retaining
+# it is a routing decision onto a known-bad default, so that fallback returns
+# `reason=default_token_*` + exit 4.  A probe-qualified registry profile may
+# still launch; stale expiresAt alone is not evidence that a *probed* profile
+# cannot refresh in-process.
 #
 # Env:
 #   LEADV2_CLAUDE_PROFILE_REQUESTED  pin to this ONE registry label instead of
@@ -88,13 +92,14 @@
 # account the slot is logged into; it carries NO subscriptionType), while
 # subscriptionType/expiresAt come from the credential's claudeAiOauth
 # (which carries NO email) -- the two are merged.
-# Loud fail-open warns (journal + stderr; selection never blocked):
-#   same_account      two slots resolve to ONE real account (the incident)
+# Loud events (journal + stderr):
+#   same_account      two slots resolve to ONE real account; refuse (exit 4)
 #   label_mismatch    derived identity differs from the `expect` column
 #   identity_email_unresolved  no readable .claude.json -> email unverifiable
-#   default_token_expired / default_token_absent  the inherited slot's
-#                      credential is dead/missing (the lane runs on it
-#                      whenever the selector fails open)
+#   default_token_expired / default_token_absent  inherited fallback is
+#                      refused (exit 4); only a probe-qualified profile may
+#                      launch, making any failover explicit in the selection
+#                      record rather than silently retaining the default.
 #   expiresAt_stale    the credential's `claudeAiOauth.expiresAt` is in the
 #                      past -- NOT treated as proof the slot is dead (D3,
 #                      TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01: measured
@@ -138,7 +143,19 @@ warn() {
       >> "$LEADV2_CLAUDE_PROFILE_JOURNAL" 2>/dev/null || true
   fi
 }
-single_profile() { printf 'profile=- reason=single_profile\n'; exit 0; }
+# Set after the inherited-slot inspection below.  It is deliberately a
+# fallback guard, not a blanket ban on a registry row with a stale expiresAt:
+# the latter may refresh in-process and must be decided by its live probe.
+DEFAULT_FALLBACK_REASON=""
+single_profile() {
+  if [[ -n "$DEFAULT_FALLBACK_REASON" ]]; then
+    warn "FATAL: ${DEFAULT_FALLBACK_REASON} -- refusing inherited single-profile fallback"
+    printf 'profile=- reason=%s\n' "$DEFAULT_FALLBACK_REASON"
+    exit 4
+  fi
+  printf 'profile=- reason=single_profile\n'
+  exit 0
+}
 
 # read_cred_json <credential_source> -> raw credential JSON on stdout, empty
 # on any failure. keychain: goes through $SECURITY_BIN (overridable for
@@ -226,10 +243,12 @@ if [[ "$d_cred" != "1" ]]; then
   IFS=$'\t' read -r d_sub d_email d_exp d_cj d_cred d_uuid d_org d_digest <<<"$def_line"
 fi
 if [[ "$d_cred" != "1" ]]; then
-  warn "WARN: default_token_absent (inherited slot has no readable credential) -- fail-open"
+  DEFAULT_FALLBACK_REASON="default_token_absent"
+  warn "WARN: default_token_absent (inherited slot has no readable credential) -- inherited fallback will refuse"
 elif [[ "$d_exp" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
   if (( ${d_exp%%.*} <= $(date +%s) * 1000 )); then
-    warn "WARN: default_token_expired identity=${d_sub}/${d_email} -- fail-open"
+    DEFAULT_FALLBACK_REASON="default_token_expired"
+    warn "WARN: default_token_expired identity=${d_sub}/${d_email} -- inherited fallback will refuse; probe-qualified profile required"
   fi
 fi
 
@@ -421,7 +440,7 @@ detect_same_account
 (( SAME_ACCOUNT_HIT )) || clear_alarm
 if (( SAME_ACCOUNT_HIT )); then
   printf 'profile=- reason=same_account\n'
-  exit 0
+  exit 4
 fi
 
 # <2 valid entries => multi-profile is inert; caller keeps its inherited

@@ -28,8 +28,9 @@
 #                                        exit 2 for that reason alone)
 #
 # Exit codes:
-#   0  TWO_BUCKETS     -- distinct accountUuids (or unresolvable-but-distinct
-#                         config dirs when a Linux container has no keychain)
+#   0  TWO_BUCKETS     -- distinct accountUuids. This establishes identity
+#                         separation only; availability remains unknown
+#                         because this command never probes a usage endpoint.
 #   1  ONE_BUCKET      -- two slots resolve to the SAME accountUuid
 #   2  INDETERMINATE   -- a slot's .claude.json is unreadable (identity
 #                         cannot be established at all for that slot)
@@ -120,6 +121,10 @@ while IFS=$'\t' read -r label config_dir cred expect || [[ -n "${label:-}" ]]; d
 done < "$REGISTRY"
 
 n=${#LABELS[@]}
+if (( n < 2 )); then
+  printf 'VERDICT: INDETERMINATE reason=insufficient_slots slots=%s\n' "$n" >&2
+  exit 2
+fi
 i=0
 while (( i < n )); do
   if [[ "${CJ_OKS[$i]}" != "1" ]]; then
@@ -195,7 +200,8 @@ verdict() {
     distinct_creds="$(printf '%s\n' "${DIGESTS[@]}" | grep -v '^-$' | sort -u | wc -l | tr -d ' ')"
     creds_out="$distinct_creds"
   fi
-  printf 'VERDICT: TWO_BUCKETS accounts=%s creds=%s\n' "${distinct_accounts:-0}" "$creds_out"
+  printf 'VERDICT: TWO_BUCKETS accounts=%s creds=%s availability=unknown(identity_only)\n' \
+    "${distinct_accounts:-0}" "$creds_out"
   return 0
 }
 
