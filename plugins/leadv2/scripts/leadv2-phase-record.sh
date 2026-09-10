@@ -118,7 +118,7 @@
 #                   not verify. Nothing is written. See
 #                   PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01.
 #
-#   leadv2-phase-record.sh assert <sig8> --class <Trivial|Light|Standard|Heavy>
+#   leadv2-phase-record.sh assert <sig8> --class <canonical phase-record class>
 #       [--waiver <phase>=<reason>]...
 #       [--writes <csv>]
 #       [--at-bootstrap]   ACCEPTED BUT IGNORED (PHASE-GATE-IS-INVERTED-01):
@@ -373,7 +373,7 @@ _read_phases_yaml() {
     printf '{"version":1,"class_overrides":{},"waivers_allowed":[],"steps":{}}'
     return 0
   fi
-  python3 - "$pyfile" <<'PYEOF'
+  LEADV2_PHASE_RECORD_CLASSES="$(_phase_record_valid_classes)" python3 - "$pyfile" <<'PYEOF'
 import json, sys, os
 try:
     import yaml
@@ -391,7 +391,7 @@ except Exception as e:
 
 KNOWN_PHASES = {"classify","diverge","plan","gate1","build","test","review",
                 "deploy","live_verify","e2e","close"}
-KNOWN_CLASSES = {"Trivial","Light","Standard","Heavy"}
+KNOWN_CLASSES = set(os.environ["LEADV2_PHASE_RECORD_CLASSES"].split())
 KNOWN_HOOKS = {"plan.post","gate1.main","build.post","review.pre","review.post",
                "deploy.main","deploy.post","verify.main","e2e.main","close.pre"}
 REMOVAL_KEYS = {"remove","exclude","skip","optional","drop"}
@@ -1083,6 +1083,22 @@ _phase_satisfied() {
 }
 
 # ── assert subcommand ─────────────────────────────────────────────────────────
+# The phase-record class vocabulary has one source.  Keep this helper beside its
+# first consumer so assert and plan-for cannot grow separate case lists; the YAML
+# override parser above also reads it at execution time.
+_phase_record_valid_classes() {
+  local -r classes="Trivial Light Standard Heavy Strategic Bulk"
+  printf '%s\n' "$classes"
+}
+
+_phase_record_class_is_valid() {
+  local cls="$1" candidate
+  for candidate in $(_phase_record_valid_classes); do
+    [[ "$cls" == "$candidate" ]] && return 0
+  done
+  return 1
+}
+
 cmd_assert() {
   local sig8="" cls="" writes="" scope="full" caller_bootstrap=0
   local -a waivers=()
@@ -1109,10 +1125,7 @@ cmd_assert() {
   [[ -n "$sig8" ]] || { _log_err "assert: <sig8> required"; exit 4; }
   [[ -n "$cls" ]] || { _log_err "assert: --class required"; exit 4; }
 
-  case "$cls" in
-    Trivial|Light|Standard|Heavy) ;;
-    *) _log_err "assert: invalid class '$cls'"; exit 4 ;;
-  esac
+  _phase_record_class_is_valid "$cls" || { _log_err "assert: invalid class '$cls'"; exit 4; }
 
   # PHASE-BOOTSTRAP-01 (DISPATCH-PHASE-DEADLOCK-01): capture whether this lane
   # has ANY phase record at all, BEFORE the waiver loop below can create one.
@@ -1337,10 +1350,7 @@ cmd_plan_for() {
   done
   [[ -n "$cls" ]] || { _log_err "plan-for: --class required"; exit 4; }
 
-  case "$cls" in
-    Trivial|Light|Standard|Heavy) ;;
-    *) _log_err "plan-for: invalid class '$cls'"; exit 4 ;;
-  esac
+  _phase_record_class_is_valid "$cls" || { _log_err "plan-for: invalid class '$cls'"; exit 4; }
 
   _resolve_mandatory "$cls" "$writes"
 }
