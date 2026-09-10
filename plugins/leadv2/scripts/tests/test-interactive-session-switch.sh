@@ -33,6 +33,12 @@
 #                                                  [cwd backward scan]
 #   case 8  transcript carries NO cwd anywhere -> loud refusal, never cd "-"
 #                                                  [cwd guard]
+#   case 9  both slots share one projects tree (target resolves to the SAME
+#           inode) -> transplant already satisfied by construction, SAID
+#           aloud, resume command still emitted    [same-inode transplant]
+#   case 10 a DIFFERENT file already sits in the target slot -> loud
+#           transplant_target_exists, that session never overwritten
+#                                                  [transplant target guard]
 #
 # run-all-triggers: leadv2-interactive-session-switch leadv2-interactive-limit-detect
 
@@ -188,6 +194,8 @@ DEST_SHA="$(shasum -a 256 "$TRANSPLANT_DEST" 2>/dev/null | cut -d' ' -f1)"
 [[ "$DEST_SHA" == "$TRANS_SHA" ]] && pass "case1 transplant byte-identical" || fail "case1 transplant byte-identical" "sha $DEST_SHA != $TRANS_SHA"
 check_file "$MARKER_A" "case1 cooldown marker armed for exhausted a (the switch happened)"
 check_grep "$(cat "$H/interactive-switch.log" 2>/dev/null)" 'switched from=a to=b.*session=' "case1 journal: switch + session named"
+J1_N="$(grep -c 'switched from=a to=b' "$H/interactive-switch.log" 2>/dev/null || echo 0)"
+[[ "$J1_N" == "1" ]] && pass "case1 journal: exactly ONE switched line (no duplicate decision)" || fail "case1 journal: exactly ONE switched line (no duplicate decision)" "found $J1_N switched lines"
 check_file "$H/account-switch.log" "case1 account-switch ran and journalled"
 
 # =============================================================================
@@ -308,6 +316,43 @@ if grep -qF -- 'cd "-"' <<<"$OUT"; then fail "case8 never emits a dash cwd" "fou
 check_nofile "$H/account-switch.log" "case8 account-switch NEVER invoked"
 check_nofile "$MARKER_A" "case8 account untouched (guard fires before the switch)"
 check_grep "$(cat "$H/interactive-switch.log" 2>/dev/null)" 'REFUSED reason=transcript_no_cwd' "case8 journal names the cwd guard"
+
+# =============================================================================
+log "== case 9: both slots share one projects tree (same inode) -> transplant already satisfied, resume still emitted (same-inode transplant)"
+# The live 2026-09-10 machine shape: ~/.claude-work/projects is a symlink to
+# ~/.claude/projects, so the transplant target IS the transcript -- refusing
+# on bare existence made the happy path unreachable.  Slot b's projects is a
+# symlink into slot a's; DEST exists and is the same file (one inode).
+write_scenario 100 30
+reset_case
+mk_handoff c9; H="$MK_HANDOFF_OUT"
+export_env "$H"
+ln -s "$DIR_A/projects" "$DIR_B/projects"
+OUT="$(bash "$ORCH_BIN" --transcript "$TRANSCRIPT" --config-dir "$DIR_A" --screen-text "$BANNER" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 0 "case9 rc=0 (transplant satisfied by the shared tree)"
+check_grep "$OUT" 'OK transplant already in place' "case9 SAYS the transplant is already in place (never silently skipped)"
+check_grep "$OUT" 'OK switched from=a to=b' "case9 the switch itself is reported"
+check_fixed "$OUT" "resume: cd \"/tmp/proj\" && CLAUDE_CONFIG_DIR=\"$DIR_B\" claude --resume $SID" "case9 emits the exact resume command pinned to slot b"
+J9="$(cat "$H/interactive-switch.log" 2>/dev/null)"
+check_grep "$J9" 'switched from=a to=b transplant_same_inode dest=' "case9 journal carries its OWN word for the already-done transplant"
+check_grep "$J9" 'switched from=a to=b transplant_same_inode.*session=' "case9 journal still names the session + target dir"
+if grep -qE ' transplanted=' <<<"$J9"; then fail "case9 journal never claims a copy (transplanted= absent)" "found a false transplanted= claim in: $J9"; else pass "case9 journal never claims a copy (transplanted= absent)"; fi
+
+# =============================================================================
+log "== case 10: a DIFFERENT file already sits in the target slot -> loud refusal, never overwriting (transplant target guard)"
+# The guard the same-inode path must NOT weaken: slot b's OWN session with the
+# same id is another inode -- overwriting it would destroy it.
+write_scenario 100 30
+reset_case
+mk_handoff c10; H="$MK_HANDOFF_OUT"
+export_env "$H"
+mkdir -p "$DIR_B/projects/$PROJ_SEG"
+printf '{"cwd":"/tmp/proj","type":"user","message":{"role":"user","content":"slot b owns this session already"}}\n' > "$TRANSPLANT_DEST"
+OUT="$(bash "$ORCH_BIN" --transcript "$TRANSCRIPT" --config-dir "$DIR_A" --screen-text "$BANNER" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 5 "case10 rc=5 (failed, loud)"
+check_grep "$OUT" 'FAILED reason=transplant_target_exists' "case10 keeps the loud transplant_target_exists refusal"
+check_grep "$(cat "$H/interactive-switch.log" 2>/dev/null)" 'FAILED reason=transplant_target_exists dest=' "case10 journal names the target-exists guard + dest"
+check_fixed "$(cat "$TRANSPLANT_DEST" 2>/dev/null)" "slot b owns this session already" "case10 the target slot's own session is untouched"
 
 # =============================================================================
 printf -- '[TEST] summary: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"

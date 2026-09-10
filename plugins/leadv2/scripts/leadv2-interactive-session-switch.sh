@@ -21,9 +21,10 @@
 #     the selector's own cooldown marker for the exhausted account, and
 #     OBSERVES the next selection landing on the target (rc 5 otherwise);
 #   * this script then transplants the session transcript into the target
-#     slot's projects tree (byte-verified, never overwriting) and emits the
-#     exact `claude --resume` command that continues the conversation on the
-#     free account.
+#     slot's projects tree (byte-verified, never overwriting; when both slots
+#     share one projects tree the transplant is already satisfied -- same
+#     inode, said aloud, no copy) and emits the exact `claude --resume`
+#     command that continues the conversation on the free account.
 #
 # Usage:
 #   leadv2-interactive-session-switch.sh --transcript <session.jsonl>
@@ -97,6 +98,10 @@ refuse() { # <rc> <reason line for stdout> <journal line> -- loud, then stop
   say "$2"
   journal "$3"
   exit "$1"
+}
+ino_id() { # <file> -> dev:ino identity ('' when unstattable), BSD stat and GNU stat
+  if [[ "$(uname -s)" == "Darwin" ]]; then stat -f '%d:%i' "$1" 2>/dev/null
+  else stat -c '%d:%i' "$1" 2>/dev/null; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -234,8 +239,15 @@ fi
 # ---------------------------------------------------------------------------
 # Guard 5: transplant + resume.  The transcript is COPIED (never moved: the
 # original session's history stays where it was), byte-verified, and an
-# existing destination is never overwritten (that would be destroying the
-# target slot's own session with the same id).
+# existing destination that is ANOTHER file is never overwritten (that would
+# be destroying the target slot's own session with the same id).  One shape
+# measured live 2026-09-10 (lane b7b09a41c2f7): the target slot's projects/
+# is a symlink to the source slot's, so DEST IS the transcript -- one inode,
+# the transplant is satisfied by construction, and refusing on bare existence
+# made the happy path unreachable on this machine.  Inode identity (stat
+# dev:ino), never path equality (the paths differ) and never content (hashing
+# 70 MB to learn a file is itself): recognized, SAID aloud, then straight to
+# the resume command.  A different file in the slot keeps the loud refusal.
 DEST_DIR="$TARGET_DIR/projects/$PROJ_SEG"
 DEST="$DEST_DIR/$SESSION_ID.jsonl"
 if (( DRY_RUN )); then
@@ -244,29 +256,45 @@ if (( DRY_RUN )); then
   journal "DRY-RUN from=$CURRENT_LABEL to=$TARGET_LABEL would_transplant=$DEST session=$SESSION_ID"
   exit 0
 fi
+SAME_INODE=0
 if [[ -e "$DEST" ]]; then
-  refuse 5 "FAILED reason=transplant_target_exists -- $DEST already exists; never overwriting a session in the target slot" \
-           "FAILED reason=transplant_target_exists dest=$DEST"
+  SRC_INO="$(ino_id "$TRANSCRIPT")"; DST_INO="$(ino_id "$DEST")"
+  if [[ -n "$SRC_INO" && "$SRC_INO" == "$DST_INO" ]]; then
+    SAME_INODE=1
+    say "OK transplant already in place: $DEST is the transcript itself (both slots share one projects tree)"
+  else
+    refuse 5 "FAILED reason=transplant_target_exists -- $DEST already exists; never overwriting a session in the target slot" \
+             "FAILED reason=transplant_target_exists dest=$DEST"
+  fi
 fi
 SRC_SHA="$(shasum -a 256 "$TRANSCRIPT" 2>/dev/null | cut -d' ' -f1)"
-mkdir -p "$DEST_DIR" 2>/dev/null || true
-if ! cp "$TRANSCRIPT" "$DEST" 2>/dev/null; then
-  refuse 5 "FAILED reason=transplant_failed -- copy $TRANSCRIPT -> $DEST did not succeed" \
-           "FAILED reason=transplant_failed stage=copy dest=$DEST"
-fi
-DST_SHA="$(shasum -a 256 "$DEST" 2>/dev/null | cut -d' ' -f1)"
-if [[ -z "$SRC_SHA" || "$SRC_SHA" != "$DST_SHA" ]]; then
-  rm -f "$DEST" 2>/dev/null || true
-  refuse 5 "FAILED reason=transplant_failed -- byte-verify failed (src=${SRC_SHA:-none} dst=${DST_SHA:-none}); partial copy removed" \
-           "FAILED reason=transplant_failed stage=verify src=${SRC_SHA:-none} dst=${DST_SHA:-none}"
+if (( SAME_INODE )); then
+  DST_SHA="$SRC_SHA"   # the destination IS the transcript; nothing to copy or verify
+else
+  mkdir -p "$DEST_DIR" 2>/dev/null || true
+  if ! cp "$TRANSCRIPT" "$DEST" 2>/dev/null; then
+    refuse 5 "FAILED reason=transplant_failed -- copy $TRANSCRIPT -> $DEST did not succeed" \
+             "FAILED reason=transplant_failed stage=copy dest=$DEST"
+  fi
+  DST_SHA="$(shasum -a 256 "$DEST" 2>/dev/null | cut -d' ' -f1)"
+  if [[ -z "$SRC_SHA" || "$SRC_SHA" != "$DST_SHA" ]]; then
+    rm -f "$DEST" 2>/dev/null || true
+    refuse 5 "FAILED reason=transplant_failed -- byte-verify failed (src=${SRC_SHA:-none} dst=${DST_SHA:-none}); partial copy removed" \
+             "FAILED reason=transplant_failed stage=verify src=${SRC_SHA:-none} dst=${DST_SHA:-none}"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
 # The resume command: pinned to the TARGET slot (Step-0: the account is fixed
 # at process start, so pinning the config dir IS pinning the account), in the
 # session's own working directory so the project context matches.
-say "OK switched from=$CURRENT_LABEL to=$TARGET_LABEL and transplanted session=$SESSION_ID (sha256 ${DST_SHA:0:12})"
+if (( SAME_INODE )); then
+  say "OK switched from=$CURRENT_LABEL to=$TARGET_LABEL; transplant already satisfied, same inode (sha256 ${DST_SHA:0:12})"
+  journal "switched from=$CURRENT_LABEL to=$TARGET_LABEL transplant_same_inode dest=$DEST sha12=${DST_SHA:0:12} session=$SESSION_ID target_dir=$TARGET_DIR cwd=$CWD"
+else
+  say "OK switched from=$CURRENT_LABEL to=$TARGET_LABEL and transplanted session=$SESSION_ID (sha256 ${DST_SHA:0:12})"
+  journal "switched from=$CURRENT_LABEL to=$TARGET_LABEL transplanted=$DEST sha12=${DST_SHA:0:12} session=$SESSION_ID target_dir=$TARGET_DIR cwd=$CWD"
+fi
 say "exit the stuck session, then continue it on the free account with:"
 say "resume: cd \"$CWD\" && CLAUDE_CONFIG_DIR=\"$TARGET_DIR\" claude --resume $SESSION_ID"
-journal "switched from=$CURRENT_LABEL to=$TARGET_LABEL transplanted=$DEST sha12=${DST_SHA:0:12} session=$SESSION_ID target_dir=$TARGET_DIR cwd=$CWD"
 exit 0
