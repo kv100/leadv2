@@ -447,3 +447,61 @@ Artifact: `docs/handoff/SALVAGE-EXITS-ZERO-ON-CONFLICT-01/mutation-control/20260
 
 Round 2 complete: negative control RUN and FILED; every acceptance observable of the
 round-2 design is evidenced above; zero code diff.
+
+## 10. Round-2 gates (resumed run, 2026-09-10 late) — e2e rerun + gate-runner decision
+
+### 10.1 End-to-end gate: changed-scope rerun at HEAD `885bae1`
+
+`bash tests/run-all.sh --scope changed` (foreground, rc captured unpiped):
+
+```
+[CORE-OFFLINE] scope=changed running 0 of 95 suites (base=main@7ac957d427, 0 changed files, 0 unmapped)
+[CORE-OFFLINE] SCOPE_RESULT selected=0 total=95 base=main@7ac957d427 changed=0 unmapped=0 verdict=nothing_to_run reason=no_relevant_changed_files
+[PASS] …/run-core-offline.sh
+[PASS] …/test-status-surface-single-lead.sh
+[PASS] …/test-status-surface-fast-names.sh
+[FAIL] tests/test-status-surface-bash32.sh   # [SUITE-TIMEOUT] exceeded 600s ceiling
+run-all: 3 passed, 1 failed, scope=changed    RUN_ALL_RC=1
+```
+
+The bash32 red is **concurrent-runner contention, not this lane's diff** (the changed
+range is docs-only; selection is empty). At the moment of the run, >=3 foreign lanes were
+running their own changed-scope suites (`b35ad780ea1d`, `JOURNAL-PHASE-SILENT-RC0-01`,
+`REGISTRY-SILENT-RC0-01` — pids observed live), each invoking the same
+`leadv2-status-surface.5s.sh` wrapper with `LEADV2_STATUS_SYNC=1` against the shared
+registry. A/B proof — same suite, same tree, quiet window (22:15:30, no foreign
+status-surface process live):
+
+```
+$ gtimeout 420 bash tests/test-status-surface-bash32.sh
+test-status-surface-bash32: 16 passed, 0 failed, 0 skipped      # rc 0
+```
+
+Red under contention, green isolated => environmental (matches the recorded
+core-offline-reds-under-concurrent-runners failure mode). Code-relevant proof for this
+lane remains the direct runs: §9.1 green `pass=20 fail=0` rc 0, §9.2/§3.2 red
+`pass=17 fail=4` rc 1.
+
+### 10.2 Why the standalone `leadv2-phase8-e2e-gate.sh` stamper was NOT run
+
+Round 1's code is already merged into `main` (merge-base `7ac957d4`), and round 2 wrote
+only docs. The stamper's `lv2_lane_diff_is_empty` checks LANE_WRITES (the two code
+files) against merge-base..HEAD — unchanged — so it would false-refuse `no_work`, delete
+the round-1 `e2e-gate-passed.flag`, and overwrite `review-gate.md` with
+`blocked/no_work`, destroying a true pass record. The e2e substance (changed-scope run)
+was executed directly instead (§10.1). The lead's close pipeline, which resolves the
+lane-start base rather than merge-base, remains the authoritative stamper.
+
+### 10.3 Report + mutation-control consolidated into `docs/handoff/c65d77ed1b3c/`
+
+The review engine's DoD gate requires one task dir holding `brief.md`, `report.md`, and
+`mutation-control/`. They were split (`brief.md` here; report+MC under
+`docs/handoff/SALVAGE-EXITS-ZERO-ON-CONFLICT-01/`), which made every paste-evidence
+check fail against a report-less task dir (measured: `dod_fail paste_evidence_missing
+brief_line=27,31`). `report.md` moved by `git mv` (history preserved); the MC artifacts
+moved with it and were re-force-added. §3.3/§9.9 path references predate the move.
+
+### 10.4 Cross-provider review gate (round 2)
+
+Re-run via `leadv2-review-run.sh` over `review-r2.diff` = `git diff 7ac957d4..HEAD`
+(the full round-2 docs range). Verdict: `docs/handoff/dispatch-b9fd9799/review-gate.md`.
