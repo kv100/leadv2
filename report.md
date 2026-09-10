@@ -142,3 +142,55 @@ red_line=[TEST] FAIL: committed branch was misclassified (...)
 diff_hash=ef70dab37636b9a1879b2f43a510ca65687d9d6343afa5d7df7098003c0b0aac
 lane_diff_hash=c8e45965550dc5e711a5425da705e1b755adedbffa1a49f81895a7527a0118c7
 ```
+
+---
+
+# Mission lint brief contract
+
+Added a decision-completeness refusal (`MISSION_NOT_DECISION_COMPLETE`, rc 9)
+for briefs without a `Подход`/`Approach`/`Как делать` heading, plus a
+non-blocking `MISSION_MUTATION_WITHOUT_BEHAVIOUR` warning. The new suite is
+self-registered for `leadv2-mission-lint` changes.
+
+## Evidence: red before the implementation
+
+```text
+[TEST] PASS: bash -n: mission linter parses
+[TEST] FAIL: no approach heading -> expected rc=9 and named reason; rc=0; out=
+[TEST] PASS: adding only an Approach heading -> exit 0
+[TEST] FAIL: mutation without behaviour -> expected warning + rc=0; rc=0; out=
+decision-complete function mutation anchor not found
+[TEST] FAIL: negative control setup: decision-complete function mutation anchor not found
+[TEST] ----
+[TEST] PASS=2 FAIL=3
+```
+
+## Evidence: green target suite
+
+```text
+[TEST] PASS: bash -n: mission linter parses
+[TEST] PASS: no approach heading -> MISSION_NOT_DECISION_COMPLETE, exit 9
+[TEST] PASS: adding only an Approach heading -> exit 0
+[TEST] PASS: mutation without behaviour -> warning and exit 0
+[TEST] PASS: negative control: removing check A inside its function makes no-approach case red
+[TEST] ----
+[TEST] PASS=5 FAIL=0
+```
+
+## Evidence: leadv2-mutation-control.sh live run
+
+Artifact: `mutation-control/20260910T092927Z-live-50779.txt`.
+
+```text
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-mission-lint-contract.sh file=plugins/leadv2/scripts/leadv2-mission-lint.sh red_line=[TEST] FAIL: no approach heading -> expected rc=9 and named reason; rc=0; out= diff_hash=0e0fab572690db687cd5151ada6700dc7d0644e1fda12f7b31c7c43a70692ca1 lane_diff_hash=9ad931ee6d680de23a0fcda5a324d96972f7b0159baae038047c66af63a8bbd4 porcelain_clean=yes
+```
+
+## Evidence: changed-scope runner
+
+```text
+[CORE-OFFLINE] waiting for lock file=/tmp/leadv2-core-offline--Users-kostiantyn-vlasenko-Projects-leadv2--claude-worktrees-f2c4bf8090d0.lock holder=pid=18158 host=UA-K-VLASENKO-LT-2.local since=2026-09-10T09:32:26Z (held by a concurrent run)
+[CORE-OFFLINE] FATAL lock_timeout file=/tmp/leadv2-core-offline--Users-kostiantyn-vlasenko-Projects-leadv2--claude-worktrees-f2c4bf8090d0.lock wait_s=60 holder=pid=18158 host=UA-K-VLASENKO-LT-2.local since=2026-09-10T09:32:26Z
+```
+
+The runner therefore did not execute any changed-scope suite in this lane;
+the direct target suite above is green.
