@@ -24,10 +24,26 @@
 #     things. land ends at the push.
 #
 # Usage:
-#   leadv2-land.sh <lane-branch> [--dry-run]
+#   leadv2-land.sh <lane-branch> [--dry-run] [--no-ff]
 #
 # Environment:
 #   LEADV2_LAND_MAX_BEHIND  max allowed behind-main count (default 0)
+#   LEADV2_LAND_WRITE_SET   the lane's write set for the merged-tree check
+#                           inside land_safety_gate (W-LEAD-LAST-MILE-01 §1):
+#                           either a comma/colon-separated list of
+#                           repo-relative paths, or a path to an existing
+#                           file holding one path per line (# comments and
+#                           blank lines ignored). A path is inside the set
+#                           on exact match or when the entry is a directory
+#                           prefix. Unset -> derived from the lane's own
+#                           diff (merge-base..LANE_TIP), which is
+#                           self-consistent by construction; the DECLARED
+#                           form is what catches a lane touching main files
+#                           outside its mission.
+#   --no-ff                 merge with a real merge commit carrying the
+#                           Landed-lane: / Landed-branch: trailers instead
+#                           of ff (the lead's close-ritual shape). Default
+#                           stays ff-only.
 #   LEADV2_LAND_TASK_ID     task id for the merge-blocker.flag mirror
 #                           (default: lane branch minus a leading "worktree-")
 #   LEADV2_MERGE_TIMEOUT_SEC / _POLL_SEC / _STALE_SEC   passed through to
@@ -68,14 +84,16 @@ REPO_SLUG="$(basename "${ROOT}")"
 source "${SCRIPT_DIR}/leadv2-branch-merged.sh"
 
 usage() {
-  printf 'Usage: %s <lane-branch> [--dry-run]\n' "$(basename "$0")" >&2
+  printf 'Usage: %s <lane-branch> [--dry-run] [--no-ff]\n' "$(basename "$0")" >&2
 }
 
 DRY_RUN=0
+NO_FF=0
 LANE=""
 for _a in "$@"; do
   case "${_a}" in
     --dry-run) DRY_RUN=1 ;;
+    --no-ff) NO_FF=1 ;;
     -*) usage; exit 2 ;;
     *)
       if [[ -n "${LANE}" ]]; then usage; exit 2; fi
@@ -230,6 +248,7 @@ if [[ -z "${LANE_TIP}" ]]; then
   exit 1
 fi
 L_TIP="${LANE_TIP}"
+L_TASK="${LEADV2_LAND_TASK_ID:-${LANE#worktree-}}"
 L_BEHIND="$(git -C "${ROOT}" rev-list --count "${LANE}..${DEFAULT}" 2>/dev/null || printf -- '-1')"
 L_AHEAD="$(git -C "${ROOT}" rev-list --count "${DEFAULT}..${LANE}" 2>/dev/null || printf -- '-1')"
 _ledger_prewrite
@@ -335,28 +354,108 @@ land_throwaway_untrack() { # prints the tip to land (original, or hygiene-advanc
   git -C "${WT_DIR}" rev-parse HEAD
 }
 
+# ── the lane's write set (W-LEAD-LAST-MILE-01 §1) ───────────────────────────
+# Repo-relative paths this lane is allowed to change on the default branch.
+# LEADV2_LAND_WRITE_SET declares them (csv/colon list or a file, one per
+# line); unset falls back to the lane's own diff from its merge-base, which
+# is self-consistent by construction — the DECLARED form is the instrument
+# that catches a lane touching main files outside its mission.
+LAND_WRITE_SET=()
+land_write_set_load() {
+  local spec="${LEADV2_LAND_WRITE_SET:-}" item f base
+  LAND_WRITE_SET=()
+  if [[ -n "${spec}" && -f "${spec}" ]]; then
+    while IFS= read -r f; do
+      f="${f%%#*}"
+      f="${f#"${f%%[![:space:]]*}"}"
+      f="${f%"${f##*[![:space:]]}"}"
+      [[ -n "${f}" ]] && LAND_WRITE_SET=(${LAND_WRITE_SET[@]+"${LAND_WRITE_SET[@]}"} "${f}")
+    done < "${spec}"
+  elif [[ -n "${spec}" ]]; then
+    local IFS=',:'
+    for item in ${spec}; do
+      [[ -n "${item}" ]] && LAND_WRITE_SET=(${LAND_WRITE_SET[@]+"${LAND_WRITE_SET[@]}"} "${item}")
+    done
+  else
+    base="$(git -C "${ROOT}" merge-base "${DEFAULT}" "${LANE_TIP}" 2>/dev/null || printf '%s' "${DEFAULT}")"
+    # --no-renames: a rename is TWO paths (old + new); both are the lane's.
+    while IFS= read -r f; do
+      [[ -n "${f}" ]] && LAND_WRITE_SET=(${LAND_WRITE_SET[@]+"${LAND_WRITE_SET[@]}"} "${f}")
+    done < <(git -C "${ROOT}" diff --name-only --no-renames "${base}" "${LANE_TIP}" 2>/dev/null)
+  fi
+}
+
+land_in_write_set() { # <path> -> rc 0 = the lane may change this path
+  local w
+  for w in ${LAND_WRITE_SET[@]+"${LAND_WRITE_SET[@]}"}; do
+    if [[ "$1" == "${w}" || "$1" == "${w}"/* ]]; then return 0; fi
+  done
+  return 1
+}
+
+# ── merged-tree instrument (W-LEAD-LAST-MILE-01 §1) ─────────────────────────
+# The only honest answer to "would merging this lane delete or revert main
+# files outside its write set" is the tree `git merge-tree --write-tree`
+# would actually produce — not a tip-to-tip file list. Entries the merge
+# ADDS (A) are new lane files, never a main-file loss; every other entry
+# (D = deletion, M/T = content overwrite/revert) must be inside the write
+# set or the land is refused, one line per offending file.
+land_merged_tree_check() { # <tip-to-land>
+  local tip="$1" mt_out mt_tree rc st path offenders=""
+  mt_out="$(git -C "${ROOT}" merge-tree --write-tree --no-messages "${DEFAULT}" "${tip}" 2>&1)"
+  rc=$?
+  mt_tree="$(printf '%s\n' "${mt_out}" | head -1)"
+  if [[ ${rc} -ne 0 || ! "${mt_tree}" =~ ^[0-9a-f]{7,40}$ ]]; then
+    L_OUTCOME="refused"; L_MODE="refused"; L_REASON="merged_tree_conflict"
+    _lane_files
+    printf 'leadv2-land: REFUSED reason=merged_tree_conflict: git merge-tree --write-tree %s %s produced no clean tree (rc=%s)\n' \
+      "${DEFAULT}" "${tip}" "${rc}" >&2
+    exit 1
+  fi
+  while IFS=$'\t' read -r st path; do
+    [[ -n "${path}" ]] || continue
+    [[ "${st}" == A* ]] && continue
+    if ! land_in_write_set "${path}"; then
+      offenders="${offenders} ${path}"
+      printf 'leadv2-land: merged-tree %s outside the lane write set: %s\n' \
+        "$([[ "${st}" == D* ]] && printf 'deletes main file' || printf 'changes main file')" "${path}" >&2
+    fi
+  done < <(git -C "${ROOT}" diff --name-status --no-renames "${DEFAULT}" "${mt_tree}" 2>/dev/null)
+  if [[ -n "${offenders}" ]]; then
+    L_OUTCOME="refused"; L_MODE="refused"; L_REASON="merged_tree_outside_write_set"
+    _lane_files
+    printf 'leadv2-land: REFUSED reason=merged_tree_outside_write_set: merging %s would touch main files outside the lane write set:%s (write set: %s entry(ies), %s)\n' \
+      "${tip}" "${offenders}" "${#LAND_WRITE_SET[@]}" \
+      "$([[ -n "${LEADV2_LAND_WRITE_SET:-}" ]] && printf 'declared' || printf 'derived')" >&2
+    exit 1
+  fi
+}
+
 # ── step: merge-safety gate (rc 0 safe / 1 refused / >=2 error) ──────────────
 land_safety_gate() {
-  local grc gtask
+  local grc
   bash "${SCRIPT_DIR}/leadv2-merge-safety-gate.sh" "${ROOT}" "${LANE}" "${DEFAULT}" >/dev/null 2>&1
   grc=$?
-  [[ ${grc} -eq 0 ]] && return 0
-  L_OUTCOME="refused"; L_MODE="refused"
-  _lane_files
-  if [[ ${grc} -eq 1 ]]; then
-    L_REASON="safety_gate_refused"
-    gtask="${LEADV2_LAND_TASK_ID:-${LANE#worktree-}}"
-    mkdir -p "${ROOT}/docs/handoff/${gtask}"
-    # write_blocker shape, verbatim from leadv2-deploy-merge.sh
-    printf -- 'merge_blocked: true\nreason: %s\nfailed_at: %s\ntask_id: %s\n' \
-      "safety_gate_refused" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${gtask}" \
-      > "${ROOT}/docs/handoff/${gtask}/merge-blocker.flag"
-    printf 'leadv2-land: REFUSED reason=safety_gate_refused (mirror written to docs/handoff/%s/merge-blocker.flag)\n' "${gtask}" >&2
-  else
-    L_REASON="safety_gate_error"
-    printf 'leadv2-land: REFUSED reason=safety_gate_error (gate rc=%s)\n' "${grc}" >&2
+  if [[ ${grc} -ne 0 ]]; then
+    L_OUTCOME="refused"; L_MODE="refused"
+    _lane_files
+    if [[ ${grc} -eq 1 ]]; then
+      L_REASON="safety_gate_refused"
+      mkdir -p "${ROOT}/docs/handoff/${L_TASK}"
+      # write_blocker shape, verbatim from leadv2-deploy-merge.sh
+      printf -- 'merge_blocked: true\nreason: %s\nfailed_at: %s\ntask_id: %s\n' \
+        "safety_gate_refused" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${L_TASK}" \
+        > "${ROOT}/docs/handoff/${L_TASK}/merge-blocker.flag"
+      printf 'leadv2-land: REFUSED reason=safety_gate_refused (mirror written to docs/handoff/%s/merge-blocker.flag)\n' "${L_TASK}" >&2
+    else
+      L_REASON="safety_gate_error"
+      printf 'leadv2-land: REFUSED reason=safety_gate_error (gate rc=%s)\n' "${grc}" >&2
+    fi
+    exit 1
   fi
-  exit 1
+  land_write_set_load
+  land_merged_tree_check "${LAND_TIP}" # MERGED-TREE-INSTRUMENT: removing this call must redden test-land-merged-tree.sh (W-LEAD-LAST-MILE-01 §1)
+  return 0
 }
 
 # ── step: the four landing conditions (brief §4), against the repo ───────────
@@ -426,29 +525,58 @@ LAND_TIP="$(land_throwaway_untrack)"
 land_safety_gate
 
 if [[ ${DRY_RUN} -eq 1 ]]; then
-  printf 'leadv2-land: DRY-RUN ok — would ff %s to %s and push origin %s (state restored: %d file(s); land tip %s)\n' \
-    "${DEFAULT}" "${LAND_TIP}" "${DEFAULT}" "${#L_HYGIENE[@]}" "${LAND_TIP}" >&2
+  if [[ ${NO_FF} -eq 1 ]]; then
+    printf 'leadv2-land: DRY-RUN ok — would merge --no-ff %s onto %s (trailers Landed-lane: %s / Landed-branch: %s) and push origin %s (state restored: %d file(s); land tip %s)\n' \
+      "${LAND_TIP}" "${DEFAULT}" "${L_TASK}" "${LANE}" "${DEFAULT}" "${#L_HYGIENE[@]}" "${LAND_TIP}" >&2
+  else
+    printf 'leadv2-land: DRY-RUN ok — would ff %s to %s and push origin %s (state restored: %d file(s); land tip %s)\n' \
+      "${DEFAULT}" "${LAND_TIP}" "${DEFAULT}" "${#L_HYGIENE[@]}" "${LAND_TIP}" >&2
+  fi
   exit 0
 fi
 
-if ! git -C "${ROOT}" merge --ff-only "${LAND_TIP}" >/dev/null 2>&1; then
-  L_OUTCOME="failed"; L_REASON="ff_failed"; L_MODE="ff"
-  _lane_files
-  printf 'leadv2-land: FAILED reason=ff_failed: git merge --ff-only %s failed\n' "${LAND_TIP}" >&2
-  exit 1
+if [[ ${NO_FF} -eq 1 ]]; then
+  # The lead's close-ritual shape (W-LEAD-LAST-MILE-01 §3): a real merge
+  # commit carrying the Landed-lane: / Landed-branch: trailers instead of
+  # ff. Still the SAME lander — queue, ledger, push and verification are
+  # unchanged; only the merge command differs.
+  if [[ "${L_AHEAD}" -eq 0 ]]; then
+    L_OUTCOME="refused"; L_REASON="noop_land"; L_MODE="refused"
+    _lane_files
+    printf 'leadv2-land: REFUSED reason=noop_land: %s is 0 commit(s) ahead of %s — --no-ff would land an empty merge\n' \
+      "${LANE}" "${DEFAULT}" >&2
+    exit 1
+  fi
+  L_MODE="no_ff"
+  if ! git -C "${ROOT}" merge --no-ff -m "merge: lane ${L_TASK} landed
+
+Landed-lane: ${L_TASK}
+Landed-branch: ${LANE}" "${LAND_TIP}" >/dev/null 2>&1; then
+    L_OUTCOME="failed"; L_REASON="merge_failed"
+    _lane_files
+    printf 'leadv2-land: FAILED reason=merge_failed: git merge --no-ff %s failed\n' "${LAND_TIP}" >&2
+    exit 1
+  fi
+else
+  if ! git -C "${ROOT}" merge --ff-only "${LAND_TIP}" >/dev/null 2>&1; then
+    L_OUTCOME="failed"; L_REASON="ff_failed"; L_MODE="ff"
+    _lane_files
+    printf 'leadv2-land: FAILED reason=ff_failed: git merge --ff-only %s failed\n' "${LAND_TIP}" >&2
+    exit 1
+  fi
 fi
 L_MAIN_AFTER="$(git -C "${ROOT}" rev-parse "${DEFAULT}")"
 
 if ! git -C "${ROOT}" push origin "${DEFAULT}" >/dev/null 2>&1; then
   # main has already moved locally; the row records that honestly
-  L_OUTCOME="failed"; L_REASON="push_failed"; L_MODE="ff"
+  L_OUTCOME="failed"; L_REASON="push_failed"; L_MODE="$([[ ${NO_FF} -eq 1 ]] && printf 'no_ff' || printf 'ff')"
   L_PUSHED=false
   L_FILES="$(git -C "${ROOT}" diff --name-only "${L_MAIN_BEFORE}..${L_MAIN_AFTER}" 2>/dev/null | wc -l | tr -d ' ')"
   printf 'leadv2-land: FAILED reason=push_failed: main moved to %s locally but the push was refused\n' "${L_MAIN_AFTER}" >&2
   exit 1
 fi
 
-L_OUTCOME="landed"; L_REASON="ok"; L_MODE="ff"
+L_OUTCOME="landed"; L_REASON="ok"; L_MODE="$([[ ${NO_FF} -eq 1 ]] && printf 'no_ff' || printf 'ff')"
 if ! land_verify_landed; then
   L_OUTCOME="failed"; L_REASON="verify_failed"; L_MODE="ff"
   exit 1
