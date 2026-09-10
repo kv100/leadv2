@@ -4056,11 +4056,24 @@ else
     # No isolated lane branch to merge (shared-tree fallback lane, or work already landed on
     # the default branch directly) -- nothing to merge, so `landed` is accurate as-is.
     _dl_note landed review_verdict_pass "$(leadv2_red_proof_render_evidence "diff=${diff_hash:0:8}${_rgf_dnm}" "${_pc_unproven_suffix}")"
-  elif [[ -n "$(git -C "${ROOT}" status --porcelain 2>/dev/null)" ]]; then
-    # Shared tree has foreign uncommitted work right now -- merging here risks another
-    # session's in-flight edits. Never force past this: fail toward pass_unlanded.
-    _dl_note pass_unlanded root_dirty "$(leadv2_red_proof_render_evidence "branch=${_t11_branch} diff=${diff_hash:0:8}" "${_pc_unproven_suffix}")"
   else
+    # W18-ROOT-DIRTY-GATE-01: leadv2-land computes the prospective merged tree
+    # and reuses land_in_write_set for the membership decision. This avoids a
+    # second root-dirt rule and permits unrelated shared-checkout residue.
+    _T11_ROOT_DIRT_PROBE="${SCRIPT_DIR}/leadv2-land.sh"
+    [[ -f "${_T11_ROOT_DIRT_PROBE}" ]] || _T11_ROOT_DIRT_PROBE="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-land.sh"
+    _t11_root_dirt_rc=0
+    _t11_root_dirt_out=""
+    if [[ -f "${_T11_ROOT_DIRT_PROBE}" ]]; then
+      _t11_root_dirt_out="$(LEADV2_LAND_ROOT="${ROOT}" bash "${_T11_ROOT_DIRT_PROBE}" --root-dirt-check "${_t11_branch}" 2>&1)" || _t11_root_dirt_rc=$?
+    else
+      _t11_root_dirt_rc=1
+      _t11_root_dirt_out="leadv2-dispatch-product-close: root-dirt probe unavailable: ${_T11_ROOT_DIRT_PROBE}"
+    fi
+    if [[ ${_t11_root_dirt_rc} -ne 0 ]]; then
+      printf '%s\n' "${_t11_root_dirt_out}" >&2
+      _dl_note pass_unlanded root_dirty "$(leadv2_red_proof_render_evidence "branch=${_t11_branch} diff=${diff_hash:0:8}" "${_pc_unproven_suffix}")"
+    else
     _t11_landed=0
     _t11_merge_refused=0
     [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" acquire "${TASK}" >/dev/null 2>&1
@@ -4111,6 +4124,7 @@ else
       fi
     else
       _dl_note pass_unlanded merge_conflict "$(leadv2_red_proof_render_evidence "branch=${_t11_branch} diff=${diff_hash:0:8}" "${_pc_unproven_suffix}")"
+    fi
     fi
   fi
 fi
