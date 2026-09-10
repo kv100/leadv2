@@ -126,6 +126,15 @@ run_all_changed_rc=124
 Focused changed-code evidence remains the two green suites above; the broad
 runner is red/timeout and is not represented as a passing verification.
 
+The deterministic definition-of-done gate passed on the committed lane:
+
+```text
+dod_pass check=suite_registration
+dod_pass check=runtime_state
+dod_report wrote=1 path=/tmp/77de6264b787-dod.md
+dod_gate_rc=0
+```
+
 ## Mutation control
 
 The committed-diff-bound control restored the old quiet `same_account -> exit
