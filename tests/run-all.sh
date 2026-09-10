@@ -558,6 +558,11 @@ $(git -C "${ROOT}" diff --name-only "${_range_start}..HEAD" 2>/dev/null)"
         # FABLE-THINK-TIER-01 R6: the policy resolver is a py carrier of the
         # think-tier contract — the scripts/*.sh allowlist below never saw it.
         stem="leadv2-glm-policy-resolve.py"
+      elif [[ "${cf}" == "plugins/leadv2/scripts/lib/leadv2-routing-merge.py" ]]; then
+        # PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the routing merge
+        # engine — lib/*.py reaches no allowlist below, and a merge-semantics
+        # change must select its suite, same shape as the row above.
+        stem="leadv2-routing-merge.py"
       elif [[ "${cf}" == plugins/leadv2/workflows/*.js ]]; then
         # FABLE-THINK-TIER-01 R6: the four THINK workflows (diverge/learn/
         # diagnose/po-feedback-loop) are js carriers — the R5 map rows were

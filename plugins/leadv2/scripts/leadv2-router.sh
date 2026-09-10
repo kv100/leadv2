@@ -38,8 +38,13 @@ readonly PROJECT_ROOT
 # behaviour is byte-identical to before and the failure is never silent.
 # shellcheck source=lib/leadv2-phase-policy-path.sh
 source "${SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh"
+# PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the historical-name fallback
+# is the ONE resolver (env override as-is, else tenant delta MERGED over the
+# canonical registry, else canonical). Unresolvable -> empty, and the existing
+# not-found warning below fires -- never a private path rebuild.
 ROUTING_YAML="$(leadv2_phase_policy_path "$PROJECT_ROOT")" \
-  || ROUTING_YAML="$PROJECT_ROOT/.claude/ref/leadv2-routing.yaml"
+  || ROUTING_YAML="$(leadv2_routing_config_path "$PROJECT_ROOT" 2>/dev/null)" \
+  || ROUTING_YAML=""
 readonly ROUTING_YAML
 # T-b (SUPERVISOR-AUDIT-01): single glm_policy/codex_quota_gate resolver, shared with
 # leadv2-dispatch-code.sh:resolve_arm(). Exported so the python helper (a temp file, not

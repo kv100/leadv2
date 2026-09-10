@@ -197,6 +197,8 @@ source "${_CODEX_SCRIPT_DIR}/lib/leadv2-codex-quota-gate.sh"
 # phases.glm_policy, i.e. in the PHASE POLICY document, not the router registry.
 # shellcheck source=lib/leadv2-phase-policy-path.sh
 source "${_CODEX_SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh"
+# shellcheck source=lib/leadv2-routing-config.sh
+source "${_CODEX_SCRIPT_DIR}/lib/leadv2-routing-config.sh"
 
 # C3 (tenant-generic) -- resolve the routing yaml. SAME convention as
 # leadv2-dispatch-product-close.sh:196 and leadv2-dispatch-code.sh:263:
@@ -228,7 +230,20 @@ _codex_quota_routing_yaml() {
     printf '%s' "$_pp"
     return 0
   fi
-  printf '%s/.claude/ref/leadv2-routing.yaml' "$_root"
+  # PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the historical-name
+  # fallback is now the ONE routing-config resolver (env override as-is, else
+  # tenant delta MERGED over the canonical registry). The quota gate reads
+  # phases.* keys the registry does not carry, so a miss still means empty
+  # thresholds and the caller FAIL-OPENs -- unchanged; the resolver's refusal
+  # on a BROKEN tenant delta (rc=1) is loud on stderr and yields no path,
+  # which the caller treats as unreadable config (fail-open), never a silent
+  # slide to canonical cells.
+  local _rc_yaml=""
+  if _rc_yaml="$(leadv2_routing_config_path "$_root")"; then
+    printf '%s' "$_rc_yaml"
+    return 0
+  fi
+  return 1
 }
 
 # C4 -- read build/review threshold pct from the routing yaml. Same keys the

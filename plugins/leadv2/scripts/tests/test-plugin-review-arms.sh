@@ -117,9 +117,16 @@ t1_sig "docs/missions/some-report.md" 0 \
   && pass "T1e: docs markdown path -> NOT protected (deliberate)" \
   || fail "T1e: docs markdown path" "expected protected=0"
 
-# ── T2: author exclusion against the TENANT yaml (R7) ──────────────────────────
+# ── T2: author exclusion against the TENANT policy surface (R7) ────────────────
+# PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01 (2026-09-10): the tenant file
+# is now a DELTA; what dispatch actually reads in this repo is the MERGED
+# config (canonical registry + this repo's delta), so the author-exclusion
+# proof runs against the merged materialization, not the delta file alone.
+T2_YAML="$(bash -c 'source "$1"; leadv2_routing_config_path "$2"' _ \
+  "${SCRIPTS_ROOT}/lib/leadv2-routing-config.sh" "$REPO_ROOT" 2>/dev/null)" || T2_YAML="$TENANT_YAML"
+[[ -n "$T2_YAML" ]] || T2_YAML="$TENANT_YAML"
 t2_pool() { # <author> -> prints resolver output
-  python3 "$RESOLVER" --routing-yaml "$TENANT_YAML" --job review --base-arm codex \
+  python3 "$RESOLVER" --routing-yaml "$T2_YAML" --job review --base-arm codex \
     --review-pool --author "$1" --signals '{"protected_path":true,"safety_touched":true}' 2>/dev/null
 }
 out_glm="$(t2_pool glm)"

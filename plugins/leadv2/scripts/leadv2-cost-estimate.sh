@@ -24,8 +24,15 @@ readonly PROJECT_ROOT
 # filename. Same resolver, same fallback, same behaviour on a miss (routing={}).
 # shellcheck source=lib/leadv2-phase-policy-path.sh
 source "${SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh"
+# shellcheck source=lib/leadv2-routing-config.sh
+source "${SCRIPT_DIR}/lib/leadv2-routing-config.sh"
+# PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the historical-name fallback
+# is the ONE resolver (env override as-is, else tenant delta MERGED over the
+# canonical registry, else canonical). A routing={} miss keeps today's
+# behaviour; a broken tenant delta refuses loudly on stderr.
 ROUTING_YAML="$(leadv2_phase_policy_path "$PROJECT_ROOT")" \
-  || ROUTING_YAML="$PROJECT_ROOT/.claude/ref/leadv2-routing.yaml"
+  || ROUTING_YAML="$(leadv2_routing_config_path "$PROJECT_ROOT" 2>/dev/null)" \
+  || ROUTING_YAML=""
 readonly ROUTING_YAML
 # DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: prefer the shared
 # control-plane copy; see leadv2-active-registry.sh's writer comment.

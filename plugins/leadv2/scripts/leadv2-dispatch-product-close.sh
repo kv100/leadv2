@@ -570,30 +570,44 @@ resolve_review_pool_call() {
     printf 'reviewer=\npool=\nrefusal=resolver_missing_failclosed\n'
     return
   fi
-  # dispatch-8e2a32be D1: ordered first-existing-file-wins search. Root cause this
-  # fixes: the pre-fix single lookup (${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/
-  # leadv2-routing.yaml}) never found a file at runtime -- .claude/ref/
-  # leadv2-routing.yaml does not exist in ANY of the three live repos -- so the
-  # resolver silently ran its no-op/fail-closed fallback and this function never
-  # printed a real reviewer=/pool=/refusal= line at all. Tenant-override precedence
-  # (env var, then repo-local .claude/ref/) is UNCHANGED; this only adds the
-  # plugin-local and canonical tiers so a repo that never opted into a tenant
-  # override still resolves against a real routing yaml instead of nothing.
+  # PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01 (2026-09-10): this private
+  # five-tier chain (dispatch-8e2a32be D1) is replaced by the ONE resolver,
+  # lib/leadv2-routing-config.sh -- env override as-is, else the tenant file
+  # MERGED over the canonical registry (the old chain SUBSTITUTED it: in the
+  # plugin repo that shadow was 229 lines behind canonical), else canonical
+  # as-is. source= stays in the old vocabulary (tenant|plugin|canonical|none)
+  # so downstream greps keep working; "tenant" now means the merged
+  # materialization, and a broken tenant delta is a LOUD refusal (rc=1), not
+  # a silent slide to another tier.
   local routing_yaml="" _ry_source="none"
-  if [[ -n "${LEADV2_ROUTING_YAML:-}" && -f "${LEADV2_ROUTING_YAML}" ]]; then
-    routing_yaml="${LEADV2_ROUTING_YAML}"; _ry_source="tenant"
-  elif [[ -f "${ROOT}/.claude/ref/leadv2-routing.yaml" ]]; then
-    routing_yaml="${ROOT}/.claude/ref/leadv2-routing.yaml"; _ry_source="tenant"
-  elif [[ -f "${SCRIPT_DIR}/../config/leadv2-routing.yaml" ]]; then
-    routing_yaml="${SCRIPT_DIR}/../config/leadv2-routing.yaml"; _ry_source="plugin"
-  elif [[ -f "${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/config/leadv2-routing.yaml" ]]; then
-    routing_yaml="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/config/leadv2-routing.yaml"
-    _ry_source="canonical"
+  declare -F leadv2_routing_config_path >/dev/null 2>&1 || {
+    local _rc_sh="${SCRIPT_DIR}/lib/leadv2-routing-config.sh"
+    [[ -f "${_rc_sh}" ]] || _rc_sh="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-routing-config.sh"
+    # shellcheck source=lib/leadv2-routing-config.sh
+    [[ -f "${_rc_sh}" ]] && source "${_rc_sh}" || true
+  }
+  if declare -F leadv2_routing_config_path >/dev/null 2>&1; then
+    local _rc_rc=0
+    routing_yaml="$(leadv2_routing_config_path "${ROOT}")" || _rc_rc=$?
+    if [[ "${_rc_rc}" -eq 0 && -n "${routing_yaml}" ]]; then
+      if [[ "${LEADV2_ROUTING_YAML:-}" == "${routing_yaml}" ]]; then
+        _ry_source="tenant"
+      elif [[ "${routing_yaml}" == "${ROOT}/.claude/ref/"* || "${routing_yaml}" == *"/leadv2-routing-merged/"* ]]; then
+        _ry_source="tenant"   # tenant delta (merged materialization)
+      else
+        _ry_source="canonical"
+      fi
+    else
+      routing_yaml=""
+      _ry_source="none"
+      [[ "${_rc_rc}" -eq 1 ]] && emit decision "review_routing_yaml task=${TASK} source=refused_broken_tenant (see resolver stderr; not falling back)" || true
+    fi
   else
-    # True last resort: keep the OLD default expression so a caller that somehow has
-    # none of the above still gets exactly the pre-fix path (and therefore the
-    # resolver's own D1 self-heal gets one more chance at it).
-    routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
+    # Resolver lib unavailable (no local lib/, no canonical root): the old
+    # last-resort expression, so the python resolver's D1 self-heal still gets
+    # its chance. Never a private rebuild of the tier chain.
+    routing_yaml="${LEADV2_ROUTING_YAML:-}"
+    _ry_source=$([[ -n "${routing_yaml}" ]] && printf tenant || printf none)
   fi
   emit decision "review_routing_yaml task=${TASK} source=${_ry_source}" || true
   # CODEX-GATE-01 item 6: compute REAL safety signals from the lane's write paths vs the
