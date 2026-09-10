@@ -281,6 +281,7 @@ leadv2-route-arbiter:plugins/leadv2/tests/test-arm-pool-reachability.sh
 leadv2-routing.yaml:plugins/leadv2/tests/test-arm-pool-reachability.sh
 leadv2-glm-policy-resolve:plugins/leadv2/tests/test-arm-pool-reachability.sh
 leadv2-glm-policy-resolve.py:plugins/leadv2/tests/test-arm-pool-reachability.sh
+leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-record-class.sh
 leadv2-dispatch-code:plugins/leadv2/tests/test-exclusion-stages.sh
 leadv2-route-arbiter:plugins/leadv2/tests/test-exclusion-stages.sh
 leadv2-routing.yaml:plugins/leadv2/tests/test-exclusion-stages.sh
