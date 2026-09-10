@@ -211,7 +211,20 @@ resolve_review_pool_call() {
     printf 'reviewer=\npool=\nrefusal=resolver_missing_failclosed\n'
     return
   fi
-  local routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
+  # PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the ONE resolver (env
+  # override as-is, else tenant delta MERGED over the canonical registry).
+  # Broken tenant delta: the resolver names the file on stderr and we pass
+  # empty -- fail-closed downstream, never a private path rebuild.
+  local routing_yaml=""
+  declare -F leadv2_routing_config_path >/dev/null 2>&1 || {
+    local _rc_sh="${SCRIPT_DIR}/lib/leadv2-routing-config.sh"
+    [[ -f "${_rc_sh}" ]] || _rc_sh="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-routing-config.sh"
+    # shellcheck source=lib/leadv2-routing-config.sh
+    [[ -f "${_rc_sh}" ]] && source "${_rc_sh}" || true
+  }
+  if declare -F leadv2_routing_config_path >/dev/null 2>&1; then
+    routing_yaml="$(leadv2_routing_config_path "${ROOT}")" || routing_yaml=""
+  fi
   local _signals_json='{"protected_path":true,"safety_touched":true}'
   local _signals_lib="${SCRIPT_DIR}/lib/leadv2-review-signals.sh"
   local _sig_source="lib_missing_failclosed" _sig_protected="1" _sig_matched="-"
@@ -1205,7 +1218,20 @@ _engine_security_pass_enabled() {
   if [[ "${REVIEW_SIGNALS_STATUS:-missing}" != "ready" ]] || ! declare -F leadv2_review_signals >/dev/null 2>&1; then
     return 0
   fi
-  local routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
+  # PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the ONE resolver (env
+  # override as-is, else tenant delta MERGED over the canonical registry).
+  # Broken tenant delta: the resolver names the file on stderr and we pass
+  # empty -- fail-closed downstream, never a private path rebuild.
+  local routing_yaml=""
+  declare -F leadv2_routing_config_path >/dev/null 2>&1 || {
+    local _rc_sh="${SCRIPT_DIR}/lib/leadv2-routing-config.sh"
+    [[ -f "${_rc_sh}" ]] || _rc_sh="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-routing-config.sh"
+    # shellcheck source=lib/leadv2-routing-config.sh
+    [[ -f "${_rc_sh}" ]] && source "${_rc_sh}" || true
+  }
+  if declare -F leadv2_routing_config_path >/dev/null 2>&1; then
+    routing_yaml="$(leadv2_routing_config_path "${ROOT}")" || routing_yaml=""
+  fi
   local signals
   if ! signals="$(leadv2_review_signals "${routing_yaml}" "${WRITES_CSV}" 2>/dev/null)"; then
     return 0

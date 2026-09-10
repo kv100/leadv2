@@ -46,7 +46,10 @@
 # CORRECTION to the three lines that follow: no plugin sync copies this file into
 # .claude/ref. Measured 2026-09-05 -- the only writers of that path are two test
 # fixtures (tests/test-kimi-dispatch-spill.sh:23, test-kimi-admission-guard.sh:26).
-# The one tenant copy that exists was made by hand (RECOVER-WAVE1-TEN-01).
+# The one tenant copy that exists was made by hand (RECOVER-WAVE1-TEN-01); since
+# 2026-09-10 (PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01) that copy is a
+# tenant DELTA, and lib/leadv2-routing-config.sh merges it over THIS file for
+# every router-registry reader -- a key the delta lacks is inherited from here.
 # Smart routing v2 additions.  The legacy per-phase routing table remains
 # repo-local at .claude/ref/leadv2-routing.yaml; this canonical registry is
 # copied there by plugin sync when v2 is enabled.

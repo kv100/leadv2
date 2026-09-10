@@ -569,21 +569,43 @@ _LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
 if [[ "${LEADV2_DISPATCH_GUARD_SOURCE_ONLY:-0}" == "1" && "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
 fi
-ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
+# PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01 (2026-09-10): the tenant file
+# <root>/.claude/ref/leadv2-routing.yaml is a DELTA over the canonical registry
+# (plugins/leadv2/config/leadv2-routing.yaml), merged by the ONE resolver
+# lib/leadv2-routing-config.sh. Before this, a tenant file SUBSTITUTED the
+# canonical file wholesale -- in this repo the shadow was 229 lines behind and
+# its capability_matrix lacked `capability:`, so orders written into canonical
+# did not act on plugin lanes (reproduced three times). The resolver keeps the
+# two old seams: LEADV2_ROUTING_YAML (explicit override, as-is) and
+# LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE (canonical-tier simulation).
+_ROUTING_CONFIG_SH="${SCRIPT_DIR}/lib/leadv2-routing-config.sh"
+[[ -f "${_ROUTING_CONFIG_SH}" ]] || _ROUTING_CONFIG_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-routing-config.sh"
+[[ -f "${_ROUTING_CONFIG_SH}" ]] && source "${_ROUTING_CONFIG_SH}"
 ROUTING_CONFIG_ABSENT=0
-# ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P3: when the project root has no routing
-# config (dispatching from inside the plugin repo itself), fall back to the
-# plugin's own canonical config so we do not log no_routing_yaml and route blind.
-# LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE: test-only seam to simulate a missing
-# plugin config.
-if [[ ! -f "${ROUTING_YAML}" ]]; then
-  _plugin_routing_yaml="${LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE:-${SCRIPT_DIR}/../config/leadv2-routing.yaml}"
-  if [[ -f "${_plugin_routing_yaml}" ]]; then
-    ROUTING_YAML="${_plugin_routing_yaml}"
-  else
+if declare -F leadv2_routing_config_path >/dev/null 2>&1; then
+  _routing_rc=0
+  ROUTING_YAML="$(leadv2_routing_config_path "${PROJECT_ROOT}")" || _routing_rc=$?
+  if [[ "${_routing_rc}" -eq 1 ]]; then
+    # Broken tenant delta: the resolver already named the file on stderr. Loud
+    # exit, never a quiet fall back to canonical -- a silent fallback is the
+    # substitution defect seen from the other side.
+    printf '[leadv2-dispatch-code] REFUSE: unresolvable routing config (see the resolver message above); fix or delete the tenant delta file
+' >&2
+    exit 2
+  elif [[ "${_routing_rc}" -ne 0 ]]; then
+    # No routing config anywhere (the old ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01
+    # P3 absent-config case): log no_routing_yaml downstream and route blind.
     ROUTING_CONFIG_ABSENT=1
+    ROUTING_YAML=""
   fi
+else
+  # Resolver lib missing entirely (no local lib/, no canonical root): same
+  # absent-config posture as above, never a private reimplementation of the
+  # path rule -- that duplication is what this task removed.
+  ROUTING_CONFIG_ABSENT=1
+  ROUTING_YAML=""
 fi
+unset _routing_rc _ROUTING_CONFIG_SH 2>/dev/null || true
 # T17: the arbiter is intentionally optional at load time. A missing/corrupt
 # copy falls through to the established ladder and is made observable at the
 # call site, rather than making dispatch unavailable.
@@ -2467,11 +2489,16 @@ for e in ladder:
     when_field = ",".join(str(w) for w in when) or "all"
     print(eid + "\t" + e.get("provider", eid) + "\t" + untrusted + "\t" + when_field)
 ' "${ROUTING_YAML}" 2>/dev/null)" || _parsed=""
-  # T19 fix-round (H2b / critic H3): ROUTING_YAML resolution above only falls
-  # back to the plugin's canonical yaml when the TENANT FILE ITSELF is absent.
-  # All 3 live tenant repos HAVE a .claude/ref/leadv2-routing.yaml, so that
-  # fallback never fires -- but none of those tenant files carry a
-  # router.dispatch_ladder key at all, so `_parsed` above comes back empty and
+  # T19 fix-round (H2b / critic H3), corrected 2026-09-10 by
+  # PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the claim below that "All
+  # 3 live tenant repos HAVE a .claude/ref/leadv2-routing.yaml" was FALSE --
+  # measured 2026-09-10, not one of persona-engine/m3-market/respiro-ios
+  # carries the file; the only copy in existence is this repo's own tenant
+  # delta. ROUTING_YAML above is now the resolver's MERGED config, so a tenant
+  # without router.dispatch_ladder INHERITS the canonical ladder and `_parsed`
+  # is non-empty. This key-level retry stays for the one tier that can still
+  # produce an empty `_parsed`: an explicit LEADV2_ROUTING_YAML override whose
+  # file lacks the key (resolver prints it as-is, unmerged).
   # this function fell straight to the legacy hardcoded order (glm codex
   # sonnet), which has no freepool entry. Result: freepool was dead in every
   # tenant repo regardless of the plugin yaml change, verified by grepping

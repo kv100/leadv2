@@ -1,518 +1,63 @@
 # ==============================================================================
-# WHICH FILE IS AUTHORITATIVE FOR WHICH DECISION
-# ROUTING-YAML-HAS-TWO-READERS-AND-TWO-FILES-01, 2026-09-05. Measured on disk and
-# in the readers -- not designed. Do not "correct" this from memory.
+# TENANT DELTA for the plugin's own repo — PLUGIN-REPO-CARRIES-A-SHADOW-
+# ROUTING-CONFIG-01 (row 85e7878c), 2026-09-10.
 #
-# THIS FILE IS: document A (router registry) at a TENANT path -- a copy of the canonical
-#               file, NOT a per-phase table
+# This file is NO LONGER a copy of plugins/leadv2/config/leadv2-routing.yaml.
+# Until 2026-09-10 it was a 558-line hand-made copy (made 2026-09-05 for ONE
+# adjusted block), drifted 229 lines behind canonical, and it SUBSTITUTED the
+# canonical registry for every reader in this repo — so routing orders written
+# into canonical (capability_matrix cells, dispatch_ladder, quota posture)
+# did not act on plugin lanes. A copy that must be kept in sync IS the defect;
+# the copy is deleted on purpose.
 #
-# Three files carry this NAME and hold TWO documents that share ZERO top-level keys:
-#   A  router registry         top-level `router_v2` + `router`
-#      - <leadv2>/plugins/leadv2/config/leadv2-routing.yaml   (canonical, shipped)
-#      - <leadv2>/.claude/ref/leadv2-routing.yaml             (hand-made copy, 2026-09-05)
-#   B  legacy per-phase table  top-level `phases` `stop_rules` `downgrade_chain` `floor_rules`
-#      - <persona-engine>/.claude/ref/leadv2-routing.yaml     (the ONLY document-B file)
-#   m3-market and respiro-ios have NO tenant file at all.
+# How this file is read now: lib/leadv2-routing-config.sh (the ONE resolver)
+# MERGES this delta over the canonical registry via lib/leadv2-routing-merge.py
+# and materializes the result (cached, atomic). Rules, one and only one set:
+#   - a key ABSENT here is inherited from canonical;
+#   - a key PRESENT here wins;
+#   - a list PRESENT here REPLACES the canonical list entirely (a tenant must
+#     be able to REMOVE a ladder row, not only add one).
+# Each build writes one journal line to stderr naming canonical, tenant and
+# the overridden-key count: "[leadv2-routing-config] merged ...". The old
+# substitution was silent — that is why it survived five weeks.
 #
-# Because the two documents are disjoint, "the tenant file overrides the plugin
-# file" is FALSE: for any given key exactly one document ever carries it. So
-# authority is per-DECISION, not per-file --
+# Only what this repo actually overrides lives here. Every copied line is a
+# future silently-ignored order.
 #
-#   HOW an arm is chosen         router_v2.capability_matrix
-#       -> the PLUGIN copy ONLY. leadv2-route-arbiter.sh:52 reads
-#          ${LEADV2_ROUTE_ARBITER_ROUTING_YAML:-<plugin>/config/leadv2-routing.yaml}
-#          and never a tenant path. A capability_matrix written into a tenant
-#          file is INERT -- that cost a full lane on 2026-09-05 before anyone saw it.
-#   WHICH arms are offered       router.dispatch_ladder
-#       -> the TENANT file if it carries the key, else the plugin copy
-#          (leadv2-dispatch-code.sh:567 file-level, :2336 key-level fallback).
-#   which account quota is read  router_v2.active_account
-#       -> the PLUGIN copy ONLY (leadv2-quota-read.py:372).
-#   which paths are protected    router.glm_policy.protected path patterns
-#       -> the TENANT file if it carries the key, else the CANONICAL ROOT copy
-#          (lib/leadv2-review-signals.sh:82) -- canonical root, not this install.
-#   per-phase/step model, stop rules, downgrade chain, floors, and the
-#   codex quota gate under phases.glm_policy
-#       -> document B ONLY. leadv2-router.sh:33, leadv2-cost-estimate.sh:22,
-#          codex-task.sh:150 and leadv2-router-v2.sh:70 read the TENANT path with
-#          NO fallback, so in a repo whose tenant file is document A they degrade
-#          to their own defaults instead.
+# The full per-decision authority map that this file's 558-line predecessor
+# carried is history now: docs/handoff/ROUTING-YAML-HAS-TWO-READERS-AND-TWO-
+# FILES-01/report.md keeps the 2026-09-05 census. What survives from it:
+#   - the router registry (this document) resolves through
+#     lib/leadv2-routing-config.sh — merge, everywhere;
+#   - the phase-policy document (phases/stop_rules/floor_rules) resolves by
+#     SHAPE through lib/leadv2-phase-policy-path.sh — unrelated to this tier;
+#   - leadv2-route-arbiter.sh still reads the plugin config directly
+#     (untouched by this task, lane 10ee163f7a3e owns it);
+#   - leadv2-quota-read.py still reads router_v2.active_account from the
+#     plugin copy only.
 #
-# 13 product read sites, 4 resolution disciplines (tenant-only / plugin-only /
-# file-level fallback / key-level fallback). Full census, with the measurement
-# behind every line above:
-# ~/Projects/leadv2/docs/handoff/ROUTING-YAML-HAS-TWO-READERS-AND-TWO-FILES-01/report.md
+# Parse discipline for the delta and the materialized merge: key names and
+# the two-space glm_policy: indentation stay load-bearing —
+# lib/leadv2-review-signals.sh reads protected_path_patterns with a REGEX and
+# leadv2-glm-policy-resolve.py with yaml.safe_load. Do not reformat.
 # ==============================================================================
-# Tenant override for the plugin's own repo (leadv2), PLUGIN-REVIEW-ARMS-01 +
-# RECOVER-WAVE1-TEN-01 (2026-09-05). Base: plugins/leadv2/config/leadv2-routing.yaml
-# verbatim (including the 2026-09-05 router_v2.effort_matrix + failure_memory
-# evolution), with ONE block adjusted: router.glm_policy.protected_path_patterns
-# is the union of the shipped default patterns and this repo's surface globs
-# (see the comment at that key). The 2026-08-15 hand-written minimum this file
-# replaces (phases/protected_paths/downgrade_chain) was written before the
-# router_v2 shape existed; no reader consumes those legacy keys from this tier
-# any more (leadv2-router.sh degrades to its class-based fallback, verified:
-# `leadv2-router.sh think-model` -> fable rc=0 against this shape).
-# Parsed by BOTH a regex extractor (lib/leadv2-review-signals.sh) and
-# yaml.safe_load (leadv2-glm-policy-resolve.py) -- key names and the two-space
-# glm_policy: indentation are load-bearing; do not reformat.
-# Smart routing v2 additions.  The legacy per-phase routing table remains
-# repo-local at .claude/ref/leadv2-routing.yaml; this canonical registry is
-# copied there by plugin sync when v2 is enabled.
-router_v2:
-  # Advisory capability data (per-arm scores + confidence + sources):
-  #   plugins/leadv2/config/model-capability.yaml
-  # Not consumed by scoring yet (MODEL-BENCH-DATA-01). Cost policy wins.
-  # Used only when the current session credential cannot be identified.  The
-  # quota reader reports account_resolution=pinned_unresolved in that case.
-  active_account: max_20x
-
-  # usable_now is remaining percentage-points per hour, not percent used.
-  headroom_weights:
-    - min_usable_now: 8
-      weight: 1.0
-    - min_usable_now: 2
-      weight: 0.7
-    - min_usable_now: 0
-      weight: 0.4
-    - min_usable_now: null
-      weight: 0.2
-
-  # ── Quota ceilings, founder decision 2026-08-02 ───────────────────────────
-  # Two ceilings per provider: ordinary work, and a HIGHER one for review, because
-  # review is the last thing we want to skip when quota gets tight. A provider is
-  # withdrawn from the ladder for ordinary work at `work_pct` and stays available
-  # for review until `review_pct`.
-  #
-  #   glm    work 80  · review 90
-  #   codex  work 90  · review 95
-  #   claude work 95  · review 95   (weekly)
-  #
-  # These are ceilings on the BINDING (worst-case) window of each provider.
-  #
-  # ARBITER-REMEMBERS-FAILURES-01 (2026-09-05): the paragraph that stood here said
-  # codex and claude had "no ceiling reader at all" and that these numbers were
-  # "declared policy, NOT enforced behaviour". That stopped being true when the
-  # route arbiter landed and it has been misleading readers since. All three rows
-  # ARE enforced, per role, by leadv2-route-arbiter.sh's over_ceiling(): it selects
-  # review_pct when role=reviewer and work_pct otherwise, for glm, codex AND claude
-  # alike, and an over-ceiling provider is dropped from the candidate set. Live
-  # proof: a claude probe at 96% (>= claude work_pct 95) produced an
-  # `arm=refuse reason=all_arms_capped` line. leadv2-glm-quota-gate.sh remains a
-  # SECOND, glm-only enforcement point that does not distinguish review from
-  # ordinary work; it is additional to the arbiter's, not a substitute for it.
-  #
-  # Two exemptions apply on top, both named on the decision line: a provider whose
-  # binding window resets within 10% of that window's own period is waited on
-  # rather than switched away from (wait_applied=), and a provider whose probe did
-  # not answer at all is NOT treated as capped -- it is demoted on cost and named
-  # by probe_outage=. `unknown` is not `100%`.
-  quota_ceilings:
-    glm:    { work_pct: 80, review_pct: 90 }
-    codex:  { work_pct: 90, review_pct: 95 }
-    claude: { work_pct: 95, review_pct: 95 }
-
-  # ARBITER-REMEMBERS-FAILURES-01 (founder 2026-09-05): an arm that already came
-  # up and died without producing work on THIS task drops out of the candidate set
-  # for THIS task. Not a global ban -- the key is the mission-content signature
-  # (sig8), the same key the duplicate_task_signature guard uses, so the memory
-  # follows the task and nothing else.
-  #
-  # `threshold` is how many attributed failures retire an arm for that signature.
-  # 2 is the founder's rule ("failed twice -> next in the chain"); 1 would retire
-  # an arm on a single flake, and the arbiter cannot tell a flake from a pattern.
-  #
-  # `arm_failure_causes` is an ALLOW-list of `<terminal>:<cause>` pairs from
-  # dispatch-ledger.jsonl, and the allow-list direction is the load-bearing part:
-  # an unrecognized cause is never counted, so a new terminal shape can never
-  # silently start banning healthy arms. Absent or empty, the script's own default
-  # list applies -- a config drift must not be able to disable the memory quietly.
-  # Deliberately NOT here: every refused:* cause (writeset_pending / _overlap /
-  # _conflict, duplicate_task_signature, all_arms_capped, plan_source_absent,
-  # undiffable_write_set, unscoped_lane_work) -- those are refusals BEFORE the
-  # spawn, the lane's or the gate's shape, never the arm's fault; and the quality
-  # rejections (e2e_regression, review_verdict_fail, review_dod_fail) -- there the
-  # arm DID produce work and it was judged bad, which is a different question.
-  failure_memory:
-    threshold: 2
-    arm_failure_causes:
-      - no_work:arm_produced_nothing
-      - no_work:empty_diff
-      - dead:crashed_unfinished
-      - dead:timeout
-      - dead:empty_response
-      - dead:worker_died_with_session
-      - dead:no_verdict_marker
-      - dead:review_body_lost
-
-  # T17 route arbiter capability matrix. This is data, not a second ladder.
-  # `cost` is a relative unit used only among capable, uncapped arms.
-  #
-  # T17 fix-round (C1): `kinds:` must carry the vocabulary real callers
-  # actually pass, not just the abstract code|docs|review|plan|audit|safety
-  # set. `grep -rhoE '--kind "[^"]+"' scripts/*.sh scripts/lib/*.sh` on
-  # d6179df showed the only two literal values ANY caller sends are
-  # fanout-class-funnel (leadv2-fanout.sh, leadv2-fanout-lane-launcher.sh) and
-  # backlog-pump (leadv2-backlog-pump.sh) -- neither was in this matrix, so
-  # every fanout lane and every backlog-pump dispatch hard-refused
-  # (all_arms_capped, dispatch exit 4) with every arm under ceiling. Both are
-  # ordinary build-kind work (not review/plan/audit/safety), so they are
-  # listed on the same cells as `code`. The arbiter (leadv2-route-arbiter.sh)
-  # also normalizes any OTHER out-of-vocabulary --kind value to `code` as a
-  # second, defensive layer -- this matrix entry is the first-class one so the
-  # journal shows the real kind, not a silent rewrite.
-  capability_matrix:
-    # GLM-DOES-ANY-WORK-01 — прямое решение основателя 2026-09-04, дословно:
-    # «дай глм право делать любую работу, вообще любую, во всех репо. глм отлично
-    # все делает, и ревью тоже пусть делает». Это ШИРЕ его же решения от 2026-09-03
-    # («разрешить с исключениями») и заменяет его.
-    #
-    # Что именно изменено в этой ячейке и что каждое поле значит:
-    #   protected: false -> true   — glm допущен на защищённые пути. Тот же флаг
-    #     через require_trusted (lib/leadv2-route-arbiter.sh:80) закрывает safety,
-    #     publish и ui_judgment, поэтому glm теперь выигрывает и их: при цене 1
-    #     против 5 у sonnet он дешевле на любом сравнении. Это НЕ побочный эффект,
-    #     а буквально то, о чём попросили; названо здесь, чтобы никто не счёл это
-    #     недосмотром и не «починил» обратно молча.
-    #   review: false -> true      — glm допущен как рецензент, не только как автор.
-    #   kinds += review, plan, safety — раньше ячейка не бралась за эти виды работ
-    #     вовсе, независимо от цены.
-    #
-    # Не изменено намеренно: glm-flash и freepool остаются protected: false. Оба
-    # помечены `untrusted: true` в лестнице диспатчера, и лестница снимает их на
-    # защищённом пути раньше арбитра — так что правка одной ячейки их всё равно не
-    # пустила бы, а править лестницу основатель не просил. Речь шла о GLM, а
-    # glm-flash это его дешёвый тариф для механической работы, не он сам.
-    #
-    # Откат — один шаг: вернуть в этой строке protected: false, review: false и
-    # исходный список kinds. Ледгер: SD-GLM-DOES-ANY-WORK-ROLLBACK-01.
-    - { arm: glm, provider: glm, model: glm-5.3, tier: standard, cost: 1, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [bulk, background], review: true, protected: true }
-    # GLM-53-FLASH-ARM-01 (founder order 2026-08-26): glm-5.3-flash, the CHEAP
-    # glm-family arm. GLM-EFFICIENCY-01 (founder ruling on ask q-bba84179,
-    # 2026-09-02, option b): cost corrected 0.4 -> 0.33 against Z.AI's measured
-    # credit multipliers (docs.z.ai/devpack/teamplan.md, fetched 2026-09-02):
-    # flash 2.3 in / 0.56 cached / 8 out vs glm-5.3 6.9 / 1.7 / 24 — exactly ⅓,
-    # i.e. flash's advertised "3x the quota" means 3x the ALLOWANCE, not 3x the
-    # cost. The old 0.4 was a legacy-plan figure; the direction (flash cheapest)
-    # was always right. Flash stays preferred on trivial/light/standard.
-    # `cost: 0.33` is that credit-weight ratio expressed in the arbiter's only
-    # economic unit (relative cost among capable, uncapped arms) — a STATIC
-    # preference note, not a quota model: the arbiter scores provider-level
-    # utilization, not per-model consumption, so no per-arm quota math was
-    # added in this round. Good for mechanical edits, small fixes, doc rounds,
-    # test authoring. NOT for protected/safety/publish (protected: false here
-    # plus `untrusted: true` on the ladder entry below), NOT review/audit/plan,
-    # and sizes stop at standard — heavy/bulk stay on glm-5.3/codex/sonnet.
-    # GLM-FLASH-DOES-ANY-WORK-01 (founder 2026-09-10) — mirrored from the canonical
-    # plugin config. THIS FILE IS A DRIFTED SHADOW (row filed 2026-09-10): it is what
-    # leadv2-dispatch-code.sh actually reads when PROJECT_ROOT is the plugin repo, and
-    # it was 229 lines behind canonical when this edit was made.
-    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.33, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [cheap, mechanical], review: true, protected: true }
-    # recon (ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01, founder 2026-09-04):
-    # recon is cheap, high-volume, READ-ONLY exploration — routing intent lives
-    # here as rows, not in arbiter code branches. freepool (cost 1) is the
-    # winner while its gate is healthy; haiku (cost 2) is the capable fallback
-    # when the gate benches freepool. No glm/codex/sonnet/opus cell carries
-    # recon — the doctrine is "the cheapest capable arm", exactly these two.
-    - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, cost: 1, kinds: [code, docs, recon, fanout-class-funnel, backlog-pump], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false }
-    - { arm: codex, provider: codex, model: gpt-5.6, tier: volume, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true } # PLUGIN-PAPERCUTS-01 defect 2: was tier: spark — codex-task.sh rejects spark (banned, founder directive 2026-04-28; accepts top|standard|volume only), so this cell won the auction and died at spawn. volume (gpt-5.6-luna/low) is the launcher's cheapest valid tier for this cheap leg.
-    - { arm: codex, provider: codex, model: gpt-5.6, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true }
-    - { arm: codex, provider: codex, model: gpt-5.6, tier: top, cost: 7, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true }
-    - { arm: haiku, provider: claude, model: haiku, tier: standard, cost: 2, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
-    - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true }
-    - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true }
-
-  # EFFORT-IS-NOT-WIRED-01: the second routing knob (docs/model-effort-matrix.md
-  # -- model = hardness, effort = marginal value of extra thinking) resolved
-  # from the SAME winning capability_matrix cell the arbiter already picked,
-  # never a second decision and never an `if arm==X` branch in the script.
-  # Doctrine mapping (model-effort-matrix.md): adversarial review /
-  # safety judgment / architecture (`plan`) / a protected final verdict ⇒
-  # high; mechanical / classify / cheap work ⇒ low; everything else
-  # (ordinary build/fix) ⇒ medium. Adding a row here changes routing outcomes
-  # with no script edit -- that is the anti-hardcoding property under test.
-  #
-  # SMART-ARBITER-01 / EFFORT-FOLLOWS-THE-ARM-NOT-THE-TASK-01 (founder
-  # 2026-09-04): rows split into TWO phases. Phase 1 rows are keyed ONLY on
-  # the TASK descriptor (kinds/sizes/complexity/duration_class/protected/
-  # default) and are evaluated FIRST; phase 2 rows (arm `tags`) are a
-  # fallback for when no task row matched. Before this split the winning
-  # ARM's tags decided effort: glm-flash won a standard build on cost and its
-  # cheap/mechanical tags forced effort=low for writing code (43 live
-  # decisions at effort=low, 2026-09-03/04) -- the exact circularity the
-  # founder rejected. The pre-split tag rows are preserved below as phase 2
-  # so a config that ships only arm rows still resolves.
-  effort_matrix:
-    # Phase 1 -- task-keyed, evaluated first (effort follows the TASK).
-    - { kinds: [safety], effort: high }
-    - { protected: true, effort: high }
-    - { kinds: [plan, audit, review], effort: high }
-    - { kinds: [code], complexity: [complex], effort: high }
-    - { kinds: [code], effort: medium }  # a build is NEVER low: founder 2026-09-04
-    - { kinds: [docs, recon, fanout-class-funnel, backlog-pump], effort: low }
-    - { default: true, effort: medium }
-    # Phase 2 -- arm-keyed FALLBACK, never overrides a task-keyed row above.
-    - { tags: [adversarial], effort: high }
-    - { tags: [safety], effort: high }
-    - { tags: [mechanical], effort: low }
-    - { tags: [classify], effort: low }
-    - { tags: [cheap], effort: low }
-  # COMPLEXITY-ESTIMATOR-IS-OFF-01: the arbiter's `cheapest_capable` sort (the
-  # ecost() function in leadv2-route-arbiter.sh) previously had no notion of
-  # how hard a task is -- kind/size/protected pick the eligible cells, `cost`
-  # alone breaks the tie. Each rule here adds `penalty` to the effective cost
-  # of any capable cell whose `tags` intersect `penalize_tags`, but ONLY when
-  # the dispatch's judge-estimated complexity/duration_class matches. Data-
-  # driven, additive: an empty list (or a rule that never matches) reproduces
-  # today's pure-cost behavior byte-for-byte. Never names an arm directly --
-  # matches on the SAME `tags` capability_matrix cells already carry (cheap/
-  # mechanical/bulk/background), so a routing-yaml-only edit (no script
-  # change) is enough to retune which cells count as "too cheap" for hard work.
-  complexity_penalty:
-    - complexities: [complex]
-      # GLM-FIRST-IS-DEAD-BY-COMPLEXITY-PENALTY-01 (lead, 2026-09-03, founder
-      # decision the same evening: heavy+complex work is ALLOWED on glm, with
-      # exceptions). `bulk` and `background` are glm's own tags, and the penalty
-      # is +100 -- the same magnitude the freepool capability floor uses to
-      # "clear the whole real cost range". So this rule was not a nudge, it was
-      # a total ban: every task the judge called `complex` removed glm from
-      # contention entirely (measured: glm cost 1 -> 101, sonnet 5 wins and is
-      # journalled `reason=cheapest_capable` while glm sits at 13% utilization
-      # and claude at 54%).
-      # `cheap` and `mechanical` stay penalized -- those are glm-flash's tags,
-      # and a flash-tier arm on complex work is the case this rule was written
-      # for. The exceptions founder policy actually names (safety / publish /
-      # payments / ui_judgment) are enforced elsewhere and are untouched: they
-      # come through `_hard_flag` in leadv2-route-arbiter.sh:79, which forces
-      # require_trusted regardless of any cost ranking. Controls run on the live
-      # tree before/after: complex+safety -> sonnet (both), complex alone ->
-      # sonnet before / glm after, glm-flash never wins complex.
-      penalize_tags: [cheap, mechanical]
-      penalty: 100
-
-  # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
-  # Anthropic arms deliberately share the active Max x20 account bucket.
-  #
-  # NOTE 2026-08-02 (updated ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01): the dispatch
-  # order now comes from router.dispatch_ladder above. This arms list remains
-  # for advisory/quota-bucket purposes. The dispatcher builds candidate_arms
-  # from dispatch_ladder, not from this list.
-  arms:
-    - id: glm
-      # Live acceptance evidence: plugins/leadv2/docs/evidence/glm-5.3-probe.md.
-      channel: glm-coder.sh
-      model: glm-5.3
-      bucket: glm
-      reserve_threshold: 2
-      reserve_allow: [review]
-    # GLM-53-FLASH-ARM-01: same channel (glm-coder.sh, model selected via its
-    # GLM_MODEL env), same glm quota bucket and lockout scope. Never a
-    # reviewer — glm family is in DEFAULT_REVIEW_EXCLUSIONS, glm-flash included.
-    - id: glm-flash
-      channel: glm-coder.sh
-      model: glm-5.3-flash
-      bucket: glm
-      reserve_threshold: 2
-    # RETIRED 2026-08-05 (DISPATCH-KIMI-ARM-MISMATCH-01, founder order 2026-08-04
-    # «Кими убрать»): kimi is not a dispatchable build arm. Uncomment this block to
-    # restore it — the launcher implementation (kimi) spawn case, _apply_kimi_admission,
-    # _wait_kimi_verdict, KIMI_BIN) is intact and still works.
-    # - id: kimi
-    #   model: moonshotai/kimi-k3-free
-    #   bucket: kimi
-    #   reserve_threshold: 2
-    #   reserve_allow: [review]
-    - id: freepool
-      # T19 (founder decision 2026-08-26): local proxy in front of free-tier
-      # providers (Alishahryar1/free-claude-code). health_gated: true means
-      # this arm's own gate (leadv2-freepool-gate.sh) can refuse independently
-      # of quota — a proxy with no keys configured yet, or one breaching its
-      # rolling error-rate/latency window, is arm_down/gate_broken by FACT,
-      # not by a hand-kept exclusion list. Standard/bulk only until a week of
-      # first-pass review-rate data (T17) clears it for Heavy/integration —
-      # never protected/safety/publish/UI-judgment regardless of data.
-      channel: freepool-coder.sh
-      model: freepool-default
-      bucket: freepool
-      reserve_threshold: 2
-      # T19 fix-round (L3): no reserve_allow: [review] here -- it contradicted
-      # DEFAULT_REVIEW_EXCLUSIONS = ["glm", "freepool"] in
-      # lib/leadv2-glm-policy-resolve.py, added by this same T19 change. freepool
-      # never reviews its own or anyone else's diff.
-      health_gated: true
-    - id: codex
-      channel: codex-task.sh
-      model: gpt-5.6-terra
-      bucket: codex
-      reserve_threshold: 2
-      reserve_allow: [review]
-    - id: claude-haiku
-      channel: claude-subsession.sh
-      model: haiku
-      bucket: anthropic:max_20x
-      reserve_threshold: 2
-      reserve_allow: [review]
-    - id: claude-sonnet
-      channel: claude-subsession.sh
-      model: sonnet
-      bucket: anthropic:max_20x
-      reserve_threshold: 2
-      reserve_allow: [review]
-    - id: claude-opus
-      channel: claude-subsession.sh
-      model: opus
-      bucket: anthropic:max_20x
-      reserve_threshold: 2
-      reserve_allow: [review]
-
-# CODEX-GATE-01 item 6: in-lane DEFAULT protected-path patterns consumed by
-# lib/leadv2-review-signals.sh (the safety source for the product-close review pool). This is
-# the safety net so a tenant override (.claude/ref/leadv2-routing.yaml) that lacks this key
-# never silently fail-closes kimi review everywhere. Patterns are bash globs (`*` spans `/`),
-# matched against the task's lane-write paths. Covers the same three areas the routing yaml's
-# sonnet_exceptions `safety_gate_publish_payments / when: protected_path` rule names:
-# safety-gate, publish, payments. First yaml in the ordered lookup that carries this key wins.
 router:
-  # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P1: the ordered dispatch ladder.
-  # dispatch-code.sh reads this list to build candidate_arms — it no longer
-  # carries a hardcoded fallback order. The resolver's primary arm starts the
-  # candidate list; every arm after it in this order is a fallback. Changing
-  # this list changes dispatch routing.
-  #
-  # Each entry:
-  #   id       — arm identifier used in the dispatch script's case/spawn logic
-  #   provider — the quota/lockout scope (one lockout record covers all arms
-  #              on the same provider)
-  #   model    — the model the arm dispatches
-  #   when     — task kinds this arm is eligible for (advisory; the resolver
-  #              decides the primary arm from glm_policy rules, this list
-  #              governs fallback eligibility)
-  #   effort   — effort tier for the arm's provider
-  #   review_rank — dispatch-8e2a32be (D3): integer rank used ONLY by the review-pool
-  #              resolver's non-empty floor (leadv2-glm-policy-resolve.py:_review_floor).
-  #              Present only on Anthropic-account arms today (haiku < sonnet < opus <
-  #              fable). floor(author) escalates to the next-higher rank above the
-  #              author, or the highest rank if the author is already at/above the top
-  #              -- so the review pool can never end up genuinely empty just because
-  #              codex+glm are both quota-locked and the author is an Anthropic arm.
-  #              Absent key on an entry = that arm never participates in the floor
-  #              (build-only arms like glm/codex/kimi keep their own quota gating
-  #              instead). Never read for build-ladder ordering -- see dispatch: false
-  #              note on the two review-only entries below.
-  dispatch_ladder:
-    - id: glm
-      provider: glm
-      model: glm-5.3
-      when: [all]
-      effort: standard
-    # GLM-53-FLASH-ARM-01: the CHEAP glm-family arm, first fallback after
-    # glm-5.3 (the route arbiter ranks it ahead on cost 0.33 whenever a
-    # standard-size mechanical cell matches). `untrusted: true` reuses the
-    # T19 protected/safety chain-strip mechanism — for freepool it encodes
-    # third-party trust, for glm-flash it encodes the model-class rule that a
-    # flash model never touches a protected/safety/publish chain, even as a
-    # fallback position. `when:` stops at standard: heavy/bulk/strategic
-    # fallback legs skip flash (mechanical tier only). Same glm provider =>
-    # one lockout record covers both glm arms.
-    - id: glm-flash
-      provider: glm
-      model: glm-5.3-flash
-      when: [all]
-      effort: standard
-    # RETIRED as a build arm (founder order 2026-08-04 «Кими убрать», executed as
-    # 3398d11 / DISPATCH-KIMI-ARM-MISMATCH-01). The entry stays so _arm_provider
-    # can name the provider if a stale tenant yaml ever hands back arm=kimi, but
-    # dispatch: false makes the ladder loader skip it. T19: freepool below is the
-    # kimi replacement in the bulk ladder (glm -> codex -> sonnet -> freepool).
-    - id: kimi
-      provider: kimi
-      model: moonshotai/kimi-k3-free
-      when: [all]
-      effort: standard
-      dispatch: false
-    - id: codex
-      provider: codex
-      model: gpt-5.6-terra
-      when: [all]
-      effort: standard
-    - id: sonnet
-      provider: anthropic
-      model: sonnet
-      when: [all]
-      effort: standard
-      review_rank: 2
-    # T19 (founder decision 2026-08-26): Standard/bulk from day one, parallel-
-    # eligible. Positioned LAST -- glm -> codex -> sonnet -> freepool, matching
-    # the ladder comment above (the kimi replacement in the bulk ladder).
-    # T19 fix-round (review FAIL on 009d0b6, C1): the prior comment here claimed
-    # glm_policy.protected_path_patterns already excluded protected/safety/
-    # publish/payments tasks "for every arm on this ladder" -- false on both
-    # counts (protected_path_patterns only sets the DC_PROTECTED signal for the
-    # resolver's PRIMARY-arm pick; it never touches the fallback chain, and the
-    # plugin yaml had no sonnet_exceptions row for the safety rule to fire on
-    # in the first place, see glm_policy.sonnet_exceptions below). `untrusted:
-    # true` is the real guard: _build_candidate_chain (leadv2-dispatch-code.sh)
-    # strips every untrusted arm from the chain whenever DC_PROTECTED=1 or
-    # DC_SAFETY=1, at every chain position, and journals arm_excluded
-    # reason=protected_path so the skip is a fact, not a comment.
-    # Heavy/integration eligibility is data-gated (T17): `when: [light,
-    # standard, bulk]` is enforced by _build_candidate_chain against
-    # --task-class (default "standard"; unset for a caller that never
-    # resolved a size class, which keeps today's behaviour).
-    # ARMS-ADMISSION-01 (ROUTER-ARBITER-DISAGREE-ON-FREEPOOL-01): `light` was
-    # missing here while leadv2-route-arbiter.sh's SIZE_MAP has always folded
-    # light into the 'standard' capability cell for freepool (see FP-08's own
-    # comment there: "trivial|light... must stay freepool-eligible"), so the
-    # ladder and the arbiter disagreed on the exact same task_class. The
-    # arbiter's behaviour is the one the founder already signed off on
-    # (FP-06/FP-08) -- this ladder now agrees with it instead of the arbiter
-    # being the sole source of truth for `light`.
-    - id: freepool
-      provider: freepool
-      model: freepool-default
-      when: [light, standard, bulk]
-      effort: standard
-      health_gated: true
-      untrusted: true
-    # dispatch-8e2a32be (D3): review-only entries, never build-dispatched (dispatch:
-    # false, same posture as fable below) -- they exist here solely so the review-pool
-    # floor has a provider mapping + rank for every Anthropic-account arm the review
-    # path can actually invoke (run_reviewer_arm's generic claude-subsession.sh --model
-    # <arm> branch already handles any arm name, haiku/opus included).
-    - id: haiku
-      provider: anthropic
-      model: haiku
-      when: [review]
-      effort: standard
-      dispatch: false
-      review_rank: 1
-    - id: opus
-      provider: anthropic
-      model: opus
-      when: [review]
-      effort: high
-      dispatch: false
-      review_rank: 3
-    # Architect-path models — expressed here so the config is the single
-    # source of truth, but never dispatched by dispatch-code.sh (the plan
-    # workflow uses fable directly via workflows/leadv2-plan.js).
-    - id: fable
-      provider: anthropic
-      model: fable
-      when: [architect, heavy]
-      effort: high
-      dispatch: false
-      review_rank: 4
   glm_policy:
-    # RECOVER-WAVE1-TEN-01 union (2026-09-05): the shipped default patterns
-    # (safety/publish/payments) PLUS the plugin-repo patterns from
-    # PLUGIN-REVIEW-ARMS-01's tenant override (worktree-100a892d): this repo
-    # has no DB/auth/payments, so what breaks every consuming repo at once is
-    # the dispatch/gate/hook surface -- that surface is protected HERE, the
-    # shipped generic patterns are kept so nothing the default guarded is
-    # silently unprotected. Deliberately NOT protected: docs/** and
-    # plugins/leadv2/skills/**/*.md (markdown-only edits do not warrant a
-    # safety-tier review). Glob syntax: `*` spans `/` (lib/leadv2-review-signals.sh).
+    # RECOVER-WAVE1-TEN-01 union (2026-09-05), kept verbatim from the copy
+    # this delta replaces: the shipped default patterns (safety/publish/
+    # payments) PLUS this repo's own surface globs. This repo has no DB/auth/
+    # payments — what breaks every consuming repo at once is the dispatch/
+    # gate/hook surface, protected here; the shipped generic patterns are kept
+    # so nothing the default guarded is silently unprotected. Deliberately NOT
+    # protected: docs/** and plugins/leadv2/skills/**/*.md (markdown-only edits
+    # do not warrant a safety-tier review).
+    #
+    # This list REPLACES canonical's (list-replace rule) — so it MUST stay a
+    # SUPERSET of the canonical defaults; if canonical grows a default glob and
+    # this list does not, tests/test-routing-config-merge.sh REDS and names the
+    # missing glob. That drift is the one place inheritance cannot help (a
+    # present list wins), so the test is the guard.
+    # Glob syntax: `*` spans `/` (lib/leadv2-review-signals.sh).
     protected_path_patterns:
       - "*safety-gate*"
       - "*safety_gate*"
@@ -524,35 +69,3 @@ router:
       - "plugins/leadv2/hooks/*"
       - "plugins/leadv2/config/*"
       - ".claude/settings.json"
-    # T19 fix-round (review FAIL on 009d0b6, C1b): this canonical plugin yaml
-    # had NO sonnet_exceptions key at all, so the resolve_glm_policy()
-    # precedence rows below (leadv2-glm-policy-resolve.py:707-722) could never
-    # fire in a repo that inherits this config directly (ROUTING_YAML falls
-    # back here when a tenant's .claude/ref/leadv2-routing.yaml is absent) --
-    # a protected/safety/publish/payments task resolved arm=glm instead of
-    # sonnet, verified live: `--signals '{"protected_path":true,
-    # "safety_touched":true}'` returned `arm=glm reason=glm_default` before
-    # this fix. Mirrors the tenant-repo shape (persona-engine's
-    # .claude/ref/leadv2-routing.yaml:77-87) so the plugin config is no longer
-    # a silent exception to its own safety rule.
-    sonnet_exceptions:
-      # SMART-ARBITER-01: `safety_gate_publish_payments when: protected_path`
-      # is REMOVED. It predates GLM-DOES-ANY-WORK-01 (founder 2026-09-04 «дай
-      # глм право делать любую работу, вообще любую») and still forced
-      # sonnet-primary + glm-excluded on every protected task -- the matrix
-      # cell's protected:true could never win this path (84 live
-      # sonnet-at-cost-5 decisions 2026-09-03/04 while glm idled at 13-31%;
-      # direct arm_excluded lines in dispatch-07401216's journal). The
-      # resolver's exc-id gate (leadv2-glm-policy-resolve.py: rid not in
-      # exc_ids -> cannot fire) makes this row's absence the enforcement.
-      # Rollback: re-add the two lines below. The resolver's unconditional
-      # freepool/glm-flash protected guards still hold -- those arms remain
-      # excluded from protected work; glm itself is allowed.
-      - id: integration_critical_4subsystems
-        when: subsystem_count>=4 or needs_midflight_interaction
-      - id: ui_design_judgment
-        when: ui_design_judgment
-      - id: glm_failed_twice
-        when: glm_failure_count>=2
-      - id: glm_lock_busy_no_second_channel
-        when: glm_lock_busy

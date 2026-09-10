@@ -749,7 +749,14 @@ _scope_changed_file_select() { # <repo-relative changed file>
     stem="$(basename "$cf" .sh)"; via_hooks=1
   elif [[ "$cf" == "plugins/leadv2/config/freepool-arm.yaml" ]]; then
     stem="freepool-arm.yaml"
-  elif [[ "$cf" == "plugins/leadv2/config/leadv2-routing.yaml" ]]; then
+  elif [[ "$cf" == "plugins/leadv2/config/leadv2-routing.yaml" ]] \
+      || [[ "$cf" == ".claude/ref/leadv2-routing.yaml" ]]; then
+    # PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the tenant DELTA at
+    # .claude/ref/ is a real production routing config now (merged over the
+    # canonical by lib/leadv2-routing-config.sh); without this case it was
+    # structurally unmappable -> full-set fallback (95 suites) — same shape
+    # as the known-red-suites.txt case below. Same stem as the canonical:
+    # a delta edit must select the suites that grade routing.
     stem="leadv2-routing.yaml"
   elif [[ "$cf" == "plugins/leadv2/config/model-capability.yaml" ]]; then
     stem="model-capability.yaml"
@@ -757,6 +764,11 @@ _scope_changed_file_select() { # <repo-relative changed file>
     stem="leadv2-main-model.yaml"
   elif [[ "$cf" == "plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py" ]]; then
     stem="leadv2-glm-policy-resolve.py"
+  elif [[ "$cf" == "plugins/leadv2/scripts/lib/leadv2-routing-merge.py" ]]; then
+    # PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: lib/*.py reaches no
+    # allowlist below (only scripts/*.py does), so the merge engine was
+    # structurally unmappable -> full-set fallback for this lane's diff.
+    stem="leadv2-routing-merge.py"
   elif [[ "$cf" == plugins/leadv2/workflows/*.js ]]; then
     stem="$(basename "$cf")"
   elif [[ "$cf" == ".claude/leadv2-overrides/status-collector-facts.sh" ]]; then

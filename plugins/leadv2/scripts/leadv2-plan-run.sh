@@ -246,7 +246,21 @@ resolve_plan_pool_call() {
     printf 'planner=\npool=\nrefusal=resolver_missing_failclosed\n'
     return
   fi
-  local routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
+  # PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the ONE resolver (env
+  # override as-is -- hermetic fixtures keep exact bytes, else tenant delta
+  # MERGED over the canonical registry). Broken tenant delta: the resolver
+  # names the file on stderr and we pass empty, letting the python resolver's
+  # D1 self-heal fail closed rather than substitute.
+  local routing_yaml=""
+  declare -F leadv2_routing_config_path >/dev/null 2>&1 || {
+    local _rc_sh="${SCRIPT_DIR}/lib/leadv2-routing-config.sh"
+    [[ -f "${_rc_sh}" ]] || _rc_sh="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-routing-config.sh"
+    # shellcheck source=lib/leadv2-routing-config.sh
+    [[ -f "${_rc_sh}" ]] && source "${_rc_sh}" || true
+  }
+  if declare -F leadv2_routing_config_path >/dev/null 2>&1; then
+    routing_yaml="$(leadv2_routing_config_path "${ROOT}")" || routing_yaml=""
+  fi
   local _signals_json='{}'
   # ROUTING-YAML-HAS-TWO-READERS-AND-TWO-FILES-01: glm_policy lives in the phase
   # policy document, which no longer has to share the registry's filename.

@@ -97,7 +97,9 @@ _judge_atomic_flush() {
 
 # ---------------------------------------------------------------------------
 # Dual-path: Haiku first for Light/Standard. Escalate to Opus only if needed.
-# Configured via .claude/ref/leadv2-routing.yaml (dual_path.llm_judge).
+# Configured via the routing registry resolved by lib/leadv2-routing-config.sh
+# (canonical plugins/leadv2/config/leadv2-routing.yaml + tenant delta at
+# .claude/ref/leadv2-routing.yaml, merged) -- dual_path.llm_judge.
 # ---------------------------------------------------------------------------
 HAIKU_SCRIPT="${SCRIPT_DIR}/leadv2-llm-judge-haiku.sh"
 if [[ "$TASK_CLASS" =~ ^(Light|Standard)$ ]] && [[ -x "$HAIKU_SCRIPT" ]]; then
