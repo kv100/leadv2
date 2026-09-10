@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-land-merged-tree.sh
+file=plugins/leadv2/scripts/leadv2-land.sh
+anchor=/^  land_merged_tree_check "${LAND_TIP}" # MERGED-TREE-INSTRUMENT.*$/d
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL - m1: rc=1 on outside-write-set deletion (expected [1], got [0])
+diff_hash=fb3a5d385a9a896c424f47bf0ccb6732b816f3dfca35eae8f6336b64b5609629
+lane_diff_hash=5a85f0d642101317208383e7afc5fc07165208338fb7347ee3690f300fb9dbea
+porcelain_clean=yes
+restored=yes
