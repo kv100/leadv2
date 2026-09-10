@@ -64,6 +64,11 @@ the one measured 4/4 — needs no second step at all.
   the no-record cases; deterministic kimi-pin refusal instead of the
   quota-stub shape that stopped refusing). Was 20 pass / 5 fail on pristine
   main before this lane; 28/0 after.
+- `plugins/leadv2/scripts/tests/test-quota-reset-arbiter.sh` — case (d) made
+  deterministic (pre-existing red on pristine main, same anthropic-stub drift
+  class: the bare all_arms_capped refusal stopped firing; now a pinned capped
+  arm refuses through the same prints). 8/1 -> 9/0.
+- `docs/handoff/w-spawn-deadlock/mutation-control/` — two control artifacts.
 - `docs/handoff/w-spawn-deadlock/report.md` — this file.
 
 `leadv2-model-inherit-guard.sh` NOT touched (the reproducer already passes it;
@@ -72,4 +77,112 @@ its no-model denial for built-ins is unchanged and still stands).
 
 ## Acceptance evidence
 
-(filled below as each probe runs)
+### The real spawn through both hooks (half the acceptance)
+
+The EXACT reproducer payload, real hooks, real arbiter, live journal — first
+`verdict=allow` in the policy's lifetime (only the quota probe is stubbed to a
+healthy anthropic window; the live window is honestly forecast-blocked today,
+see the next block):
+
+```
+PAYLOAD='{"tool_name":"Agent","tool_input":{"subagent_type":"Explore","model":"haiku","prompt":"map the auth flow"}}'
+=== hook 1: model-inherit-guard ===   rc=0 (silence + rc0 = pass)
+=== hook 2: spawn-arbiter-gate ===
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
+ "additionalContext": "[leadv2-spawn-arbiter-gate] arbiter decision on record:
+ kind=recon arm=haiku model=haiku tier=standard reason=explicit_requested_capable
+ recorded=2026-09-10T11:39:36Z -- spawn honours this decision."}}
+VERDICT-LINE: verdict=allow
+=== live journal tail ===
+{'subtype': 'Explore', 'work_kind': 'recon', 'arm': 'haiku', 'model': 'haiku',
+ 'tier': 'standard', 'reason': 'explicit_requested_capable', 'ts': '2026-09-10T11:39:36Z'}
+```
+
+### Fully live run (no stubs at all), same payload, same minute
+
+The live anthropic window is forecast-blocked, so the honest live answer today
+is a NAMED, current refusal — not the historical deadlock (the arbiter no
+longer answers freepool-default; freepool drops itself as not_in_pool):
+
+```
+permissionDecision: "deny"
+Gate consult (one call ...; speakable pool: sonnet opus haiku fable):
+  arm=refuse model=none tier=none reason=requested_arm_forecast kind=recon
+  requested_arm=haiku chain= util_glm=22 util_codex=47 util_claude=64
+  util_freepool=0 reset_claude=34.36h_live
+  arm_excluded=freepool:not_in_pool,haiku:forecast
+journal: {'arm': 'refuse', 'reason': 'requested_arm_forecast', 'subtype': 'Explore', ...}
+```
+
+This is the system working: the first live `verdict=allow` on a bare spawn
+arrives when the anthropic window has headroom; the mechanism no longer
+depends on anything unpronounceable. NOTE for the founder: under
+`kind=recon` the speakable pool has exactly one arm (haiku; freepool is
+excluded by founder order 2026-09-09), so a bare recon spawn is only as
+available as the anthropic window. If bare recons should survive an
+anthropic forecast block, that is a matrix/policy row (add a speakable recon
+cell), not a gate change.
+
+### Falsification set
+
+`bash -n` over every changed shell — all OK:
+
+```
+OK  bash -n plugins/leadv2/hooks/leadv2-spawn-arbiter-gate.sh
+OK  bash -n plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+OK  bash -n plugins/leadv2/scripts/tests/test-spawn-arbiter-gate.sh
+OK  bash -n plugins/leadv2/scripts/tests/test-spawn-speakable-pool.sh
+OK  bash -n plugins/leadv2/scripts/tests/test-quota-reset-arbiter.sh
+```
+
+No standalone Python files changed (the arbiter's python is embedded and is
+exercised by every suite run above).
+
+### Suites
+
+New suite `test-spawn-speakable-pool.sh` — 26/26, including the brief's
+acceptance pairs (A: Explore+decided model passes on attempt one, exactly one
+consult; B: undecided models keep the same refusal opening — freepool-default
+as not_in_pool, kimi-k2 as requested_model_unknown; C: model-less custom
+agent passes + pre-existing-record path untouched; D: emptied pool refuses
+pool_empty_all_excluded naming every arm+stage; E: garbage/missing arbiter ->
+named refusal; F: auto-consult kill switch; G: kind assumption named and
+escapable; H: mutation bites — strip the speakable branch and the arbiter
+answers freepool again).
+
+```
+SUMMARY: pass=26 fail=0        # test-spawn-speakable-pool.sh
+SUMMARY: pass=28 fail=0        # test-spawn-arbiter-gate.sh (was 20/5 on pristine main)
+SUMMARY: pass=9 fail=0         # test-quota-reset-arbiter.sh (was 8/1 on pristine main)
+```
+
+Neighbour regression sweep (worktree, post-change):
+
+```
+test-route-arbiter.sh                  rc=0 0 fails
+test-route-arbiter-loud-refusal.sh     rc=0 0 fails
+test-route-arbiter-failure-memory.sh   rc=0 0 fails
+test-route-arbiter-spend-forecast.sh   rc=0 0 fails
+test-quota-reset-arbiter.sh            rc=0 (after case-(d) repair)
+test-think-through-arbiter.sh          rc=0 0 fails
+test-arbiter-seam-plugin-kind.sh       rc=0 PASS=14 FAIL=0
+```
+
+### Mutation controls (leadv2-mutation-control.sh artifacts)
+
+```
+MUTATION-CONTROL ok suite=.../test-spawn-speakable-pool.sh
+  file=.../leadv2-route-arbiter.sh sed='s/if speakable is not None:/if False:/'
+  red_line=AssertionError: {}          # H0: the auction answered freepool
+MUTATION-CONTROL ok suite=.../test-spawn-speakable-pool.sh
+  file=.../leadv2-spawn-arbiter-gate.sh sed='s/^SPEAKABLE_MODELS="sonnet opus haiku fable"/SPEAKABLE_MODELS=""/'
+  red_line=FAIL: A1 verdict=deny       # emptied pool -> loud refusal -> reproducer reds
+lane_diff_hash=ac28c8696e1230825792dc8f72d3926e34f5ceefd58ec9c9e0e506efba2a98ae
+```
+
+Artifacts: `mutation-control/20260910T114324Z-18921.txt`,
+`mutation-control/20260910T114353Z-51524.txt`.
+
+### Changed-scope runner
+
+`tbd — appended when the background run completes`
