@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-interactive-session-switch.sh
+file=plugins/leadv2/scripts/leadv2-interactive-session-switch.sh
+anchor=/tmp/w-resume-cwd/mut7.patch
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] == case 4: ordinary network error on screen -> no_limit, account never touched (screen non-limit)
+diff_hash=6ea44c2d483d6b6cb70039a781bbafbfb690c70f809856a022a7ae501da475f5
+lane_diff_hash=cd8a4a6e04a47748d9aae28b2df59d971f7b1d0ba2f14f5b37d89a29827d1976
