@@ -65,7 +65,8 @@ _mk_case() { # <name> — sets CASE, REPO, ORIGIN, STATE, LEDGER, LAND
   mkdir -p "$REPO/plugins/leadv2/scripts"
   local f
   for f in leadv2-land.sh leadv2-branch-merged.sh leadv2-merge-queue.sh \
-           leadv2-merge-safety-gate.sh leadv2-state-path.sh; do
+           leadv2-merge-safety-gate.sh leadv2-state-path.sh \
+           leadv2-portable-lock.sh; do
     cp "${SRC_DIR}/${f}" "${REPO}/plugins/leadv2/scripts/${f}"
   done
   LAND="${REPO}/plugins/leadv2/scripts/leadv2-land.sh"
@@ -161,7 +162,7 @@ case_b() {
   assert_eq "b: remote unmoved" "$main_before" "$(_remote_tip)"
 }
 
-# ── (c) dirty state files restored, land proceeds, row names them ────────────
+# ── (c) unrelated dirty state files are preserved, land proceeds ─────────────
 case_c() {
   _mk_case c
   _commit "$REPO" docs/leadv2/live-state.json '{"v":1}' "live state tracked"
@@ -180,15 +181,13 @@ case_c() {
   _run_land lane-c
   local rc=$?
   assert_eq "c: rc=0 despite state dirt" 0 "$rc"
-  assert "c: live-state.json restored" git -C "$REPO" diff --quiet HEAD -- docs/leadv2/live-state.json
-  assert "c: LEAD_V2_STATE.md restored" git -C "$REPO" diff --quiet HEAD -- docs/LEAD_V2_STATE.md
-  assert "c: dispatch-nw0012 restored" git -C "$REPO" diff --quiet HEAD -- docs/handoff/dispatch-nw0012/x.json
+  assert "c: live-state.json preserved" grep -qx '{"v":99}' "$REPO/docs/leadv2/live-state.json"
+  assert "c: LEAD_V2_STATE.md preserved" grep -qx 'dirty state' "$REPO/docs/LEAD_V2_STATE.md"
+  assert "c: dispatch-nw0012 preserved" grep -qx '{"x":9}' "$REPO/docs/handoff/dispatch-nw0012/x.json"
   assert_eq "c: main == lane tip" "$tip" "$(git -C "$REPO" rev-parse main)"
   local row; row="$(_last_row)"
   assert_contains "c: row landed" "$(_field "$row" outcome)" "landed"
-  assert "c: row names live-state.json" _hygiene_has "$row" "docs/leadv2/live-state.json"
-  assert "c: row names LEAD_V2_STATE.md" _hygiene_has "$row" "docs/LEAD_V2_STATE.md"
-  assert "c: row names dispatch-nw0012/x.json" _hygiene_has "$row" "docs/handoff/dispatch-nw0012/x.json"
+  assert_eq "c: row does not rewrite unrelated state" "[]" "$(_field "$row" hygiene)"
 }
 
 # ── (d) tracked-in-lane / ignored-on-main file dropped before the ff ─────────
@@ -230,7 +229,7 @@ case_d() {
   assert_contains "d: row landed" "$(_field "$row" outcome)" "landed"
 }
 
-# ── (e) a non-state dirty file refuses with a named reason ───────────────────
+# ── (e) a non-state dirty file outside the merged tree does not refuse ───────
 case_e() {
   _mk_case e
   git -C "$REPO" checkout -q -b lane-e
@@ -242,12 +241,11 @@ case_e() {
   assert "e: README dirty" test -n "$(git -C "$REPO" status --porcelain -- README)"
   local err; err="$(_land_stderr lane-e)"
   local rc=$?
-  assert_eq "e: rc=1" 1 "$rc"
-  assert_contains "e: refusal names main_dirty" "$err" "main_dirty"
+  assert_eq "e: rc=0" 0 "$rc"
   assert "e: README modification preserved" grep -q "locally modified README" "$REPO/README"
-  assert_eq "e: main unmoved" "$main_before" "$(git -C "$REPO" rev-parse main)"
+  assert "e: main moved to lane tip" git -C "$REPO" merge-base --is-ancestor lane-e main
   local row; row="$(_last_row)"
-  assert_contains "e: row reason main_dirty" "$(_field "$row" reason)" "main_dirty"
+  assert_contains "e: row landed" "$(_field "$row" outcome)" "landed"
 }
 
 # ── (f) safety-gate rc=1 refuses and writes merge-blocker.flag ───────────────
@@ -302,7 +300,6 @@ case_g() {
   # teardown: free the queue for later cases in THIS scratch state dir
   PROJECT_ROOT="$REPO" LEADV2_STATE_BASE="$STATE" bash "$mq" release g-holder >/dev/null 2>&1 || true
   PROJECT_ROOT="$REPO" LEADV2_STATE_BASE="$STATE" bash "$mq" release land-lane-g >/dev/null 2>&1 || true
-  kill "$holder" 2>/dev/null || true
 }
 
 # ── (h) queue acquire rc is not swallowed ────────────────────────────────────
@@ -322,7 +319,6 @@ case_h() {
   assert_contains "h: row refused" "$(_field "$row" outcome)" "refused"
   assert_contains "h: row reason queue_acquire_failed" "$(_field "$row" reason)" "queue_acquire_failed"
   PROJECT_ROOT="$REPO" LEADV2_STATE_BASE="$STATE" bash "$mq" release h-holder >/dev/null 2>&1 || true
-  kill "$holder" 2>/dev/null || true
 }
 
 # ── (i) push failure: main moved locally, pushed=false, reason recorded ──────

@@ -44,7 +44,7 @@ git -C "${REPO}" checkout -q main
 LAND="${REPO}/plugins/leadv2/scripts/leadv2-land.sh"
 
 run_probe() { # sets PROBE_OUT and PROBE_RC
-  PROBE_OUT="$(LEADV2_LAND_ROOT="${REPO}" bash "${LAND}" --root-dirt-check lane-root-dirt 2>&1)"
+  PROBE_OUT="$(LEADV2_LAND_PROBE_ROOT="${REPO}" bash "${LAND}" --root-dirt-check lane-root-dirt 2>&1)"
   PROBE_RC=$?
 }
 restore() { git -C "${REPO}" checkout -q -- src/foreign.txt src/merge-modified.txt 2>/dev/null || true; rm -f "${REPO}/tmp-unrelated.txt" "${REPO}/src/created-by-merge.txt"; }

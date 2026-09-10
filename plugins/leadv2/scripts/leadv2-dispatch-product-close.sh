@@ -4065,7 +4065,7 @@ else
     _t11_root_dirt_rc=0
     _t11_root_dirt_out=""
     if [[ -f "${_T11_ROOT_DIRT_PROBE}" ]]; then
-      _t11_root_dirt_out="$(LEADV2_LAND_ROOT="${ROOT}" bash "${_T11_ROOT_DIRT_PROBE}" --root-dirt-check "${_t11_branch}" 2>&1)" || _t11_root_dirt_rc=$?
+      _t11_root_dirt_out="$(LEADV2_LAND_PROBE_ROOT="${ROOT}" bash "${_T11_ROOT_DIRT_PROBE}" --root-dirt-check "${_t11_branch}" 2>&1)" || _t11_root_dirt_rc=$?
     else
       _t11_root_dirt_rc=1
       _t11_root_dirt_out="leadv2-dispatch-product-close: root-dirt probe unavailable: ${_T11_ROOT_DIRT_PROBE}"

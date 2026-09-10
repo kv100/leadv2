@@ -72,8 +72,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ROOT is normally the PRIMARY checkout (dirname of the git common dir), never
 # a lane worktree. The product-close probe may run from a consumer repo whose
 # plugin script is symlinked from the canonical checkout, so it supplies ROOT.
-if [[ -n "${LEADV2_LAND_ROOT:-}" ]]; then
-  ROOT="$(cd "${LEADV2_LAND_ROOT}" 2>/dev/null && pwd)"
+if [[ -n "${LEADV2_LAND_PROBE_ROOT:-}" ]]; then
+  ROOT="$(cd "${LEADV2_LAND_PROBE_ROOT}" 2>/dev/null && pwd)"
 else
   _COMMON_DIR="$(git -C "${SCRIPT_DIR}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
   if [[ -z "${_COMMON_DIR}" ]]; then
@@ -276,11 +276,9 @@ land_refuse_behind() {
 }
 
 # ── THE ONE LIST of pre-land state paths (brief §5 step 5) ───────────────────
-# Per-checkout runtime state: modified in every live checkout by running
-# lanes, safe to restore to HEAD without losing lane work. Everything else
-# dirty in the main checkout refuses the land. Untracked files (? ?) are
-# neither restored nor refused — they cannot block a merge unless the merge
-# would overwrite them, which fails as reason=ff_failed.
+# State paths remain relevant to throwaway untracking below. They are NOT a
+# separate root-dirt exception list: root dirt is judged solely against the
+# prospective merged tree, so unrelated state writes are left untouched.
 _is_state_path() { # <path> -> rc 0 = on the list
   case "$1" in
     docs/leadv2|docs/leadv2/*|docs/LEAD_V2_STATE.md|docs/handoff/dispatch-nw*)
@@ -290,32 +288,11 @@ _is_state_path() { # <path> -> rc 0 = on the list
   return 1
 }
 
-land_hygiene_state() { # <apply|dry> — restore state-list dirt in MAIN's checkout, refuse the rest
-  local line xy path rest_list=""
-  while IFS= read -r line; do
-    [[ -n "${line}" ]] || continue
-    xy="${line:0:2}"
-    path="${line:3}"
-    case "${path}" in *" -> "*) path="${path##* -> }" ;; esac
-    [[ "${xy}" == "??" ]] && continue
-    if _is_state_path "${path}"; then
-      L_HYGIENE=(${L_HYGIENE[@]+"${L_HYGIENE[@]}"} "${path}")
-      if [[ "$1" == "apply" ]]; then
-        if [[ "${xy}" == A* || "${xy}" == *A ]]; then
-          # staged-added: HEAD does not have it; restore means remove
-          git -C "${ROOT}" rm -f -q -- "${path}" 2>/dev/null || true
-        else
-          git -C "${ROOT}" checkout HEAD -- "${path}" 2>/dev/null || true
-        fi
-      fi
-    else
-      rest_list="${rest_list}${path}\n"
-    fi
-  done < <(git -C "${ROOT}" status --porcelain 2>/dev/null)
-  if [[ -n "${rest_list}" ]]; then
-    L_OUTCOME="refused"; L_REASON="main_dirty"; L_MODE="refused"
+land_hygiene_state() { # merged-tree root-dirt gate; leaves unrelated dirt untouched
+  if ! land_root_dirt_check "${LAND_TIP}"; then
+    L_OUTCOME="refused"; L_REASON="root_dirty_merge_intersection"; L_MODE="refused"
     _lane_files
-    printf 'leadv2-land: REFUSED reason=main_dirty: main checkout has tracked changes outside the state list:\n%s' "${rest_list}" >&2
+    printf 'leadv2-land: REFUSED reason=root_dirty_merge_intersection: shared checkout dirt overlaps this lane merged tree\n' >&2
     exit 1
   fi
 }
@@ -409,8 +386,8 @@ land_in_write_set() { # <path> -> rc 0 = the lane may change this path
 # unrelated untracked residue. Build the exact clean merged tree first, then
 # reuse land_in_write_set against THAT tree's changed-path set. Tracked dirt
 # blocks only when this merge changes it; untracked dirt blocks only when the
-# resulting tree needs that pathname. This does not replace land_hygiene_state:
-# landing's broader tracked-dirt policy is a separate transaction contract.
+# resulting tree needs that pathname. land_hygiene_state calls this same probe,
+# so product-close and leadv2-land cannot drift into separate dirt policies.
 land_root_dirt_check() { # <tip-to-land>; rc 0 safe, 1 conflict/error
   local tip="$1" mt_out mt_tree rc rec xy path old_path offenders=""
   mt_out="$(git -C "${ROOT}" merge-tree --write-tree --no-messages "${DEFAULT}" "${tip}" 2>&1)"
@@ -546,7 +523,6 @@ if [[ ${ROOT_DIRT_CHECK} -eq 1 ]]; then
 fi
 
 land_refuse_behind
-land_hygiene_state "$([[ ${DRY_RUN} -eq 1 ]] && printf 'dry' || printf 'apply')"
 
 # The ff runs in the primary checkout; it may only do so ON the default branch.
 if [[ "$(git -C "${ROOT}" symbolic-ref --short -q HEAD 2>/dev/null || printf 'DETACHED')" != "${DEFAULT}" ]]; then
@@ -582,6 +558,7 @@ fi
 LAND_TIP="$(land_throwaway_untrack)"
 
 land_safety_gate
+land_hygiene_state
 
 if [[ ${DRY_RUN} -eq 1 ]]; then
   if [[ ${NO_FF} -eq 1 ]]; then
