@@ -93,3 +93,14 @@ All three are runtime-state files written by persona-engine's own running sessio
 - `bash -n` on both new hook symlinks (through the symlink): `SYNTAX-OK`.
 - `settings.json`: `JSON-VALID` after edit.
 - No shell/python files changed in leadv2 (lane diff is docs/handoff/w-getmany-parity/report.md only) → no `bash -n`/`py_compile` targets there; falsification for the getmany side is in §2 (SYNTAX-OK / JSON-VALID).
+
+## 7. Changed-scope runner (after lane commit f97914af)
+
+Lane diff is docs-only (report.md); docs map to no suite:
+```
+$ tests/run-all.sh --scope changed   (rc=0)
+[CORE-OFFLINE] scope=changed running 0 of 95 suites (base=main@491a7c1ab0, 0 changed files, 0 unmapped)
+[CORE-OFFLINE] suites passed=0 failed=0 missing=0 verdict=nothing_to_run reason=no_relevant_changed_files
+run-all: 4 passed, 0 failed, scope=changed
+```
+4 = always-on tail, green. Range is NOT degenerate: base 491a7c1a → HEAD contains the lane anchor + report.md; docs simply select nothing.
