@@ -1,4 +1,123 @@
 # Phase-record class validation report
+# Hook escalation evidence
+
+## Scope
+
+Changed the two tracked Bash blockers that match the incident: `leadv2-block-bash-heredoc.sh` and `leadv2-deny-floor.sh`. A private hook helper validates a one-command `LEADV2_HOOK_ESCALATE` reason, queries the journal path through `leadv2-journal.sh path`, and appends the event through that script. The new `test-hook-escalation.sh` self-registers through `run-all-triggers`.
+
+The deny floor keeps `git reset --hard`, `git clean`, `git stash`, and `git worktree prune` closed when the new variable is present. The existing `CLAUDE_ALLOW_SHARED_GIT_DESTRUCTIVE` escape hatch was not changed.
+
+Example recorded journal payload (the focused test asserts the full heredoc command and reason are present):
+
+```text
+- <UTC timestamp> [decision] hook_id=leadv2-block-bash-heredoc session_id=hook-escalation-test command=<full 2066-byte heredoc command> reason=recover blocked lane safely
+```
+
+## test-hook-escalation.sh — raw red output
+
+```text
+PASS  heredoc without escalation remains denied
+FAIL  one-word reason rc=2 out=[leadv2-block-bash-heredoc] Bash command is 2066 bytes with a heredoc body.
+Heredocs in Bash live in the transcript forever (~2066 chars × every future turn).
+
+Use the Write tool instead:
+  Write({ file_path: "/abs/path/file.md", content: "..." })
+
+To override (rare): append "# bash-guard: allow" to the command.
+FAIL  meaningful heredoc escalation rc=2 journal=/Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/leadv2-hook-escalation.8bpwKK/docs/leadv2/tasks/hook-escalation-test/journal.md out=[leadv2-block-bash-heredoc] Bash command is 2066 bytes with a heredoc body.
+Heredocs in Bash live in the transcript forever (~2066 chars × every future turn).
+
+Use the Write tool instead:
+  Write({ file_path: "/abs/path/file.md", content: "..." })
+
+To override (rare): append "# bash-guard: allow" to the command.
+FAIL  reset --hard rc=2 out=[leadv2-deny-floor] BLOCKED: command matches deny-floor rule 'git_reset_hard'.
+git reset --hard is blocked — discards uncommitted work irreversibly. Use ask-lead.sh if this is intentional, or append '# deny-floor: allow' to override on a throwaway tree.
+
+This floor applies even under Codex danger-full-access — it is not a review
+heuristic, it is a hard pre-execution stop on irreversible operations.
+
+If this is a genuine false positive:
+  - append "# deny-floor: allow" to the command (rare, one-off), or
+  - use ask-lead.sh to raise an off_limits/decision conflict for a durable fix.
+Traceback (most recent call last):
+  File "<stdin>", line 3, in <module>
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/leadv2-hook-escalation.8bpwKK/mutant/hooks/lib/leadv2-hook-escalation.sh'
+```
+
+This was the intended pre-implementation red run; the missing helper also prevented the mutation fixture from being created.
+
+## test-hook-escalation.sh — raw green output
+
+```text
+PASS  heredoc without escalation remains denied
+PASS  one-word reason remains denied
+PASS  meaningful heredoc escalation passes and is journalled
+PASS  reset --hard remains a closed non-escalatable class
+PASS  MUTATION RED: removing reason validation lets one word through
+
+5 passed, 0 failed
+```
+
+The mutation is performed in a copied hook tree inside the suite: removing the marked reason-validation branch makes the one-word case pass, while the real helper keeps it denied.
+
+## Changed-scope runner — raw output
+
+```text
+$ bash plugins/leadv2/scripts/tests/run-core-offline.sh --scope changed
+[CORE-OFFLINE] scope=changed running 3 of 95 suites (base=main@c694480528, 4 changed files, 0 unmapped)
+[CORE-OFFLINE] SCOPE_RESULT selected=3 total=95 base=main@c694480528 changed=4 unmapped=0 verdict=selected reason=-
+[CORE-OFFLINE] running 3 suites across 4 shards
+
+[CORE-OFFLINE] all plugin shell syntax
+[CORE-OFFLINE] SHARD_RESULT idx=0 pass=1 fail=0 missing=0
+
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-hook-escalation.sh (scope-selected ad-hoc)
+PASS  heredoc without escalation remains denied
+PASS  one-word reason remains denied
+PASS  meaningful heredoc escalation passes and is journalled
+PASS  reset --hard remains a closed non-escalatable class
+PASS  MUTATION RED: removing reason validation lets one word through
+
+5 passed, 0 failed
+[CORE-OFFLINE] SHARD_RESULT idx=1 pass=1 fail=0 missing=0
+
+[CORE-OFFLINE] tests/test-bash-pre-dispatch.sh (scope-selected ad-hoc)
+PASS echo_hi dispatcher verdict matches all 13 originals (ALLOW)
+PASS echo_hi expected verdict ALLOW
+PASS echo hi is a silent exit 0
+PASS echo hi trace invokes only the 2 ALWAYS guards
+PASS heredoc dispatcher verdict matches all 13 originals (BLOCK)
+PASS heredoc expected verdict BLOCK
+PASS heredoc block forwards the guard message on stderr
+PASS codex_exec dispatcher verdict matches all 13 originals (BLOCK)
+PASS codex_exec expected verdict BLOCK
+PASS codex exec matches the standalone direct-exec guard verdict
+PASS close_push dispatcher verdict matches all 13 originals (BLOCK)
+PASS close_push expected verdict BLOCK
+PASS close-ritual/git-push-shaped command forwards deny JSON
+TIMING echo_hi runs=5 dispatcher=1226ms_total/245.2ms_avg originals=5690ms_total/1138.0ms_avg
+ALL TESTS PASSED
+[CORE-OFFLINE] SHARD_RESULT idx=2 pass=1 fail=0 missing=0
+[CORE-OFFLINE] SHARD_RESULT idx=3 pass=0 fail=0 missing=0
+[CORE-OFFLINE] SHARD_RESULT idx=serial pass=0 fail=0 missing=0
+
+[CORE-OFFLINE] suites passed=3 failed=0 missing=0 known_red_skipped=0 repo=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/4e78ef0dfc51
+```
+
+## Syntax and diff hygiene — raw output
+
+```text
+$ bash -n plugins/leadv2/hooks/leadv2-block-bash-heredoc.sh plugins/leadv2/hooks/leadv2-deny-floor.sh plugins/leadv2/hooks/lib/leadv2-hook-escalation.sh plugins/leadv2/scripts/tests/test-hook-escalation.sh
+$ git diff --check
+# both commands produced no stdout or stderr and exited 0
+```
+
+---
+
+## Preserved earlier report content
+
+# Refusal reason emitter
 
 ## Actual class casing
 

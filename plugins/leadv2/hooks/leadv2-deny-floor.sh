@@ -111,6 +111,28 @@ REST="${RESULT#*|}"
 RULE_ALLOW_OVERRIDE="${REST%%|*}"
 RULE_MSG="${REST#*|}"
 
+# Only a command that reached the deny path is eligible to emit an escalation.
+# shellcheck source=lib/leadv2-hook-escalation.sh
+ESCALATION_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/leadv2-hook-escalation.sh"
+[[ -r "$ESCALATION_LIB" ]] || ESCALATION_LIB=""
+SESSION_ID=$(printf '%s' "$INPUT" | python3 -c "
+import sys, json
+try:
+    r = json.loads(sys.stdin.read())
+    print(r.get('session_id', ''))
+except Exception:
+    pass
+" 2>/dev/null || true)
+if [[ -n "$ESCALATION_LIB" ]]; then
+  source "$ESCALATION_LIB"
+  if lv2_hook_escalation_try "leadv2-deny-floor" "$CMD" "$SESSION_ID"; then
+    exit 0
+  else
+    ESCALATION_RC=$?
+  fi
+  [[ "$ESCALATION_RC" -eq 3 ]] && exit 2
+fi
+
 # Inline override only bypasses rules explicitly marked
 # allow_inline_override: true (SOFT rules). CATASTROPHIC rules ignore the
 # inline comment entirely — only LEADV2_DENY_FLOOR=0 bypasses those.
@@ -132,5 +154,6 @@ else
   printf -- '  - this rule is CATASTROPHIC-tier: the inline "# deny-floor: allow" comment does NOT bypass it,\n'
 fi)
   - use ask-lead.sh to raise an off_limits/decision conflict for a durable fix.
+  - set LEADV2_HOOK_ESCALATE to a meaningful reason for an auditable one-command passage where eligible.
 MSG
 exit 2
