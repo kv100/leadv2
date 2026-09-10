@@ -27,6 +27,12 @@
 #   2 — heavy_conflict
 #   3 — budget_refused
 #
+# Shared no-op/failure codes for mutating operations:
+#   2 — path-absent (set_worktree target is not a directory)
+#   4 — no-op: task_id not found, or active.yaml is file-missing
+# Mutating callers that intentionally tolerate these ordering/race failures
+# must say so at the call site with `|| true` or an equivalent comment.
+#
 # Exit codes for leadv2_active_register's `writes` admission check
 # (LANE-WRITESET-REGISTRY-01, D3/D7 -- fires only when a non-empty `writes`
 # is passed; folded into the SAME flock as the append, so admission is
@@ -159,9 +165,11 @@ _leadv2_yaml_lockfile() {
 # dispatch would silently materialise an empty registry out of nothing.
 _leadv2_registry_require_file() {
   local yaml_file="${1:?yaml_file required}"
+  local task_id="${2:?task_id required}"
+  local op="${3:?operation required}"
   [[ -f "$yaml_file" ]] && return 0
-  printf 'registry: active.yaml missing at %s
-' "$yaml_file" >&2
+  printf 'registry: %s: active.yaml missing task=%s reason=file-missing path=%s\n' \
+    "$op" "$task_id" "$yaml_file" >&2
   return 4
 }
 
@@ -804,7 +812,7 @@ try:
         _before = len(sessions)
         data["sessions"] = [s for s in sessions if not _unreg_matches(s)]
         _removed = _before - len(data["sessions"])
-        print(f"unregistered {_removed} row(s) task={task_id} selector={sel_kind or 'all'}", file=sys.stderr)
+        print(f"unregistered {_removed} row(s) task={task_id} selector={sel_kind or 'all'} reason={'not-found' if _removed == 0 else 'removed'}", file=sys.stderr)
         if _removed == 0:
             # WAVE0-REGISTRY-FAILS-OPEN-01: zero rows matched is rc 4, not a
             # success -- and the atomic rewrite below must NOT run, or a no-op
@@ -821,7 +829,7 @@ try:
             # silent rc 0 -- no row is created, the caller survives (every
             # fanout call site keeps `|| true`), and the post-register retry
             # supplies the value.
-            print(f"registry: set_worktree: task not registered task={task_id}", file=sys.stderr)
+            print(f"registry: set_worktree: task not registered task={task_id} reason=not-found", file=sys.stderr)
             sys.exit(4)
         row["worktree"] = worktree
         row["updated_at"] = _now_iso()
@@ -861,7 +869,7 @@ try:
         #           lane clears the flag via lane_register, which re-opens
         #           transitions
         if target is None:
-            print(f"[registry] update_phase: task not registered: {task_id}", file=sys.stderr)
+            print(f"[registry] update_phase: task not registered task={task_id} reason=not-found", file=sys.stderr)
             sys.exit(4)
         if target.get("dead_at"):
             print(f"[registry] update_phase: refused, row is closed (dead_at={target.get('dead_at')}): {task_id}", file=sys.stderr)
@@ -894,7 +902,7 @@ try:
         else:
             # WAVE0-REGISTRY-FAILS-OPEN-01: unknown task_id must not read as a
             # recorded pulse. rc 4, no write, no created row.
-            print(f"registry: update_pulse: task not registered task={task_id}", file=sys.stderr)
+            print(f"registry: update_pulse: task not registered task={task_id} reason=not-found", file=sys.stderr)
             sys.exit(4)
 
     elif op == "update_pid":
@@ -1082,7 +1090,7 @@ try:
             _role = "worker"
         target = next((s for s in sessions if s.get("task_id") == task_id), None)
         if target is None:
-            print(f"registry: set_worker_pid: task not registered task={task_id}", file=sys.stderr)
+            print(f"registry: set_worker_pid: task not registered task={task_id} reason=not-found", file=sys.stderr)
             sys.exit(4)
         try:
             wpid = int(pid_str) if pid_str not in ("", "null", "None") else None
@@ -1306,8 +1314,10 @@ leadv2_active_check_writes_conflict() {
 # callers keep `|| true` so launcher/register ordering races never kill a lane.
 leadv2_active_set_worktree() {
   local task_id="${1:?task_id required}" wt="${2:?worktree required}"
-  [[ -d "$wt" ]] || { printf 'registry: set_worktree: not a directory: %s
-' "$wt" >&2; return 2; }
+  [[ -d "$wt" ]] || {
+    printf 'registry: set_worktree: not a directory task=%s reason=path-absent path=%s\n' "$task_id" "$wt" >&2
+    return 2
+  }
   _leadv2_yaml_py_lock "$(_leadv2_yaml_lockfile)" "$(_leadv2_yaml_file)" set_worktree "$task_id" "$wt"
 }
 
@@ -1340,7 +1350,7 @@ leadv2_active_unregister() {
   # WAVE0-REGISTRY-FAILS-OPEN-01: missing active.yaml = rc 4, never rc 0 --
   # and the python core must not run here at all, or it silently materialises
   # an empty registry out of nothing.
-  _leadv2_registry_require_file "$yaml_file" || return
+  _leadv2_registry_require_file "$yaml_file" "$task_id" "unregister" || return
   local _rc=0
   _leadv2_yaml_py_lock "$lockfile" "$yaml_file" unregister "$task_id" "$@" || _rc=$?
   if [[ "$_rc" -ne 0 ]]; then
@@ -1387,7 +1397,7 @@ leadv2_active_update_phase() {
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
-  _leadv2_registry_require_file "$yaml_file" || return
+  _leadv2_registry_require_file "$yaml_file" "$task_id" "update_phase" || return
   _leadv2_yaml_py_lock "$lockfile" "$yaml_file" update_phase "$task_id" "$phase" "$model" "$detail"
 }
 
@@ -1401,7 +1411,7 @@ leadv2_active_update_pulse() {
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
-  _leadv2_registry_require_file "$yaml_file" || return
+  _leadv2_registry_require_file "$yaml_file" "$task_id" "update_pulse" || return
   _leadv2_yaml_py_lock "$lockfile" "$yaml_file" update_pulse "$task_id" "$ts"
 }
 
@@ -1495,7 +1505,7 @@ leadv2_active_set_worker_pid() {
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
-  _leadv2_registry_require_file "$yaml_file" || return
+  _leadv2_registry_require_file "$yaml_file" "$task_id" "set_worker_pid" || return
   _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_worker_pid "$task_id" "$pid" "$pid_birth" "$role"
 }
 
