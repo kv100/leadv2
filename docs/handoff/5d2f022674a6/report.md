@@ -6,11 +6,11 @@ The pinned lane contains the production fix inherited from `f6491694`: bash prec
 
 ## Clean suite
 
-The current `test-route-arbiter-loud-refusal.sh` run passed in Debian bookworm with Python and PyYAML installed. Raw output, including the exit code and separate stream byte counts, is in [round1-green.txt](round1-green.txt).
+Probe command: `bash plugins/leadv2/scripts/tests/test-route-arbiter-loud-refusal.sh` in Debian bookworm with Python and PyYAML installed. The run passed; raw output, including the exit code and separate stream byte counts, is in [round1-green.txt](round1-green.txt).
 
 ## Linux without PyYAML
 
-The bare Linux probe ran the real `route_arbiter` through `bash -c` with Python 3 but without PyYAML. It returned a route line rather than silent rc=2; stderr contained the named fallback note. Raw output:
+Probe command: `bash -c 'source "$ARBITER"; route_arbiter worker "$DESCRIPTOR"'` with the real arbiter and fixture quota, in Debian bookworm with Python 3 but without PyYAML. It returned a route line rather than silent rc=2; stderr contained the named fallback note. Raw output:
 
 ```text
 EXIT_CODE=0
@@ -42,6 +42,8 @@ CACHED_DIFF_CHECK_RC=0
 ```
 
 ## Changed-scope runner
+
+Probe command: `bash tests/run-all.sh --scope changed` in the synthetic Linux lane containing `main` plus the committed lane change.
 
 ```text
 EXIT_CODE=0
