@@ -89,12 +89,21 @@ two="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"bulk"}')"
 three="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"bulk"}')"
 arms="$(printf '%s\n%s\n%s\n' "$one" "$two" "$three" | sed -n 's/.*arm=\([^ ]*\).*/\1/p' | sort -u | wc -l | tr -d ' ')"
 if [[ "$arms" -gt 1 ]]; then pass 'anti-sticky identical tasks rotate arms'; else fail "anti-sticky outputs=$one | $two | $three"; fi
-# (d2) And the standard cell is deterministic-cheap, not sticky: glm-flash
-# wins every time BECAUSE it is cheapest, never because it ran last.
+# (d2) The standard cell is deterministic, not sticky, under the LIVE ranking
+# rule. Since 9bd9c66ca (2026-09-07, F1-ARBITER-SCORING step 4 -- founder-
+# approved flip, docs/handoff/F1-ARBITER-SCORING-20260907/step4-flip.md)
+# capability_fit is on, and per the founder's ARBITER-ARCHITECTURE-DIRECTIVE
+# (2026-09-06) cost is one weighted condition among several, not the whole
+# rank: for an unknown-complexity code/standard request glm-flash sits one fit
+# bucket below req_eff (capability 2 < 3.0), so glm wins every time --
+# deterministically, for the ranked reason (reason=capability_fit,
+# fit_pick=glm), never because it ran last. Re-expecting glm-flash "because
+# cheapest" would re-assert the cost-only ranking the founder superseded.
 rm -f "$TMP/state"
 s1="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"standard"}')"
 s2="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"standard"}')"
-if [[ "$s1" == *'arm=glm-flash '* && "$s2" == *'arm=glm-flash '* ]]; then pass 'standard cell deterministically picks glm-flash (cost, not stickiness)'; else fail "standard-cell outputs=$s1 | $s2"; fi
+if [[ "$s1" == *'arm=glm '* && "$s2" == *'arm=glm '* \
+   && "$s1" == *'reason=capability_fit'* && "$s2" == *'reason=capability_fit'* ]]; then pass 'standard cell deterministically picks glm (capability_fit rank, not stickiness)'; else fail "standard-cell outputs=$s1 | $s2"; fi
 
 # (e) The dispatcher must retain the ladder when its arbiter file is absent.
 # TEST-ROUTE-ARBITER-CASE-E-RED-ON-MAIN-01: this case was red on main from
@@ -472,17 +481,36 @@ rm -f "$TMP/state"
 g7p="$(run_y "$TMP/untrusted-glm.yaml" "$(quota 13 20 45)" '{"kind":"code","size":"standard","protected":true}')"
 rm -f "$TMP/state"
 g7c="$(run_y "$TMP/untrusted-glm.yaml" "$(quota 13 20 45)" '{"kind":"code","size":"standard"}')"
+# 2026-09-10 (W1-ARBITER-SUITE-THREE-RED-01): "silent when nothing was cut"
+# is re-cut against the typed-stage vocabulary of test-exclusion-stages.sh §5
+# -- arm_excluded may name auction losers (sonnet:price_ratio), but it must
+# stay free of CUT stages (untrusted/not_in_pool/not_launchable) when no
+# filter cut anything. The same pinned matrix also proves the other half of
+# the contract: a real vocabulary hole (kind=docs has no cell here) refuses
+# no_capable_cell and stays silent, so a green (g7) means both the cut-naming
+# and the hole-silence hold.
+rm -f "$TMP/state"
+g7h="$(run_y "$TMP/untrusted-glm.yaml" "$(quota 13 20 45)" '{"kind":"docs","size":"standard"}' || true)"
 if [[ "$g7p" == *'arm=sonnet '* && "$g7p" == *'arm_excluded=glm:untrusted'* \
-   && "$g7c" == *'arm=glm '* && "$g7c" != *'arm_excluded='* ]]; then
-  pass 'a require_trusted cut names the arm it removed (and is silent when nothing was cut)'
+   && "$g7c" == *'arm=glm '* && "$g7c" != *'untrusted'* && "$g7c" != *'not_in_pool'* \
+   && "$g7h" == *'reason=no_capable_cell'* && "$g7h" != *'arm_excluded='* ]]; then
+  pass 'a require_trusted cut names the arm it removed; nothing-cut and a real vocabulary hole stay unaccused'
 else
-  fail "arm_excluded protected=$g7p | unprotected=$g7c"
+  fail "arm_excluded protected=$g7p | unprotected=$g7c | hole=$g7h"
 fi
 
-# (g7-gap) The same fact on the refusal line. `no_capable_cell` is read as a
-#      routing.yaml vocabulary gap; when a POLICY filter emptied the set instead,
-#      the refusal must say which arms it emptied it of, or the accusation lands
-#      on the config.
+# (g7-gap) The same fact on the refusal line, against the three-state reason
+#      dictionary cut 2026-09-07 (T17 C1 split, contract-tested by
+#      test-exclusion-stages.sh) and pinned here 2026-09-10: `no_capable_cell`
+#      is EXCLUSIVELY the vocabulary gap -- the matrix cannot express this
+#      work, nothing was cut, the line stays silent. A POLICY filter that
+#      emptied the set instead refuses `pool_empty_all_excluded` and
+#      enumerates which arms it emptied it of (arm:stage per stripped arm), so
+#      the accusation never lands on the config. One fixture, two descriptors:
+#      the only difference is WHICH filter empties the set, and the two
+#      refusals must differ by the reason token itself -- a dispatch fail-open
+#      journal carries the reason alone (arb_reason=...), and the two
+#      diagnoses have opposite repairs (fix the policy vs fix the matrix).
 cat >"$TMP/untrusted-only.yaml" <<'YML'
 router_v2:
   quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
@@ -493,11 +521,11 @@ rm -f "$TMP/state"
 g7g="$(run_y "$TMP/untrusted-only.yaml" "$(quota 13 20 45)" '{"kind":"code","size":"standard","protected":true}' || true)"
 rm -f "$TMP/state"
 g7gc="$(run_y "$TMP/untrusted-only.yaml" "$(quota 13 20 45)" '{"kind":"docs","size":"standard","protected":true}' || true)"
-if [[ "$g7g" == *'reason=no_capable_cell'* && "$g7g" == *'arm_excluded=glm:untrusted'* \
+if [[ "$g7g" == *'reason=pool_empty_all_excluded'* && "$g7g" == *'arm_excluded=glm:untrusted'* \
    && "$g7gc" == *'reason=no_capable_cell'* && "$g7gc" != *'arm_excluded='* ]]; then
-  pass 'no_capable_cell separates a policy cut from a real config gap'
+  pass 'a policy cut refuses pool_empty_all_excluded (enumerated); a vocabulary gap refuses no_capable_cell, silent -- same fixture'
 else
-  fail "no_capable_cell policy=$g7g | vocabulary=$g7gc"
+  fail "refusal-dictionary policy=$g7g | vocabulary=$g7gc"
 fi
 
 
