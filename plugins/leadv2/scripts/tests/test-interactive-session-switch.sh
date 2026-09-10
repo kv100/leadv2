@@ -28,6 +28,11 @@
 #                                               [unknown is never a limit]
 #   case 6  transcript missing -> refused before anything runs
 #                                                  [transcript guard]
+#   case 7  transcript ends in a type=cost-state record (no cwd structurally)
+#           -> resume command still carries the REAL cwd from above it
+#                                                  [cwd backward scan]
+#   case 8  transcript carries NO cwd anywhere -> loud refusal, never cd "-"
+#                                                  [cwd guard]
 #
 # run-all-triggers: leadv2-interactive-session-switch leadv2-interactive-limit-detect
 
@@ -261,6 +266,48 @@ check_grep "$OUT" 'REFUSED reason=transcript_missing' "case6 names transcript_mi
 check_nofile "$H/account-switch.log" "case6 nothing ran downstream of the guard"
 check_nofile "$MARKER_A" "case6 no marker (the guard fires FIRST)"
 check_grep "$(cat "$H/interactive-switch.log" 2>/dev/null)" 'REFUSED reason=transcript_missing' "case6 journal names the transcript guard"
+
+# =============================================================================
+log "== case 7: transcript ends in type=cost-state (no cwd) -> resume carries the REAL cwd (cwd backward scan)"
+# The live 2026-09-10 m3-market shape: 14255/19904 lines carry the cwd, but the
+# LAST line of a completed session is a cost-state record with no cwd key --
+# tail -n 1 saw none and the emitted resume command said cd "-".  The scan must
+# walk past the cost-state tail to the real directory.
+write_scenario 100 30
+reset_case
+mk_handoff c7; H="$MK_HANDOFF_OUT"
+export_env "$H"
+SID7="99999999-8888-7777-6666-555555555555"
+T7="$DIR_A/projects/$PROJ_SEG/$SID7.jsonl"
+{ printf '{"cwd":"/tmp/proj7","type":"user","message":{"role":"user","content":"stuck mid-task"}}\n'
+  printf '{"cwd":"/tmp/proj7","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}\n'
+  printf '{"type":"cost-state","sessionId":"%s","hasUnknownModelCost":false,"modelUsage":{},"startTime":"2026-09-10T10:00:00.000Z","totalAPIDuration":180.5,"totalCostUSD":1.25,"totalDuration":200.1}\n' "$SID7"
+} > "$T7"
+TRANS7_DEST="$DIR_B/projects/$PROJ_SEG/$SID7.jsonl"
+OUT="$(bash "$ORCH_BIN" --transcript "$T7" --config-dir "$DIR_A" --screen-text "$BANNER" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 0 "case7 rc=0 (switched + transplanted past a cost-state tail)"
+check_fixed "$OUT" "resume: cd \"/tmp/proj7\" && CLAUDE_CONFIG_DIR=\"$DIR_B\" claude --resume $SID7" "case7 resume command carries the REAL cwd from above the cost-state tail"
+if grep -qF -- 'cd "-"' <<<"$OUT"; then fail "case7 never emits a dash cwd" "found cd \"-\" in: $OUT"; else pass "case7 never emits a dash cwd"; fi
+check_file "$TRANS7_DEST" "case7 transcript transplanted into slot b"
+
+# =============================================================================
+log "== case 8: transcript carries NO cwd anywhere -> loud refusal, never cd \"-\" (cwd guard)"
+write_scenario 100 30
+reset_case
+mk_handoff c8; H="$MK_HANDOFF_OUT"
+export_env "$H"
+SID8="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+T8="$DIR_A/projects/$PROJ_SEG/$SID8.jsonl"
+{ printf '{"type":"user","message":{"role":"user","content":"no cwd line"}}\n'
+  printf '{"type":"cost-state","sessionId":"%s","totalCostUSD":0.5,"totalDuration":60,"modelUsage":{}}\n' "$SID8"
+} > "$T8"
+OUT="$(bash "$ORCH_BIN" --transcript "$T8" --config-dir "$DIR_A" --screen-text "$BANNER" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 5 "case8 rc=5 (refused)"
+check_grep "$OUT" 'REFUSED reason=transcript_no_cwd' "case8 names transcript_no_cwd (no guessed directory)"
+if grep -qF -- 'cd "-"' <<<"$OUT"; then fail "case8 never emits a dash cwd" "found cd \"-\" in: $OUT"; else pass "case8 never emits a dash cwd"; fi
+check_nofile "$H/account-switch.log" "case8 account-switch NEVER invoked"
+check_nofile "$MARKER_A" "case8 account untouched (guard fires before the switch)"
+check_grep "$(cat "$H/interactive-switch.log" 2>/dev/null)" 'REFUSED reason=transcript_no_cwd' "case8 journal names the cwd guard"
 
 # =============================================================================
 printf -- '[TEST] summary: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
