@@ -283,7 +283,9 @@ docs/handoff/*/*` drops it), and copied to the main checkout's handoff dir per p
 Procedure per prepass §5.3: `plugins/leadv2/scripts/` copied to a scratch dir
 (`/tmp/salvage-mut.bQEF9y`), the patcher asserted EXACTLY ONE matching arm
 (`:449  conflict) return 3 ;;` inside `main()`) before replacing it with `return 0 ;;`;
-the tree was never mutated. Mutated rc=1. Suite output verbatim (pasted from
+the tree was never mutated. Mutated rc=1. Unmutated control, same suite, same
+tree: `pass=20 fail=0`, rc 0 (§9.1) — the declared mutation flips exactly the
+four conflict-rc assertions and nothing else. Suite output verbatim (pasted from
 `/tmp/salvage-mut.bQEF9y/red.txt` with `cat`, not retyped):
 
 ```
