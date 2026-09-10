@@ -47,8 +47,8 @@
 #   4  REFUSED, guard -- reason=current_not_in_registry, or an account-switch
 #      guard refusal (registry_not_two_buckets / selector_refused) propagated
 #   5  FAILED -- reason=switch_failed (switch_not_taken propagated) |
-#      transcript_missing | transcript_not_session | transplant_target_exists
-#      | transplant_failed
+#      transcript_missing | transcript_not_session | transcript_no_cwd |
+#      transplant_target_exists | transplant_failed
 #
 # Journal: <handoff>/interactive-switch.log — one line per decision, each
 # refusal carrying its OWN reason word + detail= naming WHICH guard fired
@@ -113,14 +113,51 @@ if ! [[ "$SESSION_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-
            "REFUSED reason=transcript_not_session stem=$SESSION_ID"
 fi
 PROJ_SEG="$(basename "$(dirname "$TRANSCRIPT")")"
-CWD="$(tail -n 1 "$TRANSCRIPT" 2>/dev/null | python3 -c 'import json,sys
-try:
-    d = json.loads(sys.stdin.read())
-except Exception:
-    raise SystemExit(1)
-c = d.get("cwd") if isinstance(d, dict) else None
-print(c if isinstance(c, str) and c else "-")
-' 2>/dev/null || echo '-')"
+# The last line of a COMPLETED session is a type=cost-state record that has no
+# cwd structurally (2026-09-10 m3-market, live: 14255 of 19904 lines carried
+# the real cwd, yet tail -n 1 saw none and the resume command said cd "-").
+# Scan BACKWARDS in bounded chunks -- never loading the whole transcript --
+# and let the first record carrying a non-empty string cwd win (a session does
+# not change directory mid-run; if one ever did, its LAST value is the right
+# one).  No cwd anywhere is a LOUD refusal, never a guessed directory: a quiet
+# cd "-" sends the operator to the PREVIOUS directory, silently.
+CWD="$(python3 -c '
+import json, os, sys
+path, chunk = sys.argv[1], 65536
+with open(path, "rb") as f:
+    f.seek(0, os.SEEK_END); pos = f.tell(); head = b""
+    while pos > 0:
+        step = min(chunk, pos); pos -= step
+        f.seek(pos)
+        lines = (f.read(step) + head).split(b"\n")
+        head = lines[0]
+        for ln in reversed(lines[1:]):
+            s = ln.strip()
+            if not s:
+                continue
+            try:
+                d = json.loads(s)
+            except Exception:
+                continue
+            if isinstance(d, dict):
+                c = d.get("cwd")
+                if isinstance(c, str) and c:
+                    print(c); sys.exit(0)
+    s = head.strip()
+    try:
+        d = json.loads(s) if s else None
+    except Exception:
+        d = None
+    if isinstance(d, dict):
+        c = d.get("cwd")
+        if isinstance(c, str) and c:
+            print(c); sys.exit(0)
+sys.exit(1)
+' "$TRANSCRIPT" 2>/dev/null || true)"
+if [[ -z "$CWD" ]]; then
+  refuse 5 "REFUSED reason=transcript_no_cwd -- no record in $SESSION_ID carries a cwd; a resume command with a guessed directory would be a quiet lie" \
+           "REFUSED reason=transcript_no_cwd session=$SESSION_ID transcript=$TRANSCRIPT"
+fi
 
 # ---------------------------------------------------------------------------
 # Guard 2: the detector.  Not a limit / cannot say -> LOUD refusal, the
