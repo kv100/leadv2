@@ -1,0 +1,8 @@
+[TEST] PASS: bash -c eval with BASH_SOURCE unset refuses closed (rc=4, stdout empty)
+[TEST] PASS: diagnostic names the unavailable location mechanism, not a sibling lookup
+[TEST] PASS: executed bash still resolves the explicit state root
+[TEST] PASS: sourced from a real bash file context still resolves normally
+[TEST] PASS: declared silent-fallback mutation fails open (negative control flips)
+[TEST] PASS: bash -n clean
+[TEST] ----------------------------------------
+[TEST] RESULTS: 6 passed, 0 failed
