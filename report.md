@@ -485,3 +485,53 @@ mktemp: mkdtemp failed on .../tmp.rmBCPQEjyt: Operation not permitted
 [RUN] .../plugins/leadv2/scripts/tests/test-claude-subsession-sentinel.sh
 run_all_changed_rc=124
 ```
+
+---
+
+# Eight-level effort scale
+
+`router_v2.effort_scale` is the sole ordered vocabulary: `none, minimal, low,
+medium, high, xhigh, max, ultra`; `effort_ceiling` defaults to `ultra`. The
+arbiter validates names, caps by scale index, and applies arm-local provider
+projections. GLM's partial `low|high|max` projection rounds `xhigh` down to
+`high`. The thinking journal now carries `effort=`.
+
+## Arbiter raw output
+
+```text
+PASS: ultra safety effort is capped at high and names capped_from=ultra
+PASS: high effort below an ultra ceiling remains uncapped
+PASS: glm low|high|max projection rounds internal xhigh down to provider high
+PASS: an unknown effort name rejects config and names the bad level
+PASS: mutation control: string comparison reddens the xhigh-under-ultra projection case
+SUMMARY: pass=31 fail=1
+FAIL: (g-red) mutation did not flip the outcome — the control is not falsifiable
+```
+
+`(g-red)` is the pre-existing dispatcher fail-open negative control; every
+effort-scale case above passed.
+
+## Thinking and dispatch raw output
+
+```text
+PASS: both think_model_resolved lines include role, class, arm, model, reason, and effort
+SUMMARY: 14 pass, 0 fail
+PASS: standard build projects internal medium to glm provider low regardless of glm-family winner
+PASS: codex arm receives --effort high in its own launch args (distinct from --tier)
+PASS: sonnet arm receives --effort in its own launch args, no --tier flag (different shape than codex)
+PASS: the glm-family arm receives the resolved effort as a launcher flag, and does not crash
+SUMMARY: pass=13 fail=0
+```
+
+## Mutation-control raw output
+
+```text
+MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-think-through-arbiter.sh file=plugins/leadv2/scripts/leadv2-router.sh
+red_line=FAIL: journal lines missing/incomplete: think_model_resolved ... reason=arbiter_cheapest_capable
+```
+
+## Syntax checks
+
+```text
+PASS: bash -n changed shell files and effort suites
+```

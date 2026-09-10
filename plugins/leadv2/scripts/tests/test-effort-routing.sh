@@ -14,7 +14,9 @@ SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ARBITER="${SCRIPTS_DIR}/lib/leadv2-route-arbiter.sh"
 ROUTING="${SCRIPTS_DIR}/../config/leadv2-routing.yaml"
 DC="${SCRIPTS_DIR}/leadv2-dispatch-code.sh"
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
+TMP_BASE="${LEADV2_TEST_TMPDIR:-/tmp}"
+TMP="$(mktemp -d "${TMP_BASE%/}/test-effort-routing.XXXXXX")"; trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
+export LEADV2_ROUTE_ARBITER_EVENTS_JOURNAL="$TMP/events.jsonl"
 # `|| true`: the dispatch arms leadv2-lane-pulse-watch.sh (:5243 in
 # leadv2-dispatch-code.sh), a deliberately async terminal-state watcher that
 # can still be writing pulse/inbox artifacts under "$TMP" when this suite
@@ -63,14 +65,15 @@ else
   fail "docs output=$out"
 fi
 
-# (3) Acceptance #3: an ordinary build resolves to the middle tier. glm-flash
+# (3) Acceptance #3: an ordinary build resolves to the middle internal tier;
+# glm's low|high|max provider projection rounds it down to low. glm-flash
 # (cost 0.4, tags cheap/mechanical) is only capable at size=standard, so pin
 # size=heavy to land on a plain bulk/background cell (glm) with no
 # mechanical/adversarial/safety/plan/protected tag -- the effort_matrix
 # default row.
 out="$(run "$(quota 1 1 1)" 0 '{"kind":"code","size":"heavy"}')"
-if [[ "$out" == *' effort=medium '* || "$out" == *' effort=medium reason='* ]]; then
-  pass 'ordinary heavy code build resolves effort=medium'
+if [[ "$out" == *' effort=low '* || "$out" == *' effort=low reason='* ]]; then
+  pass 'ordinary heavy code build projects internal medium down to glm low'
 else
   fail "heavy-code output=$out"
 fi
@@ -134,21 +137,21 @@ fi
 # descriptor -- proves the flip above came from the yaml row, not from state
 # bleed or a lucky cost tie.
 out="$(run "$(quota 1 1 1)" 0 '{"kind":"code","size":"heavy"}')"
-if [[ "$out" == *' effort=medium '* || "$out" == *' effort=medium reason='* ]]; then
-  pass 'unmodified routing.yaml still resolves medium (control for the anti-hardcode case)'
+if [[ "$out" == *' effort=low '* || "$out" == *' effort=low reason='* ]]; then
+  pass 'unmodified routing.yaml still projects medium down to glm low (anti-hardcode control)'
 else
   fail "anti-hardcode control output=$out"
 fi
 
 # (8) SMART-ARBITER-01 / EFFORT-FOLLOWS-THE-ARM-NOT-THE-TASK-01 (founder
 # 2026-09-04): effort is a property of the TASK, never of the winning arm's
-# tags. glm-flash (tags cheap+mechanical) still WINS an unprotected standard
-# code task on cost -- the task-keyed effort phase must pin build work to
-# medium regardless. Before the fix the arm's tags resolved effort=low for
-# writing code (43 live decisions at effort=low, 2026-09-03/04).
+# tags. The ranking may select either glm-family arm as capability-fit evolves;
+# both use the same low|high|max provider projection, so the task-keyed
+# internal medium must become provider low regardless. Before the fix an arm's
+# tags could choose the task effort directly.
 out="$(run "$(quota 1 1 1)" 0 '{"kind":"code","size":"standard"}')"
-if [[ "$out" == *'arm=glm-flash '* && "$out" == *' effort=medium '* ]]; then
-  pass 'standard build won by glm-flash (cheap/mechanical tags) resolves effort=medium'
+if [[ "$out" =~ arm=glm(-flash)?[[:space:]] && "$out" == *' effort=low '* ]]; then
+  pass 'standard build projects internal medium to glm provider low regardless of glm-family winner'
 else
   fail "task-keyed build output=$out"
 fi

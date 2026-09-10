@@ -6472,12 +6472,10 @@ CONTRACT_EOF
       # appends `--effort <v>` to its `claude -p` argv when GLM_EFFORT is set
       # (CC 2.1.258 --effort; Z.AI's Anthropic-compat layer reads it as
       # output_config.effort — probe: docs/handoff/GLM-EFFICIENCY-01/report.md).
-      # Mapping is by RAW task class (this dispatcher owns the class->effort
-      # contract; the arbiter's effort_matrix is tag-keyed and cannot see the
-      # raw class): trivial|light -> low, standard -> high, heavy|strategic ->
-      # max, bulk -> low (mechanical). Review/verify roles would pay `high`
-      # regardless of class — glm is in DEFAULT_REVIEW_EXCLUSIONS today, so
-      # this row is contract-complete but currently unreachable.
+      # The arbiter now emits the provider projection of its one internal
+      # effort scale.  Keep the historical class map only for the arbiter
+      # fail-open path; class/role/deepthink must never override a configured
+      # effort_ceiling on a healthy arbiter decision.
       local _glm_effort _glm_effort_source _glm_think _glm_think_source
       read -r _glm_effort _glm_effort_source <<<"$(_glm_effort_for_class "${DC_TASK_CLASS:-standard}")"
       # DEEPTHINK-MODE-IS-NOT-WIRED-01: resolve the deepthink decision from
@@ -6485,16 +6483,16 @@ CONTRACT_EOF
       # journaled on the effort_applied line next to effort= so a week from
       # now the decision line itself proves deepthink travelled.
       read -r _glm_think _glm_think_source <<<"$(_glm_think_for_class "${DC_TASK_CLASS:-standard}")"
-      case "${LEADV2_WORKER_ROLE:-developer}" in
-        review|verify|critic) _glm_effort=high; _glm_effort_source=role_override ;;
-      esac
-      # think=deep pins effort=max AFTER the role override — a heavy-diff
-      # review must not be capped at high. Source becomes think_deep only
-      # when the pin actually changed the value; a heavy|strategic developer
-      # keeps source=class_map so the GLM-EFFICIENCY-01 suite's assertion
-      # (effort=max ... source=class_map) stays byte-identical.
-      if [[ "${_glm_think}" == "deep" && "${_glm_effort}" != "max" ]]; then
-        _glm_effort=max; _glm_effort_source=think_deep
+      if [[ -n "${RESOLVED_EFFORT:-}" ]]; then
+        _glm_effort="${RESOLVED_EFFORT}"
+        _glm_effort_source=route_projection
+      else
+        case "${LEADV2_WORKER_ROLE:-developer}" in
+          review|verify|critic) _glm_effort=high; _glm_effort_source=role_override ;;
+        esac
+        if [[ "${_glm_think}" == "deep" && "${_glm_effort}" != "max" ]]; then
+          _glm_effort=max; _glm_effort_source=think_deep
+        fi
       fi
       emit decision "effort_applied by=router arm=${arm} task=${sig8} effort=${_glm_effort} think=${_glm_think} think_source=${_glm_think_source:-class_map} mechanism=flag source=${_glm_effort_source:-fallback} resolved=${RESOLVED_EFFORT:-unset}"
       # FIX PASS 4: `9>&-` closes the lock fd for this call as defense-in-depth -- the

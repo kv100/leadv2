@@ -272,6 +272,10 @@ router_v2:
   # decisions at effort=low, 2026-09-03/04) -- the exact circularity the
   # founder rejected. The pre-split tag rows are preserved below as phase 2
   # so a config that ships only arm rows still resolves.
+  # Internal effort vocabulary.  Consumers compare positions in this list; no
+  # script owns a second copy.  `effort_ceiling` is the emergency spend brake.
+  effort_scale: [none, minimal, low, medium, high, xhigh, max, ultra]
+  effort_ceiling: ultra
   effort_matrix:
     # Phase 1 -- task-keyed, evaluated first (effort follows the TASK).
     - { kinds: [safety], effort: high }

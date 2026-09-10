@@ -28,6 +28,7 @@
 # NEVER overrides routing policy (cost-first glm/kimi arms unchanged).
 
 fable:
+  effort_projection: { none: low, minimal: low, low: low, medium: medium, high: high, xhigh: xhigh, max: max, ultra: max }
   model_id: claude-fable-5-1
   underlying_model: claude-fable-5-1
   role: think            # FABLE-THINK-TIER-01: default arm for every thinking role
@@ -81,6 +82,7 @@ fable:
   round2_probed: "2026-09-01T21:03:17Z"
 
 opus:
+  effort_projection: { none: low, minimal: low, low: low, medium: medium, high: high, xhigh: xhigh, max: max, ultra: max }
   model_id: claude-opus-5
   underlying_model: claude-opus-5
   role: think_fallback   # FABLE-THINK-TIER-01: serves think roles only when fable is unavailable/refused
@@ -105,6 +107,7 @@ opus:
   asof: "2026-07-31"
 
 sonnet:
+  effort_projection: { none: low, minimal: low, low: low, medium: medium, high: high, xhigh: xhigh, max: max, ultra: max }
   model_id: claude-sonnet-5
   underlying_model: claude-sonnet-5
   coding_score: 72.7
@@ -130,6 +133,7 @@ sonnet:
   asof: "2026-07-31"
 
 haiku:
+  effort_projection: { none: low, minimal: low, low: low, medium: medium, high: high, xhigh: xhigh, max: max, ultra: max }
   model_id: claude-haiku-4-5-20251001
   underlying_model: claude-haiku-4-5-20251001
   coding_score: 73.3
@@ -154,6 +158,8 @@ haiku:
   asof: "2026-07-31"
 
 codex-standard:
+  arm: codex
+  effort_projection: { none: none, minimal: minimal, low: low, medium: medium, high: high, xhigh: xhigh, max: xhigh, ultra: xhigh }
   underlying_model: gpt-5.5
   coding_score: 76.4
   score_basis: terminal-bench-2.1
@@ -199,6 +205,7 @@ codex-top:
   asof: "2026-07-31"
 
 glm:
+  effort_projection: { low: low, high: high, max: max }
   underlying_model: glm-5.3
   coding_score: null
   score_basis: null
@@ -231,6 +238,7 @@ glm:
   asof: "2026-09-02"
 
 glm-flash:
+  effort_projection: { low: low, high: high, max: max }
   underlying_model: glm-5.3-flash
   coding_score: null
   score_basis: null

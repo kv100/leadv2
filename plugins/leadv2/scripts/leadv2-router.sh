@@ -223,7 +223,7 @@ _think_journal() { # $1=k=v payload (without the think_model_resolved prefix)
       append "${THINK_TASK_ID}" decision "$line" >/dev/null 2>&1 || true
   fi
 }
-# Consult the arbiter for a think role. Prints "<arm>|<reason>" on success,
+# Consult the arbiter for a think role. Prints "<arm>|<reason>|<effort>" on success,
 # "|<why>" when the caller must fail open. Nothing else, ever — stdout of the
 # think-model CLI is one model name and must stay that way.
 _think_arbiter_decide() { # $1=role $2=task_class $3=task_id
@@ -412,7 +412,7 @@ PY
     printf '|stakes_or_data_missing\n'
     return 0
   fi
-  local out rc arm arb_reason _err="${TMPDIR:-/tmp}/leadv2-think-arb-err.tmp"
+  local out rc arm arb_reason arb_effort _err="${TMPDIR:-/tmp}/leadv2-think-arb-err.tmp"
   rm -f "$_err"
   # Think-specific last-arm state: the anti-rotation bookkeeping of BUILD
   # dispatches (leadv2-route-arbiter-last-arm) must not be perturbed by
@@ -444,6 +444,7 @@ PY
   rm -f "$_err"
   arm="$(printf '%s\n' "$out" | grep -oE '(^| )arm=[^ ]+' | head -1 | sed 's/.*=//')"
   arb_reason="$(printf '%s\n' "$out" | grep -oE '(^| )reason=[^ ]+' | head -1 | sed 's/.*=//')"
+  arb_effort="$(printf '%s\n' "$out" | grep -oE '(^| )effort=[^ ]+' | head -1 | sed 's/.*=//')"
   if [[ "$rc" -eq 0 && -n "$arm" && "$arm" != "refuse" ]]; then
     # Kill switch beats the arbiter too — the pool was pre-filtered; this
     # re-check is belt-and-suspenders and costs one yaml read.
@@ -451,7 +452,7 @@ PY
       printf '|arbiter_returned_killswitched_%s\n' "$arm"
       return 0
     fi
-    printf '%s|arbiter_%s\n' "$arm" "${arb_reason:-resolved}"
+    printf '%s|arbiter_%s|%s\n' "$arm" "${arb_reason:-resolved}" "${arb_effort:-unknown}"
     return 0
   fi
   printf '|arbiter_fail_open_rc=%s_%s\n' "$rc" "${arb_reason:-silent}"
@@ -459,20 +460,26 @@ PY
 }
 think_model() {
   local role="${THINK_ROLE:-default}" task_class="${THINK_CLASS:-}"
-  local resolved="" reason="" verdict
+  local resolved="" reason="" effort="" verdict verdict_tail
+  # A model pin keeps its historical authority over the selected model, but
+  # does not create a second effort policy: resolve the matrix effort through
+  # the arbiter and retain only that field.
+  verdict="$(_think_arbiter_decide "$role" "$task_class" "${THINK_TASK_ID:-}")"
+  verdict_tail="${verdict#*|}"
+  effort="${verdict_tail#*|}"
+  [[ "$effort" == "$verdict_tail" ]] && effort="unknown"
   if [[ -n "${LEADV2_THINK_MODEL:-}" ]]; then
     resolved="$(_think_resolve_candidate "${LEADV2_THINK_MODEL}")"
     reason="env_pin"
   else
-    verdict="$(_think_arbiter_decide "$role" "$task_class" "${THINK_TASK_ID:-}")"
     resolved="${verdict%%|*}"
-    reason="${verdict#*|}"
+    reason="${verdict_tail%%|*}"
     if [[ -z "$resolved" ]]; then
       resolved="$(_think_resolve_candidate fable)"
       reason="fail_open_legacy_${reason}"
     fi
   fi
-  _think_journal "role=${role} class=${task_class:-default} arm=${resolved} model=${resolved} reason=${reason}"
+  _think_journal "role=${role} class=${task_class:-default} arm=${resolved} model=${resolved} reason=${reason} effort=${effort}"
   printf '%s\n' "${resolved}"
   return 0
 }

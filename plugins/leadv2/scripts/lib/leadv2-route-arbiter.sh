@@ -147,6 +147,7 @@ route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   ROUTE_ARBITER_ROLE="$role" ROUTE_ARBITER_DESCRIPTOR="$descriptor" \
   ROUTE_ARBITER_QUOTA="$quota_json" ROUTE_ARBITER_FREEPOOL_RC="$free_rc" \
   ROUTE_ARBITER_FREEPOOL_REASON="${free_reason}" \
+  ROUTE_ARBITER_MODEL_CAPABILITY="${LEADV2_ROUTE_ARBITER_MODEL_CAPABILITY_YAML:-${LEADV2_MODEL_CAPABILITY_YAML:-${here}/../config/model-capability.yaml}}" \
   ROUTE_ARBITER_STATE_FILE="${LEADV2_ROUTE_ARBITER_STATE_FILE:-${TMPDIR:-/tmp}/leadv2-route-arbiter-last-arm}" \
   ROUTE_ARBITER_FAILURE_LEDGER="${LEADV2_ROUTE_ARBITER_FAILURE_LEDGER:-${HOME}/.claude/leadv2-state/leadv2/dispatch-ledger.jsonl}" \
   ROUTE_ARBITER_EVENTS_JOURNAL="${_ra_evt_journal}" \
@@ -1580,10 +1581,79 @@ def _effort_row_matches(row):
 _effort_rows=((data.get('router_v2') or {}).get('effort_matrix') or [])
 _task_rows=[r for r in _effort_rows if _effort_row_is_task_keyed(r)]
 _arm_rows=[r for r in _effort_rows if not _effort_row_is_task_keyed(r)]
-effort='medium'
+_router_cfg=data.get('router_v2') or {}
+_effort_scale=_router_cfg.get('effort_scale')
+if not isinstance(_effort_scale, list) or not _effort_scale:
+    _fatal('effort_scale_invalid', 'effort_scale must be a non-empty list')
+if any(not isinstance(_level, str) or not _level for _level in _effort_scale) or len(set(_effort_scale)) != len(_effort_scale):
+    _fatal('effort_scale_invalid', 'effort_scale has empty, non-string, or duplicate names')
+def _effort_rank(_name):
+    if not isinstance(_name, str) or _name not in _effort_scale:
+        _fatal('effort_level_unknown', 'level=%r' % (_name,))
+    return _effort_scale.index(_name)
+# Validate every authored rule, including unreachable rows: a typo must reject
+# the configuration rather than become a hidden default after a later reorder.
+for _rule in _effort_rows:
+    if not isinstance(_rule, dict):
+        _fatal('effort_matrix_invalid', 'row=%r' % (_rule,))
+    _effort_rank(_rule.get('effort'))
+_effort_ceiling=_router_cfg.get('effort_ceiling')
+_effort_rank(_effort_ceiling)
+_requested_effort=None
 for _row in (_task_rows+_arm_rows):
     if _effort_row_matches(_row):
-        effort = _row.get('effort', 'medium'); break
+        _requested_effort = _row.get('effort'); break
+if _requested_effort is None:
+    _fatal('effort_matrix_no_match', 'no effort_matrix rule matched kind=%s' % mkind)
+_capped_from=''
+if _effort_rank(_requested_effort) > _effort_rank(_effort_ceiling):
+    _capped_from=_requested_effort
+    _requested_effort=_effort_ceiling
+
+# The internal scale is deliberately broader than any provider's API.  A
+# projection is capability data next to the arm; a partial projection rounds
+# down by the scale index.  An arm with no projection keeps its historic value.
+def _projection_for_arm(_path, _arm):
+    try:
+        _lines=open(_path).read().splitlines()
+    except Exception:
+        return None
+    _rows=[]; _current=None
+    for _line in _lines:
+        if not _line.strip() or _line.lstrip().startswith('#'):
+            continue
+        _top=re.match(r'^([A-Za-z0-9_.-]+):\s*$', _line)
+        if _top:
+            _current={'name': _top.group(1)}; _rows.append(_current); continue
+        if _current is None:
+            continue
+        _field=re.match(r'^\s+([A-Za-z0-9_.-]+):\s*(.*?)\s*$', _line)
+        if not _field:
+            continue
+        _key,_raw=_field.groups()
+        if _key == 'arm':
+            _current['arm']=_plain_scalar(_raw, 'model capability arm')
+        elif _key == 'effort_projection':
+            _current['projection']=_flow_value(_raw, 'model capability effort_projection')
+    for _row in _rows:
+        if _row.get('name') == _arm or _row.get('arm') == _arm:
+            _projection=_row.get('projection')
+            if _projection is None:
+                continue
+            if not isinstance(_projection, dict):
+                _fatal('effort_projection_invalid', 'arm=%s projection=%r' % (_arm, _projection))
+            for _internal, _provider in _projection.items():
+                _effort_rank(_internal)
+                if not isinstance(_provider, str) or not _provider:
+                    _fatal('effort_projection_invalid', 'arm=%s level=%s value=%r' % (_arm, _internal, _provider))
+            return _projection
+    return None
+_projection=_projection_for_arm(os.environ.get('ROUTE_ARBITER_MODEL_CAPABILITY') or '', w['arm'])
+if _projection:
+    _projectable=[_level for _level in _projection if _effort_rank(_level) <= _effort_rank(_requested_effort)]
+    effort=_projection[max(_projectable, key=_effort_rank)] if _projectable else _requested_effort
+else:
+    effort=_requested_effort
 # FP-08 fix-round (M3/L1/L2): atomic write (same-dir tempfile + os.replace),
 # task-stamped, fd closed -- the old `json.dump(..., open(state,'w'))` inside
 # `try/except: pass` leaked the fd and, on a failed write, silently left the
@@ -1729,7 +1799,8 @@ _fit_tok = (' complexity_source=%s conf=%.1f req_eff=%.1f fit_mode=%s fit_pick=%
              ','.join('%s:%d' % (c['arm'], fit_bucket(c)) for c in ok),
              (' cap_default=%s' % ','.join(sorted(set(_cap_defaulted)))) if _cap_defaulted else '',
              (' complexity_unmapped=%s' % complexity_unmapped) if complexity_unmapped else ''))
-print('arm=%s kind=%s model=%s tier=%s effort=%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok))
+_effort_cap=(' capped_from=%s' % _capped_from) if _capped_from else ''
+print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok))
 PY
 }
 
