@@ -407,3 +407,43 @@ reported as `conflict`) stay filed as backlog per design §5(4)c — deliberatel
   lane edit).
 
 ### 9.8 Post-commit gates (appended after the docs commit)
+
+```
+$ bash tests/run-all.sh --scope changed   # foreground, rc captured unpiped
+[CORE-OFFLINE] scope=changed running 0 of 95 suites (base=main@7ac957d427, 0 changed files, 0 unmapped)
+[CORE-OFFLINE] SCOPE_RESULT selected=0 total=95 base=main@7ac957d427 changed=0 unmapped=0 verdict=nothing_to_run reason=no_relevant_changed_files
+[PASS] …/run-core-offline.sh
+[PASS] …/test-status-surface-bash32.sh
+[PASS] …/test-status-surface-single-lead.sh
+[PASS] …/test-status-surface-fast-names.sh
+run-all: 4 passed, 0 failed, scope=changed
+RUN_ALL_RC=0
+```
+Selection is empty BY CONSTRUCTION this round: base `main@7ac957d427` == the pre-round-2
+HEAD, and the round-2 diff is docs-only, so no trigger-mappable file changed. The
+code-relevant proof is carried by the direct runs above (§9.1 green `pass=20 fail=0` rc=0;
+§9.2 red `pass=17 fail=4` rc=1) and by round 1's changed-scope run over the actual code
+range (§6: 7 passed incl. `test-lane-salvage-exit-codes.sh`).
+
+### 9.9 mutation-control re-run (after the last non-artifact commit `8da8200c`)
+
+```
+$ bash plugins/leadv2/scripts/leadv2-mutation-control.sh \
+    plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh \
+    plugins/leadv2/scripts/leadv2-lane-salvage.sh \
+    's/conflict)                          return 3 ;;/conflict)                          return 0 ;;/' \
+    docs/handoff/SALVAGE-EXITS-ZERO-ON-CONFLICT-01
+leadv2-mutation-control: snapshot=head_plus_declared declared=2 excluded_dirty=0
+MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh \
+  file=plugins/leadv2/scripts/leadv2-lane-salvage.sh \
+  red_line=FAIL - E1 conflict at first pick: rc=0 (want 3) \
+  diff_hash=04ef44d463ed5538ca69fd66d41eab663dd3c0db2bd3a9bc5d5d667408016228 \
+  lane_diff_hash=8e2e6460580a0e1d84404216fba330877982ccf70996ce92122d9c5f887e4e73
+MC_RC=0
+```
+Artifact: `docs/handoff/SALVAGE-EXITS-ZERO-ON-CONFLICT-01/mutation-control/20260910T182602Z-90301.txt`
+(force-added; gitignored). Same `diff_hash` as round 1 (the mutated file is byte-identical);
+`lane_diff_hash` re-binds to the round-2 committed HEAD.
+
+Round 2 complete: negative control RUN and FILED; every acceptance observable of the
+round-2 design is evidenced above; zero code diff.
