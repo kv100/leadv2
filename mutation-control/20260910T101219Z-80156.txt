@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-think-through-arbiter.sh
+file=plugins/leadv2/scripts/leadv2-router.sh
+anchor=s/ reason=${reason} effort=${effort}/ reason=${reason}/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: journal lines missing/incomplete: 2026-09-10T10:12:15Z think_model_resolved role=judge class=Light arm=sonnet model=sonnet reason=arbiter_cheapest_capable|2026-09-10T10:12:15Z think_model_resolved role=judge class=Heavy arm=fable model=fable reason=arbiter_cheapest_capable|
+diff_hash=197743153c77bbbfd15a54ebaf2bc3a942329e0639644a2c81b82c9b08ce00c7
+lane_diff_hash=6b7b12219cda6ca6ab35270182dc7e1bf9810788b1c93ed56f500c91944c34c9

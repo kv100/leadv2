@@ -13,6 +13,7 @@ ROUTING="${SCRIPTS_DIR}/../config/leadv2-routing.yaml"
 # TMPDIR.  Keep the normal /tmp default but expose a narrow fixture-only seam.
 TMP_BASE="${LEADV2_TEST_TMPDIR:-/tmp}"
 TMP="$(mktemp -d "${TMP_BASE%/}/test-route-arbiter.XXXXXX")"; trap 'rm -rf "$TMP"' EXIT
+export LEADV2_ROUTE_ARBITER_EVENTS_JOURNAL="$TMP/events.jsonl"
 # W1-ARBITER-SUITE-THREE-RED-01 round 2 (lead correction 2026-09-10): every
 # run must self-identify WHICH arbiter bytes it sourced. The round-2 rejection
 # was measured, not guessed: the lead's acceptance mutation (collapse
@@ -69,6 +70,9 @@ if [[ "${LEADV2_ROUTE_ARBITER_FOCUS:-}" == "refusal-emitter" ]]; then
   cat >"$TMP/refusal-emitter.yaml" <<'YML'
 router_v2:
   quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  effort_scale: [none, minimal, low, medium, high, xhigh, max, ultra]
+  effort_ceiling: ultra
+  effort_matrix: [{default: true, effort: medium}]
   capability_matrix:
     - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: false, sizes: [standard], kinds: [code]}
 YML
@@ -539,6 +543,9 @@ fi
 cat >"$TMP/untrusted-glm.yaml" <<'YML'
 router_v2:
   quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  effort_scale: [none, minimal, low, medium, high, xhigh, max, ultra]
+  effort_ceiling: ultra
+  effort_matrix: [{default: true, effort: medium}]
   capability_matrix:
     - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: false, sizes: [standard], kinds: [code]}
     - {arm: sonnet, provider: claude, model: sonnet, cost: 5, protected: true, sizes: [standard], kinds: [code]}
@@ -614,6 +621,9 @@ fi
 cat >"$TMP/alt-matrix.yaml" <<'YML'
 router_v2:
   quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  effort_scale: [none, minimal, low, medium, high, xhigh, max, ultra]
+  effort_ceiling: ultra
+  effort_matrix: [{default: true, effort: medium}]
   capability_matrix:
     - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: true, sizes: [standard], kinds: [code]}
 YML
@@ -644,6 +654,9 @@ fi
 cat >"$TMP/empty-matrix.yaml" <<'YML'
 router_v2:
   quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  effort_scale: [none, minimal, low, medium, high, xhigh, max, ultra]
+  effort_ceiling: ultra
+  effort_matrix: [{default: true, effort: medium}]
   capability_matrix:
     - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: true, sizes: [standard], kinds: [docs]}
 YML
@@ -680,6 +693,76 @@ if [[ "$out" != *'reason=all_arms_capped'* && "$out" == *'probe_outage='* ]]; th
   pass 'a total probe outage is named probe_outage=, never reported as an exhausted quota'
 else
   fail "all-probes-broken output=$out"
+fi
+
+# EFFORT-SCALE-IS-THREE-BUCKETS-01: one ordered internal scale, an emergency
+# ceiling, and an arm-local provider projection. These fixtures exercise the
+# real arbiter with only config bytes changed.
+effort_yaml(){ # <rule effort> <ceiling> <destination>
+  python3 - "$ROUTING" "$1" "$2" "$3" <<'PY'
+import sys, yaml
+src, effort, ceiling, dst = sys.argv[1:]
+data = yaml.safe_load(open(src))
+data['router_v2']['effort_matrix'][0]['effort'] = effort # safety rule
+data['router_v2']['effort_ceiling'] = ceiling
+yaml.safe_dump(data, open(dst, 'w'))
+PY
+}
+effort_run(){ # <arbiter> <routing yaml> <descriptor>
+  LEADV2_ROUTE_ARBITER_ROUTING_YAML="$2" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" \
+  LEADV2_ROUTE_ARBITER_MODEL_CAPABILITY_YAML="$SCRIPTS_DIR/../config/model-capability.yaml" \
+  LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/effort-state-$RANDOM" \
+  ROUTE_TEST_QUOTA="$(quota 1 1 1)" ROUTE_TEST_FREE_RC=1 bash -c 'source "$0"; route_arbiter worker "$1"' "$1" "$3" 2>&1
+}
+EFFORT_CAP="$TMP/effort-cap.yaml"; effort_yaml ultra high "$EFFORT_CAP"
+ecap="$(effort_run "$ARBITER" "$EFFORT_CAP" '{"kind":"safety","size":"standard"}')"
+if [[ "$ecap" == *' effort=high capped_from=ultra '* ]]; then
+  pass 'ultra safety effort is capped at high and names capped_from=ultra'
+else
+  fail "effort ceiling output=$ecap"
+fi
+EFFORT_OPEN="$TMP/effort-open.yaml"; effort_yaml high ultra "$EFFORT_OPEN"
+eopen="$(effort_run "$ARBITER" "$EFFORT_OPEN" '{"kind":"safety","size":"standard"}')"
+if [[ "$eopen" == *' effort=high '* && "$eopen" != *' capped_from='* ]]; then
+  pass 'high effort below an ultra ceiling remains uncapped'
+else
+  fail "effort ceiling control output=$eopen"
+fi
+EFFORT_PROJECT="$TMP/effort-project.yaml"; effort_yaml xhigh ultra "$EFFORT_PROJECT"
+eproject="$(effort_run "$ARBITER" "$EFFORT_PROJECT" '{"kind":"safety","size":"standard"}')"
+if [[ "$eproject" == *'arm=glm '* && "$eproject" == *' effort=high '* && "$eproject" != *' capped_from='* ]]; then
+  pass 'glm low|high|max projection rounds internal xhigh down to provider high'
+else
+  fail "effort projection output=$eproject"
+fi
+EFFORT_BAD="$TMP/effort-bad.yaml"; effort_yaml ultra ultra "$EFFORT_BAD"
+python3 - "$EFFORT_BAD" <<'PY'
+import sys, yaml
+p=sys.argv[1]; data=yaml.safe_load(open(p)); data['router_v2']['effort_matrix'][0]['effort']='not-a-level'; yaml.safe_dump(data, open(p,'w'))
+PY
+set +e
+ebad="$(effort_run "$ARBITER" "$EFFORT_BAD" '{"kind":"safety","size":"standard"}')"; ebad_rc=$?
+set -e
+if [[ "$ebad_rc" -ne 0 && "$ebad" == *'effort_level_unknown'* && "$ebad" == *'not-a-level'* ]]; then
+  pass 'an unknown effort name rejects config and names the bad level'
+else
+  fail "unknown effort output rc=$ebad_rc output=$ebad"
+fi
+# Mutation control: replacing scale-index comparison with string comparison
+# incorrectly caps xhigh under ultra (xhigh sorts after ultra). The named
+# positive fixture must observe that red mutation.
+EFFORT_MUT="$TMP/effort-string-compare-mutant.sh"; cp "$ARBITER" "$EFFORT_MUT"
+python3 - "$EFFORT_MUT" <<'PY'
+import sys
+p=sys.argv[1]; s=open(p).read(); old="return _effort_scale.index(_name)"; new="return _name"
+if s.count(old) != 1: raise SystemExit('mutation anchor count=%d' % s.count(old))
+open(p,'w').write(s.replace(old,new))
+PY
+emut="$(effort_run "$EFFORT_MUT" "$EFFORT_PROJECT" '{"kind":"safety","size":"standard"}' || true)"
+if [[ "$emut" == *'effort=max capped_from=xhigh'* ]]; then
+  pass 'mutation control: string comparison reddens the xhigh-under-ultra projection case'
+else
+  fail "string-comparison mutant escaped output=$emut"
 fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"

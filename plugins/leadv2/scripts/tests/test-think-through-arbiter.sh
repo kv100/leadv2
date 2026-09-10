@@ -17,7 +17,8 @@ SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ROUTER="${SCRIPTS_DIR}/leadv2-router.sh"
 ROUTING="${SCRIPTS_DIR}/../config/leadv2-routing.yaml"
 JOURNAL="${SCRIPTS_DIR}/leadv2-journal.sh"
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP_BASE="${LEADV2_TEST_TMPDIR:-/tmp}"
+TMP="$(mktemp -d "${TMP_BASE%/}/test-think-through-arbiter.XXXXXX")"; trap 'rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0
 LAST_ASSERT="(none yet -- died before the first assertion)"
 SUMMARY_PRINTED=0
@@ -80,9 +81,9 @@ if [[ "$LIGHT_ARM" != "$HEAVY_ARM" && -n "$LIGHT_ARM" && -n "$HEAVY_ARM" ]]; the
 else
   fail "light-vs-heavy gave identical/empty arms: light='$LIGHT_ARM' heavy='$HEAVY_ARM'"
 fi
-if sink_lines | grep -q "role=judge class=Light arm=${LIGHT_ARM} " \
-   && sink_lines | grep -q "role=judge class=Heavy arm=${HEAVY_ARM} "; then
-  pass "both think_model_resolved lines in the census sink (role, class, arm, model, reason)"
+if sink_lines | grep -q "role=judge class=Light arm=${LIGHT_ARM} .* effort=[^ ]" \
+   && sink_lines | grep -q "role=judge class=Heavy arm=${HEAVY_ARM} .* effort=[^ ]"; then
+  pass "both think_model_resolved lines include role, class, arm, model, reason, and effort"
 else
   fail "journal lines missing/incomplete: $(sink_lines | tail -2 | tr '\n' '|')"
 fi
