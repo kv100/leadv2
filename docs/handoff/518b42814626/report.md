@@ -41,4 +41,26 @@ The external mutation command asserted `negative_control_rc=1`.
 
 ## Falsification commands
 
-Pending the final changed-scope runner transcript before commit.
+### Changed-scope runner
+
+Post-commit command: `timeout 30 bash tests/run-all.sh --scope changed`.
+The runner admitted the committed suite and delegated to the repository core
+runner; the explicit 30-second bound then terminated it with rc=124 before
+the core runner could emit a verdict. Raw artifact: `changed-scope.txt`.
+
+```text
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/518b42814626/plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: delegating scope=changed to plugins/leadv2/scripts/tests/run-core-offline.sh
+post_commit_changed_scope_rc=124
+```
+
+The earlier 900-second foreground run reached the repository’s named core
+suite ceiling before the outer bound: `run-core-offline.sh exceeded 600s
+ceiling`, then remained in the next selected suite until the outer command
+returned rc=124. This is ambient changed-scope gate timeout evidence; the
+targeted resolver suite is independently green above.
+
+### Shell syntax
+
+`bash -n` passed for the changed suite and the resolver; no Python file was
+changed, so `python3 -m py_compile` had no applicable target.
