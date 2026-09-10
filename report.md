@@ -155,3 +155,58 @@ MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-claude-profile-selec
   lane_diff_hash=73ab3a0452828bd5081e8a992d321d5cd1555a9a55a4253292a5652361a32d5e
 mutation_control_rc=0
 ```
+
+## §3 round 2 — caller propagates selector refusal
+
+`claude-subsession.sh` now captures the selector's status without letting
+`set -e` exit first.  An unrequested `rc=4` stops the launch with a FATAL line
+and journals the selector's `reason=`; an empty refusal becomes
+`reason=unparsed_refusal`.  Requested-profile failures retain their existing
+`exit 5` path.  `rc=124`, a missing selector, malformed stdout, and the
+multi-profile opt-out still take the prior soft fallback.  The successful
+selector-line grammar is unchanged.
+
+The existing selector suite gained hermetic caller fixtures for hard refusal,
+timeout fallback, successful selection, empty refusal, and requested-profile
+priority.  The fixture varies only selector stdout and exit code, and its fake
+Claude records whether launch was reached.
+
+### Raw red then green
+
+Before the caller fix, the new hard-refusal fixture showed that the process
+exited on the selector's non-zero `wait` before emitting its required caller
+diagnostics:
+
+```text
+[TEST] FAIL: I10c: refusal reason reaches FATAL stderr -- no match for '^\\[claude-subsession\\] FATAL:.*reason=same_account'
+[TEST] FAIL: I10d: refusal reason reaches handoff log -- no match for '\\[claude-profile\\] FATAL reason=same_account'
+[TEST] FAIL: I11a -- rc=124
+```
+
+After the fix:
+
+```text
+$ bash -n plugins/leadv2/scripts/claude-subsession.sh
+$ bash -n plugins/leadv2/scripts/tests/test-claude-profile-select.sh
+$ timeout 120 bash plugins/leadv2/scripts/tests/test-claude-profile-select.sh
+[TEST] PASS: I10a: rc=4 refusal stops the launch
+[TEST] PASS: I10d: refusal reason reaches handoff log
+[TEST] PASS: I11a: rc=124 remains a soft fallback that reaches launch
+[TEST] PASS: I12c: successful selection journal remains byte-for-byte legacy shape
+[TEST] PASS: I13c: empty rc=4 reason reaches handoff log
+[TEST] PASS: I14a: requested-profile refusal keeps exit 5 priority
+[TEST] Results: PASS=122 FAIL=0
+```
+
+### Mutation control
+
+The live control replaced the new refusal branch's `exit 4` with `return 0`,
+then restored the real file.  The hard-refusal fixture went red because fake
+Claude was launched; the artifact records both restoration and a clean
+porcelain check.
+
+Artifact: `mutation-control/20260910T095827Z-live-24057.txt`
+
+```text
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-claude-profile-select.sh file=plugins/leadv2/scripts/claude-subsession.sh red_line=[TEST] FAIL: I10b -- capture=CLAUDE_CONFIG_DIR=<unset> diff_hash=961bec9ad405c57841ec508616b1c0ddf1cf68d9575f77b6eac9b5252534f9f4 lane_diff_hash=5b2bef32bf5b559df2c76038913cdb2b00a0fda0fb0aab1df43ff8d9483da40e porcelain_clean=yes
+```
