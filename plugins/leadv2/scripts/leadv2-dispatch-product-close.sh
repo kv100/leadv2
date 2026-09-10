@@ -1708,6 +1708,56 @@ _pc_lane_commits_ahead() {  # <root> -> stdout "N" | "unknown"; always rc0
   printf 'unknown'
 }
 
+# CLOSER-MUST-LAND-FROM-GIT-TRUTH-NOT-A-REPORT-FILE-01: a missing handoff
+# artifact is not evidence that a lane did no work.  This deliberately asks
+# the lane worktree's branch and index directly, immediately before the sole
+# empty-diff -> no_work transition below.  The normal scoped diff remains the
+# review body; this is only a guard against destroying the distinction between
+# "nothing exists" and "work exists but could not be scoped".
+_pc_git_truth_before_no_work() { # <lane-root>; sets _PC_GIT_TRUTH_*
+  local root="$1" branch default commits staged first
+  _PC_GIT_TRUTH_KIND="none"
+  _PC_GIT_TRUTH_BRANCH="absent"
+  _PC_GIT_TRUTH_COMMITS=""
+  _PC_GIT_TRUTH_FIRST_SHA=""
+  _PC_GIT_TRUTH_STAGED=""
+  [[ -n "${root}" && -d "${root}" ]] || return 0
+  git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+
+  branch="$(git -C "${root}" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  [[ -n "${branch}" ]] && _PC_GIT_TRUTH_BRANCH="${branch}"
+  # The index is independent evidence: git log cannot see staged work.
+  staged="$(git -C "${root}" diff --cached --name-only 2>/dev/null || true)"
+  _PC_GIT_TRUTH_STAGED="${staged}"
+
+  if [[ -n "${branch}" ]] && git -C "${root}" show-ref --verify --quiet "refs/heads/${branch}"; then
+    default="$(git -C "${root}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)"
+    [[ -n "${default}" ]] || default="$(git -C "${root}" symbolic-ref --quiet --short HEAD 2>/dev/null | sed 's/.*//' || true)"
+    # Local main is the authoritative default for the close gate; origin may be
+    # frozen.  Do not manufacture a second landing/write-set policy here.
+    if git -C "${root}" show-ref --verify --quiet refs/heads/main; then
+      default="main"
+    elif git -C "${root}" show-ref --verify --quiet refs/heads/master; then
+      default="master"
+    fi
+    if [[ -n "${default}" ]] && git -C "${root}" show-ref --verify --quiet "refs/heads/${default}"; then
+      commits="$(git -C "${root}" log --format=%H "refs/heads/${default}..refs/heads/${branch}" 2>/dev/null || true)"
+      if [[ -n "${commits}" ]]; then
+        first="$(printf '%s\n' "${commits}" | head -1)"
+        _PC_GIT_TRUTH_KIND="commits"
+        _PC_GIT_TRUTH_COMMITS="$(printf '%s' "${commits}" | tr '\n' ',')"
+        _PC_GIT_TRUTH_COMMITS="${_PC_GIT_TRUTH_COMMITS%,}"
+        _PC_GIT_TRUTH_FIRST_SHA="${first}"
+        return 0
+      fi
+    fi
+  fi
+  if [[ -n "${staged}" ]]; then
+    _PC_GIT_TRUTH_KIND="staged"
+    return 0
+  fi
+}
+
 # GATE-FALSE-SILENT-01: a worker whose process is still alive is never silent, whatever
 # the stream/commit/dirty state says -- it just hasn't produced a terminal signal yet.
 # Deliberately calls _pc_process_alive (pid-file-only liveness), NEVER pc_worker_alive --
@@ -3034,6 +3084,7 @@ if [[ -n "${blocked_reason}" ]]; then
     # this retryable, matching landed|dead-only write-once semantics.
     _pc_dirty_evidence=""
     _pc_offending=""
+    _pc_dirty_n=0
     _pc_declared_list="$(_pc_join_capped "${writes[@]:-}")"
     if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && ! lv2_lane_root_is_own_worktree "${_lane_root}"; then
       # Never let porcelain from a parent repository become lane evidence.
@@ -3097,10 +3148,30 @@ if [[ -n "${blocked_reason}" ]]; then
         _pc_terminal="refused"; _pc_cause="declared_no_bytes"; _pc_rg_reason="declared_no_bytes"
       fi
     else
-      _pc_terminal="no_work"; _pc_cause="empty_diff"; _pc_rg_reason="no_work"
-      if [[ -n "${_PC_ASKED_INTO_VOID:-}" && -f "${_PC_ASKED_INTO_VOID}" ]]; then
-        _pc_cause="asked_into_void"
-      fi
+      # A report can be absent after a worker dies, but its branch or index can
+      # still contain recoverable work.  Consult git before the irreversible
+      # no_work label; commits become a refused/scoping verdict, staged work a
+      # refused/recoverable verdict.  `leadv2-land.sh` remains the sole landing
+      # path (merged-tree + land_in_write_set); this close gate only preserves
+      # the work for that path instead of inventing a second merge policy.
+      _pc_git_truth_before_no_work "${diff_root}"
+      case "${_PC_GIT_TRUTH_KIND}" in
+        commits)
+          _pc_terminal="refused"; _pc_cause="git_truth_commits"; _pc_rg_reason="git_truth_commits"
+          _pc_dirty_evidence="git_truth=commits branch=${_PC_GIT_TRUTH_BRANCH} commits=${_PC_GIT_TRUTH_COMMITS}"
+          _pc_terminal_commit="${_PC_GIT_TRUTH_FIRST_SHA}"
+          ;;
+        staged)
+          _pc_terminal="refused"; _pc_cause="git_truth_staged"; _pc_rg_reason="git_truth_staged"
+          _pc_dirty_evidence="git_truth=staged branch=${_PC_GIT_TRUTH_BRANCH} staged=$(printf '%s' "${_PC_GIT_TRUTH_STAGED}" | tr '\n' ',')"
+          ;;
+        *)
+          _pc_terminal="no_work"; _pc_cause="empty_diff"; _pc_rg_reason="no_work"
+          if [[ -n "${_PC_ASKED_INTO_VOID:-}" && -f "${_PC_ASKED_INTO_VOID}" ]]; then
+            _pc_cause="asked_into_void"
+          fi
+          ;;
+      esac
     fi
   fi
   # review-gate.md reason mirrors the ledger word so the on-disk artifact and the
@@ -3128,6 +3199,7 @@ if [[ -n "${blocked_reason}" ]]; then
         "${_pc_kind}" "${_pc_base_used:-HEAD}" "${_pc_dirty_n}"
       [[ -n "${_pc_declared_list:-}" ]] && printf 'declared_writes: %s\n' "${_pc_declared_list}"
       [[ -n "${_pc_offending:-}" ]] && printf 'offending: %s\n' "${_pc_offending}"
+      [[ "${_pc_dirty_evidence:-}" == git_truth=* ]] && printf 'git_truth: %s\n' "${_pc_dirty_evidence}"
       [[ -n "${_PC_LANE_RESOLVED_TOP:-}" ]] && printf 'resolved_toplevel: %s\nexpected_lane_root: %s\n' "${_PC_LANE_RESOLVED_TOP}" "${_lane_root}"
       [[ -n "${_PC_LANE_PRODUCED:-}" ]] && printf 'produced: %s\n' "${_PC_LANE_PRODUCED}"
       [[ -n "${_PC_UNDIFFABLE_CSV:-}" ]] && printf 'undiffable: %s\n' "${_PC_UNDIFFABLE_CSV}"
@@ -3143,7 +3215,7 @@ if [[ -n "${blocked_reason}" ]]; then
   _pc_offending_evt=""
   [[ -n "${_pc_offending:-}" ]] && _pc_offending_evt=" offending=${_pc_offending}"
   emit decision "review_gate task=${TASK} status=blocked reason=${_pc_rg_reason} terminal=${_pc_terminal} cause=${_pc_cause}${_pc_offending_evt}"
-  _dl_note "${_pc_terminal}" "${_pc_cause}" "${_pc_dirty_evidence}${_pc_offending_evt}"
+  _dl_note "${_pc_terminal}" "${_pc_cause}" "${_pc_dirty_evidence}${_pc_offending_evt}" "${_pc_terminal_commit:-}"
   _stamp_review_terminal blocked
   exit 5
 fi
@@ -3361,6 +3433,27 @@ elif ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${_lv2_e2e_root
   _dl_note refused no_e2e_entrypoint "repo=${repo}"
   exit 4
 else
+  # W18-CLOSER-THROUGHPUT: the prior fixed 900s budget was reached by a
+  # censored p95, so size the close budget from the changed-scope selection.
+  # The standard run-all selector is intentionally non-executing.  Other
+  # declared e2e commands do not promise that seam, so retain the one-suite
+  # floor and make that absence explicit in the gate artifacts.
+  _pc_e2e_selected="unknown"
+  _pc_e2e_select_log="$(mktemp "${TMPDIR:-/tmp}/e2e-select-log.XXXXXX")"
+  case "${e2e_cmd}" in
+    *tests/run-all.sh*)
+      ( cd "${_lv2_e2e_root}" && LEADV2_RUN_ALL_SELECT_ONLY=1 bash -c "${e2e_cmd} --scope changed" ) > "${_pc_e2e_select_log}" 2>&1 || true
+      _pc_e2e_selected="$(sed -nE 's/^run-all: ([0-9]+) selected, scope=changed, select_only=1$/\1/p' "${_pc_e2e_select_log}" | tail -1)"
+      ;;
+  esac
+  [[ "${_pc_e2e_selected}" =~ ^[1-9][0-9]*$ ]] || _pc_e2e_selected="unknown"
+  _pc_e2e_selected_for_budget="${_pc_e2e_selected}"
+  [[ "${_pc_e2e_selected_for_budget}" =~ ^[1-9][0-9]*$ ]] || _pc_e2e_selected_for_budget=1
+  # Formula: min(3600, 1200 + 120 * (selected_suites - 1)).  1200 is the
+  # rounded 900s censored p95 plus a 300s reserve; each additional selected
+  # suite buys 120s.  An explicit operator override remains authoritative.
+  _pc_e2e_budget_default=$(( 1200 + 120 * (_pc_e2e_selected_for_budget - 1) ))
+  [[ "${_pc_e2e_budget_default}" -gt 3600 ]] && _pc_e2e_budget_default=3600
   # PPC-G8: mirror leadv2-phase8-e2e-gate.sh's deadline enforcement here too --
   # this is the SAME "e2e_cmd --scope changed" invocation, just reached via the
   # dispatch-close path instead of the standalone gate. Without a deadline on
@@ -3368,13 +3461,13 @@ else
   # the standalone gate now times out; both writers of e2e-gate-passed.flag must
   # share one enforcement mechanism (_lv2_selfcheck_timeout_run, from
   # lib/leadv2-builder-selfcheck.sh, sourced at :89-91) or the fix is partial.
-  _pc_e2e_timeout_s="${LEADV2_PHASE8_E2E_TIMEOUT_S:-900}"
+  _pc_e2e_timeout_s="${LEADV2_PHASE8_E2E_TIMEOUT_S:-${_pc_e2e_budget_default}}"
   # Do NOT log to /dev/stdout: on Linux `> /dev/stdout` re-opens (and
   # truncates) the outer redirect target, erasing the e2e-root: line. Use a
   # temp file and cat it back into the real log instead.
   _pc_e2e_run_log="$(mktemp "${TMPDIR:-/tmp}/e2e-run-log.XXXXXX")"
   if command -v _lv2_selfcheck_timeout_run >/dev/null 2>&1; then
-    ( printf 'e2e-root: %s\n' "${_lv2_e2e_root}"; ( cd "${_lv2_e2e_root}" && _lv2_selfcheck_timeout_run "${_pc_e2e_timeout_s}" "${_pc_e2e_run_log}" -- bash -c "${e2e_cmd} --scope changed" ); rc=$?; cat "${_pc_e2e_run_log}" 2>/dev/null; exit "${rc}" ) > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
+    ( printf 'e2e-root: %s\nselected-suites: %s\nbudget-formula: min(3600,1200+120*(selected-1))\nbudget-s: %s\n' "${_lv2_e2e_root}" "${_pc_e2e_selected}" "${_pc_e2e_timeout_s}"; ( cd "${_lv2_e2e_root}" && _lv2_selfcheck_timeout_run "${_pc_e2e_timeout_s}" "${_pc_e2e_run_log}" -- bash -c "${e2e_cmd} --scope changed" ); rc=$?; cat "${_pc_e2e_run_log}" 2>/dev/null; exit "${rc}" ) > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
     rm -f "${_pc_e2e_run_log}"
   else
     # Guarded-source lib absent (R1: infra fault, not lane fault) -- degrade to
@@ -3383,6 +3476,12 @@ else
   fi
   if [[ ${e2e_rc} -eq 124 ]]; then
     echo "leadv2-dispatch-product-close: e2e suite TIMED OUT after ${_pc_e2e_timeout_s}s" >> "${HANDOFF}/e2e-gate.log"
+    _pc_e2e_completed="$(grep -Ec '^\[(PASS|FAIL)\] ' "${HANDOFF}/e2e-gate.log" 2>/dev/null || true)"
+    _pc_e2e_completed="${_pc_e2e_completed:-0}"
+    _pc_e2e_interrupted="$(sed -nE 's/^\[RUN\] //p' "${HANDOFF}/e2e-gate.log" | tail -1)"
+    [[ -n "${_pc_e2e_interrupted}" ]] || _pc_e2e_interrupted="unknown"
+    printf 'timeout-progress: completed=%s selected=%s interrupted_suite=%s\n' \
+      "${_pc_e2e_completed}" "${_pc_e2e_selected}" "${_pc_e2e_interrupted}" >> "${HANDOFF}/e2e-gate.log"
   fi
   # GATE-FOREIGN-FAILURE-01: WRITES_CSV present + ownership enabled means the
   # passed sentinel is stamped as scoped to the lane's own write set (the
@@ -3407,9 +3506,9 @@ else
     # whether a failure reproduces against the lane's own writes -- meaningless
     # for a sweep that never finished, and itself liable to time out again).
     rm -f "${HANDOFF}/e2e-gate-passed.flag"
-    printf 'status: unknown\nreason: e2e_timeout\nrc: %s\ntimeout_s: %s\n' \
-      "${e2e_rc}" "${_pc_e2e_timeout_s}" > "${HANDOFF}/e2e-gate.md"
-    emit decision "e2e_gate task=${TASK} status=ran verdict=timeout rc=${e2e_rc} timeout_s=${_pc_e2e_timeout_s}"
+    printf 'status: unknown\nreason: e2e_timeout\nrc: %s\ntimeout_s: %s\nselected_suites: %s\ncompleted_suites: %s\ninterrupted_suite: %s\n' \
+      "${e2e_rc}" "${_pc_e2e_timeout_s}" "${_pc_e2e_selected}" "${_pc_e2e_completed}" "${_pc_e2e_interrupted}" > "${HANDOFF}/e2e-gate.md"
+    emit decision "e2e_gate task=${TASK} status=ran verdict=timeout rc=${e2e_rc} timeout_s=${_pc_e2e_timeout_s} selected_suites=${_pc_e2e_selected} completed_suites=${_pc_e2e_completed} interrupted_suite=${_pc_e2e_interrupted}"
     # parked, not dead: a timeout is not evidence the lane's code regressed
     # (brief item 2) -- it says the budget or the sweep's scope was wrong.
     # parked is the ledger's existing "a human must decide" terminal (see
@@ -3418,7 +3517,7 @@ else
     # (leadv2-dispatch-ledger.sh:266-268). The worker's diff was already
     # checkpointed by pc_stop_gate_autocommit above (:2571), so the round's
     # work survives this terminal regardless of what a human decides next.
-    _dl_note parked e2e_timeout "rc=${e2e_rc} timeout_s=${_pc_e2e_timeout_s}"
+    _dl_note parked e2e_timeout "rc=${e2e_rc} timeout_s=${_pc_e2e_timeout_s} selected_suites=${_pc_e2e_selected} completed_suites=${_pc_e2e_completed} interrupted_suite=${_pc_e2e_interrupted}"
     _stamp_review_terminal blocked
     exit 5
   else

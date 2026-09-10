@@ -153,6 +153,13 @@ else
   fail "R1: expected exit 5 + status:unknown + reason:e2e_timeout, got rc=${RC} md=<${MD}>"
 fi
 
+if grep -q '^selected_suites: unknown$' <<<"${MD}" && grep -q '^completed_suites: 0$' <<<"${MD}" \
+   && grep -q '^interrupted_suite: unknown$' <<<"${MD}"; then
+  pass "R1: timeout artifact names selection/progress even when the custom entrypoint has no selector seam"
+else
+  fail "R1: timeout artifact missing selection/progress fields -- md=<${MD}>"
+fi
+
 if grep -qE 'e2e_gate task=r1sig001 status=ran verdict=timeout rc=124' "${JOURNAL_LOG}"; then
   pass "R1: journal records verdict=timeout rc=124"
 else
