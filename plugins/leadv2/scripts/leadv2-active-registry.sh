@@ -168,8 +168,8 @@ _leadv2_registry_require_file() {
   local task_id="${2:?task_id required}"
   local op="${3:?operation required}"
   [[ -f "$yaml_file" ]] && return 0
-  printf 'registry: %s: active.yaml missing task=%s reason=file-missing path=%s\n' \
-    "$op" "$task_id" "$yaml_file" >&2
+  printf 'registry: active.yaml missing at %s: %s task=%s reason=file-missing\n' \
+    "$yaml_file" "$op" "$task_id" >&2
   return 4
 }
 

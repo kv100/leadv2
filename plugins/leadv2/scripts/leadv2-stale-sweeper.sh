@@ -310,8 +310,14 @@ if [[ "$stale_count" -gt 0 && "$INTERACTIVE" == "true" ]]; then
     abandon|a)
       log "abandon selected — removing stale rows"
       for tid in "${stale_task_ids[@]+"${stale_task_ids[@]}"}"; do
-        leadv2_active_unregister "$tid"
-        log "removed stale row: $tid"
+        # Caller tolerance: a concurrent reaper may remove this stale row
+        # between the prompt and the unregister; that no-op must not abort the
+        # sweep now that the registry reports it as rc=4.
+        if leadv2_active_unregister "$tid"; then
+          log "removed stale row: $tid"
+        else
+          log "stale row already absent: $tid"
+        fi
       done
       ;;
     *)
