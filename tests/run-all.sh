@@ -537,10 +537,15 @@ $(git -C "${ROOT}" diff --name-only "${_range_start}..HEAD" 2>/dev/null)"
         # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01: data-only arm-ranking change must
         # select the suites that grade it.
         stem="freepool-arm.yaml"
-      elif [[ "${cf}" == "plugins/leadv2/config/leadv2-routing.yaml" ]]; then
+      elif [[ "${cf}" == "plugins/leadv2/config/leadv2-routing.yaml" ]] \
+          || [[ "${cf}" == ".claude/ref/leadv2-routing.yaml" ]]; then
         # PLUGIN-PAPERCUTS-01: a data-only routing change (arm cells, tiers)
         # must select the suites that grade routing, same shape as
         # freepool-arm.yaml above.
+        # PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the tenant DELTA at
+        # .claude/ref/ is a production routing config now (merged over the
+        # canonical by lib/leadv2-routing-config.sh); it shares the canonical
+        # stem so a delta edit selects the suites that grade routing.
         stem="leadv2-routing.yaml"
       elif [[ "${cf}" == "plugins/leadv2/config/model-capability.yaml" ]]; then
         # FABLE-THINK-TIER-01 R6: a data-only capability change must select
