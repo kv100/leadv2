@@ -455,14 +455,26 @@ fi
 # healthy one produced byte-identical output, and case (e) above went red for six
 # days with its failure naming no cause. Control: an untouched run resolves its
 # own arbiter and must NOT claim a substitution.
+# HERMETIC-CANONICAL-ROOT (round 2, 2026-09-10): the canonical fallback resolves
+# via ${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}, so this case silently
+# depended on the OPERATOR's real $HOME — green standalone, red under
+# run-core-offline.sh's hermetic gate (scrubbed LEADV2_* + fake HOME): the
+# canonical arbiter then does not exist, dispatch prints arbiter_lib_absent
+# instead of arbiter_lib_substituted, and (s2) fails with sub=0. Measured
+# pre-existing at the lane branch point (8dcb2d43: nested pass=23 fail=4).
+# Pinning LEADV2_CANONICAL_ROOT to this suite's own tree makes the case measure
+# the substitution, not the machine it runs on.
+LANE_ROOT="$(cd "${SCRIPTS_DIR}/../../.." && pwd)"
 sub_out="$(CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-sub" \
   LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
+  LEADV2_CANONICAL_ROOT="$LANE_ROOT" \
   LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" LEADV2_ROUTE_ARBITER_LIB="$TMP/deleted-route-arbiter.sh" \
   bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'substitution test' --kind code --no-spawn --writes src/x.py 2>&1 || true)"
 plain_out="$(CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-plain" \
   LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
+  LEADV2_CANONICAL_ROOT="$LANE_ROOT" \
   LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
   bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'plain test' --kind code --no-spawn --writes src/x.py 2>&1 || true)"
 if [[ "$sub_out" == *'arbiter_lib_substituted'* && "$plain_out" != *'arbiter_lib_substituted'* ]]; then
