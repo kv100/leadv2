@@ -1,36 +1,33 @@
-# SALVAGE-EXITS-ZERO-ON-CONFLICT-01 (ряд `c65d77ed1b3c`, волна В0)
+# SALVAGE-EXITS-ZERO-ON-CONFLICT-01
 
-## Первым делом прочитать улику целиком
-```
-grep -A8 "id: c65d77ed1b3c" /Users/kostiantyn.vlasenko/Projects/persona-engine/docs/tasks.yaml
-```
-Поле `intent:` — единственный источник постановки. Не выдумывать проблему.
+Wave B0. File: `plugins/leadv2/scripts/leadv2-lane-salvage.sh`.
 
-## Кратко
-`plugins/leadv2/scripts/leadv2-lane-salvage.sh` печатает
-`SALVAGE_RESULT verdict=conflict ... carried=0/4` и **выходит с кодом 0**.
-Замер 2026-09-04: цикл по 17 линиям В1 отрапортовал 17 OK, веток `salvage/*`
-не создано ни одной — вердикт был в stdout, вызывающий смотрел на rc.
+## Defect (measured 2026-09-04)
+The script prints `SALVAGE_RESULT verdict=conflict ... carried=0/4` and **exits 0**.
+A loop over 17 B1 lanes reported "17 OK" while creating zero `salvage/*` branches:
+the verdict lived in stdout, the caller read the exit code. This is the
+"counter always answers, content answers truthfully" shape.
 
-## Что сделать
-1. `verdict=conflict` → **ненулевой rc, отличный от `verdict=fail`**
-   (предлагается 0 ok / 3 conflict / 1 fail). Коды описать в usage-тексте скрипта.
-2. `grep -rn leadv2-lane-salvage ~/Projects/leadv2` — пройти КАЖДОГО вызывающего
-   и убедиться, что новый ненулевой rc не проглатывается там (`|| true`,
-   `$(...)` под `set -e`, игнор rc). Где проглатывается — починить минимальным диффом.
-3. Сюита `plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh`.
+## Deliver
+1. `verdict=conflict` -> a NON-ZERO exit code, distinct from `verdict=fail`.
+   Pick two stable codes, document them in the script header, and keep
+   `verdict=ok` at 0. Do not change stdout format — callers parse it.
+2. Audit every caller of leadv2-lane-salvage.sh in this repo (`grep -rn lane-salvage`)
+   and make sure none of them now breaks on the new non-zero — a caller that
+   legitimately tolerates conflict must say so explicitly (`|| true` with a comment),
+   never by accident.
+3. Suite: `plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh`.
+   It must drive the REAL salvage path against a scratch git repo with a
+   genuine conflicting merge — do NOT stub the function under claim.
 
-## Write set — только эти файлы
-- `plugins/leadv2/scripts/leadv2-lane-salvage.sh`
-- `plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh` (новый)
-- вызывающие из п.2 — минимальным диффом
+## Negative control (declare it in the suite header, and RUN it)
+Mutation: inside the salvage function body, force the conflict branch to
+`return 0`. The suite MUST go red. Insert the mutation INSIDE the function body,
+not at top level — a top-level insert reddens every suite for the wrong reason
+and reads as a pass. Paste the red output into
+`docs/handoff/c65d77ed1b3c/round1-red.txt`.
 
-## Off-limits (чужие линии, идут параллельно)
-`leadv2-deploy-merge.sh`, `leadv2-active-registry.sh`, `lib/*`,
-`leadv2-state-path.sh`, `scripts/waves-refresh.sh`.
-
-## Приёмка — обязательный негативный контроль
-Сюита зелёная **и** названная мутация краснит её. Мутацию вставить ВНУТРЬ тела
-функции (не на верхний уровень файла): вернуть `return 0` на ветке conflict.
-В отчёт вставить оба прогона: зелёный и красный, с выводом. Без красного прогона
-работа не принимается — «сюита есть» это не доказательство, что она что-то ловит.
+## Done
+- suite green on unmutated tree, red under the declared mutation, both outputs pasted
+- exit codes documented in the script header
+- no caller silently broken

@@ -238,3 +238,172 @@ DoD gate item (c) satisfied by the discovery mechanism itself, not by assertion.
 - Off-limits files (`leadv2-deploy-merge.sh`, `leadv2-active-registry.sh`, `lib/*`,
   `leadv2-state-path.sh`, `scripts/waves-refresh.sh`) untouched — zero hunks.
 - No env vars, wrappers, or configuration introduced.
+
+## 9. Round 2 (2026-09-10) — verification-and-filing: `round1-red.txt` filed, zero code diff
+
+Design: architect prepass round 2 (mechanism-closed, base_head `7ac957d4`). Its census HELD
+(measured, §9.3/§9.6): every mission item was already in main; the only open deliverable was
+the negative-control filing. **This round changed zero bytes of code** — `git diff --stat
+7ac957d4..HEAD -- plugins/ tests/` is empty; the diff is docs-only.
+
+### 9.1 Unmutated suite (verbatim; rc captured UNPIPED — stdout redirected to a file)
+
+```
+$ bash plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh > /tmp/salvage-green-58081.txt 2>&1
+$ rc=$?   # captured on the next line, never through a pipe
+$ echo "rc=$rc"; cat /tmp/salvage-green-58081.txt
+rc=0
+ok - bash -n leadv2-lane-salvage.sh (incl. 3.2)
+ok - E1 verdict=conflict carried=0/1, branch dropped
+ok - E1 conflict at first pick: exit 3
+ok - E2 verdict=conflict carried=1/2, prefix branch kept
+ok - E2 conflict after one carried pick: exit 3
+ok - E3 verdict=salvaged_green
+ok - E3 salvaged_green: exit 0
+ok - E4 verdict=salvaged_red suite_rc=7
+ok - E4 salvaged_red: exit 1
+ok - E5 verdict=nothing_to_salvage carried=0/0
+ok - E5 nothing_to_salvage: exit 0
+ok - E6 unknown lane: FATAL
+ok - E6 unknown lane: no SALVAGE_RESULT line
+ok - E6 unknown lane: exit 2
+ok - E7 --help lists '0 = salvaged_green'
+ok - E7 --help lists '1 = salvaged_red'
+ok - E7 --help lists '3 = conflict'
+ok - E7 --help lists '2 = usage'
+ok - E7 --help: exit 0
+ok - E8 exit code agrees with printed verdict (5/5 runs)
+salvage-exit-codes: pass=20 fail=0
+```
+<!-- bash-guard: allow -->
+### 9.2 `round1-red.txt` — negative control, red run (the filed artifact)
+
+Path: `docs/handoff/c65d77ed1b3c/round1-red.txt`, committed force-added (`.gitignore:77
+docs/handoff/*/*` drops it), and copied to the main checkout's handoff dir per prepass R3.
+Procedure per prepass §5.3: `plugins/leadv2/scripts/` copied to a scratch dir
+(`/tmp/salvage-mut.bQEF9y`), the patcher asserted EXACTLY ONE matching arm
+(`:449  conflict) return 3 ;;` inside `main()`) before replacing it with `return 0 ;;`;
+the tree was never mutated. Mutated rc=1. Suite output verbatim (pasted from
+`/tmp/salvage-mut.bQEF9y/red.txt` with `cat`, not retyped):
+
+```
+ok - bash -n leadv2-lane-salvage.sh (incl. 3.2)
+ok - E1 verdict=conflict carried=0/1, branch dropped
+FAIL - E1 conflict at first pick: rc=0 (want 3)
+ok - E2 verdict=conflict carried=1/2, prefix branch kept
+FAIL - E2 conflict after one carried pick: rc=0 (want 3)
+ok - E3 verdict=salvaged_green
+ok - E3 salvaged_green: exit 0
+ok - E4 verdict=salvaged_red suite_rc=7
+ok - E4 salvaged_red: exit 1
+ok - E5 verdict=nothing_to_salvage carried=0/0
+ok - E5 nothing_to_salvage: exit 0
+ok - E6 unknown lane: FATAL
+ok - E6 unknown lane: no SALVAGE_RESULT line
+ok - E6 unknown lane: exit 2
+ok - E7 --help lists '0 = salvaged_green'
+ok - E7 --help lists '1 = salvaged_red'
+ok - E7 --help lists '3 = conflict'
+ok - E7 --help lists '2 = usage'
+ok - E7 --help: exit 0
+FAIL - E8 verdict=conflict exited rc=0 (want 3)
+FAIL - E8 verdict=conflict exited rc=0 (want 3)
+salvage-exit-codes: pass=17 fail=4
+```
+Exactly the four FAIL lines the prepass predicted (E1, E2, E8 ×2), each ending
+`rc=0 (want 3)`; 17 unrelated assertions stay green.
+<!-- bash-guard: allow -->
+### 9.3 Caller grep re-run (verbatim, byte-accurate: appended by the command itself)
+
+```
+plugins/leadv2/scripts/leadv2-lane-salvage.sh:2:# leadv2-lane-salvage.sh — LANE-SALVAGE-TOOL-01
+plugins/leadv2/scripts/leadv2-lane-salvage.sh:31:#   leadv2-lane-salvage.sh <lane-id> [--force] [--suite-timeout <sec>]
+plugins/leadv2/scripts/leadv2-lane-salvage.sh:68:_slv_fatal() { printf 'leadv2-lane-salvage: FATAL %s\n' "$*" >&2; exit 2; }
+plugins/leadv2/scripts/leadv2-lane-salvage.sh:185:  WT="$(mktemp -d "${TMPDIR:-/tmp}/lane-salvage.${LANE_ID}.XXXXXX")"
+plugins/leadv2/scripts/leadv2-lane-salvage.sh:221:  t="$(mktemp -d "${TMPDIR:-/tmp}/lane-salvage-union.XXXXXX")"
+plugins/leadv2/scripts/leadv2-lane-salvage.sh:330:  [[ -n "${LANE_ID}" ]] || _slv_fatal "usage: leadv2-lane-salvage.sh <lane-id> [--force] [--suite-timeout <s>] [--log-dir <dir>]"
+plugins/leadv2/scripts/leadv2-lane-salvage.sh:361:  pick_err="$(mktemp "${TMPDIR:-/tmp}/lane-salvage-pick.XXXXXX")"
+plugins/leadv2/scripts/leadv2-land.sh:18:#     plugins/leadv2/scripts/leadv2-lane-salvage.sh, which owns REBASING
+plugins/leadv2/scripts/leadv2-land.sh:242:    printf 'leadv2-land: REFUSED reason=behind_main: %s is %s commit(s) behind %s (LEADV2_LAND_MAX_BEHIND=%s). Rebase the past with plugins/leadv2/scripts/leadv2-lane-salvage.sh (it carries stale lane commits onto salvage/%s from current %s), then land THAT branch with this script.\n' \
+plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh:3:# run-all-triggers: leadv2-lane-salvage.sh
+plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh:4:# test-lane-salvage-exit-codes.sh — SALVAGE-EXITS-ZERO-ON-CONFLICT-01
+plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh:30:SALVAGE="${SCRIPT_DIR}/../leadv2-lane-salvage.sh"
+plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh:74:# kept in lockstep with leadv2-lane-salvage.sh's own exit-code case.
+plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh:259:  _fail "bash -n leadv2-lane-salvage.sh"
+plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh:261:  _ok "bash -n leadv2-lane-salvage.sh (incl. 3.2)"
+plugins/leadv2/scripts/tests/test-control-plane-merge.sh:15:#   T4  leadv2-lane-salvage.sh's exit code carries the verdict:
+plugins/leadv2/scripts/tests/test-control-plane-merge.sh:27:# run-all-triggers: leadv2-lane-salvage.sh leadv2-merge-old-branch.sh leadv2-control-plane-merge-driver.sh
+plugins/leadv2/scripts/tests/test-control-plane-merge.sh:37:SALVAGE="${PLUGIN_DIR}/scripts/leadv2-lane-salvage.sh"
+plugins/leadv2/scripts/tests/test-leadv2-land.sh:154:  assert_contains "b: refusal names lane-salvage" "$err" "leadv2-lane-salvage.sh"
+plugins/leadv2/scripts/tests/test-lane-salvage.sh:7:# run-all-triggers: leadv2-lane-salvage.sh
+plugins/leadv2/scripts/tests/test-lane-salvage.sh:8:# test-lane-salvage.sh — LANE-SALVAGE-TOOL-01
+plugins/leadv2/scripts/tests/test-lane-salvage.sh:10:# Hermetic git-sandbox fixtures for leadv2-lane-salvage.sh. Every case is a
+plugins/leadv2/scripts/tests/test-lane-salvage.sh:41:SALVAGE="${SCRIPT_DIR}/../leadv2-lane-salvage.sh"
+plugins/leadv2/scripts/tests/test-lane-salvage.sh:54:  tmp="$(mktemp -d "${TMPDIR:-/tmp}/lane-salvage-fixture.XXXXXX")"
+plugins/leadv2/scripts/tests/test-lane-salvage.sh:111:FLAG="$(git rev-parse --git-common-dir)/lane-salvage-test-hook-fired"
+plugins/leadv2/scripts/tests/test-lane-salvage.sh:627:  if ! git -C "$repo" worktree list --porcelain 2>/dev/null | grep -q 'lane-salvage\.LANE9'; then
+plugins/leadv2/scripts/tests/test-lane-salvage.sh:683:  _fail "bash -n leadv2-lane-salvage.sh"
+plugins/leadv2/scripts/tests/test-lane-salvage.sh:685:  _ok "bash -n leadv2-lane-salvage.sh (incl. 3.2)"
+plugins/leadv2/scripts/tests/test-lane-salvage.sh:700:printf 'lane-salvage: pass=%d fail=%d\n' "$PASS" "$FAIL"
+tests/test-run-all-self-registration.sh:335:leadv2-lane-salvage.sh:plugins/leadv2/scripts/tests/test-lane-salvage.sh
+docs/leadv2/scheduled-decisions.md:501:Проба ведущей 2026-09-04. Инструмент `leadv2-lane-salvage.sh` (линия LANE-SALVAGE-TOOL-01,
+docs/audits/scope-changed-deterministic.md:50:- `leadv2-lane-salvage.sh:299,306`: fresh worktree, no checkpoint → first run
+```
+
+Classification vs prepass §1 — same six files, same roles, **no new invocation**:
+- `leadv2-land.sh` refusal text sits at `:242` here vs `:272` in the prepass (and
+  `test-leadv2-land.sh:154` vs `:155`): the prepass grepped the main checkout, whose main
+  is 159 commits ahead of this lane's merge-base (`7ac957d4`); `leadv2-land.sh` grew
+  upstream between the two trees. Same two roles (comment + refusal message), never executes
+  the tool.
+- Two prose hits the prepass table did not list: `docs/leadv2/scheduled-decisions.md:501`
+  and `docs/audits/scope-changed-deterministic.md:50` — narrative/doc references, no
+  execution, no rc consumption. Not callers.
+- Self-hits inside `leadv2-lane-salvage.sh` (usage text, mktemp templates) — the tool itself.
+
+### 9.4 `--help` rendered table (acceptance: rendered_line; `--help` rc=0)
+
+```
+  salvaged_green     all work commits carried AND run-all exited 0
+  salvaged_red       carried, but run-all exited non-zero (or timed out)
+  conflict           a pick conflicted outside the auto-resolvable shape
+  nothing_to_salvage no non-anchor, non-merge commits ahead of merge-base
+
+Exit codes (CONTROL-PLANE-FILES-CONFLICT-ON-EVERY-OLD-BRANCH-01): the exit
+code now CARRIES the verdict — a record that says "conflict" must never be
+read as success by a caller that only checks $?
+  0 = salvaged_green | nothing_to_salvage
+  1 = salvaged_red (carried, but run-all exited non-zero or timed out)
+  3 = conflict (a pick conflicted outside the auto-resolvable shape)
+  2 = usage / environment error (no verdict), incl. main-moved invariant
+```
+
+### 9.5 Falsification set (round 2)
+
+```
+$ bash -n plugins/leadv2/scripts/leadv2-lane-salvage.sh && echo "bash -n OK"
+bash -n OK
+$ bash -n plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh && echo "bash -n OK"
+bash -n OK
+```
+No shell or Python file changed this round (zero code diff) — re-checked anyway.
+`py_compile` n/a. Changed-scope runner and mutation-control re-run: §9.8 (post-commit,
+they bind to committed HEAD).
+
+### 9.6 Census check vs the round-2 design (PREPASS-MECHANISM-CLOSURE-01)
+
+No falsification found: no caller the design missed (§9.3), no return-code consequence
+differing from design §1/§2, no configuration state missed that this lane's invariant
+touches. The two §3 sharp edges (`--suite-timeout 0` = unbounded; unwritable TMPDIR
+reported as `conflict`) stay filed as backlog per design §5(4)c — deliberately untouched.
+
+### 9.7 Lane state (round 2)
+
+- Code diff vs `7ac957d4`: **zero** (`git diff --stat 7ac957d4..HEAD -- plugins/ tests/`
+  will read empty once §9 is committed — this round touches docs only).
+- Docs committed: `round1-red.txt` (force-added, gitignored by `.gitignore:77`), this §9,
+  and the dispatcher's round-2 refresh of the tracked `docs/handoff/c65d77ed1b3c/brief.md`
+  (committed to keep the lane clean for salvage; it is the round-2 mission text, not a
+  lane edit).
+
+### 9.8 Post-commit gates (appended after the docs commit)

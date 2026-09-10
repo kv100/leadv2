@@ -1,0 +1,37 @@
+# round1-red.txt — SALVAGE-EXITS-ZERO-ON-CONFLICT-01 negative control, filed 2026-09-10
+# Lane c65d77ed1b3c (dispatch-b9fd9799), round 2. The only open deliverable per the
+# round-2 architect prepass: run the mutation declared in the suite header and file it.
+#
+# Mutation (declared at plugins/leadv2/scripts/tests/test-lane-salvage-exit-codes.sh:20-22):
+#   inside main(), the case arm `conflict) return 3 ;;` (leadv2-lane-salvage.sh:449)
+#   becomes `conflict) return 0 ;;`.
+# Procedure: plugins/leadv2/scripts/ copied to a scratch dir (/tmp/salvage-mut.bQEF9y),
+# never mutated in place; the patcher asserted EXACTLY ONE matching arm before replacing
+# (a top-level or multi-site patch would redden for the wrong reason). Tree untouched.
+# Command: bash /tmp/salvage-mut.bQEF9y/scripts/tests/test-lane-salvage-exit-codes.sh
+# Captured UNPIPED (stdout redirected to a file, never through a pipe): mutated rc=1.
+# Unmutated control, same suite, same tree: pass=20 fail=0, rc=0 (report §9.1).
+#
+# --- suite output (verbatim, 22 lines) ---
+ok - bash -n leadv2-lane-salvage.sh (incl. 3.2)
+ok - E1 verdict=conflict carried=0/1, branch dropped
+FAIL - E1 conflict at first pick: rc=0 (want 3)
+ok - E2 verdict=conflict carried=1/2, prefix branch kept
+FAIL - E2 conflict after one carried pick: rc=0 (want 3)
+ok - E3 verdict=salvaged_green
+ok - E3 salvaged_green: exit 0
+ok - E4 verdict=salvaged_red suite_rc=7
+ok - E4 salvaged_red: exit 1
+ok - E5 verdict=nothing_to_salvage carried=0/0
+ok - E5 nothing_to_salvage: exit 0
+ok - E6 unknown lane: FATAL
+ok - E6 unknown lane: no SALVAGE_RESULT line
+ok - E6 unknown lane: exit 2
+ok - E7 --help lists '0 = salvaged_green'
+ok - E7 --help lists '1 = salvaged_red'
+ok - E7 --help lists '3 = conflict'
+ok - E7 --help lists '2 = usage'
+ok - E7 --help: exit 0
+FAIL - E8 verdict=conflict exited rc=0 (want 3)
+FAIL - E8 verdict=conflict exited rc=0 (want 3)
+salvage-exit-codes: pass=17 fail=4
