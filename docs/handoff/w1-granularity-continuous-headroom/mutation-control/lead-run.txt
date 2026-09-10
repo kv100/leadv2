@@ -1,0 +1,23 @@
+W1-GRANULARITY-CONTINUOUS-HEADROOM-01 — negative control, run by the LEAD on the real file
+lane 84d8f25ae5eb · file plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh · 2026-09-10
+
+MUTATION (inside headroom_weight() body, line 1490 — not a copy, not top level):
+  -    _w=_headroom_ramp(un)
+  +    _w=(1.0 if un>=8 else (0.7 if un>=2 else (0.4 if un>=0 else 0.2)))
+
+CLEAN   : SUMMARY: 9 passed, 0 failed
+MUTATED : SUMMARY: 6 passed, 3 failed
+
+FAIL: separation: t05=0.4 t15=0.4 (expected 0.25 / 0.35)
+FAIL: separation 0.5-vs-7.0: t05=0.4 t70=0.7 (expected 0.9)
+FAIL: monotonicity: formula-mismatch at 0->0.4(!=0.2),0.5->0.4(!=0.25),1->0.4(!=0.3),
+      1.5->0.4(!=0.35),2->0.7(!=0.4),2.5->0.7(!=0.45),3->0.7(!=0.5),4->0.7(!=0.6),
+      6->0.7(!=0.8),7->0.7(!=0.9),7.5->0.7(!=0.95); flat stretch below saturation
+      sweep: 0 0.4;0.5 0.4;1 0.4;1.5 0.4;2 0.7;2.5 0.7;3 0.7;4 0.7;5 0.7;6 0.7;7 0.7;7.5 0.7;8 1.0;9 1.0;12 1.0;
+
+UNMOVED under the mutation (correct — this is a ranking mutation, refusals are independent):
+  PASS: discrete refusal: codex over work ceiling excluded (arm_excluded=codex:capped)
+  PASS: discrete refusal: all measured providers capped -> arm=refuse reason=all_arms_capped
+  PASS: edge u>=8 / u>=20 -> weight exactly 1.0
+
+RESTORE: file restored from /tmp/arb.orig after each run; git status --porcelain = 0 lines both times.
