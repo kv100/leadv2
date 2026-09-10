@@ -456,6 +456,79 @@ def lookup(kind, role, arm, task_class, routing_yaml=None):
     }
 
 
+# ── §4 phase 1 (row 4afa0ee2525a): decision verification, not re-ranking ────
+# SMART-ARBITER-DESIGN-20260907, "The smallest seam that actually executes":
+# the workflow-step boundary (leadv2-workflow-step.py run_step) asks the
+# arbiter, then hands the decision HERE for verification. lookup() stays the
+# single resolution path for existing callers; resolve_decision never ranks,
+# never substitutes, never re-resolves -- it only checks that what arrived is
+# exactly what this registry would launch, and names the field that diverged.
+def resolve_decision(decision, step_context):
+    """(decision dict, step_context dict) -> {"ok": True, invocation...} |
+    {"ok": False, reason, field, ...}.
+
+    decision: the parsed arbiter decision line (arm/kind/model/tier/effort).
+    step_context: {"kind", "role", "task_class", "routing_yaml" (optional)}.
+
+    Verifies (1) the arm is launchable through THIS registry at all -- an
+    external-adapter arm (glm/freepool) or an out-of-set arm is a refusal
+    NAMING THE ARM, never a substituted neighbour (same defect class the
+    10ee163f7a3e guard fixes); (2) model/tier match the registry's own
+    descriptor for (kind, role, arm, task_class) field by field; (3) the
+    selected effort is APPLICABLE (effort_applied is not None) and equal --
+    an executor that cannot apply the decision's effort refuses, it never
+    silently launches a cheaper tier/effort.
+    """
+    kind = step_context.get("kind")
+    role = step_context.get("role", "worker")
+    task_class = step_context.get("task_class")
+    arm = decision.get("arm")
+
+    desc = lookup(kind, role, arm, task_class, routing_yaml=step_context.get("routing_yaml"))
+    if not desc.get("ok"):
+        # Loud, arm-naming refusal: keep lookup()'s own reason verbatim
+        # (not_a_build_arm / arm_not_capable_for_kind /
+        # adapter_argv_not_registered with adapter_scope=external, ...).
+        refusal = {"ok": False, "reason": "arm_not_launchable", "field": "arm",
+                   "arm": arm, "registry_reason": desc.get("reason")}
+        if desc.get("adapter_scope"):
+            refusal["adapter_scope"] = desc["adapter_scope"]
+            refusal["external_adapter"] = desc.get("external_adapter")
+        return refusal
+
+    if desc.get("effort_applied") is None:
+        # the executor cannot apply the selected effort: refuse, never
+        # silently re-resolve a cheaper tier (design, same section)
+        return {"ok": False, "reason": "effort_not_applicable", "field": "effort",
+                "arm": arm, "decision_value": decision.get("effort"),
+                "registry_value": None,
+                "message": "the registry's launch path for arm=%s cannot apply effort=%r"
+                           % (arm, decision.get("effort"))}
+
+    # decision-match-mut (negative control, row 4afa0ee2525a): this loop is
+    # the arm/model verification; leadv2-mutation-control.sh drops "arm",
+    # "model" from the tuple below and test-workflow-step-runner.sh must go
+    # red on the paired substitution case. Registry values are the truth;
+    # the decision must match them EXACTLY.
+    for _field in ("arm", "model", "tier", "effort"):
+        _d = decision.get(_field)
+        _r = desc.get("effort_applied") if _field == "effort" else desc.get(_field)
+        if _d != _r:
+            return {"ok": False, "reason": "decision_field_mismatch", "field": _field,
+                    "arm": arm, "decision_value": _d, "registry_value": _r,
+                    "message": "arbiter decision field '%s' (%r) diverged from the registry "
+                               "launch metadata (%r) for arm=%s -- refusing rather than "
+                               "substituting or re-ranking" % (_field, _d, _r, arm)}
+
+    return {"ok": True, "reason": "decision_verified",
+            "verified_fields": ["arm", "model", "tier", "effort"],
+            "kind": kind, "role": role, "arm": arm, "task_class": task_class,
+            "model": desc["model"], "tier": desc["tier"],
+            "effort": desc["effort_applied"], "effort_supported": desc["effort_supported"],
+            "size": desc["size"], "size_fallback": desc["size_fallback"],
+            "pool_default": desc["pool_default"], "argv": desc["argv"]}
+
+
 def _cli(argv):
     args = {}
     i = 0

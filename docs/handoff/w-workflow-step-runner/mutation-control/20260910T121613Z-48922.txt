@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-workflow-step-runner.sh
+file=plugins/leadv2/scripts/lib/leadv2-launch-registry.py
+anchor=s/for _field in ("arm", "model", "tier", "effort"):/for _field in ("tier", "effort"):/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: paired: refused, outcome not ok -> {'arbiter': {'decision_line': 'arm=haiku kind=recon model=sonnet tier=standard effort=low reason=cheapest_capable chain=haiku util_glm=20'}, 'attempt': 1, 'boundary': 'leadv2-workflow-step/run_step', 'decision': {'arm': 'haiku', 'effort': 'low', 'kind': 'recon', 'model': 'sonnet', 'reason': 'cheapest_capable', 'tier': 'standard'}, 'decision_id': '115a9716f38ec65f', 'detail': None, 'elapsed_s': 0.037, 'launched': True, 'observed': {'arm': 'haiku', 'model': 'haiku'}, 'observed_source': 'executor_report', 'outcome': 'ok', 'quota_evidence': {'age_s': 0.37891602516174316, 'limit_s': 60, 'refreshed': False, 'sampled_at_epoch': 1789042572, 'source': 'suite-fixture'}, 'raw_result': {'bytes': 14, 'path': '/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//wf-step.BfjzbE/step-115a9716f38ec65f/raw-output.txt', 'sha256': 'f85ee2859e7757b5'}, 'receipt_persisted': True, 'refusal': None, 'requested': {'arm': 'haiku', 'effort': 'low', 'model': 'haiku', 'tier': 'standard'}, 'round': 1, 'schema_validation': {'error': None, 'schema_id': 'answer-v1', 'valid': True}, 'schema_version': 1, 'status': 'ok', 'step_id': 'probe/1', 'ts': '2026-09-10T12:16:12Z', 'ts_epoch': 1789042572, 'usage': {'input_tokens': 10, 'output_tokens': 5}, 'workflow_run_id': 'suite-w1'}
+diff_hash=054989210524c901ee0e05c5f8feaac8451f9c8b9ceaf65fb0d2ded6464bf50b
+lane_diff_hash=a10666e5e3790a3c16305ddc0fd7d57a72d2d77e5c54ae9765b4a742c039f322
