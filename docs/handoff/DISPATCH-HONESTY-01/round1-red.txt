@@ -1,0 +1,17 @@
+$ bash plugins/leadv2/scripts/tests/test-prepass-timeout-on-exhausted-credential-falls-back.sh
+[ok] exhausted selected credential reclassifies rc=124 as quota_exceeded and opens the existing fallback
+[red-control §1 raw]
+[leadv2-dispatch-code] arbiter_lib_substituted missing=/Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/dispatch-honesty-prepass.Q8zYIT/lib/leadv2-route-arbiter.sh using=/Users/kostiantyn.vlasenko/Projects/leadv2/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh reason=canonical_fallback
+[leadv2-dispatch-code] architect_prepass task=badc0de1 status=failed reason=timeout rc=124 arm=claude detail=profile=work binding_window=five_hour usable_now=0.0
+[leadv2-dispatch-code] ERROR: architect prepass failed (arm=claude, class=timeout): architect_prepass_timeout
+[ok] negative control: unconditional timeout classification blocks fallback
+=== all checks passed ===
+
+$ bash plugins/leadv2/scripts/tests/test-dispatch-writes-reaches-registry.sh
+[ok] declared --writes reaches the real scratch active.yaml registry row
+[red-control §2 raw]
+[leadv2-dispatch-code] arbiter_lib_substituted missing=/Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/dispatch-honesty-registry.diXFTI/lib/leadv2-route-arbiter.sh using=/Users/kostiantyn.vlasenko/Projects/leadv2/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh reason=canonical_fallback
+[lv2_durable_pid] WARNING: no claude process found in PPID chain; using fallback pid=69425
+proof=present=1	owner=DISPATCH-WRITES-NEGATIVE	writes=<missing>	worktree=/Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/dispatch-honesty-registry.diXFTI	pid_role=lead_durable	writes_reason=-
+[ok] negative control: losing --writes in the bridge is caught by registry read-back
+=== all checks passed ===

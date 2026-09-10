@@ -4303,7 +4303,10 @@ except Exception:
     pass
 PYEOF
 )" || ws_age=""
-    emit decision "dispatch_refused reason=writeset_pending task=${sig8} blocked_by=${other} age_s=${ws_age:-unknown} window_s=${LEADV2_WRITESET_PENDING_WINDOW_SEC:-900} writes_reason=${ws_reason:-undeclared} writes=${lane_writes}"
+    # The pending row is the blocker.  Label the candidate set as requested
+    # scope, and name the incumbent's missing-set owner/reason explicitly so a
+    # `writes_reason=undeclared` line can never be misread as the victim's set.
+    emit decision "dispatch_refused reason=writeset_pending task=${sig8} blocked_by=${other} age_s=${ws_age:-unknown} window_s=${LEADV2_WRITESET_PENDING_WINDOW_SEC:-900} blocked_writes_owner=${other} blocked_writes_reason=${ws_reason:-not_recorded_by_registry} writes_reason=${ws_reason:-undeclared} requested_writes=${lane_writes}"
     _dl_note "${sig8}" refused writeset_pending "" "${founder_task_id}"
     printf 'LEADV2_DISPATCH_REFUSED: writeset_pending\n'
     return 0
@@ -4317,6 +4320,53 @@ PYEOF
   emit decision "dispatch_refused reason=writeset_conflict task=${sig8} writes=${lane_writes}"
   _dl_note "${sig8}" refused writeset_conflict "" "${founder_task_id}"
   printf 'LEADV2_DISPATCH_REFUSED: writeset_conflict\n'
+}
+
+# DISPATCH-HONESTY-01 §2: registration is not proven by the registrar's rc=0
+# alone.  Read the exact row back from the same resolved active.yaml and require
+# the declared CSV to be present byte-for-byte.  This catches a watcher/fanout
+# writer replacing the row, a stale registry function, or a root mismatch while
+# the dispatcher can still name the row that failed to retain its declaration.
+_dispatch_registry_writes_proof() {  # <task_id> <expected_csv> -> 0 iff exact row field persisted
+  local task_id="$1" expected="$2" yaml_file="" proof="" rc=0
+  DISPATCH_REGISTRY_WRITES_PROOF=""
+  yaml_file="$(_leadv2_yaml_file 2>/dev/null)" || return 2
+  [[ -r "${yaml_file}" ]] || return 2
+  proof="$(python3 -c 'import sys
+try:
+ import yaml
+ with open(sys.argv[1],encoding="utf-8") as fh: doc=yaml.safe_load(fh) or {}
+ rows=doc.get("sessions") or []
+ row=next((r for r in rows if isinstance(r,dict) and str(r.get("task_id"))==sys.argv[2]),None)
+ if row is None:
+  print("present=0"); sys.exit(1)
+ value=row.get("writes")
+ if value is None: value=row.get("write_set")
+ print("present=1\towner=%s\twrites=%s\tworktree=%s\tpid_role=%s\twrites_reason=%s" % (row.get("task_id"), value if value is not None else "<missing>", row.get("worktree") or "<missing>", row.get("pid_role") or "<missing>", row.get("writes_reason") or "-"))
+ sys.exit(0 if str(value)==sys.argv[3] else 1)
+except Exception:
+ print("readback_error=registry_unreadable")
+ sys.exit(2)' "${yaml_file}" "${task_id}" "${expected}" 2>/dev/null)" || rc=$?
+  DISPATCH_REGISTRY_WRITES_PROOF="${proof}"
+  return "${rc}"
+}
+
+# Keep the positional registry contract in one bridge.  In particular, the
+# eighth positional argument is the caller's declared writes CSV; keeping that
+# transport in a named function makes both registration sites and their proof
+# exercise the same path.
+_dispatch_register_writes_row() {  # <task> <class> <worktree> <branch> <writes> <reason>
+  local task_id="$1" cls="$2" worktree="$3" branch="$4" writes="$5" reason="$6"
+  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register \
+    "${task_id}" "${cls}" "${worktree}" "${branch}" "" "" "" "${writes}" "${reason}"
+}
+
+_dispatch_writeset_persist_refusal() {  # <sig8> <row/task id> <writes> <where>
+  local sig8="$1" owner="$2" expected="$3" where="$4"
+  local proof="${DISPATCH_REGISTRY_WRITES_PROOF:-readback_unavailable}"
+  emit decision "dispatch_refused reason=writeset_persist_failed task=${sig8} blocked_by=${owner} missing_writes_owner=${owner} writes_reason=declared_but_not_persisted where=${where} expected_writes=${expected} registry=${proof}"
+  _dl_note "${sig8}" refused writeset_persist_failed "blocked_by=${owner}" "${founder_task_id}"
+  printf 'LEADV2_DISPATCH_REFUSED: writeset_persist_failed\n'
 }
 
 # REPORT-ONLY-GATE-01: harvest the mission's own `LANE_DELIVERABLE:` declaration, using
@@ -5339,6 +5389,87 @@ $(tail -c 262144 "${s}" 2>/dev/null)"
   printf '%s\t%s' "${cls}" "${detail}"
 }
 
+# DISPATCH-HONESTY-01 §1: a timed-out Claude prepass is normally a real timeout,
+# but a selected credential can become exhausted after arm selection and then
+# present as a silent hang.  Re-read ONLY that selected credential before the
+# caller assigns the generic timeout class.  The reader is deliberately run
+# with --no-cache and a short foreground bound; any missing/ambiguous/unreadable
+# evidence fails open to the ordinary timeout class.
+ARCHITECT_PREPASS_QUOTA_EXHAUSTED=0
+ARCHITECT_PREPASS_QUOTA_DETAIL=""
+_architect_selected_credential_exhausted() {  # <architect handoff dir> -> 0 iff exact usable_now=0
+  local adir="$1" profile_log="${1}/claude-profile.log" profile="" registry="" slot="" config_dir="" source=""
+  local qreader qout qrc verdict binding usable
+  ARCHITECT_PREPASS_QUOTA_EXHAUSTED=0
+  ARCHITECT_PREPASS_QUOTA_DETAIL=""
+
+  if [[ -s "${profile_log}" ]]; then
+    profile="$(grep -E '\[claude-profile\] selected=[a-z0-9][a-z0-9_-]{0,31}([[:space:]]|$)' "${profile_log}" 2>/dev/null \
+      | tail -1 | sed -n 's/.*selected=\([a-z0-9][a-z0-9_-]*\).*/\1/p')"
+  fi
+  registry="${LEADV2_CLAUDE_PROFILES_FILE:-${HOME}/.claude/state/leadv2/claude-profiles.tsv}"
+  if [[ -n "${profile}" && -r "${registry}" ]]; then
+    slot="$(awk -F '\t' -v want="${profile}" '$1 == want {print $2 "\t" ($3 != "" ? $3 : "file:" $2); exit}' "${registry}" 2>/dev/null)"
+    IFS=$'\t' read -r config_dir source <<<"${slot}"
+  fi
+  if [[ -z "${source}" ]]; then
+    config_dir="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+    if [[ -r "${config_dir}/.credentials.json" ]]; then
+      source="file:${config_dir}/.credentials.json"
+    else
+      source="keychain:${LEADV2_ANTHROPIC_ACTIVE_SERVICE:-Claude Code-credentials}"
+    fi
+  fi
+  qreader="${LEADV2_QUOTA_READ:-${SCRIPT_DIR}/leadv2-quota-read.py}"
+  [[ -f "${qreader}" ]] || return 1
+
+  # The wrapper keeps the probe bounded without relying on macOS `timeout` and
+  # never exposes credential bytes; only the normalized JSON reaches the parser.
+  case "${source}" in
+    file:/*)  qout="$(python3 -c 'import os,subprocess,sys
+reader,kind,value=sys.argv[1:]
+try:
+    argv=[sys.executable,reader,"anthropic","--no-cache","--credential-file",value]
+    p=subprocess.run(argv,env=os.environ.copy(),capture_output=True,text=True,timeout=8)
+    sys.stdout.write(p.stdout); sys.stderr.write(p.stderr); sys.exit(p.returncode)
+except Exception:
+    sys.exit(124)' "${qreader}" file "${source#file:}" 2>/dev/null)"; qrc=$? ;;
+    keychain:*) qout="$(python3 -c 'import os,subprocess,sys
+reader,kind,value=sys.argv[1:]
+try:
+    env=os.environ.copy(); env["LEADV2_ANTHROPIC_ACTIVE_SERVICE"]=value
+    p=subprocess.run([sys.executable,reader,"anthropic","--no-cache"],env=env,capture_output=True,text=True,timeout=8)
+    sys.stdout.write(p.stdout); sys.stderr.write(p.stderr); sys.exit(p.returncode)
+except Exception:
+    sys.exit(124)' "${qreader}" keychain "${source#keychain:}" 2>/dev/null)"; qrc=$? ;;
+    *) return 1 ;;
+  esac
+  [[ ${qrc} -eq 0 && -n "${qout}" ]] || return 1
+  verdict="$(python3 -c 'import json,sys
+try:
+    d=json.loads(sys.argv[1]); label=sys.argv[2]
+    accounts=d.get("accounts") or []
+    a=None
+    if label:
+        a=next((x for x in accounts if isinstance(x,dict) and x.get("account_label")==label),None)
+    if a is None:
+        active=[x for x in accounts if isinstance(x,dict) and x.get("active")]
+        if len(active)==1: a=active[0]
+    if a is None and len(accounts)==1: a=accounts[0]
+    root=a or d; binding=root.get("binding_window")
+    window=root.get(binding) if binding else None
+    usable=window.get("usable_now") if isinstance(window,dict) else None
+    if isinstance(usable,(int,float)) and not isinstance(usable,bool) and float(usable)==0.0:
+        print("exhausted\t%s\t%s" % (binding or "unknown", usable))
+except Exception:
+    pass' "${qout}" "${profile}" 2>/dev/null)"
+  IFS=$'\t' read -r verdict binding usable <<<"${verdict}"
+  [[ "${verdict}" == "exhausted" ]] || return 1
+  ARCHITECT_PREPASS_QUOTA_EXHAUSTED=1
+  ARCHITECT_PREPASS_QUOTA_DETAIL="profile=${profile:-inherited} binding_window=${binding} usable_now=${usable}"
+  return 0
+}
+
 # PREPASS-PROVIDER-FALLBACK-01 §2: bounded runner for a fallback-arm launcher.
 # Same contract as the primary architect invocation below (timeout; kill the
 # WHOLE descendant tree on expiry, not just the process group --
@@ -5874,7 +6005,20 @@ PY
     # failed was on disk, the journal said failed_rc_1). rc 124 stays `timeout`.
     local _pp_cls _pp_detail="" _pp_failed_prov
     _pp_cls="$(_architect_failure_class "${adir}" "${out}" "${rc}")"
-    [[ ${rc} -eq 124 ]] && _pp_cls="timeout"
+    # DISPATCH-HONESTY-01 §1: rc=124 is a timeout only when a fresh probe of
+    # the credential actually selected for this architect run does NOT prove
+    # the binding quota window is exhausted.  This does not widen fallback to
+    # arbitrary timeouts: only the exact quota_exceeded class opens the existing
+    # provider-fallback list.
+    if [[ ${rc} -eq 124 ]]; then
+      _architect_selected_credential_exhausted "${adir}" || true
+      if [[ "${ARCHITECT_PREPASS_QUOTA_EXHAUSTED:-0}" == "1" ]]; then
+        _pp_cls="quota_exceeded"
+        _pp_detail="${ARCHITECT_PREPASS_QUOTA_DETAIL}"
+      else
+        _pp_cls="timeout"
+      fi
+    fi
     if [[ "${_pp_cls}" == *$'\t'* ]]; then
       _pp_detail="${_pp_cls#*$'\t'}"
       _pp_detail="$(printf '%s' "${_pp_detail}" | tr -c '[:print:]' ' ' | tr -s ' ')"
@@ -8499,7 +8643,7 @@ PY
       # (row-declared or CLI --writes) declares them and carries no reason.
       local _reg_ws_reason="prepass_pending"
       [[ -n "${lane_writes}" ]] && _reg_ws_reason="-"
-      _register_out="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" "" "" "" "${lane_writes}" "${_reg_ws_reason}" 2>"${_register_errf:-/dev/null}")"
+      _register_out="$(_dispatch_register_writes_row "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" "${lane_writes}" "${_reg_ws_reason}" 2>"${_register_errf:-/dev/null}")"
       _register_rc=$?
       _register_err=""
       if [[ -n "${_register_errf}" ]]; then
@@ -8520,6 +8664,21 @@ PY
            printf 'LEADV2_DISPATCH_REFUSED: writeset_unknown\n'
            exit 2 ;;
       esac
+      # DISPATCH-HONESTY-01 §2: an explicit CLI --writes declaration must be
+      # visible in the row before admission continues.  A successful command
+      # substitution is not enough evidence when a watcher or a wrong-root
+      # registrar can have written a different row.
+      if [[ -n "${lane_writes}" ]]; then
+        if [[ ${_register_rc} -ne 0 ]]; then
+          DISPATCH_REGISTRY_WRITES_PROOF="register_rc=${_register_rc} registry_write_unverifiable"
+          _dispatch_writeset_persist_refusal "${sig8}" "${reg_id}" "${lane_writes}" "initial_register"
+          exit 2
+        fi
+        if ! _dispatch_registry_writes_proof "${reg_id}" "${lane_writes}"; then
+          _dispatch_writeset_persist_refusal "${sig8}" "${reg_id}" "${lane_writes}" "initial_register"
+          exit 2
+        fi
+      fi
       if [[ -n "${DISPATCH_SLOT_SESSION}" ]]; then
         DISPATCH_SLOT_REG_ID="${reg_id}"
         DISPATCH_SLOT_PID="$(_lv2_durable_pid 2>/dev/null || printf '%s' "$$")"
@@ -8725,9 +8884,7 @@ ${mission}"
     # WRITESET-REFUSAL-NEVER-NAMES-THE-BLOCKER-01: `2>&1 >/dev/null` swaps the
     # capture -- the registry's conflict line (stderr) is kept for
     # _emit_writeset_refusal; stdout (session_id chatter, unused here) drops.
-    _ws_err="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register \
-      "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" \
-      "" "" "" "${lane_writes}" 2>&1 >/dev/null)" || _ws_rc=$?
+    _ws_err="$(_dispatch_register_writes_row "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" "${lane_writes}" "-" 2>&1 >/dev/null)" || _ws_rc=$?
     case "${_ws_rc}" in
       0) : ;;
       5) _emit_writeset_refusal "${sig8}" "${lane_writes}" "${_ws_err}" "${founder_task_id}"
@@ -8738,8 +8895,22 @@ ${mission}"
          printf 'LEADV2_DISPATCH_REFUSED: writeset_unknown\n'
          # R5 §4: EXIT trap releases the registered row (no worker spawned).
          exit 2 ;;
-      *) : ;;  # non-fatal registry error (e.g. missing PyYAML) -- never block dispatch on it
+      *) : ;;
     esac
+    if [[ ${_ws_rc} -ne 0 ]]; then
+      DISPATCH_REGISTRY_WRITES_PROOF="register_rc=${_ws_rc} registry_write_unverifiable"
+      _dispatch_writeset_persist_refusal "${sig8}" "${reg_id}" "${lane_writes}" "resolved_register"
+      exit 2
+    fi
+    # The second register is the atomic collision check and the normal point
+    # where prepass-derived writes are first known.  Keep the same read-back
+    # proof here: if it returns success but the row still lacks the declared
+    # set, refuse with the owner and persistence cause, never with a misleading
+    # pending refusal carrying the next lane's scope.
+    if [[ ${_ws_rc} -eq 0 ]] && ! _dispatch_registry_writes_proof "${reg_id}" "${lane_writes}"; then
+      _dispatch_writeset_persist_refusal "${sig8}" "${reg_id}" "${lane_writes}" "resolved_register"
+      exit 2
+    fi
   fi
 
   # KIMI-CHANNEL-REHAB-01 M4: admission measures the actual scoped mission,
