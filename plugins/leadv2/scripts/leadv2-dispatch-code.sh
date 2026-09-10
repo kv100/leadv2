@@ -7876,6 +7876,225 @@ atomic_dispatch_reserve_confirm_opus() {  # <sig> <arm> <rule>
   return 1
 }
 
+# _premise_probe_gate — PREMISE-PROBE-BEFORE-A-LANE-IS-DISPATCHED-01.
+#
+# Reads the CALLER cmd_resolve's locals through bash dynamic scoping (the
+# same licence _model_select_telemetry documents): sig8, founder_task_id,
+# lane_acceptance_cmd, placement_lane_ref, placement_path. Contract:
+#   return 0  premise alive (red probe) or gate not applicable -- dispatch
+#             proceeds byte-identically past this point.
+#   exit 7    premise DEAD (probe green): the row is closed through the
+#             repo-native seam FIRST (${PROJECT_ROOT}/scripts/task-close.sh,
+#             the same seam phase8 close calls), then the lane is refused --
+#             never spent. A close failure is loud but never re-opens the
+#             lane: the row stays queued and the next dispatch re-probes.
+#   exit 8    premise REFUSED, row NOT closed: no_premise_probe |
+#             probe_cmd_unreadable | row_ambiguous | probe_not_runnable |
+#             probe_budget_exceeded | resolver_failed. The reason is always
+#             the LAST stderr line and every refusal names its remedy.
+#             Never a silent pass-through, never "assume alive by default".
+# Probe precedence: --acceptance-cmd (leadv2-fanout.sh already forwards a
+# row's acceptance_cmd field through it) over the resolved row's OWN
+# acceptance_cmd in docs/tasks.yaml, matched via the shared colon-anchored
+# matcher (leadv2_tasks_yaml_common.row_matches -- the same resolver phase8
+# close uses, never a substring). acceptance_probe_id alone points into the
+# Supabase probe_registry, which no plugin-side path can read -> refused as
+# probe_cmd_unreadable with the remedy naming how to attach a runnable
+# probe. Scope: a --task-id that resolves to no row keeps today's contract
+# (advisory binding; phase8 SKIPs it at close the same way); --resume-lane /
+# --worktree pins finish in-flight lanes whose premise was judged at first
+# dispatch. Budget: LEADV2_PREMISE_PROBE_BUDGET_SEC (default 120, minimum
+# 1, non-numeric falls back to the default); a probe killed at the deadline
+# is premise_unknown -- a class APART from green and red, also refused.
+# rc 125/126/127 = the probe could not run at all (cwd gone / not
+# executable / command not found) = premise_unknown, never a verdict.
+# Exit codes extend the ladder after the burn gate's 6. LEADV2_PREMISE_PROBE=0
+# disables the whole gate (the emergency-valve convention of
+# LEADV2_BURN_GOVERNOR=0), journaled as a skip -- never silently.
+_premise_probe_gate() {
+  local PREMISE_DEAD_RC=7 PREMISE_REFUSED_RC=8
+  local _pp_status="none" _pp_sid="" _pp_probe_id="" _pp_needs="0" _pp_root="" _pp_cmd=""
+  local _pp_line _pp_first _pp_plan _pp_reason _pp_remedy
+  if [[ "${LEADV2_PREMISE_PROBE:-1}" != "1" ]]; then
+    emit decision "premise_probe task=${sig8} verdict=skipped reason=gate_disabled"
+    return 0
+  fi
+  # A resume pin finishes an in-flight lane; its premise was judged at the
+  # first dispatch and the lane's own half-done work outranks a re-probe.
+  if [[ -n "${placement_lane_ref:-}${placement_path:-}" ]]; then
+    emit decision "premise_probe task=${sig8} verdict=skipped reason=resume_lane"
+    return 0
+  fi
+  # Resolve the founder's backlog row (roots rule + write-once protocol
+  # mirror phase8 close's [backlog-row] resolver: PROJECT_ROOT first, then
+  # the git-common-dir parent every linked worktree shares; the first root
+  # with any hits decides). Fail-CLOSED: a resolver crash refuses the
+  # dispatch -- an unreadable registry must never wave a lane through.
+  _pp_plan="$(
+    PROJECT_ROOT="${PROJECT_ROOT}" PP_FOUNDER_TASK="${founder_task_id:-}" \
+    PP_EXPLICIT_CMD="${lane_acceptance_cmd}" \
+    python3 - "${SCRIPT_DIR}" <<'PYEOF' 2>/dev/null
+import os, shlex, subprocess, sys
+
+scripts_dir = sys.argv[1]
+project_root = os.environ["PROJECT_ROOT"]
+sys.path.insert(0, scripts_dir)
+from leadv2_tasks_yaml_common import load_tasks_items, row_matches
+
+def _durable_root():
+    try:
+        out = subprocess.run(
+            ["git", "-C", project_root, "rev-parse", "--path-format=absolute",
+             "--git-common-dir"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except Exception:
+        return ""
+    root = os.path.dirname(out) if out else ""
+    return root if root and os.path.isdir(root) else ""
+
+roots = [project_root]
+_durable = _durable_root()
+if _durable and _durable != project_root:
+    roots.append(_durable)
+
+explicit = os.environ.get("PP_EXPLICIT_CMD", "")
+founder = os.environ.get("PP_FOUNDER_TASK", "")
+status, sid, probe_id, needs, root, cmd = "none", "", "", "0", project_root, explicit
+
+if founder and not founder.startswith("dispatch-"):
+    for r in roots:
+        items = load_tasks_items(os.path.join(r, "docs", "tasks.yaml"))
+        hits = [it for it in items if isinstance(it, dict) and row_matches(it, founder)]
+        if hits:
+            root = r
+            if len(hits) == 1:
+                status = "one"
+                sid = str(hits[0].get("id") or "")
+                probe_id = str(hits[0].get("acceptance_probe_id") or "")
+                needs = "1" if hits[0].get("needs_acceptance_probe") else "0"
+                if not cmd:
+                    cmd = str(hits[0].get("acceptance_cmd") or "").strip()
+            else:
+                status = "many"
+            break  # first root with any hits decides; later roots never override
+
+# Tab-separated, '-' for empty (tab runs collapse under IFS-whitespace --
+# same wire convention leadv2-fanout.sh documents for its lane contract).
+print("\t".join((status, sid or "-", probe_id or "-", needs, root)))
+if cmd:
+    print("cmd=%s" % shlex.quote(cmd))
+PYEOF
+  )" || _pp_plan=""
+  if [[ -z "${_pp_plan}" ]]; then
+    emit decision "premise_probe task=${sig8} row=unknown verdict=refused reason=resolver_failed"
+    log_err "premise refused: reason=resolver_failed task=${sig8} row=unknown -- the docs/tasks.yaml resolver did not answer; fix python3/pyyaml in the control-plane root and re-dispatch"
+    exit "${PREMISE_REFUSED_RC}"
+  fi
+  _pp_first=""
+  while IFS= read -r _pp_line; do
+    if [[ -z "${_pp_first}" ]]; then
+      _pp_first="${_pp_line}"
+    else
+      case "${_pp_line}" in
+        cmd=*) eval "_pp_cmd=${_pp_line#cmd=}" ;;  # shlex.quote'd by the resolver
+      esac
+    fi
+  done < <(printf '%s\n' "${_pp_plan}")
+  IFS=$'\t' read -r _pp_status _pp_sid _pp_probe_id _pp_needs _pp_root <<<"${_pp_first}"
+  [[ "${_pp_sid}" == "-" ]] && _pp_sid=""
+  [[ "${_pp_probe_id}" == "-" ]] && _pp_probe_id=""
+  # ── decision tree ──────────────────────────────────────────────────────
+  if [[ "${_pp_status}" == "none" && -z "${_pp_cmd}" ]]; then
+    # No row claims this premise and the caller declared no probe: --task-id
+    # is advisory binding metadata here (phase8 close SKIPs the same shape at
+    # the other end) -- ad-hoc dispatch keeps today's contract.
+    emit decision "premise_probe task=${sig8} verdict=skipped reason=no_backlog_row"
+    return 0
+  fi
+  if [[ "${_pp_status}" == "many" ]]; then
+    emit decision "premise_probe task=${sig8} row=ambiguous verdict=refused reason=row_ambiguous"
+    log_err "premise refused: reason=row_ambiguous task=${sig8} founder=${founder_task_id:-none} -- 2+ docs/tasks.yaml rows match this founder id; disambiguate the id before dispatching"
+    exit "${PREMISE_REFUSED_RC}"
+  fi
+  if [[ -z "${_pp_cmd}" ]]; then
+    if [[ -n "${_pp_probe_id}" ]]; then
+      _pp_reason="probe_cmd_unreadable"
+      _pp_remedy="acceptance_probe_id=${_pp_probe_id} points into the Supabase probe_registry, which no plugin-side path can read; attach a runnable probe instead: --acceptance-cmd '<cmd>' at dispatch, or acceptance_cmd on the row (task-add.sh --acceptance-cmd '<cmd>' --expect '<expr>' in the repo-owner)"
+    else
+      _pp_reason="no_premise_probe"
+      _pp_remedy="the row carries no acceptance probe; add one: scripts/task-add.sh \"<subject>\" --acceptance-cmd '<cmd>' --expect '<expr>' in the repo-owner, or add acceptance_cmd: '<cmd>' to the row and regenerate the mirror (scripts/task-sync-yaml.sh), or dispatch with --acceptance-cmd '<cmd>' (probe rc=0 = premise dead = row closed before any lane is spent)"
+    fi
+    emit decision "premise_probe task=${sig8} row=${_pp_sid:-none} verdict=refused reason=${_pp_reason}"
+    log_err "premise refused: reason=${_pp_reason} task=${sig8} row=${_pp_sid:-none} -- ${_pp_remedy}"
+    exit "${PREMISE_REFUSED_RC}"
+  fi
+
+  # ── run the probe under a hard budget ──────────────────────────────────
+  # bash's SIGCHLD reaping makes kill -0 the house liveness idiom (the same
+  # check spawn_worker's sonnet arm uses); GNU timeout(1) does not exist on
+  # stock macOS, so the budget is a poll loop, 1s granularity.
+  local _pp_budget="${LEADV2_PREMISE_PROBE_BUDGET_SEC:-120}"
+  [[ "${_pp_budget}" =~ ^[1-9][0-9]*$ ]] || _pp_budget=120
+  local _pp_out _pp_pid _pp_rc=0 _pp_killed=0 _pp_deadline _pp_t0
+  _pp_out="$(mktemp 2>/dev/null || printf '/tmp/premise-probe-%s.out' "${sig8}")"
+  _pp_t0="$(_now_epoch)"
+  _pp_deadline=$(( _pp_t0 + _pp_budget ))
+  ( cd "${_pp_root}" 2>/dev/null || exit 125; exec bash -c "${_pp_cmd}" ) >"${_pp_out}" 2>&1 &
+  _pp_pid=$!
+  while kill -0 "${_pp_pid}" 2>/dev/null; do
+    if [[ "$(_now_epoch)" -ge "${_pp_deadline}" ]]; then
+      kill "${_pp_pid}" 2>/dev/null
+      wait "${_pp_pid}" 2>/dev/null
+      _pp_killed=1
+      break
+    fi
+    sleep 1
+  done
+  [[ "${_pp_killed}" == "0" ]] && { wait "${_pp_pid}" || _pp_rc=$?; }
+  case "${_pp_rc}:${_pp_killed}" in
+    0:0)
+      # GREEN: the defect the lane was about to chase is already dead. Close
+      # the row through the repo-native seam, journal, refuse the lane.
+      emit decision "premise_dead task=${sig8} row=${_pp_sid:-none} probe=green rc=0"
+      if [[ -n "${_pp_sid}" ]]; then
+        local _pp_bin="${PROJECT_ROOT}/scripts/task-close.sh"
+        if [[ -x "${_pp_bin}" ]]; then
+          if bash "${_pp_bin}" "${_pp_sid}" \
+              --reason "premise probe green at dispatch (PREMISE-PROBE-BEFORE-A-LANE-IS-DISPATCHED-01): acceptance already satisfied, lane not spent [task=${sig8} founder=${founder_task_id:-none}]"; then
+            log "premise_dead: backlog row ${_pp_sid} closed (probe green) -- lane not spent"
+          else
+            log_err "premise_dead: task-close.sh FAILED for row ${_pp_sid} -- row left open and will re-probe on the next dispatch; close manually: scripts/task-close.sh ${_pp_sid} --reason 'premise green at dispatch'"
+          fi
+        else
+          log "premise_dead: ${PROJECT_ROOT}/scripts/task-close.sh not present/not executable -- backlog row ${_pp_sid} left to its owning repo"
+        fi
+      fi
+      rm -f "${_pp_out}"
+      log_err "premise dead: task=${sig8} row=${_pp_sid:-none} acceptance probe green -- lane NOT dispatched (exit ${PREMISE_DEAD_RC})"
+      exit "${PREMISE_DEAD_RC}"
+      ;;
+    *:1)
+      emit decision "premise_probe task=${sig8} row=${_pp_sid:-none} verdict=unknown reason=probe_budget_exceeded budget=${_pp_budget}s"
+      log_err "premise refused: reason=probe_budget_exceeded task=${sig8} row=${_pp_sid:-none} -- probe did not finish within ${_pp_budget}s (premise_unknown, neither green nor red); raise LEADV2_PREMISE_PROBE_BUDGET_SEC or make the probe faster"
+      rm -f "${_pp_out}"
+      exit "${PREMISE_REFUSED_RC}"
+      ;;
+    125:*|126:*|127:*)
+      emit decision "premise_probe task=${sig8} row=${_pp_sid:-none} verdict=unknown reason=probe_not_runnable rc=${_pp_rc}"
+      log_err "premise refused: reason=probe_not_runnable rc=${_pp_rc} task=${sig8} row=${_pp_sid:-none} -- the probe command itself could not run (cwd/probe binary); fix the row's acceptance_cmd"
+      rm -f "${_pp_out}"
+      exit "${PREMISE_REFUSED_RC}"
+      ;;
+    *)
+      # RED: the premise is alive -- this is the one branch that spends the
+      # lane, and it proceeds into the untouched dispatch flow below.
+      emit decision "premise_probe task=${sig8} row=${_pp_sid:-none} verdict=alive rc=${_pp_rc}"
+      rm -f "${_pp_out}"
+      return 0
+      ;;
+  esac
+}
 usage() {
   cat >&2 <<EOF
 Usage:
@@ -7906,7 +8125,13 @@ Usage:
                 refused (nonexistent/foreign-repo/live lane — no ledger row, no spawn),
                 6 burn hard cap (BURN-GOVERNOR-01: 24h local token burn >= hard cap --
                 no ledger row, no worktree, no spawn; task parked to burn-deferred.jsonl;
-                LEADV2_BURN_OVERRIDE=1 bypasses, --force never does).
+                LEADV2_BURN_OVERRIDE=1 bypasses, --force never does). 7 premise dead
+                (PREMISE-PROBE-BEFORE-A-LANE-IS-DISPATCHED-01: the row's acceptance probe ran
+                green, the backlog row was closed via scripts/task-close.sh and the lane was
+                NOT spent; no ledger row, no worktree, no spawn), 8 premise refused (no
+                readable acceptance probe on the row / probe unrunnable / probe budget
+                exceeded / 2+ rows match the founder id -- the reason and remedy are the
+                last stderr line; never a silent pass-through, never assume-alive).
   $SCRIPT_NAME record-review --diff-hash <h> --verdict <PASS|FAIL|PASS_WITH_NITS>
                 [--reviewer <s>] [--run-id <s>]
                 Record a Codex review verdict; refuse a duplicate diff-hash (ATOMIC).
@@ -7928,6 +8153,9 @@ Env: LEADV2_DISPATCH_ENFORCE=0 disables dedup (no-op/pass-through). LEADV2_DISPA
      LEADV2_BURN_OVERRIDE=1 bypasses a hard-cap refusal (journaled, --force never bypasses it).
      LEADV2_BURN_GOVERNOR_BIN / LEADV2_CLAUDE_BURN_DIR override the governor script / its
      ~/.claude/burn telemetry dir (tests).
+     LEADV2_PREMISE_PROBE=0 disables the premise-probe gate (PREMISE-PROBE-BEFORE-A-
+     LANE-IS-DISPATCHED-01). LEADV2_PREMISE_PROBE_BUDGET_SEC caps the acceptance probe
+     runtime (default 120s; a probe exceeding it is premise_unknown -> exit 8).
 EOF
   # DISPATCH-EXITS-ZERO-ON-UNREADABLE-MISSION-01: the exit code was never the defect --
   # this is exit 1, and an unrecognised flag reaches it through the `--*` branch below,
@@ -8402,6 +8630,23 @@ cmd_resolve() {
        "$([[ -n "${lane_writes}" ]] && printf 'cli_or_row' || printf 'empty')"; then
     exit 2
   fi
+  # PREMISE-PROBE-BEFORE-A-LANE-IS-DISPATCHED-01: before anything is paid
+  # for -- before the burn gate, the placement pin, the ensure block, the
+  # architect prepass, any registry/ledger row, reservation or spawn -- ask
+  # the backlog row whether the defect this lane would chase is still alive.
+  # Measured 2026-09-10/11 (wave B0): five of six dispatched lanes started
+  # against defects ALREADY fixed on main, because a row's status is set by
+  # hand and nothing closes it when the premise dies -- lane c65d77ed1b3c
+  # burned 25 minutes on glm producing a 509-line report of a fix that
+  # already existed, zero product diff. Green probe -> row closed via the
+  # repo-native seam + journal premise_dead + exit 7, lane never spent; red
+  # probe -> dispatch proceeds; no readable probe / probe unrunnable /
+  # budget exceeded -> exit 8 with the remedy as the last stderr line.
+  # Ordering note: this deliberately runs BEFORE _burn_gate -- a dead
+  # premise makes every later check moot, and burn's parked-retry flow must
+  # never absorb what is actually a premise verdict.
+  _premise_probe_gate
+
   # BURN-GOVERNOR-01: 24h local token-burn gate, runs FIRST -- before the placement pin,
   # before the ensure block, before any reservation/terminal/spawn (architect prepass
   # §1.2 D2). Refuses (exit 6) only on verdict=hard and LEADV2_BURN_OVERRIDE!=1.
