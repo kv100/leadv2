@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-account-switch.sh
+file=plugins/leadv2/scripts/leadv2-account-switch.sh
+anchor=s,if \[\[ ! "$OBSERVED_SCORE" =~ \^\[0-9\]+\$ || "$OBSERVED_SCORE" -ge 100 \]\]; then,if false; then,
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] == case 6: switch cannot take (b exhausts after confirmation) -> FAILED, never silent success
+diff_hash=076769750c3b5a88e84733a4eb3cbf0c0061edd87deba6dea5430bc1664bb7e4
+lane_diff_hash=ce92b6ac8473ec4d596b30cf22322449cba4dd340c179aa4a46bf0dea8b45a70
