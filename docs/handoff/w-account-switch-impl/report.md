@@ -114,6 +114,78 @@ MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-account-switch.sh \
   session log: `bash -n leadv2-account-switch.sh: OK`, `bash -n
   test-account-switch.sh: OK`).
 
+## Round 2 — the label guard gets its own fixture (and its own journal voice)
+
+Round-1 defect (lead's mutation): killing the FIRST switch_not_taken guard
+(`:357` — "the next pick stayed on the OLD account") left the suite 30/0.
+Two guards, one fixture: `case 6` covers only the score guard.
+
+### What changed
+
+- `test-account-switch.sh` **case 8**: the switch arms the steer for `a`,
+  then the operator re-logs into the exhausted account mid-switch
+  (`SWITCH_TEST_A_RELOGIN`: the credential stub returns a different blob
+  from the moment the marker's `.cred` sidecar exists — the selector's own
+  `PROBE-COOLDOWN-OUTLIVES-ITS-CONDITION-01` invalidation then deletes the
+  steer) AND the account reads free again (`a_drop_after=3`: probeings 1-2
+  see 100, the marker probe and the observation run see 10/5). The
+  observation run therefore legitimately lands back on `a` with a NORMAL
+  score (<100) — the score guard is silent, only the label guard can catch
+  it. Expects rc=5, stdout names observed+expected, journal names both plus
+  which guard fired.
+- `leadv2-account-switch.sh`: the label guard's journal line now carries
+  `detail=next_pick_not_target`, symmetric to the score guard's
+  `detail=target_no_longer_free` (that guard moved `:366` -> `:368` — three
+  comment lines added above it; same guard).
+- Suite 39/0 on intact code; existing cases byte-untouched (case 6's
+  counter/flip path identical).
+
+### Mutation -> what went red (the two matrices)
+
+Mutation A — kill the label guard, `:357`:
+
+```
+s,if \[\[ "$OBSERVED_NEXT" != "$TARGET_LABEL" \]\]; then,if false; then,
+summary: PASS=35 FAIL=4   -- ALL four failures are case 8:
+  FAIL: case8 rc=5 (switch_not_taken) -- rc=0 want=5
+  FAIL: case8 names switch_not_taken
+  FAIL: case8 names the EXPECTED label (b)
+  FAIL: case8 journal: observed+expected+label-guard discriminator
+case 6: green.  cases 1-7: green.
+```
+
+Mutation B — kill the score guard, `:366`/`:368`:
+
+```
+s,if \[\[ ! "$OBSERVED_SCORE" =~ \^\[0-9\]+\$ || "$OBSERVED_SCORE" -ge 100 \]\]; then,if false; then,
+summary: PASS=35 FAIL=4   -- ALL four failures are case 6:
+  FAIL: case6 rc=5 (switch_not_taken) -- rc=0 want=5
+  FAIL: case6 names switch_not_taken
+  FAIL: case6 says the target stopped being free
+  FAIL: case6 journalled as failed
+case 8: green.  cases 1-5,7: green.
+```
+
+Each mutation reds exactly one case and never both — the fixtures
+discriminate the two guards.
+
+### The journal line of each refusal (which guard, readable after the fact)
+
+```
+FAILED reason=switch_not_taken observed=a expected=b detail=next_pick_not_target marker_rc=0
+FAILED reason=switch_not_taken observed=b observed_score=100 detail=target_no_longer_free marker_rc=0
+```
+
+### Evidence
+
+- `bash -n` both changed files: OK.
+- Suite on intact code: `summary: PASS=39 FAIL=0`.
+- changed-scope runner: `run-all: 5 passed, 0 failed, scope=changed`.
+- mutation-control artifacts (re-bound to the final lane HEAD after the
+  report commit — see below):
+  `mutation-control/<run-id>.txt` ×2 — `MUTATION-CONTROL ok ... mutated_rc=1`
+  for both mutations (diff_hash bca5e06e... / 07676975...).
+
 ## Live-lane behaviour (what the operation says, not assumes)
 
 - Already-running sessions keep the old account for their lifetime (their
