@@ -7893,17 +7893,19 @@ atomic_dispatch_reserve_confirm_opus() {  # <sig> <arm> <rule>
 #             probe_budget_exceeded | resolver_failed. The reason is always
 #             the LAST stderr line and every refusal names its remedy.
 #             Never a silent pass-through, never "assume alive by default".
-# Probe precedence: --acceptance-cmd (leadv2-fanout.sh already forwards a
-# row's acceptance_cmd field through it) over the resolved row's OWN
-# acceptance_cmd in docs/tasks.yaml, matched via the shared colon-anchored
-# matcher (leadv2_tasks_yaml_common.row_matches -- the same resolver phase8
-# close uses, never a substring). acceptance_probe_id alone points into the
-# Supabase probe_registry, which no plugin-side path can read -> refused as
-# probe_cmd_unreadable with the remedy naming how to attach a runnable
-# probe. Scope: a --task-id that resolves to no row keeps today's contract
-# (advisory binding; phase8 SKIPs it at close the same way); --resume-lane /
-# --worktree pins finish in-flight lanes whose premise was judged at first
-# dispatch. Budget: LEADV2_PREMISE_PROBE_BUDGET_SEC (default 120, minimum
+# The premise is a PROPERTY OF THE ROW: the gate runs only when --task-id
+# resolves to exactly one docs/tasks.yaml row (matched via the shared
+# colon-anchored matcher leadv2_tasks_yaml_common.row_matches -- the same
+# resolver phase8 close uses, never a substring). The row's probe command
+# comes from --acceptance-cmd (leadv2-fanout.sh already forwards the row's
+# acceptance_cmd field through it) or the row's OWN acceptance_cmd field.
+# acceptance_probe_id alone points into the Supabase probe_registry, which
+# no plugin-side path can read -> refused as probe_cmd_unreadable with the
+# remedy naming how to attach a runnable probe. Scope: a --task-id that
+# resolves to no row keeps today's contract (advisory binding; phase8 SKIPs
+# it at close the same way) and a bare --acceptance-cmd without a row is a
+# downstream-gate declaration, never a premise; --resume-lane / --worktree
+# pins finish in-flight lanes whose premise was judged at first dispatch. Budget: LEADV2_PREMISE_PROBE_BUDGET_SEC (default 120, minimum
 # 1, non-numeric falls back to the default); a probe killed at the deadline
 # is premise_unknown -- a class APART from green and red, also refused.
 # rc 125/126/127 = the probe could not run at all (cwd gone / not
@@ -7960,7 +7962,7 @@ if _durable and _durable != project_root:
 
 explicit = os.environ.get("PP_EXPLICIT_CMD", "")
 founder = os.environ.get("PP_FOUNDER_TASK", "")
-status, sid, probe_id, needs, root, cmd = "none", "", "", "0", project_root, explicit
+status, sid, probe_id, needs, root, cmd = "none", "", "", "0", project_root, ""
 
 if founder and not founder.startswith("dispatch-"):
     for r in roots:
@@ -7973,8 +7975,10 @@ if founder and not founder.startswith("dispatch-"):
                 sid = str(hits[0].get("id") or "")
                 probe_id = str(hits[0].get("acceptance_probe_id") or "")
                 needs = "1" if hits[0].get("needs_acceptance_probe") else "0"
-                if not cmd:
-                    cmd = str(hits[0].get("acceptance_cmd") or "").strip()
+                # explicit --acceptance-cmd is a SOURCE for the ROW's probe
+                # (fanout forwards the row's own field through it), never a
+                # standalone premise: without a row there is nothing to probe.
+                cmd = explicit if explicit else str(hits[0].get("acceptance_cmd") or "").strip()
             else:
                 status = "many"
             break  # first root with any hits decides; later roots never override
@@ -8005,10 +8009,14 @@ PYEOF
   [[ "${_pp_sid}" == "-" ]] && _pp_sid=""
   [[ "${_pp_probe_id}" == "-" ]] && _pp_probe_id=""
   # ── decision tree ──────────────────────────────────────────────────────
-  if [[ "${_pp_status}" == "none" && -z "${_pp_cmd}" ]]; then
-    # No row claims this premise and the caller declared no probe: --task-id
-    # is advisory binding metadata here (phase8 close SKIPs the same shape at
-    # the other end) -- ad-hoc dispatch keeps today's contract.
+  if [[ "${_pp_status}" == "none" ]]; then
+    # No row claims this premise: --task-id is advisory binding metadata here
+    # (phase8 close SKIPs the same shape at the other end) and a bare
+    # --acceptance-cmd is a downstream-gate declaration (lane-shape classify,
+    # product-close), not a premise -- ad-hoc dispatch keeps today's contract
+    # byte-for-byte. Measured 2026-09-11: test-leadv2-lane-shape.sh and
+    # test-plugin-papercuts.sh dispatch with --acceptance-cmd 'true' and no
+    # row; gating those would have refused them on a green 'true'.
     emit decision "premise_probe task=${sig8} verdict=skipped reason=no_backlog_row"
     return 0
   fi

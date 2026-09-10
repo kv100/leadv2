@@ -45,6 +45,9 @@
 #   T8 NO-SEAM    green probe but no scripts/task-close.sh in the repo ->
 #                rc=7 still, row left to its owning repo, no worker
 #   T9 AMBIG      2 rows match the founder id -> rc=8 reason=row_ambiguous
+#   T10 DECLCMD    --acceptance-cmd 'true' with NO row -> rc=0, worker
+#                started (declarative callers -- lane-shape, papercuts --
+#                keep today's contract; the premise is a property of the ROW)
 #   T0 bash -n on the dispatch script and on this suite
 #
 # Negative controls (mutation, run via leadv2-mutation-control.sh) that MUST
@@ -207,6 +210,7 @@ cd "${ROOT}"
 
 # _dispatch <case-name> <founder-task-id> [extra env: VAR=val ...] ->
 # sets OUT, RC, and resets the per-case capture files.
+DISPATCH_EXTRA=()
 _dispatch() {
   local _case="$1" _tid="$2"; shift 2
   rm -f "${SPAWN_MARK}" "${CLOSE_CAP}"
@@ -232,7 +236,7 @@ _dispatch() {
     LEADV2_BURN_GOVERNOR=0 \
     ${_env[@]+"${_env[@]}"} \
     bash "${DISPATCH_SH}" "premise-probe suite ${_case} $$ $(date +%s 2>/dev/null || echo 0)" \
-      --spawn --task-id "${_tid}" 2>&1)" || _rc=$?
+      --spawn --task-id "${_tid}" ${DISPATCH_EXTRA[@]+"${DISPATCH_EXTRA[@]}"} 2>&1)" || _rc=$?
   RC="${_rc}"; OUT="${_out}"
 }
 # bash-guard: allow
@@ -314,6 +318,15 @@ _dispatch ambig TASK-PREMISE-AMBIG-01
 if [[ "${RC}" == "8" ]]; then pass "T9 ambiguous: exit 8"; else fail "T9 ambiguous: expected rc=8 got ${RC}"; fi
 grep -q "reason=row_ambiguous" <<<"${OUT}" && pass "T9 reason=row_ambiguous" || fail "T9 reason missing: $(printf '%s' "${OUT}" | tail -1)"
 [[ ! -s "${CLOSE_CAP:-/dev/nonexistent}" ]] && pass "T9 nothing closed" || fail "T9 row closed despite ambiguity"
+
+# ── T10: bare --acceptance-cmd, no row -> declaration, not a premise ─────
+rm -f "${SPAWN_MARK}" "${CLOSE_CAP}"; : > "${JOURNAL_REC}"
+DISPATCH_EXTRA=(--acceptance-cmd 'true')
+_dispatch declcmd TASK-UNRESOLVED-88
+DISPATCH_EXTRA=()
+if [[ "${RC}" == "0" ]]; then pass "T10 declarative --acceptance-cmd: dispatch proceeds rc=0"; else fail "T10 declarative cmd: expected rc=0 got ${RC}: $(printf '%s' "${OUT}" | tail -1)"; fi
+grep -q '^SPAWN ' "${SPAWN_MARK:-/dev/nonexistent}" && pass "T10 worker started (declarative callers intact)" || fail "T10 worker not started"
+[[ ! -s "${CLOSE_CAP:-/dev/nonexistent}" ]] && pass "T10 nothing closed" || fail "T10 row closed with no row"
 
 printf -- '\n%d passed, %d failed\n' "${PASS}" "${FAIL}"
 if [[ "${FAIL}" -gt 0 ]]; then
