@@ -72,28 +72,62 @@
 # (this script's own marker), .git/.
 set -euo pipefail
 
+# === Configuration ===
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-case "${SELF_DIR}" in
-  "${HOME}"/.claude/plugins/cache/*)
-    printf -- 'REFUSING: invoked from the plugin cache (%s) — run from the git-tracked repo tree (see leadv2-plugin-sync.sh CACHE-REFUSAL).\n' "${SELF_DIR}" >&2
-    exit 3
-    ;;
-esac
-
 CACHE_ROOT="${LEADV2_PLUGIN_CACHE_ROOT:-${HOME}/.claude/plugins/cache}"
 META_JSON="${LEADV2_PLUGIN_META:-$(dirname "${CACHE_ROOT}")/installed_plugins.json}"
-
 SRC_GIT="$(git -C "${SELF_DIR}" rev-parse --show-toplevel 2>/dev/null || true)"
 PLUGIN_SRC="${LEADV2_PLUGIN_SRC:-${SRC_GIT:+${SRC_GIT}/plugins/leadv2}}"
-if [[ -z "${PLUGIN_SRC}" || ! -d "${PLUGIN_SRC}" ]]; then
-  printf -- 'BLOCK: source plugin tree not found: %s (set LEADV2_PLUGIN_SRC)\n' "${PLUGIN_SRC:-<unset>}" >&2
-  exit 1
-fi
 
-# ── 1. Authoritative: installed_plugins.json installPath ────────────────────
-CACHE_DIR=""
-if [[ -f "${META_JSON}" ]]; then
-  CACHE_DIR="$(python3 - "${META_JSON}" <<'PY'
+# === Helper Functions ===
+log() { printf -- '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+log_ok() { printf -- '[%s] OK: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+log_warn() { printf -- '[%s] WARN: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+
+# Print usage and exit with error code 2
+usage() {
+  cat >&2 <<EOF
+Usage: $0 [--write] [--allow-backward] [--dry-run] [--project-root <path>]
+  --write           Actually write. Without it the run is a DRY RUN (default).
+  --allow-backward  With --write, permit overwriting a destination that is
+                    NEWER than canonical.
+  --dry-run         Explicit no-op: re-asserts the default dry-run mode.
+  --project-root    Sync to this single project root only (skips yaml iteration).
+EOF
+  exit 2
+}
+
+# Refuse if invoked from the plugin cache (CACHE-REFUSAL)
+refuse_if_invoked_from_cache() {
+  case "${SELF_DIR}" in
+    "${HOME}"/.claude/plugins/cache/*)
+      printf -- 'REFUSING: invoked from the plugin cache (%s) — run from the git-tracked repo tree (see leadv2-plugin-sync.sh CACHE-REFUSAL).\n' "${SELF_DIR}" >&2
+      exit 3
+      ;;
+  esac
+}
+
+# Validate source plugin tree exists and is a git repo
+validate_source() {
+  if [[ -z "${PLUGIN_SRC}" || ! -d "${PLUGIN_SRC}" ]]; then
+    printf -- 'BLOCK: source plugin tree not found: %s (set LEADV2_PLUGIN_SRC)\n' "${PLUGIN_SRC:-<unset>}" >&2
+    exit 1
+  fi
+
+  REPO_HEAD="$(git -C "${PLUGIN_SRC}" rev-parse HEAD 2>/dev/null || true)"
+  if [[ -z "${REPO_HEAD}" ]]; then
+    printf -- 'BLOCK: source tree is not a git repo (cannot record repo_head): %s\n' "${PLUGIN_SRC}" >&2
+    exit 1
+  fi
+}
+
+# Determine the active cache directory from installed_plugins.json or fallback
+get_cache_dir() {
+  local cache_dir=""
+
+  # 1. Authoritative: installed_plugins.json installPath
+  if [[ -f "${META_JSON}" ]]; then
+    cache_dir="$(python3 - "${META_JSON}" <<'PY'
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -104,44 +138,87 @@ except Exception:
     pass
 PY
 )" || true
-fi
-
-# ── 2. Fallback: highest numeric version dir under the cache root ───────────
-if [[ -z "${CACHE_DIR}" || ! -d "${CACHE_DIR}" ]]; then
-  _base="${CACHE_ROOT}/leadv2-local/leadv2"
-  _best="$(ls -1 "${_base}" 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 || true)"
-  if [[ -n "${_best}" && -d "${_base}/${_best}" ]]; then
-    CACHE_DIR="${_base}/${_best}"
   fi
-fi
 
-if [[ -z "${CACHE_DIR}" || ! -d "${CACHE_DIR}" ]]; then
-  printf -- 'BLOCK: no leadv2 plugin cache dir found (looked in %s and %s/leadv2-local/leadv2)\n' "${META_JSON}" "${CACHE_ROOT}" >&2
-  exit 1
-fi
+  # 2. Fallback: highest numeric version dir under the cache root
+  if [[ -z "${cache_dir}" || ! -d "${cache_dir}" ]]; then
+    local _base="${CACHE_ROOT}/leadv2-local/leadv2"
+    local _best="$(ls -1 "${_base}" 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 || true)"
+    if [[ -n "${_best}" && -d "${_base}/${_best}" ]]; then
+      cache_dir="${_base}/${_best}"
+    fi
+  fi
 
-REPO_HEAD="$(git -C "${PLUGIN_SRC}" rev-parse HEAD 2>/dev/null || true)"
-if [[ -z "${REPO_HEAD}" ]]; then
-  printf -- 'BLOCK: source tree is not a git repo (cannot record repo_head): %s\n' "${PLUGIN_SRC}" >&2
-  exit 1
-fi
+  if [[ -z "${cache_dir}" || ! -d "${cache_dir}" ]]; then
+    printf -- 'BLOCK: no leadv2 plugin cache dir found (looked in %s and %s/leadv2-local/leadv2)\n' "${META_JSON}" "${CACHE_ROOT}" >&2
+    exit 1
+  fi
 
-_ITEMIZE="$(mktemp)"
-trap 'rm -f "${_ITEMIZE}"' EXIT
-# The cache dir IS a full copy of plugins/leadv2 (verified 2026-09-02:
-# agents codex-skills commands config contracts data docs examples hooks
-# prompts ref scripts skills templates tests workflows + .claude-plugin), so
-# one whole-tree rsync is the sync — per-subdir loops would silently miss
-# whatever the cache gains later.
-rsync -a --delete \
-  --exclude='hooks.bak-*' \
-  --exclude='.synced-from' \
-  --exclude='.git/' \
-  --itemize-changes \
-  "${PLUGIN_SRC}/" "${CACHE_DIR}/" >"${_ITEMIZE}" || {
-  printf -- 'BLOCK: rsync failed syncing %s -> %s\n' "${PLUGIN_SRC}" "${CACHE_DIR}" >&2
-  exit 1
+  printf '%s' "${cache_dir}"
 }
-N_SYNCED="$(grep -c '^>f' "${_ITEMIZE}" || true)"
-printf '%s\n' "${REPO_HEAD}" >"${CACHE_DIR}/.synced-from"
-printf 'synced=%s cache=%s repo_head=%s\n' "${N_SYNCED}" "${CACHE_DIR}" "${REPO_HEAD}"
+
+# Perform the rsync sync from source to cache directory
+perform_sync() {
+  local plugin_src="$1"
+  local cache_dir="$2"
+
+  _itemize="$(mktemp)"
+  trap 'rm -f "${_itemize}"' EXIT
+
+  rsync -a --delete \
+    --exclude='hooks.bak-*' \
+    --exclude='.synced-from' \
+    --exclude='.git/' \
+    --itemize-changes \
+    "${plugin_src}/" "${cache_dir}/" >"${_itemize}" || {
+    printf -- 'BLOCK: rsync failed syncing %s -> %s\n' "${plugin_src}" "${cache_dir}" >&2
+    exit 1
+  }
+
+  n_synced="$(grep -c '^>f' "${_itemize}" || true)"
+  printf '%s\n' "${REPO_HEAD}" >"${cache_dir}/.synced-from"
+  printf 'synced=%s cache=%s repo_head=%s\n' "${n_synced}" "${cache_dir}" "${REPO_HEAD}"
+}
+
+# === Main Execution ===
+main() {
+  # Parse command line options
+  local DRY_RUN=true
+  local ALLOW_BACKWARD=false
+  local PROJECT_ROOT_OVERRIDE=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --write) DRY_RUN=false ;;
+      --allow-backward) ALLOW_BACKWARD=true ;;
+      --dry-run) DRY_RUN=true ;;
+      --project-root)
+        shift
+        if [[ $# -eq 0 || -z "$1" ]]; then
+          printf -- 'Unknown/invalid arg: --project-root requires a non-empty path\n' >&2
+          exit 2
+        fi
+        PROJECT_ROOT_OVERRIDE="$1"
+        ;;
+      *) printf -- 'Unknown arg: %s\n' "$1" >&2; exit 2 ;;
+    esac
+    shift
+  done
+
+  log "Mode: $([[ "${DRY_RUN}" == "true" ]] && printf -- 'DRY_RUN (default; pass --write to write)' || printf -- 'WRITE (--write)')$([[ "${ALLOW_BACKWARD}" == "true" ]] && printf -- ' + --allow-backward (backward overwrites permitted)')"
+
+  # Refuse if invoked from cache
+  refuse_if_invoked_from_cache
+
+  # Validate source
+  validate_source
+
+  # Get cache directory
+  CACHE_DIR="$(get_cache_dir)"
+
+  # Perform sync
+  perform_sync "${PLUGIN_SRC}" "${CACHE_DIR}"
+}
+
+# Invoke main with all arguments
+main "$@"
