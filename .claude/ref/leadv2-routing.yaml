@@ -203,7 +203,11 @@ router_v2:
     # test authoring. NOT for protected/safety/publish (protected: false here
     # plus `untrusted: true` on the ladder entry below), NOT review/audit/plan,
     # and sizes stop at standard — heavy/bulk stay on glm-5.3/codex/sonnet.
-    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.33, kinds: [code, docs, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [cheap, mechanical], review: false, protected: false }
+    # GLM-FLASH-DOES-ANY-WORK-01 (founder 2026-09-10) — mirrored from the canonical
+    # plugin config. THIS FILE IS A DRIFTED SHADOW (row filed 2026-09-10): it is what
+    # leadv2-dispatch-code.sh actually reads when PROJECT_ROOT is the plugin repo, and
+    # it was 229 lines behind canonical when this edit was made.
+    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.33, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [cheap, mechanical], review: true, protected: true }
     # recon (ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01, founder 2026-09-04):
     # recon is cheap, high-volume, READ-ONLY exploration — routing intent lives
     # here as rows, not in arbiter code branches. freepool (cost 1) is the
@@ -413,9 +417,8 @@ router:
     - id: glm-flash
       provider: glm
       model: glm-5.3-flash
-      when: [trivial, light, standard]
+      when: [all]
       effort: standard
-      untrusted: true
     # RETIRED as a build arm (founder order 2026-08-04 «Кими убрать», executed as
     # 3398d11 / DISPATCH-KIMI-ARM-MISMATCH-01). The entry stays so _arm_provider
     # can name the provider if a stale tenant yaml ever hands back arm=kimi, but

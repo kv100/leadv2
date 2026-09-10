@@ -201,7 +201,28 @@ router_v2:
     # test authoring. NOT for protected/safety/publish (protected: false here
     # plus `untrusted: true` on the ladder entry below), NOT review/audit/plan,
     # and sizes stop at standard — heavy/bulk stay on glm-5.3/codex/sonnet.
-    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.33, kinds: [code, docs, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [cheap, mechanical], review: false, protected: false, capability: 2 }
+    # GLM-FLASH-DOES-ANY-WORK-01 — прямое решение основателя 2026-09-10, дословно:
+    # «хочу чтобы флеш тоже мог делать все, а там уже пускай все наши механизмы
+    # решают кто что и как». Это РАСШИРЯЕТ GLM-DOES-ANY-WORK-01 (2026-09-04), которое
+    # намеренно не тронуло flash, посчитав его «дешёвым тарифом, а не самим GLM».
+    #
+    # Снимаются РУЧНЫЕ ограничения, а не механизмы:
+    #   protected: false -> true  — flash допущен на защищённые пути;
+    #   review:    false -> true  — flash допущен как рецензент;
+    #   kinds  += review, plan, audit, safety — прежний список отсекал их по имени;
+    #   sizes  += heavy, bulk     — прежний потолок standard отсекал по размеру.
+    # `untrusted: true` снят с его ЛЕСТНИЧНОЙ записи ниже — иначе лестница снимала бы
+    # flash на защищённой цепи раньше, чем арбитр вообще что-то решит.
+    #
+    # НЕ изменено намеренно: `capability: 2` (у glm-5.3 и sonnet — 4). Это и есть
+    # «пусть решают механизмы»: capability_fit держит flash в стороне от работы,
+    # которой он не тянет, по ИЗМЕРЕННОМУ признаку, а не по списку имён. Поднять эту
+    # цифру можно только с замером, а замера нет.
+    #
+    # Откат — один шаг: вернуть в этой строке protected: false, review: false,
+    # прежние kinds/sizes и `untrusted: true` в лестничную запись.
+    # Ледгер: SD-GLM-FLASH-DOES-ANY-WORK-ROLLBACK-01.
+    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.33, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [cheap, mechanical], review: true, protected: true, capability: 2 }
     # recon (ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01, founder 2026-09-04):
     # recon is cheap, high-volume, READ-ONLY exploration — routing intent lives
     # here as rows, not in arbiter code branches. freepool (cost 1) is the
@@ -488,12 +509,16 @@ router:
     # fallback position. `when:` stops at standard: heavy/bulk/strategic
     # fallback legs skip flash (mechanical tier only). Same glm provider =>
     # one lockout record covers both glm arms.
+    # GLM-FLASH-DOES-ANY-WORK-01 (founder 2026-09-10): `when: [all]` and no
+    # `untrusted:` — the ladder no longer strips flash from a protected/safety
+    # chain, and no longer stops its fallback legs at standard. Capability, quota
+    # and price decide instead. Rollback: restore `when: [trivial, light,
+    # standard]` and `untrusted: true`.
     - id: glm-flash
       provider: glm
       model: glm-5.3-flash
-      when: [trivial, light, standard]
+      when: [all]
       effort: standard
-      untrusted: true
     # RETIRED as a build arm (founder order 2026-08-04 «Кими убрать», executed as
     # 3398d11 / DISPATCH-KIMI-ARM-MISMATCH-01). The entry stays so _arm_provider
     # can name the provider if a stale tenant yaml ever hands back arm=kimi, but
