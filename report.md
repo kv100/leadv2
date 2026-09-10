@@ -210,3 +210,22 @@ Artifact: `mutation-control/20260910T095827Z-live-24057.txt`
 ```text
 MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-claude-profile-select.sh file=plugins/leadv2/scripts/claude-subsession.sh red_line=[TEST] FAIL: I10b -- capture=CLAUDE_CONFIG_DIR=<unset> diff_hash=961bec9ad405c57841ec508616b1c0ddf1cf68d9575f77b6eac9b5252534f9f4 lane_diff_hash=5b2bef32bf5b559df2c76038913cdb2b00a0fda0fb0aab1df43ff8d9483da40e porcelain_clean=yes
 ```
+
+### Changed-scope runner (foreground, 900-second cap)
+
+The repository runner did not establish a global green result.  It reached
+unrelated suites and the outer cap returned 124; one unrelated requested-profile
+suite could not create its temp fixture in this sandbox.  The focused suite
+above is the passing changed-code evidence.
+
+```text
+$ timeout 900 bash tests/run-all.sh --scope changed
+[PASS] .../plugins/leadv2/scripts/tests/test-balancer-every-arm.sh
+[PASS] .../plugins/leadv2/scripts/tests/test-cache-truth.sh
+[RUN] .../plugins/leadv2/scripts/tests/test-claude-profile-requested.sh
+mktemp: mkdtemp failed on .../tmp.rmBCPQEjyt: Operation not permitted
+[CLAUDE-PROFILE-REQUESTED] FAILED
+[FAIL] .../plugins/leadv2/scripts/tests/test-claude-profile-requested.sh
+[RUN] .../plugins/leadv2/scripts/tests/test-claude-subsession-sentinel.sh
+run_all_changed_rc=124
+```
