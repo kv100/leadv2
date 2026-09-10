@@ -68,3 +68,18 @@ exit=124
 The focused regression and syntax checks are green. The repository wrapper
 never reached a suite result within either foreground bound; it is recorded as
 a timeout, not claimed as a passing changed-scope run.
+
+## Existing phase-record suite
+
+The pre-existing `test-phase-record.sh` does not create its fixture in this
+sandbox: its bare `mktemp -d` resolves to a denied system temp directory (the
+same result occurred with `TMPDIR=/tmp`). This is not treated as a product
+regression; the new suite uses an explicit permitted fixture path.
+
+```text
+$ timeout 120 bash plugins/leadv2/scripts/tests/test-phase-record.sh
+mktemp: mkdtemp failed on .../tmp.bV4B6x2nCr: Operation not permitted
+mkdir: /src: Operation not permitted
+[PORE-RECORD] pass=7 fail=5
+exit=1
+```
