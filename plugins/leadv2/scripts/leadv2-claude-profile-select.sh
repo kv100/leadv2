@@ -618,6 +618,65 @@ sys.exit(0 if (isinstance(account, dict) and account.get('status') != 'ok' and a
   printf '%s\t%s\t%s\t%s\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$b64" "$identity" "$demote" >> "$recs"
 done
 
+# SELECTOR-SKIPS-EXHAUSTED-01: a live account whose binding window has no
+# usable capacity is not a lower-ranked candidate.  Remove it before the
+# legacy picker sees the records, so score=100 cannot make a fully exhausted
+# account win a tie with an unknown or healthy account.  The classifier also
+# returns reset timestamps for the all-exhausted refusal below.
+EXHAUSTED_COUNT=0
+EXHAUSTED_RESETS=""
+READABLE_WINDOW_COUNT=0
+filter_exhausted_candidates() {
+  local input="$1" output="$2" classification kind reset line_no
+  : > "$output" || return 1
+  classification="$(python3 -c '
+import json, sys
+
+path = sys.argv[1]
+for line_no, raw in enumerate(open(path), 1):
+    parts = raw.rstrip("\n").split("\t")
+    payload = None
+    try:
+        payload = json.loads(__import__("base64").b64decode(parts[3]).decode())
+    except Exception:
+        pass
+    account = None
+    if isinstance(payload, dict):
+        accounts = payload.get("accounts") or []
+        account = next((a for a in accounts if isinstance(a, dict) and a.get("active")), None)
+        if account is None and len(accounts) == 1 and isinstance(accounts[0], dict):
+            account = accounts[0]
+    exhausted = False
+    readable = False
+    reset = "unknown"
+    if (isinstance(payload, dict) and payload.get("status") == "ok"
+            and isinstance(account, dict) and account.get("status") == "ok"):
+        binding = account.get("binding_window")
+        window = account.get(binding) if binding in ("five_hour", "seven_day") else None
+        usable = window.get("usable_now") if isinstance(window, dict) else None
+        if isinstance(usable, (int, float)) and not isinstance(usable, bool):
+            readable = True
+            if usable == 0.0:
+                exhausted = True
+                reset = (window.get("reset_iso") or
+                         account.get(binding + "_reset_iso") or "unknown")
+    kind = "exhausted" if exhausted else ("window" if readable else "eligible")
+    print("%s\t%s\t%s" % (kind, reset, line_no))
+' "$input")" || return 1
+  while IFS=$'\t' read -r kind reset line_no; do
+    [[ -n "$kind" ]] || continue
+    if [[ "$kind" == "exhausted" ]]; then
+      EXHAUSTED_COUNT=$((EXHAUSTED_COUNT + 1))
+      READABLE_WINDOW_COUNT=$((READABLE_WINDOW_COUNT + 1))
+      if [[ -n "$EXHAUSTED_RESETS" ]]; then EXHAUSTED_RESETS+="|"; fi
+      EXHAUSTED_RESETS+="$(sed -n "${line_no}p" "$input" 2>/dev/null | cut -f1)=${reset}"
+      continue # MUTATION-CONTROL: returning this candidate must make the suite red
+    fi
+    [[ "$kind" == "window" ]] && READABLE_WINDOW_COUNT=$((READABLE_WINDOW_COUNT + 1))
+    sed -n "${line_no}p" "$input" >> "$output"
+  done <<< "$classification"
+}
+
 # Every probe hung/crashed => no signal at all => single_profile (T8), not a
 # blind all_unknown pick that would still pin a config_dir on zero evidence.
 # A REQUESTED profile that could not even be probed is not "no signal, run
@@ -632,8 +691,18 @@ if (( completed == 0 )); then
   fi
   single_profile
 fi
-result="$(python3 "$PICK" < "$recs" 2>/dev/null)" || result=""
-rm -f "$recs"
+eligible_recs="$(mktemp "${TMPDIR:-/tmp}/claude-profile-eligible.XXXXXX")" || eligible_recs=""
+if [[ -z "$eligible_recs" ]] || ! filter_exhausted_candidates "$recs" "$eligible_recs"; then
+  rm -f "$recs" "$eligible_recs"
+  single_profile
+fi
+if (( EXHAUSTED_COUNT > 0 )) && [[ ! -s "$eligible_recs" ]]; then
+  rm -f "$recs" "$eligible_recs"
+  printf 'profile=- reason=all_exhausted candidates=%d resets=%s\n' "$n" "$EXHAUSTED_RESETS"
+  exit 4
+fi
+result="$(python3 "$PICK" < "$eligible_recs" 2>/dev/null)" || result=""
+rm -f "$recs" "$eligible_recs"
 if [[ -z "$result" ]]; then
   if [[ -n "$REQUESTED_PROFILE" ]]; then
     warn "WARN: requested profile label=${REQUESTED_PROFILE} produced no usable pick"
@@ -641,6 +710,17 @@ if [[ -z "$result" ]]; then
     exit 3
   fi
   single_profile
+fi
+# If a readable window was excluded and the remaining candidates are unknown,
+# `all_unknown` would falsely claim that no quota window was read.  Name the
+# mixed outcome after the actual decision: an unknown candidate remained after
+# exhausted candidates were excluded.
+if (( READABLE_WINDOW_COUNT > 0 )); then
+  if (( EXHAUSTED_COUNT > 0 )); then
+    result="$(printf '%s\n' "$result" | sed 's/ reason=all_unknown / reason=unknown_with_exhausted_excluded /')"
+  else
+    result="$(printf '%s\n' "$result" | sed 's/ reason=all_unknown / reason=quota_window_read /')"
+  fi
 fi
 printf '%s\n' "$result"
 exit 0
