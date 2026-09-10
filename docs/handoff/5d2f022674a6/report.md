@@ -32,6 +32,15 @@ The clean suite went red when the new bash diagnostic was silenced: exit 1, stdo
 - `git diff --check` passed before the lane commit.
 - The changed-scope runner and final committed-lane status are recorded below after execution.
 
+Raw final falsification output before the evidence commit:
+
+```text
+BASH_N_RC=0
+PY_COMPILE=NO_CHANGED_PYTHON_FILES
+DIFF_CHECK_RC=0
+CACHED_DIFF_CHECK_RC=0
+```
+
 ## Changed-scope runner
 
 ```text
