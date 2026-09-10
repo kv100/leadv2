@@ -112,7 +112,21 @@ $ bash plugins/leadv2/scripts/tests/test-claude-account-check.sh
 
 ## Mutation control
 
-Pending committed-diff-bound artifact: this section is completed after the
-first commit by mutating the same-account exit back to zero and rerunning the
-focused suite.  The artifact and its raw output are added before the final
-commit.
+The committed-diff-bound control restored the old quiet `same_account -> exit
+0` path in a scratch copy.  The selector suite went red at the named T14
+assertion; the real checkout was not mutated.
+
+Artifact: `mutation-control/20260910T091540Z-64181.txt`
+
+```text
+$ LEADV2_MUTCTL_SNAPSHOT=worktree bash plugins/leadv2/scripts/leadv2-mutation-control.sh \
+    plugins/leadv2/scripts/tests/test-claude-profile-select.sh \
+    plugins/leadv2/scripts/leadv2-claude-profile-select.sh \
+    /tmp/77de6264b787-same-account-zero.patch .
+MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-claude-profile-select.sh \
+  file=plugins/leadv2/scripts/leadv2-claude-profile-select.sh \
+  red_line=[TEST] FAIL: T14 exit -- rc=0 \
+  diff_hash=61289377310d5a7344b30498adef9e5cd639e598642d848b7ec26dd2d74e56b5 \
+  lane_diff_hash=73ab3a0452828bd5081e8a992d321d5cd1555a9a55a4253292a5652361a32d5e
+mutation_control_rc=0
+```
