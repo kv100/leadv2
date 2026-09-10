@@ -1,0 +1,17 @@
+M1 — python unregister no-match mutation
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-active-registry-noop-is-nonzero.sh file=plugins/leadv2/scripts/leadv2-active-registry.sh red_line=[TEST] FAIL: case 1 rc=0 out=RC=0 diff_hash=510b2c4183e61823ee49d22d1fa0734f0d5ec078b7e87879254774eed29b045a lane_diff_hash=4f6a5e6b552697dc9cb678ddf7bb8183a7604d304c7123c4c655055d71a12def porcelain_clean=yes
+
+M2 — set_worktree path-absent mutation
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-active-registry-noop-is-nonzero.sh file=plugins/leadv2/scripts/leadv2-active-registry.sh red_line=[TEST] FAIL: case 2 rc=0 out=UNKNOWN_RC=4 diff_hash=cb35a608eb23254649416a8354006ab803d8219a04a336a320b51c7ced1d419b lane_diff_hash=4f6a5e6b552697dc9cb678ddf7bb8183a7604d304c7123c4c655055d71a12def porcelain_clean=yes
+
+M3 — update_phase file-missing guard mutation
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-active-registry-noop-is-nonzero.sh file=plugins/leadv2/scripts/leadv2-active-registry.sh red_line=[TEST] FAIL: case 3 rc=0 out=MISSING_RC=4 diff_hash=62070cce83b32da0a93b9beb80fa636d3131e091757489c7da1e6540f679d414 lane_diff_hash=4f6a5e6b552697dc9cb678ddf7bb8183a7604d304c7123c4c655055d71a12def porcelain_clean=yes
+
+M4 — python update_pulse no-match mutation
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-active-registry-noop-is-nonzero.sh file=plugins/leadv2/scripts/leadv2-active-registry.sh red_line=[TEST] FAIL: case 4 rc=0 out=MISSING_RC=4 diff_hash=07e3edac0079e369ab8338e98865a2f46a7b47d656f79413a9dcdf2839cf95a5 lane_diff_hash=4f6a5e6b552697dc9cb678ddf7bb8183a7604d304c7123c4c655055d71a12def porcelain_clean=yes
+
+M5 — python set_worker_pid no-match mutation
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-active-registry-noop-is-nonzero.sh file=plugins/leadv2/scripts/leadv2-active-registry.sh red_line=[TEST] FAIL: case 5 rc=0 out=RC=0 diff_hash=71102c90b727d69f10fc640bb6f858feeba0d79b2103d6986eac050135b5120d lane_diff_hash=4f6a5e6b552697dc9cb678ddf7bb8183a7604d304c7123c4c655055d71a12def porcelain_clean=yes
+
+M6 — unregister file-missing guard mutation
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-active-registry-noop-is-nonzero.sh file=plugins/leadv2/scripts/leadv2-active-registry.sh red_line=[TEST] FAIL: case 6 rc=0 out=RC=4 diff_hash=87b3789a46f5f35099fa0b5bbc230098f5cd594ddd7381d9a756ccde67c7fdc6 lane_diff_hash=4f6a5e6b552697dc9cb678ddf7bb8183a7604d304c7123c4c655055d71a12def porcelain_clean=yes

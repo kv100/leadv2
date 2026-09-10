@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-active-registry-noop-is-nonzero.sh
+file=plugins/leadv2/scripts/leadv2-active-registry.sh
+anchor=/if _removed == 0:/,/sys.exit(4)/ s/sys.exit(4)/sys.exit(0)/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: case 1 rc=0 out=RC=0
+diff_hash=e8d76586debac058235c20babfadd393933bfc7d5960e16dbb76b0782556c52a
+lane_diff_hash=7aba678d265237196b7a2413a13f5af97e726613734893db60bbb682d7d9aeaa
+porcelain_clean=yes
+restored=yes
