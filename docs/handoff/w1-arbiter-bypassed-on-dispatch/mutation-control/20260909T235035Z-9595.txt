@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-route-arm-source-suffix-unbound.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=/tmp/mut-a.patch
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: (s2-declared-unassigned) /opt/homebrew/bin/bash died rc=1 under set -u -- telemetry line lost -- /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//sfx-unbound.IvTHV9/func.sh: line 15: attempted: unbound variable
+diff_hash=fa95b43e35bdaeaab60cccbf94f94d6711f540e225f44c7ec40a7ca43bc32e84
+lane_diff_hash=145098f5e8a0d5b0b0c80a00cb1cd30da4f1beaa15ed8a5c4dd3b22354fea70d
