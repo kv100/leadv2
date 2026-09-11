@@ -60,6 +60,14 @@ in each script:
 optional file, make the path optional and move it; if it is load-bearing, leave it and say
 so in the report. Do not guess.
 
+LANE_WRITES: plugins/leadv2/hooks/leadv2-bash-hook-dispatcher.sh, plugins/leadv2/hooks/scheduled-decisions-inject.sh, plugins/leadv2/hooks/anti-silence-pulse-detector.sh, plugins/leadv2/hooks/mojibake-guard.sh, plugins/leadv2/hooks/pending-questions-inject.sh, plugins/leadv2/hooks/open-threads-anchor-inject.sh, plugins/leadv2/hooks/session-start-safe-pull.sh, plugins/leadv2/hooks/learn-trigger-inject.sh, plugins/leadv2/hooks/lane-lesson-capture-hook.sh, plugins/leadv2/hooks/leadv2-phase-pulse-sync.sh, plugins/leadv2/hooks/docs-truth-inject.sh, plugins/leadv2/scripts/tests/test-portable-guards-are-plugin-owned.sh
+
+Two write sets live OUTSIDE this repo and are deliberately not in LANE_WRITES, because the
+write-set gate only reasons about this repo: the 11 symlinks under
+`~/Projects/persona-engine/.claude/hooks/` and the registration block in
+`~/Projects/getmany-followup-bot/.claude/settings.json`. Both are required by the acceptance
+suite. Touch nothing else in either repo.
+
 ## The work
 
 1. Copy the 11 portable scripts to `plugins/leadv2/hooks/` in THIS repo (the plugin repo),
