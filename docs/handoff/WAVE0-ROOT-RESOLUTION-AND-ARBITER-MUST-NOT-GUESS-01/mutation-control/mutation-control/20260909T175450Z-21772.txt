@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-state-path-zsh-refusal.sh
+file=plugins/leadv2/scripts/leadv2-state-path.sh
+anchor=/STATE-PATH-RESOLVER-FAILS-OPEN-UNDER-ZSH-01 (2026-09-09)/,/^fi$/d
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: zsh source from the scripts dir: rc=0 out='/Users/kostiantyn.vlasenko/.claude/leadv2-state/.ephemeral/leadv2-mutctl.dkFFR2' err='/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/leadv2-mutctl.dkFFR2/plugins/leadv2/scripts/tests/../leadv2-state-path.sh:99: BASH_SOURCE[0]: parameter not set'
+diff_hash=fa177fbb459b8d6b272a885a9e562098e9c6a05da395250797999dcbb0542635
+lane_diff_hash=75ae94a3dd963cb120fc38ee0990fd74b193df3e37bb45b2e6501f02a6cfc041
