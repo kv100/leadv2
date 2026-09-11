@@ -650,6 +650,43 @@ CLAUDE_ARGS=(
 # Valid range is 100000-1000000; anything outside it is SILENTLY ignored by the CLI's
 # zod schema (.catch(void 0)) — so a typo here looks applied and does nothing.
 CLAUDE_ARGS+=(--autocompact "${LEADV2_SUBSESSION_AUTOCOMPACT:-250000}")
+# CORRECTION 2026-09-12: the paragraph above is wrong about the mechanism, and
+# the flag is INERT. `--autocompact` is not a CLI option -- the only bundle
+# match for that string is the telemetry name `tengu_post_autocompact_turn`, and
+# `claude` silently accepts unknown flags (verified live: `claude --autocompact
+# 250000 -p 'say OK'` -> OK, rc=0). `autoCompactWindow` has 0 occurrences in
+# 2.1.269. So there is no zod schema and no 100000-1000000 range; this line has
+# been a no-op for months. Harmless in practice: workers peak at 240,727 over 68
+# sessions and would never have reached the threshold anyway. The real control is
+# the env var CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, a percent of the measured 479,500
+# window, clamped 0<G<=100 and Math.min-capped so it can only LOWER the
+# threshold. Row SUBSESSION-AUTOCOMPACT-FLAG-IS-INERT-01. The line is kept
+# rather than deleted so the next reader finds this note instead of re-deriving
+# it from scratch.
+
+# BUILTIN-TOOL-DIET-01 (measured 2026-09-12): the built-in tool schemas are
+# 44,132 tokens of EVERY request (floor 81,717 with MCP off, 37,585 with
+# --tools ""). `--tools <allowlist>` is the only lever that removes them: the
+# settings key `disabledBuiltinTools` measured at exactly zero effect, twice
+# (81,724 and 81,729 against controls of 81,730 and 81,736), so it drops the
+# tool without dropping its schema and is strictly worse than doing nothing.
+# The allowlist below is what a worker actually calls. It measured 69,733 and
+# 69,757 against those same controls -- about -12,000 tokens per request, paid
+# by every worker on every turn, which is where this compounds.
+# Smoke-tested before landing: a haiku worker under this exact list created a
+# file with Write and ran wc with Bash.
+# `--tools` names the BUILT-IN set only, so tools from --mcp-config are not
+# affected (help text says "from the built-in set"; the binary separately warns
+# only about the EMPTY list -- "this session has no built-in tools (--tools "")
+# so it takes none from plugins"). Not independently probed against a live MCP
+# server, so treat the MCP half as asserted, not measured.
+# Kill-switch: LEADV2_SUBSESSION_TOOL_DIET=0. Replace the list with
+# LEADV2_SUBSESSION_TOOLS. A tool left out of the list does not raise an error --
+# it is simply absent from the worker's tool list, so the failure shape is "the
+# worker never tried it", not a refusal message. Widen the list, don't debug.
+if [[ "${LEADV2_SUBSESSION_TOOL_DIET:-1}" == "1" ]]; then
+  CLAUDE_ARGS+=(--tools "${LEADV2_SUBSESSION_TOOLS:-Bash,Read,Edit,Write,Glob,Grep,Agent,Skill,SendMessage,ListAgents,TodoWrite,WebSearch,WebFetch,Monitor,TaskStop,AskUserQuestion,Workflow}")
+fi
 
 # WORKER-CONTEXT-DIET-01: fail-open per-role MCP allowlist. Empty MCP_CFG
 # (any non-zero rc from resolve_role_mcp_config) means "append nothing" --
