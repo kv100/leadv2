@@ -545,10 +545,10 @@ leadv2_select_claude_profile() {
   fi
   iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local re_sel line_log
-  re_sel='^profile=([a-z0-9][a-z0-9_-]{0,31})[[:space:]]config_dir=([^[:space:]]+)[[:space:]]score=([0-9]+)[[:space:]]source=(live|unknown)'
+  re_sel='^profile=([a-z0-9][a-z0-9_-]{0,31})[[:space:]]config_dir=([^[:space:]]+)[[:space:]]rank_by=([a-z_]+)[[:space:]]consumed_pct=([0-9]+|-)[[:space:]]usable_now=([^[:space:]]+)[[:space:]]source=(live|unknown)'
   if [[ "$sel" =~ $re_sel ]] && [[ -d "${BASH_REMATCH[2]}" && -r "${BASH_REMATCH[2]}" ]]; then
     label="${BASH_REMATCH[1]}"; dir="${BASH_REMATCH[2]}"
-    score="${BASH_REMATCH[3]}"; src="${BASH_REMATCH[4]}"
+    rank_by="${BASH_REMATCH[3]}"; score="${BASH_REMATCH[4]}"; src="${BASH_REMATCH[6]}"
     cands="$(printf '%s' "$sel" | sed -n 's/.*candidates=\([0-9][0-9]*\).*/\1/p')"
     cred="$(printf '%s' "$sel" | sed -n 's/.*[[:space:]]cred=\([^[:space:]]*\).*/\1/p')"
     identity="$(printf '%s' "$sel" | sed -n 's/.*[[:space:]]identity=\([^[:space:]]*\).*/\1/p')"
@@ -557,6 +557,7 @@ leadv2_select_claude_profile() {
     # registry row matched it). Riding the same log line keeps "was the arm
     # kept off the lead's window" measurable from claude-profile.log alone.
     demoted="$(printf '%s' "$sel" | sed -n 's/.*[[:space:]]demoted=\([^[:space:]]*\).*/\1/p')"
+    usable="${BASH_REMATCH[5]}"  # usable_now token captured by re_sel
     cred_kind=unknown
     case "$cred" in
       keychain:?*)
@@ -565,7 +566,10 @@ leadv2_select_claude_profile() {
         ;;
       file:/*) cred_kind=file ;;
     esac
-    line_log="[claude-profile] selected=${label} score=${score} source=${src} candidates=${cands:-?} cred_kind=${cred_kind} identity=${identity:-unknown/na}"
+    # BALANCER-...-01 (f1 #3): the journal line names WHAT was compared
+    # and in which direction, so the consumed number cannot be read as
+    # capacity or as "higher is better".
+    line_log="[claude-profile] selected=${label} rank_by=${rank_by} consumed_pct=${score} usable_now=${usable:--} source=${src} candidates=${cands:-?} cred_kind=${cred_kind} identity=${identity:-unknown/na}"
     # §1.3: appended ONLY when the selector actually demoted a registry row
     # (the dispatching session's own account) -- absent means "no demotion in
     # play", which keeps the line byte-identical for every legacy caller and

@@ -165,7 +165,7 @@ mk_handoff() { # <current-label>
   HANDOFF_SEQ=$((HANDOFF_SEQ + 1))
   MK_HANDOFF_OUT="$tmp/handoff-$1-$HANDOFF_SEQ"
   mkdir -p "$MK_HANDOFF_OUT"
-  printf '2026-09-09T00:00:00Z [claude-profile] selected=%s score=99 source=live candidates=2 cred_kind=keychain identity=max/%s@test\n' \
+  printf '2026-09-09T00:00:00Z [claude-profile] selected=%s rank_by=consumed_pct_min consumed_pct=99 usable_now=- source=live candidates=2 cred_kind=keychain identity=max/%s@test\n' \
     "$1" "$1" > "$MK_HANDOFF_OUT/claude-profile.log"
   printf '{"events":["lane stream row 1","lane stream row 2"]}\n' > "$MK_HANDOFF_OUT/developer.stream.jsonl"
 }
