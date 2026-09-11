@@ -7,7 +7,7 @@ For each one, verify by execution whether each prior finding below is fixed.
 Admit a NEW finding ONLY if the fixes introduced it. Do not re-litigate pre-existing issues you were not asked to verify.
 
 Prior findings:
-- [High/] none:0 
+- [High/] none:0
 
 Your review MUST contain these two lines, verbatim format, before any prose:
 REVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>
