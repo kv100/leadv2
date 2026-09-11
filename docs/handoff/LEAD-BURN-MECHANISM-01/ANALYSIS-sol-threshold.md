@@ -33,13 +33,36 @@ The condition is already met in m3-market, and in worker medians; it is not reli
 
 ## Implementable thresholds
 
-| repo/surface | setting now |
-|---|---:|
-| persona-engine interactive | `autoCompactWindow: 300000` |
-| getmany interactive | `autoCompactWindow: 275000` |
-| m3-market interactive | `autoCompactWindow: 150000` |
-| leadv2 subsessions | keep `LEADV2_SUBSESSION_AUTOCOMPACT=250000` |
+> **CORRECTION, lead, 2026-09-12 — the setting named in this section does not exist.**
+> `autoCompactWindow` has **0 occurrences** in the installed 2.1.269 bundle, and so does
+> `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. The only real knob is the env var
+> `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, and it is a **percentage of the window, not a token count**:
+> `zT2(){let A=EHA(),Q=A-13000,B=env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE; if(B){let G=parseFloat(B);
+> if(!isNaN(G)&&G>0&&G<=100){return Math.min(Math.floor(A*(G/100)),Q)}} return Q}` — so it can only
+> LOWER the threshold, never raise it. Measured live on this machine: window `EHA = 479,500`,
+> default threshold **466,500** (9 compaction boundaries in one session, 8 of them inside
+> 465,353..466,593). Convert a token target to a percent with `pct = target / 479,500 * 100`.
+>
+> Second correction: `--autocompact` is **not a CLI option** either — the one bundle match is the
+> telemetry name `tengu_post_autocompact_turn`, and `claude` silently accepts unknown flags
+> (verified: `claude --autocompact 250000 -p 'say OK'` -> `OK`, rc=0). So
+> `claude-subsession.sh:652` passing `--autocompact 250000` is inert and
+> `LEADV2_SUBSESSION_AUTOCOMPACT` is a dead knob (row `SUBSESSION-AUTOCOMPACT-FLAG-IS-INERT-01`).
+> It is inert but harmless: worker sessions peak at **240,727** max over 68 sessions, so they reach
+> neither 250k nor the default threshold.
 
-One global value is unsafe: 250k loses for getmany, while 450k buys persona-engine nothing. Interactive thresholds **are settable**, per repo, through `.claude/settings.json` (with Auto-compact enabled); `claude-subsession.sh:652` controls only workers.
+| repo/surface | setting now | = tokens |
+|---|---|---:|
+| persona-engine interactive | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=70` **(applied 2026-09-12)** | 335,650 |
+| getmany interactive | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=57` | 273,315 |
+| m3-market interactive | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=31` | 148,645 |
+| leadv2 subsessions | no action — the flag it uses is inert, and workers never reach a threshold | — |
+
+One global value is unsafe, and for a second reason beyond the one given here: the knob is a
+*fraction of the window*, so the same percent means different token counts on a different model.
+Interactive thresholds **are settable**, per repo, through the `env` block of
+`.claude/settings.json` — proven by `ENABLE_TOOL_SEARCH` sitting in that same block and being
+demonstrably in effect. The value is read at process start, so **a running session never picks up a
+change; it takes a restart.**
 
 **Brief error:** m3-market has eight reproducible starts, `59,878..112,087`; no first event is `416,198`. Its claim that the ~59,876 floor does not reproduce is itself false.
