@@ -286,6 +286,15 @@ case_7() { # $1=TREE
   else
     bad "row7 phase-record: journal line case" "rc=${rcpos} jpath=${jpath} content=$(cat "${jpath}" 2>/dev/null)"
   fi
+  out="$(cd "${FX}" && LEADV2_PROJECT_ROOT="${FX}" LEADV2_STATE_ROOT="${FX}/state" \
+    LEADV2_JOURNAL_BIN="${WORK}/missing-journal.sh" LEADV2_DISPATCH_CACHE_DIR="${FX}/cache" \
+    bash "${TREE}/leadv2-phase-record.sh" record ab12cd34 build --status running --handle h0 2>&1; echo "rc=$?")"
+  if [[ "${out}" == *'rc=0'* && "${out}" == *'[phase-record] journal_write_failed=1 event=phase_recorded task=ab12cd34 reason=journal_missing path='* \
+     && "${out}" == *'[phase-record] journal_events_missed=1'* ]]; then
+    ok "row7 phase-record: missing journal -> loud lines, record rc still 0"
+  else
+    bad "row7 phase-record: missing-journal case" "out=${out}"
+  fi
   printf '#!/usr/bin/env bash\nexit 1\n' > "${WORK}/badjournal.sh"; chmod +x "${WORK}/badjournal.sh"
   out="$(cd "${FX}" && LEADV2_PROJECT_ROOT="${FX}" LEADV2_STATE_ROOT="${FX}/state" \
     LEADV2_JOURNAL_BIN="${WORK}/badjournal.sh" LEADV2_DISPATCH_CACHE_DIR="${FX}/cache" \

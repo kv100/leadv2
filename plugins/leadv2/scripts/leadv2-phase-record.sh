@@ -202,11 +202,9 @@ _emit() { # <task-id> <event> <text>
     *)        _e_type="note" ;;
   esac
   if [[ -z "${JOURNAL_BIN}" || ! -f "${JOURNAL_BIN}" ]]; then
-    # No journal binary resolved: nothing was REFUSED, so nothing prints (the
-    # counted lines below are for refused writes only; a skip notice here
-    # broke the success-is-silent contract of test-phase-record-worktree-axis
-    # in hermetic fixtures that have no journal bin).
-    return 0
+    printf '[phase-record] journal_write_failed=1 event=%s task=%s reason=journal_missing path=%s\n' \
+      "${_e_event}" "${_e_task}" "${JOURNAL_BIN}" >&2
+    return 2
   fi
   if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${JOURNAL_BIN}" append "${_e_task}" "${_e_type}" "${_e_event} ${_e_text}" >/dev/null 2>&1; then
     printf '[phase-record] journal_write_failed=1 event=%s task=%s\n' "${_e_event}" "${_e_task}" >&2
