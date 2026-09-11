@@ -74,8 +74,10 @@ test_guard_removal_flips_red() {
   if [[ -z "$ZSH_BIN" ]]; then
     return 0
   fi
-  if ! grep -Fq 'if [[ -z "${BASH_VERSION:-}" || -z "${BASH_SOURCE[0]:-}" ]]' "$STATE_PATH_SH"; then
-    log 'SKIP: resolver override is already guard-mutated; external negative-control run'
+  grep -Fq 'if [[ -z "${BASH_VERSION:-}" || -z "${BASH_SOURCE[0]:-}" ]]' "$STATE_PATH_SH"
+  local guard_probe_rc=$?
+  if [[ "$guard_probe_rc" -ne 0 ]]; then
+    fail "resolver refusal guard is absent or its assertion tool failed (grep rc=$guard_probe_rc)"
     return 0
   fi
   local mutant_dir="${TMP_ROOT}/mutant" mutant project_root mutation_rc
