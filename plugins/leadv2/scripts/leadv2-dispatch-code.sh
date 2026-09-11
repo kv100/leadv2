@@ -555,6 +555,12 @@ _MISSION_WRITESET_SH="${SCRIPT_DIR}/lib/leadv2-mission-writeset.sh"
 _RED_PROOF_SH="${SCRIPT_DIR}/lib/leadv2-red-proof.sh"
 [[ -f "${_RED_PROOF_SH}" ]] || _RED_PROOF_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-red-proof.sh"
 [[ -f "${_RED_PROOF_SH}" ]] && source "${_RED_PROOF_SH}"
+# PREMISE-GATE-MARKDOWN-BACKLOG-01: markdown-backlog fallback for repos with
+# no docs/tasks.yaml (e.g. getmany-followup-bot). Same lib-then-canonical
+# convention as the pins above; a missing reader is a fail-open "reader
+# unavailable" row in _premise_probe_gate, never a refusal.
+_MARKDOWN_BACKLOG_READER="${LEADV2_MARKDOWN_BACKLOG_READER:-${SCRIPT_DIR}/lib/leadv2-markdown-backlog-read.py}"
+[[ -f "${_MARKDOWN_BACKLOG_READER}" ]] || _MARKDOWN_BACKLOG_READER="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-markdown-backlog-read.py"
 # C-1 (DISPATCH-PIN-CLUSTER-01 round 7): SCRIPT_DIR resolves through the
 # per-file symlink in consumer repos (persona-engine, m3-market, respiro-ios),
 # so it points at the CONSUMER's .claude/scripts, which has no lib/ copy of a
@@ -8010,15 +8016,67 @@ PYEOF
   [[ "${_pp_probe_id}" == "-" ]] && _pp_probe_id=""
   # ── decision tree ──────────────────────────────────────────────────────
   if [[ "${_pp_status}" == "none" ]]; then
-    # No row claims this premise: --task-id is advisory binding metadata here
-    # (phase8 close SKIPs the same shape at the other end) and a bare
-    # --acceptance-cmd is a downstream-gate declaration (lane-shape classify,
-    # product-close), not a premise -- ad-hoc dispatch keeps today's contract
-    # byte-for-byte. Measured 2026-09-11: test-leadv2-lane-shape.sh and
-    # test-plugin-papercuts.sh dispatch with --acceptance-cmd 'true' and no
-    # row; gating those would have refused them on a green 'true'.
-    emit decision "premise_probe task=${sig8} verdict=skipped reason=no_backlog_row"
-    return 0
+    # No yaml row claims this premise. Before falling back to the ad-hoc
+    # contract, consult the repo's markdown backlog declaration (per-repo
+    # override at .claude/leadv2-overrides/markdown-backlog.yaml) --
+    # PREMISE-GATE-MARKDOWN-BACKLOG-01: repos with no docs/tasks.yaml at all
+    # (getmany-followup-bot) must not have this gate silently no-op forever.
+    # A --task-id that is empty or a synthetic dispatch-* id is never a
+    # backlog row in either resolver -- do not even try the reader.
+    local _md_status="none" _md_id="-" _md_text="-" _md_file="-" _md_line=""
+    if [[ -n "${founder_task_id:-}" && "${founder_task_id}" != dispatch-* ]]; then
+      if [[ -x "${_MARKDOWN_BACKLOG_READER}" || -r "${_MARKDOWN_BACKLOG_READER}" ]]; then
+        _md_line="$(python3 "${_MARKDOWN_BACKLOG_READER}" --root "${PROJECT_ROOT}" --task-id "${founder_task_id}" 2>/dev/null)"
+      fi
+      if [[ -n "${_md_line}" ]]; then
+        IFS=$'\t' read -r _md_status _md_id _md_text _md_file <<<"${_md_line}"
+      else
+        _md_status="reader_failed"
+      fi
+    fi
+    case "${_md_status}" in
+      md_open)
+        emit decision "premise_probe task=${sig8} row=md:${_md_id} verdict=skipped reason=markdown_row_open_no_probe"
+        return 0
+        ;;
+      md_closed)
+        emit decision "premise_probe task=${sig8} row=md:${_md_id} verdict=refused reason=row_closed_in_markdown_backlog"
+        log_err "premise refused: reason=row_closed_in_markdown_backlog task=${sig8} row=md:${_md_id} status='${_md_text}' file=${_md_file} -- the markdown backlog marks this row closed; reopen it there or dispatch a different id"
+        exit "${PREMISE_REFUSED_RC}"
+        ;;
+      md_ambiguous)
+        emit decision "premise_probe task=${sig8} row=md:${_md_id} verdict=refused reason=markdown_row_ambiguous"
+        log_err "premise refused: reason=markdown_row_ambiguous task=${sig8} row=md:${_md_id} file=${_md_file} -- 2+ rows carry id ${_md_id} in the markdown backlog; disambiguate"
+        exit "${PREMISE_REFUSED_RC}"
+        ;;
+      reader_failed)
+        emit decision "premise_probe task=${sig8} verdict=skipped reason=no_backlog_row md=reader_failed"
+        log "premise: markdown backlog reader unavailable or produced no output (${_MARKDOWN_BACKLOG_READER}) -- treated as no row"
+        return 0
+        ;;
+      none)
+        if [[ "${_md_text}" == "-" ]]; then
+          # No row claims this premise: --task-id is advisory binding metadata
+          # here (phase8 close SKIPs the same shape at the other end) and a
+          # bare --acceptance-cmd is a downstream-gate declaration (lane-shape
+          # classify, product-close), not a premise -- ad-hoc dispatch keeps
+          # today's contract byte-for-byte. Measured 2026-09-11:
+          # test-leadv2-lane-shape.sh and test-plugin-papercuts.sh dispatch
+          # with --acceptance-cmd 'true' and no row; gating those would have
+          # refused them on a green 'true'.
+          emit decision "premise_probe task=${sig8} verdict=skipped reason=no_backlog_row"
+        else
+          emit decision "premise_probe task=${sig8} verdict=skipped reason=no_backlog_row md=${_md_text}"
+          log "premise: markdown backlog declaration unusable (${_md_text}) -- treated as no row"
+        fi
+        return 0
+        ;;
+      *)
+        emit decision "premise_probe task=${sig8} verdict=skipped reason=no_backlog_row md=reader_failed"
+        log "premise: markdown backlog reader returned an unparseable status (${_md_status}) -- treated as no row"
+        return 0
+        ;;
+    esac
   fi
   if [[ "${_pp_status}" == "many" ]]; then
     emit decision "premise_probe task=${sig8} row=ambiguous verdict=refused reason=row_ambiguous"
