@@ -526,6 +526,34 @@ allowed={str(a) for a in allowed_raw} if isinstance(allowed_raw, list) else None
 def num(x):
     try:return float(x)
     except:return None
+# ARBITER-NEVER-READS-CALLER-CAPABILITY-OR-COST-CONSTRAINTS-01: hoisted ahead of
+# the exclusion stages (:1047+) so the caller_constraint stage can read the
+# same capability_fit.cap_default the scoring step uses later (:1410+) without
+# duplicating the constant. _cf/CAP_DEFAULT are NOT redefined at their old
+# location -- CX_ORD/SRC_CONF/PRIOR/SLACK there still read this same _cf.
+_cf=((data.get('router_v2') or {}).get('capability_fit') or {})
+CAP_DEFAULT=float(_cf.get('cap_default', 3.0))
+_min_capability=num(d.get('min_capability'))
+# NOTE: an out-of-matrix-range value (e.g. min_capability=5, the scale tops
+# out at 4) is NOT malformed -- it is a legitimate, simply unsatisfiable
+# floor, and must fall through to the ordinary no_cell_meets_caller_constraint
+# refusal below so the caller sees WHY, not a validation error that hides the
+# real cause. Only a non-numeric value is a parse failure.
+_max_cost=num(d.get('max_cost'))
+if d.get('max_cost') is not None and _max_cost is None:
+    _fatal('caller_constraint_invalid', 'max_cost=%r is not numeric' % d.get('max_cost'))
+if d.get('min_capability') is not None and _min_capability is None:
+    _fatal('caller_constraint_invalid', 'min_capability=%r is not numeric' % d.get('min_capability'))
+def _constraint_ok(c):
+    if _min_capability is not None:
+        _v=c.get('capability')
+        try: _capv=float(_v) if _v is not None else CAP_DEFAULT
+        except (TypeError, ValueError): _capv=CAP_DEFAULT
+        if _capv < _min_capability: return False
+    if _max_cost is not None:
+        _cv=num(c.get('cost'))
+        if _cv is not None and _cv > _max_cost: return False
+    return True
 # CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01 (founder, 2026-09-03): the arbiter
 # previously scored ONLY the raw used-pct of a provider's binding window --
 # capped()/util() below never looked at WHEN that window resets, so "85%
@@ -1044,7 +1072,7 @@ def _pool_contains(arm):
     if speakable is not None:
         return any(str(c.get('model') or '') in speakable and c.get('pool_default',True) is not False for c in _arm_cells.get(arm,[]))
     return any(c.get('pool_default',True) is not False for c in _arm_cells.get(arm,[]))
-_STAGE_ORDER=['not_in_pool','not_launchable','untrusted','capped','forecast','failure_memory','price_ratio']
+_STAGE_ORDER=['not_in_pool','not_launchable','untrusted','caller_constraint','capped','forecast','failure_memory','price_ratio']
 _stages={}
 def _stage_add(arm,stage):
     _s=_stages.setdefault(arm,[])
@@ -1053,6 +1081,15 @@ for _a in _arm_cells:
     if not _pool_contains(_a): _stage_add(_a,'not_in_pool')
     if launchable is not None and _a not in launchable: _stage_add(_a,'not_launchable')
     if require_trusted and not any(c.get('protected',False) for c in _arm_cells[_a]): _stage_add(_a,'untrusted')
+    # ARBITER-NEVER-READS-CALLER-CAPABILITY-OR-COST-CONSTRAINTS-01: an arm is
+    # excluded by name only when EVERY one of its _fit cells fails the caller's
+    # floor/ceiling -- cell-level filtering happens below in `capable=`, this
+    # per-arm stage exists only so `arm_excluded=` names the true cause instead
+    # of falling through to a misleading capped/price_ratio label.
+    if (_min_capability is not None or _max_cost is not None):
+        _a_cells=[c for c in _fit if c.get('arm')==_a]
+        if _a_cells and not any(_constraint_ok(c) for c in _a_cells):
+            _stage_add(_a,'caller_constraint')
 # W1-FORECAST-THE-SPEND-01: the fit verdict is its own typed stage -- a
 # forecast-blocked provider with a far reset is switched away exactly like a
 # capped one, and a pinned request for such an arm is refused by the pin
@@ -1069,7 +1106,7 @@ def _excl_render():
     # forecast, failure_memory, price_ratio).
     if not _stages: return ''
     return ' arm_excluded=%s' % ','.join('%s:%s' % (a,'+'.join(sorted(_stages[a],key=_STAGE_ORDER.index))) for a in sorted(_stages))
-capable=[c for c in _fit if c.get('arm') not in _stages]
+capable=[c for c in _fit if c.get('arm') not in _stages and _constraint_ok(c)]
 # ...and the pair that makes any of this re-derivable a week later: which BYTES
 # of arbiter ran, and which BYTES of matrix it read. Absent only when the digest
 # could not be taken, which is itself the honest third value.
@@ -1353,6 +1390,38 @@ if not capable:
     if FORECAST_ON and _forecast_block and _fc_pool and \
             all('forecast' in _stages.get(_a,[]) for _a in _fc_pool):
         _forecast_refuse()
+    # ARBITER-NEVER-READS-CALLER-CAPABILITY-OR-COST-CONSTRAINTS-01 (D3): a
+    # caller floor/ceiling that killed every bound-pool arm is a distinct,
+    # named refusal -- pool_empty_all_excluded would bury the actual cause
+    # (a min_capability/max_cost the matrix cannot satisfy) behind a generic
+    # exclusion label. Fires when EVERY bound arm carries caller_constraint
+    # among its exclusion stages -- i.e. the constraint alone is sufficient to
+    # explain the full exclusion, even if some arms ALSO picked up a capacity
+    # stage (forecast/capped/...) this same cycle. If any bound arm is
+    # excluded WITHOUT caller_constraint, capacity (not the caller's floor) is
+    # the true cause and the generic reason below is the honest one.
+    if (_min_capability is not None or _max_cost is not None):
+        _cc_pool=_bound_pool & set(_arm_cells)
+        if _cc_pool and all('caller_constraint' in _stages.get(_a,[]) for _a in _cc_pool):
+            # NOTE: cap()/ecost() are defined later (~:1424+, post capability_fit
+            # scoring block) and are NOT callable from this refusal path -- reuse
+            # the same raw-field + CAP_DEFAULT-fallback logic inline instead.
+            def _raw_cap(c):
+                _v=c.get('capability')
+                try: return float(_v) if _v is not None else CAP_DEFAULT
+                except (TypeError, ValueError): return CAP_DEFAULT
+            _best_cap=max((_raw_cap(c) for c in _fit), default=0.0)
+            _min_cost=min((c.get('cost') for c in _fit if num(c.get('cost')) is not None), default=None)
+            refusal_reason='no_cell_meets_caller_constraint'
+            _record('refuse','none','none',refusal_reason)
+            print('arm=refuse model=none tier=none reason=%s kind=%s min_capability=%s max_cost=%s best_capability=%.1f min_cost=%s chain= %s%s%s%s%s' % (
+                refusal_reason,kind,
+                ('%.1f' % _min_capability if _min_capability is not None else 'none'),
+                ('%.1f' % _max_cost if _max_cost is not None else 'none'),
+                _best_cap,
+                ('%.1f' % _min_cost if _min_cost is not None else 'none'),
+                ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
+            raise SystemExit(68)
     # As above, one source prevents the record and the operator line drifting.
     refusal_reason='pool_empty_all_excluded'
     _record('refuse','none','none',refusal_reason)
@@ -1407,11 +1476,11 @@ floor_reason = '%s/%s' % (size_raw, kind) if (floor_applies and any(c.get('arm')
 # use _fit_key instead and zeroes out the legacy complexity_penalty_rules (one
 # mechanism live at a time, never both). Rollback from any state is the single
 # env flip LEADV2_ARBITER_CAPABILITY_FIT=off.
-_cf=((data.get('router_v2') or {}).get('capability_fit') or {})
 FIT_MODE=os.environ.get('LEADV2_ARBITER_CAPABILITY_FIT') or ('on' if _cf.get('enabled') else 'off')
 CX_ORD=_cf.get('complexity_ordinal') or {'trivial':1.0,'simple':2.0,'standard':3.0,'complex':4.0}
 SRC_CONF=_cf.get('source_confidence') or {'judge':0.9,'flag':0.7,'heuristic':0.4,'unknown':0.0}
-PRIOR=float(_cf.get('prior', 3.0)); SLACK=float(_cf.get('slack', 0.5)); CAP_DEFAULT=float(_cf.get('cap_default', 3.0))
+PRIOR=float(_cf.get('prior', 3.0)); SLACK=float(_cf.get('slack', 0.5))
+# CAP_DEFAULT hoisted above (:~530) -- reused here, not recomputed.
 
 cx=CX_ORD.get(complexity)                                        # None for 'unknown' or off-vocabulary
 complexity_unmapped=None if (complexity in CX_ORD or complexity == 'unknown') else complexity
@@ -1842,7 +1911,13 @@ _fit_tok = (' complexity_source=%s conf=%.1f req_eff=%.1f fit_mode=%s fit_pick=%
              (' cap_default=%s' % ','.join(sorted(set(_cap_defaulted)))) if _cap_defaulted else '',
              (' complexity_unmapped=%s' % complexity_unmapped) if complexity_unmapped else ''))
 _effort_cap=(' capped_from=%s' % _capped_from) if _capped_from else ''
-print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok))
+# ARBITER-NEVER-READS-CALLER-CAPABILITY-OR-COST-CONSTRAINTS-01 (D4): visible on
+# every success line, not just refusals -- an honoured-but-unlogged constraint
+# is unprovable a week later.
+_cc_tok = ' caller_min_cap=%s caller_max_cost=%s' % (
+    ('%.1f' % _min_capability if _min_capability is not None else 'none'),
+    ('%.1f' % _max_cost if _max_cost is not None else 'none'))
+print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok,_cc_tok))
 PY
 }
 

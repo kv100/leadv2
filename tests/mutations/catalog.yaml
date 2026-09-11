@@ -908,3 +908,19 @@ mutations:
       no longer recorded
       -- cases (h) and (i) go red (nothing recorded; no dod_blind_streak at the threshold),
       while (j) stays green because a healthy check never wrote anyway. Measured 12/2.
+
+  - id: arbiter-caller-constraint-01
+    product_flow: "ARBITER-NEVER-READS-CALLER-CAPABILITY-OR-COST-CONSTRAINTS-01: the arbiter now reads min_capability/max_cost off the caller's descriptor and cell-filters `capable=` on them, in addition to the per-arm caller_constraint exclusion stage. This mutation removes the cell-level filter only, leaving the coarser per-arm stage intact -- it isolates the finer-grained half of the fix (case C: a satisfiable floor that should change the pick within an otherwise-viable arm)."
+    file: plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+    suite: tests/test-arbiter-reads-capability-floor.sh
+    anchor: |
+      capable=[c for c in _fit if c.get('arm') not in _stages and _constraint_ok(c)]
+    patch: |
+      delete the `and _constraint_ok(c)` term, leaving
+      `capable=[c for c in _fit if c.get('arm') not in _stages]`
+      -- case C goes red (a satisfiable min_capability=4 no longer changes the pick vs.
+      the unfloored default; the cheapest cell of a still-viable arm wins regardless of
+      its capability). Cases A/B stay green in this environment because the coarser
+      per-arm caller_constraint stage (added separately, before `capable=`) already
+      excludes an arm whose EVERY cell fails the floor/ceiling -- that path is untouched
+      by this mutation. Measured 5/1 live on 2026-09-11.
