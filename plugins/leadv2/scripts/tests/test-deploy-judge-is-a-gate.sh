@@ -12,9 +12,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-GATE="${PROJECT_ROOT}/plugins/leadv2/scripts/leadv2-llm-judge-gate.sh"
-PARSE="${PROJECT_ROOT}/plugins/leadv2/scripts/leadv2-llm-judge-parse.sh"
+# LEADV2_TEST_GATE_BIN / LEADV2_TEST_PARSE_BIN let a negative-control script
+# (nc-*.sh) point this suite at a mutated scratch copy of the gate/parser
+# instead of the shipped ones, proving these assertions bite (same convention
+# as LEADV2_TEST_JUDGE_BIN in test-leadv2-task-judge.sh).
+GATE="${LEADV2_TEST_GATE_BIN:-${SCRIPT_DIR}/../leadv2-llm-judge-gate.sh}"
+PARSE="${LEADV2_TEST_PARSE_BIN:-${SCRIPT_DIR}/../leadv2-llm-judge-parse.sh}"
 
 fail=0
 pass=0
