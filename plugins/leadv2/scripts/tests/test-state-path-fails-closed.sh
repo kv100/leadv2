@@ -115,8 +115,12 @@ test_sourced_file_backed_bash_keeps_resolution() {
 
 test_mutation_guard_removed_goes_red() {
   local d="${TMP_ROOT}/mutation" mutated err
-  grep -Fq 'if [[ -z "${BASH_VERSION:-}" || -z "${BASH_SOURCE[0]:-}" ]]' "$STATE_PATH_SH"
-  local guard_probe_rc=$?
+  local guard_probe_rc
+  if grep -Fq 'if [[ -z "${BASH_VERSION:-}" || -z "${BASH_SOURCE[0]:-}" ]]' "$STATE_PATH_SH"; then
+    guard_probe_rc=0
+  else
+    guard_probe_rc=$?
+  fi
   if [[ "$guard_probe_rc" -ne 0 ]]; then
     fail "resolver refusal guard is absent or its assertion tool failed (grep rc=$guard_probe_rc)"
     return 0
