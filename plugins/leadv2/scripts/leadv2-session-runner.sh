@@ -280,21 +280,27 @@ if ! type leadv2_receipt_is_stale >/dev/null 2>&1; then
 fi
 
 completion_proof_present() {
-  local real_state
+  local real_state receipt_freshness_rc
   COMPLETION_PROOF=""
   real_state="$(_leadv2_derive_real_state "$TASK_ID" "$PROJECT_ROOT")"
   if [[ "$real_state" == "done" ]]; then
     COMPLETION_PROOF="Phase-8 completion proof"
     return 0
   fi
-  # Guard the receipt limb only: if the receipt is STALE (task re-queued in
-  # tasks.yaml) skip sentinel_present entirely (rename aside + proceed). Only
-  # an HONOURED receipt may short-circuit as already-complete.
-  if ! leadv2_receipt_is_stale "$TASK_ID" "$COMPLETION_RECEIPT" "" "$LOGF"; then
+  # Guard the receipt limb only: an rc 0 receipt is STALE and was rotated
+  # aside, so proceed; rc 1 is HONOURED and may short-circuit; rc 2 is stale
+  # but its rotation failed, which must reach the runner rather than becoming
+  # a false successful completion via the still-present receipt.
+  receipt_freshness_rc=0
+  leadv2_receipt_is_stale "$TASK_ID" "$COMPLETION_RECEIPT" "" "$LOGF" || receipt_freshness_rc=$?
+  if [[ "$receipt_freshness_rc" == "1" ]]; then
     if sentinel_present; then
       COMPLETION_PROOF="Phase-8 completion proof"
       return 0
     fi
+  elif [[ "$receipt_freshness_rc" != "0" ]]; then
+    log_error "stale receipt rotation failed for $TASK_ID (rc=$receipt_freshness_rc); refusing completion"
+    return "$receipt_freshness_rc"
   fi
   if [[ -f "${TASK_DIR}/e2e-gate-passed.flag" ]]; then
     COMPLETION_PROOF="E2E gate completion flag"
@@ -355,6 +361,8 @@ source "$SCRIPT_DIR/leadv2-helpers.sh"
 if completion_proof_present; then
   log "${COMPLETION_PROOF} already present for ${TASK_ID} — nothing to do"
   exit 0
+elif [[ "$?" -eq 2 ]]; then
+  exit 2
 fi
 
 attempt=0
@@ -367,6 +375,8 @@ while (( attempt < MAX_ATTEMPTS )); do
   if completion_proof_present; then
     log "${COMPLETION_PROOF} already present for ${TASK_ID} — skipping attempt ${attempt}"
     exit 0
+  elif [[ "$?" -eq 2 ]]; then
+    exit 2
   fi
   _real_state="$(_leadv2_derive_real_state "$TASK_ID" "$PROJECT_ROOT")"
   if [[ "$_real_state" == "close-only" ]]; then
@@ -476,6 +486,8 @@ while (( attempt < MAX_ATTEMPTS )); do
     _append_provider_receipt "complete" "0" "$attempt"
     log "${COMPLETION_PROOF} observed for ${TASK_ID} — session complete"
     exit 0
+  elif [[ "$?" -eq 2 ]]; then
+    exit 2
   fi
 
   # Case 2 (3bf68affc141): this attempt's own log slice ended in

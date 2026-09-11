@@ -109,11 +109,10 @@ if declare -F lane_adopt_pid >/dev/null 2>&1; then
   trap 'declare -F lane_deregister >/dev/null 2>&1 && lane_deregister "${TASK_ID}" "codex_session_runner_exit" >/dev/null 2>&1 || true' EXIT
 fi
 
-sentinel_present() {
-  [[ -f "$SENTINEL" ]] && return 0
+receipt_present() {
   # CODEX-LANE-FALSEKILL-0726: codex writes the sentinel into its Phase-0
-  # worktree; check there too or a completed codex lane never registers as done.
-  [[ -n "${WORKTREE_SENTINEL:-}" && -f "$WORKTREE_SENTINEL" ]] && return 0
+  # worktree; completion_proof_present checks that independent authority before
+  # considering the receipt-derived completion proof below.
   [[ -f "$COMPLETION_RECEIPT" ]] || return 1
   python3 - "$COMPLETION_RECEIPT" "$TASK_ID" <<'PYEOF' >/dev/null 2>&1
 import json, sys
@@ -130,9 +129,39 @@ raise SystemExit(0 if valid else 1)
 PYEOF
 }
 
-if sentinel_present; then
+# Receipt freshness guard: phase8 flags are independent completion proof, but
+# a receipt for a queued/pending task must be rotated aside before it can be
+# honoured. A failed rotation (rc 2) is fatal: neither report completion from
+# the retained receipt nor start a potentially duplicate task execution.
+if [[ -f "$SCRIPT_DIR/lib/leadv2-receipt-freshness.sh" ]]; then
+  # shellcheck source=lib/leadv2-receipt-freshness.sh
+  source "$SCRIPT_DIR/lib/leadv2-receipt-freshness.sh"
+fi
+if ! type leadv2_receipt_is_stale >/dev/null 2>&1; then
+  leadv2_receipt_is_stale() { return 1; }
+fi
+
+completion_proof_present() {
+  local receipt_freshness_rc=0
+  [[ -f "$SENTINEL" ]] && return 0
+  [[ -n "${WORKTREE_SENTINEL:-}" && -f "$WORKTREE_SENTINEL" ]] && return 0
+  leadv2_receipt_is_stale "$TASK_ID" "$COMPLETION_RECEIPT" "" "$LOGF" || receipt_freshness_rc=$?
+  case "$receipt_freshness_rc" in
+    0) return 1 ;; # stale receipt rotated aside: proceed
+    1) receipt_present ;; # honoured receipt may prove completion
+    *)
+      log_error "stale receipt rotation failed for $TASK_ID (rc=$receipt_freshness_rc); refusing completion"
+      return "$receipt_freshness_rc"
+      ;;
+  esac
+}
+
+if completion_proof_present; then
   log "Phase-8 completion proof already present for $TASK_ID — nothing to do"
   exit 0
+else
+  completion_proof_rc=$?
+  [[ "$completion_proof_rc" == "1" ]] || exit "$completion_proof_rc"
 fi
 
 # Completion proof is checked before touching provider auth. A closed task
@@ -570,10 +599,13 @@ while (( attempt < MAX_ATTEMPTS )); do
   _append_receipt "$_status" "$rc" "$attempt"
   log "attempt $attempt exited rc=$rc thread_id=${THREAD_ID:-missing}"
 
-  if sentinel_present; then
+  if completion_proof_present; then
     _append_receipt "complete" "0" "$attempt"
     log "Phase-8 completion proof observed for $TASK_ID"
     exit 0
+  else
+    completion_proof_rc=$?
+    [[ "$completion_proof_rc" == "1" ]] || exit "$completion_proof_rc"
   fi
 
   if [[ -z "$THREAD_ID" ]]; then
