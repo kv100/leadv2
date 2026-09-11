@@ -17,6 +17,8 @@
 #   5. receipt + no tasks.yaml -> HONOUR (rc 1, untouched).
 #   6. mapping-shape tasks.yaml ({tasks:[...]}) + queued -> STALE (both shapes).
 #   7. kill-switch LEADV2_RECEIPT_REQUEUE_GUARD=0 + queued -> HONOUR.
+#   8. receipt + read-only completions dir -> STALE but rotation failure (rc 2,
+#      original receipt retained, no stale artifact).
 #
 # Also verifies each of the three runners sources the lib (so the shared
 # behaviour is wired, not just standalone). Run: bash scripts/tests/test-stale-receipt-requeue.sh
@@ -86,7 +88,7 @@ else
 fi
 if receipt_exists; then fail "case1: original receipt still present (should be renamed)"; else pass "case1: original receipt gone"; fi
 if stale_exists; then pass "case1: *.stale-* artifact present"; else fail "case1: no *.stale-* artifact"; fi
-if grep -q "stale receipt (task re-queued) — ignoring + renaming to ${TID}.json.stale-" "$LOGF" 2>/dev/null; then
+if grep -q "renamed=1 dest=${TID}.json.stale-" "$LOGF" 2>/dev/null; then
   pass "case1: rename line in log"
 else fail "case1: rename line missing from log"; fi
 
@@ -166,6 +168,29 @@ else
   pass "case7: kill-switch=0 -> rc 1 (honour)"
 fi
 if receipt_exists; then pass "case7: receipt untouched under kill-switch"; else fail "case7: receipt renamed despite kill-switch"; fi
+
+# ── Case 8: stale receipt + read-only completions dir -> rotation failure ───
+# chmod-based write denial is skipped for root because root can rename through
+# directory mode bits. Non-root runs exercise the actual failed-mv path.
+if [[ "$(id -u)" == "0" ]]; then
+  pass "case8: read-only dir rotation failure skipped for root"
+else
+  RO_RECEIPTS="$(lv2_mktemp_dir receipt-ro)"
+  RO_RECEIPT="${RO_RECEIPTS}/${TID}.json"
+  printf '{"schema_version":1,"task_id":"%s"}\n' "$TID" > "$RO_RECEIPT"
+  chmod 0555 "$RO_RECEIPTS"
+  leadv2_receipt_is_stale "$TID" "$RO_RECEIPT" "$TY1" "$LOGF"
+  rc=$?
+  if [[ "$rc" == "2" ]] && [[ -f "$RO_RECEIPT" ]] \
+     && ! ls "${RO_RECEIPTS}/${TID}.json.stale-*" >/dev/null 2>&1 \
+     && grep -q "renamed=0 reason=rename_failed" "$LOGF" 2>/dev/null; then
+    pass "case8: read-only dir -> rc 2, receipt retained, no stale artifact"
+  else
+    fail "case8: read-only dir rotation failure" \
+      "rc=${rc} receipt_present=$([[ -f "$RO_RECEIPT" ]] && echo 1 || echo 0)"
+  fi
+  chmod 0755 "$RO_RECEIPTS" 2>/dev/null
+fi
 
 # ── Wiring: all three runners source the shared lib ────────────────────────
 for r in leadv2-kimi-session-runner.sh leadv2-glm-session-runner.sh leadv2-session-runner.sh; do
