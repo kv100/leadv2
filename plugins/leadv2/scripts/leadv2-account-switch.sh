@@ -141,7 +141,7 @@ run_selector() { # $1 = requested label or ""
   fi
 }
 
-re_sel='^profile=([a-z0-9][a-z0-9_-]{0,31})[[:space:]]config_dir=([^[:space:]]+)[[:space:]]score=([0-9]+)[[:space:]]source=(live|unknown)'
+re_sel='^profile=([a-z0-9][a-z0-9_-]{0,31})[[:space:]]config_dir=([^[:space:]]+)[[:space:]]rank_by=([a-z_]+)[[:space:]]consumed_pct=([0-9]+|-)[[:space:]]usable_now=([^[:space:]]+)[[:space:]]source=(live|unknown)'
 
 # Refusal-path helper (must be defined before the Run A decision block that
 # calls it): resolve a label's credential source through the selector, then
@@ -179,7 +179,7 @@ if r:
 # of lib/leadv2-claude-profile-pick.py; no second chooser exists here.
 SEL_A="$(run_selector "")"; SEL_A_RC=$?
 if [[ "$SEL_A" =~ $re_sel ]]; then
-  PICK_LABEL="${BASH_REMATCH[1]}"; PICK_SCORE="${BASH_REMATCH[3]}"; PICK_SOURCE="${BASH_REMATCH[4]}"
+  PICK_LABEL="${BASH_REMATCH[1]}"; PICK_RANK="${BASH_REMATCH[3]}"; PICK_SCORE="${BASH_REMATCH[4]}"; PICK_SOURCE="${BASH_REMATCH[6]}"
   PICK_WINDOWS="$(printf '%s' "$SEL_A" | sed -n 's/.*[[:space:]]windows=\([^[:space:]]*\).*/\1/p')"
 else
   SEL_REASON="$(printf '%s' "$SEL_A" | sed -n 's/^profile=-[[:space:]]reason=\([^[:space:]]*\).*/\1/p')"
@@ -192,9 +192,9 @@ fi
 if [[ "$PICK_LABEL" == "$CURRENT_LABEL" ]]; then
   # The balancer kept the current account.  Two named shapes, never a silent
   # "switched" onto the very same account:
-  if [[ "$PICK_SOURCE" == "live" && "$PICK_SCORE" -lt 100 ]]; then
-    say "REFUSED reason=current_is_best_free -- current=$CURRENT_LABEL is the freest account (score=$PICK_SCORE); windows: ${PICK_WINDOWS:-unknown}"
-    journal "REFUSED reason=current_is_best_free score=$PICK_SCORE"
+  if [[ "$PICK_SOURCE" == "live" && "$PICK_SCORE" =~ ^[0-9]+$ && "$PICK_SCORE" -lt 100 ]]; then
+    say "REFUSED reason=current_is_best_free -- current=$CURRENT_LABEL is the freest account (rank_by=$PICK_RANK consumed_pct=$PICK_SCORE); windows: ${PICK_WINDOWS:-unknown}"
+    journal "REFUSED reason=current_is_best_free rank_by=$PICK_RANK consumed_pct=$PICK_SCORE"
     exit 3
   fi
   # Current is exhausted (or unprobed) and STILL won => every alternative is
@@ -203,6 +203,7 @@ if [[ "$PICK_LABEL" == "$CURRENT_LABEL" ]]; then
   _wn="$(printf '%s' "${PICK_WINDOWS:-}" | tr '|' '\n')"
   while IFS= read -r _wrow; do
     [[ -n "$_wrow" ]] || continue
+    _wrow="${_wrow%%,*}"  # drop the ",usable_now=..." suffix (BALANCER-...-01 line shape)
     _wlb="${_wrow%%:*}"; _wpct="${_wrow##*=}"
     [[ -z "$_wlb" || "$_wlb" == "$_wrow" ]] && continue
     if [[ "$_wpct" == "100" || "$_wpct" == "-" ]]; then
@@ -218,19 +219,19 @@ TARGET_LABEL="$PICK_LABEL"
 # ---------------------------------------------------------------------------
 # Run B -- confirm the target the hard-pin way (NO-WAY-TO-PIN semantics,
 # reused): the selector must probe THIS one account and confirm it usable.
-# Free-ness comes from the live probe alone (source=live, score<100).
+# Free-ness comes from the live probe alone (source=live, consumed_pct<100).
 SEL_B="$(run_selector "$TARGET_LABEL")"; SEL_B_RC=$?
 if [[ "$SEL_B" =~ $re_sel ]]; then
-  TARGET_SOURCE="${BASH_REMATCH[4]}"; TARGET_SCORE="${BASH_REMATCH[3]}"
+  TARGET_SOURCE="${BASH_REMATCH[6]}"; TARGET_SCORE="${BASH_REMATCH[4]}"
   TARGET_BINDING="$(printf '%s' "$SEL_B" | sed -n 's/.*[[:space:]]binding=\([^[:space:]]*\).*/\1/p')"
 else
   say "REFUSED reason=target_not_usable target=$TARGET_LABEL selector_rc=$SEL_B_RC -- live probe could not confirm the target"
   journal "REFUSED reason=target_not_usable target=$TARGET_LABEL selector_rc=$SEL_B_RC"
   exit 3
 fi
-if [[ "$TARGET_SOURCE" != "live" || "$TARGET_SCORE" -ge 100 ]]; then
-  say "REFUSED reason=target_not_free target=$TARGET_LABEL source=$TARGET_SOURCE score=$TARGET_SCORE -- free requires a live probe under 100"
-  journal "REFUSED reason=target_not_free target=$TARGET_LABEL source=$TARGET_SOURCE score=$TARGET_SCORE"
+if [[ "$TARGET_SOURCE" != "live" ]] || [[ ! "$TARGET_SCORE" =~ ^[0-9]+$ ]] || [[ "$TARGET_SCORE" -ge 100 ]]; then
+  say "REFUSED reason=target_not_free target=$TARGET_LABEL source=$TARGET_SOURCE consumed_pct=${TARGET_SCORE:--} -- free requires a live probe under 100"
+  journal "REFUSED reason=target_not_free target=$TARGET_LABEL source=$TARGET_SOURCE consumed_pct=${TARGET_SCORE:--}"
   exit 3
 fi
 
@@ -301,7 +302,7 @@ else
 fi
 
 if (( DRY_RUN )); then
-  say "DRY-RUN would switch $CURRENT_LABEL -> $TARGET_LABEL (score=$TARGET_SCORE binding=$TARGET_BINDING) steering cooldown until epoch $COOLDOWN_UNTIL ($EXHAUSTED_UNTIL)"
+  say "DRY-RUN would switch $CURRENT_LABEL -> $TARGET_LABEL (rank_by=$PICK_RANK consumed_pct=$TARGET_SCORE binding=$TARGET_BINDING) steering cooldown until epoch $COOLDOWN_UNTIL ($EXHAUSTED_UNTIL)"
   journal "DRY-RUN from=$CURRENT_LABEL to=$TARGET_LABEL cooldown_until=$COOLDOWN_UNTIL basis=$EXHAUSTED_UNTIL"
   exit 0
 fi
@@ -353,7 +354,7 @@ esac
 # the old account is a FAILED switch (rc 5), loud.
 SEL_E="$(run_selector "")"
 OBSERVED_NEXT="$(printf '%s' "$SEL_E" | sed -n 's/^profile=\([a-z0-9][a-z0-9_-]*\)[[:space:]].*/\1/p')"
-OBSERVED_SCORE="$(printf '%s' "$SEL_E" | sed -n 's/.*[[:space:]]score=\([0-9]*\).*/\1/p')"
+OBSERVED_SCORE="$(printf '%s' "$SEL_E" | sed -n 's/.*[[:space:]]consumed_pct=\([0-9]*\).*/\1/p')"
 if [[ "$OBSERVED_NEXT" != "$TARGET_LABEL" ]]; then
   say "FAILED reason=switch_not_taken observed_next_pick=${OBSERVED_NEXT:-none} expected=$TARGET_LABEL -- the next selection did NOT move to the new account"
   # detail= names WHICH of the two switch_not_taken guards fired (the label
@@ -366,8 +367,8 @@ fi
 # stopped being free between confirmation and observation -- a switch onto
 # an exhausted account is not a switch, it is a relay into the same wall.
 if [[ ! "$OBSERVED_SCORE" =~ ^[0-9]+$ || "$OBSERVED_SCORE" -ge 100 ]]; then
-  say "FAILED reason=switch_not_taken observed_next_pick=$OBSERVED_NEXT observed_score=${OBSERVED_SCORE:-?} -- the target stopped being free before the next selection"
-  journal "FAILED reason=switch_not_taken observed=$OBSERVED_NEXT observed_score=${OBSERVED_SCORE:-?} detail=target_no_longer_free marker_rc=$MARKER_RC"
+  say "FAILED reason=switch_not_taken observed_next_pick=$OBSERVED_NEXT observed_consumed_pct=${OBSERVED_SCORE:-?} -- the target stopped being free before the next selection"
+  journal "FAILED reason=switch_not_taken observed=$OBSERVED_NEXT observed_consumed_pct=${OBSERVED_SCORE:-?} detail=target_no_longer_free marker_rc=$MARKER_RC"
   exit 5
 fi
 
@@ -394,9 +395,9 @@ if [[ "$CUR_CRED" == keychain:* ]]; then
   done
 fi
 
-say "OK switched from=$CURRENT_LABEL to=$TARGET_LABEL (score=$TARGET_SCORE binding=$TARGET_BINDING)"
-say "observed_next_pick=$OBSERVED_NEXT observed_score=${OBSERVED_SCORE:-?} -- the NEXT selection runs on the new account"
+say "OK switched from=$CURRENT_LABEL to=$TARGET_LABEL (rank_by=$PICK_RANK consumed_pct=$TARGET_SCORE binding=$TARGET_BINDING)"
+say "observed_next_pick=$OBSERVED_NEXT observed_consumed_pct=${OBSERVED_SCORE:-?} -- the NEXT selection runs on the new account"
 say "steering: $CURRENT_LABEL cooling until epoch $COOLDOWN_UNTIL ($EXHAUSTED_UNTIL); auto-reverts at reset"
 say "staying_children=$STAYING${STAYING_PIDS:+ pids=$STAYING_PIDS} -- running sessions keep the old account until they exit; new spawns use $TARGET_LABEL"
-journal "switched from=$CURRENT_LABEL to=$TARGET_LABEL score=$TARGET_SCORE binding=$TARGET_BINDING cooldown_until=$COOLDOWN_UNTIL basis=$EXHAUSTED_UNTIL observed_next_pick=$OBSERVED_NEXT staying_children=$STAYING marker_rc=$MARKER_RC"
+journal "switched from=$CURRENT_LABEL to=$TARGET_LABEL rank_by=$PICK_RANK consumed_pct=$TARGET_SCORE binding=$TARGET_BINDING cooldown_until=$COOLDOWN_UNTIL basis=$EXHAUSTED_UNTIL observed_next_pick=$OBSERVED_NEXT staying_children=$STAYING marker_rc=$MARKER_RC"
 exit 0

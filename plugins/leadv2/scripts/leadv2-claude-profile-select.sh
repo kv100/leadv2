@@ -5,10 +5,12 @@
 # user-level registry (LEADV2_CLAUDE_PROFILES_FILE, default
 # ~/.claude/state/leadv2/claude-profiles.tsv — NEVER committed to any repo),
 # probes each profile's quota independently, and prints exactly ONE stdout
-# line naming the profile with the lowest worst-window utilisation:
+# line naming the profile ranked best by usable_now (remaining
+# percentage-points per hour, higher first -- BALANCER-...-01: the raw
+# consumed pct only ever agreed with availability by coincidence):
 #
-#   profile=<label> config_dir=<path> score=<n> source=live|unknown \
-#   reason=<reason> candidates=<n>
+#   profile=<label> config_dir=<path> rank_by=<rule> consumed_pct=<n|-> \
+#   usable_now=<u|-> source=live|unknown reason=<reason> candidates=<n>
 #
 # config_dir appears on stdout ONLY — it is consumed by the caller
 # (claude-subsession.sh) and is never journalled, logged, or sent to handoff.
@@ -620,7 +622,7 @@ done
 
 # SELECTOR-SKIPS-EXHAUSTED-01: a live account whose binding window has no
 # usable capacity is not a lower-ranked candidate.  Remove it before the
-# legacy picker sees the records, so score=100 cannot make a fully exhausted
+# legacy picker sees the records, so a consumed_pct of 100 cannot make a fully exhausted
 # account win a tie with an unknown or healthy account.  The classifier also
 # returns reset timestamps for the all-exhausted refusal below.
 EXHAUSTED_COUNT=0

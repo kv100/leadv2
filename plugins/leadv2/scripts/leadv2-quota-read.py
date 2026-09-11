@@ -80,7 +80,18 @@ def cache_get(provider):
     try:
         if time.time() - os.path.getmtime(p) < TTL[provider]:
             with open(p) as f:
-                return json.load(f)
+                obj = json.load(f)
+            # BALANCER-RANKS-BY-THE-WRONG-NUMBER-AND-PRINTS-A-MISLEADING-ONE-01
+            # (f1 #8): TTL is judged on the payload's OWN fetched_at -- the
+            # data's age -- never on file mtime alone.  Every cache hit used
+            # to normalize-and-write the object back, resetting mtime without
+            # refreshing the API-derived fetched_at, so the nominal 300s
+            # anthropic TTL extended indefinitely while the payload aged (a
+            # ~34-minute-old payload was served).  mtime remains the
+            # fallback for legacy payloads without fetched_at.
+            fetched = _parse_iso(obj.get("fetched_at")) if isinstance(obj, dict) else None
+            if fetched is None or (datetime.datetime.now(UTC) - fetched).total_seconds() < TTL[provider]:
+                return obj
     except Exception:
         pass
     return None
@@ -1057,9 +1068,11 @@ def main():
     if "--no-cache" not in args:
         cached = cache_get(provider)
         if cached is not None:
-            cached = normalize_payload(cached)
-            cache_put(provider, cached)
-            print(json.dumps(cached))
+            # f1 #8: no rewrite-on-hit -- the old write-back reset mtime
+            # without refreshing fetched_at (the silent TTL extension).
+            # The payload is normalized in memory only; the on-disk bytes
+            # and their age stay what the last real fetch produced.
+            print(json.dumps(normalize_payload(cached)))
             return
     obj = normalize_payload(READERS[provider](credential_file)
                             if provider == "anthropic" else READERS[provider]())

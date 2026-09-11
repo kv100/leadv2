@@ -123,7 +123,7 @@ echo "=== T4: 20% vs 80% -> picks the 20% label ==="
 printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=alpha config_dir=.*/dir-alpha score=20 source=live reason=worst_window candidates=2 cred=file:[^ ]+ identity=unknown/na binding=worst_of_both:20 windows=alpha:worst_of_both=20\|beta:worst_of_both=80$' 'T4: picks alpha score=20 live, binding/windows logged'
+check_grep "$OUT" '^profile=alpha config_dir=.*/dir-alpha rank_by=consumed_pct_min consumed_pct=20 usable_now=- source=live reason=worst_window candidates=2 cred=file:[^ ]+ identity=unknown/na binding=worst_of_both:consumed_pct=20 windows=alpha:worst_of_both=20\|beta:worst_of_both=80$' 'T4: picks alpha (consumed_pct=20, legacy pct-only fixture) live, binding/windows logged'
 [[ "$RC" -eq 0 ]] && pass "T4: exit 0" || fail "T4 exit" "rc=$RC"
 
 # ============================================================================
@@ -131,7 +131,7 @@ echo "=== T5: one unknown, one ok -> picks ok, source=live ==="
 printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=beta .*score=80 source=live reason=worst_window candidates=2 cred=file:[^ ]+ identity=unknown/na binding=worst_of_both:80 windows=dead:-=-\|beta:worst_of_both=80$' 'T5: picks the ok profile, binding/windows logged'
+check_grep "$OUT" '^profile=beta .*rank_by=consumed_pct_min consumed_pct=80 usable_now=- source=live reason=worst_window candidates=2 cred=file:[^ ]+ identity=unknown/na binding=worst_of_both:consumed_pct=80 windows=dead:-=-\|beta:worst_of_both=80$' 'T5: picks the ok profile, binding/windows logged'
 
 # ============================================================================
 echo "=== T6: both unknown -> first registry entry, all_unknown ==="
@@ -139,10 +139,11 @@ printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG
 printf 'dead2\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 cp "$FIX/dead.json" "$FIX/dead2.json"
 run_select $(base_env)
-# TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: score=100 (UNKNOWN_TRIABLE), not
-# the old flat 101 -- these profiles were never successfully probed, they
-# are not in a confirmed-failure cooldown, so they still compete fairly.
-check_grep "$OUT" '^profile=dead .*score=100 source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+ identity=unknown/na binding=-:- windows=dead:-=-\|dead2:-=-$' 'T6: first entry, all_unknown, binding/windows logged'
+# TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: UNKNOWN_TRIABLE still orders the
+# pick (it competes fairly -- never successfully probed is not a confirmed-
+# failure cooldown), but since BALANCER-...-01 the line prints NO number
+# for it (rank_by=none consumed_pct=-), never a sentinel dressed as a pct.
+check_grep "$OUT" '^profile=dead .*rank_by=none consumed_pct=- usable_now=- source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+ identity=unknown/na binding=-:- windows=dead:-=-\|dead2:-=-$' 'T6: first entry, all_unknown, binding/windows logged'
 
 # ============================================================================
 echo "=== T7: malformed line + email-shaped label -> skipped, one warning each ==="
@@ -220,11 +221,11 @@ cap_val="$(cat "$cap" 2>/dev/null)"
 check_grep "$cap_val" "^CLAUDE_CONFIG_DIR=$tmp/dir-alpha$" 'I1: child sees only the selected config_dir'
 n_prof_lines="$(grep -c '^\[claude-profile\]' "$int_err")"
 if [[ "$n_prof_lines" -eq 1 ]]; then pass "I2: exactly one [claude-profile] stderr line"; else fail "I2" "count=$n_prof_lines"; fi
-check_grep "$(cat "$int_err")" '^\[claude-profile\] selected=alpha score=20 source=live candidates=2 cred_kind=file identity=unknown/na$' 'I2b: label-only stderr line shape'
+check_grep "$(cat "$int_err")" '^\[claude-profile\] selected=alpha rank_by=consumed_pct_min consumed_pct=20 usable_now=- source=live candidates=2 cred_kind=file identity=unknown/na$' 'I2b: label-only stderr line shape'
 hlog="$repo/docs/handoff/PROFILE-CL/claude-profile.log"
 [[ -f "$hlog" ]] && pass "I3: handoff claude-profile.log exists" || fail "I3" "missing $hlog"
 if [[ -f "$hlog" ]]; then
-  check_grep "$(cat "$hlog")" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[claude-profile\] selected=alpha score=20 source=live candidates=2 cred_kind=file identity=unknown/na$' 'I4: ISO-prefixed label-only handoff line'
+  check_grep "$(cat "$hlog")" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[claude-profile\] selected=alpha rank_by=consumed_pct_min consumed_pct=20 usable_now=- source=live candidates=2 cred_kind=file identity=unknown/na$' 'I4: ISO-prefixed label-only handoff line'
   check_nogrep "$(cat "$hlog")" 'sk-ant' 'I5a: handoff log has no token'
   check_nogrep "$(cat "$hlog")" '/[^[:space:]]+/' 'I5b: handoff log has no path'
 fi
@@ -301,11 +302,11 @@ run_subsession_fixture PROFILE-TIMEOUT 'profile=- reason=same_account' 124
 check_grep "$SUB_CAP" '^CLAUDE_CONFIG_DIR=<unset>$' 'I11b: rc=124 still launches on inherited config'
 check_grep "$(cat "$SUB_LOG" 2>/dev/null)" '\[claude-profile\] single-profile fallback' 'I11c: rc=124 keeps the legacy fallback journal'
 
-success_line="profile=alpha config_dir=$tmp/dir-alpha score=20 source=live candidates=2 cred=file:$tmp/dir-alpha/cred.json identity=unknown/na"
+success_line="profile=alpha config_dir=$tmp/dir-alpha rank_by=consumed_pct_min consumed_pct=20 usable_now=- source=live candidates=2 cred=file:$tmp/dir-alpha/cred.json identity=unknown/na"
 run_subsession_fixture PROFILE-SUCCESS "$success_line" 0
 [[ -n "$SUB_CAP" ]] && pass "I12a: successful selection still launches" || fail "I12a" "rc=$SUB_RC capture=$SUB_CAP"
 check_grep "$SUB_CAP" "^CLAUDE_CONFIG_DIR=$tmp/dir-alpha$" 'I12b: successful selection still sets selected config_dir'
-check_grep "$(cat "$SUB_LOG" 2>/dev/null)" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[claude-profile\] selected=alpha score=20 source=live candidates=2 cred_kind=file identity=unknown/na$' 'I12c: successful selection journal remains byte-for-byte legacy shape'
+check_grep "$(cat "$SUB_LOG" 2>/dev/null)" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[claude-profile\] selected=alpha rank_by=consumed_pct_min consumed_pct=20 usable_now=- source=live candidates=2 cred_kind=file identity=unknown/na$' 'I12c: successful selection journal carries rank_by/consumed_pct/usable_now'
 
 run_subsession_fixture PROFILE-REFUSAL-EMPTY '' 4
 [[ "$SUB_RC" -ne 0 && -z "$SUB_CAP" ]] && pass "I13a: empty rc=4 refusal still stops before launch" || fail "I13a" "rc=$SUB_RC capture=$SUB_CAP"
@@ -362,7 +363,7 @@ printf 'personal\t%s\tfile:%s/cred.json\n' "$tmp/dir-team" "$tmp/dir-team" > "$R
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
 check_grep "$OUT" '^profile=personal .*identity=team/na' 'T11a: identity derived from credential (team), not label (personal)'
-check_grep "$OUT" 'score=30 source=live' 'T11b: personal/team profile scored and picked'
+check_grep "$OUT" 'rank_by=consumed_pct_min consumed_pct=30 usable_now=- source=live' 'T11b: personal/team profile scored and picked'
 [[ "$RC" -eq 0 ]] && pass "T11: exit 0" || fail "T11 exit" "rc=$RC"
 
 echo "=== T11k (NC-a, keychain path): same mismatch via keychain: credential_source ==="
@@ -387,8 +388,8 @@ echo "=== T13 (NC-c, D3): all candidates stale + probe can't resolve them -> all
 printf 'exp-a\t%s\tfile:%s/cred.json\n' "$tmp/dir-allexp-a" "$tmp/dir-allexp-a" > "$REG"
 printf 'exp-b\t%s\tfile:%s/cred.json\n' "$tmp/dir-allexp-b" "$tmp/dir-allexp-b" >> "$REG"
 run_select $(base_env)
-# TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: score=100 (UNKNOWN_TRIABLE) -- see T6.
-check_grep "$OUT" '^profile=exp-a .*score=100 source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+ identity=max/na binding=-:- windows=exp-a:-=-\|exp-b:-=-$' 'T13a: named all_unknown outcome (probed, not statically refused), not a silent pick'
+# TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: unknown pick (rank_by=none) -- see T6.
+check_grep "$OUT" '^profile=exp-a .*rank_by=none consumed_pct=- usable_now=- source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+ identity=max/na binding=-:- windows=exp-a:-=-\|exp-b:-=-$' 'T13a: named all_unknown outcome (probed, not statically refused), not a silent pick'
 w_count="$(grep -c 'WARN: registry line .* expiresAt_stale' <<<"$ERR")"
 [[ "$w_count" -eq 2 ]] && pass "T13b: both stale entries warned but still probed" || fail "T13b" "count=$w_count err=$ERR"
 [[ "$RC" -eq 0 ]] && pass "T13: exit 0" || fail "T13 exit" "rc=$RC"
@@ -474,7 +475,7 @@ printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env) "LEADV2_CLAUDE_PROFILE_DEFAULT_DIR=$tmp/dir-def-exp" \
   "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
 check_grep "$ERR" 'WARN: default_token_expired identity=max/defexp@fixture\.test -- inherited fallback will refuse; probe-qualified profile required' 'T17a: default_token_expired makes fallback policy explicit'
-check_grep "$OUT" '^profile=alpha .*score=20 source=live' 'T17b: selection itself unchanged'
+check_grep "$OUT" '^profile=alpha .*rank_by=consumed_pct_min consumed_pct=20 usable_now=- source=live' 'T17b: selection itself unchanged'
 [[ "$RC" -eq 0 ]] && pass "T17: exit 0 (explicit probe-qualified alternative selected)" || fail "T17 exit" "rc=$RC"
 
 printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
@@ -524,7 +525,7 @@ buckets="$(sort -u "$tmp/seen" | wc -l | tr -d ' ')"
 check_nogrep "$ERR" 'same_account' 'T20b: no same_account warn when the email half is unresolved'
 w_count="$(grep -c 'identity_email_unresolved' <<<"$ERR")"
 [[ "$w_count" -eq 2 ]] && pass "T20c: both slots warned identity_email_unresolved" || fail "T20c" "count=$w_count err=$ERR"
-check_grep "$OUT" '^profile=nojson-a .*score=15 source=live.*identity=pro/na' 'T20d: selection still works (fail-open, lowest window wins)'
+check_grep "$OUT" '^profile=nojson-a .*rank_by=consumed_pct_min consumed_pct=15 usable_now=- source=live.*identity=pro/na' 'T20d: selection still works (fail-open, lowest window wins)'
 [[ "$RC" -eq 0 ]] && pass "T20: exit 0" || fail "T20 exit" "rc=$RC"
 
 # ============================================================================
@@ -544,7 +545,7 @@ acct_json_binding 20 90 seven_day > "$FIX/case2.json"
 printf 'case1\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'case2\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=case1 config_dir=.*/dir-alpha score=20 source=live reason=binding_window candidates=2 cred=file:[^ ]+ identity=unknown/na binding=seven_day:20 windows=case1:seven_day=20\|case2:seven_day=90$' \
+check_grep "$OUT" '^profile=case1 config_dir=.*/dir-alpha rank_by=consumed_pct_min consumed_pct=20 usable_now=- source=live reason=binding_window candidates=2 cred=file:[^ ]+ identity=unknown/na binding=seven_day:consumed_pct=20 windows=case1:seven_day=20\|case2:seven_day=90$' \
   'T21: picks case1 (binding window 20%) over case2 (binding window 90%), reason=binding_window'
 [[ "$RC" -eq 0 ]] && pass "T21: exit 0" || fail "T21 exit" "rc=$RC"
 
@@ -557,7 +558,7 @@ printf 'stale-live\t%s\tfile:%s/cred.json\n' "$tmp/dir-stale-live" "$tmp/dir-sta
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
 check_grep "$ERR" 'WARN: registry line 1: expiresAt_stale label=stale-live identity=max/na -- probing live anyway' 'T22a: WARN fires but does not exclude'
-check_grep "$OUT" '^profile=stale-live .*score=15 source=live' 'T22b: the stale-per-field, live-per-probe account still wins -- the field is not the liveness test'
+check_grep "$OUT" '^profile=stale-live .*rank_by=consumed_pct_min consumed_pct=15 usable_now=- source=live' 'T22b: the stale-per-field, live-per-probe account still wins -- the field is not the liveness test'
 [[ "$RC" -eq 0 ]] && pass "T22: exit 0" || fail "T22 exit" "rc=$RC"
 
 # ============================================================================
@@ -618,14 +619,14 @@ acct_json 100 100 > "$FIX/maxed.json"
 printf 'idle\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'maxed\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=idle .*score=100 source=unknown' 'T24a: never-probed idle profile (score=100) beats a 100%-exhausted live profile, not automatically loses'
+check_grep "$OUT" '^profile=idle .*rank_by=none consumed_pct=- usable_now=- source=unknown' 'T24a: never-probed idle profile (unknown triable) beats a 100%-exhausted live profile, not automatically loses'
 [[ "$RC" -eq 0 ]] && pass "T24a: exit 0" || fail "T24a exit" "rc=$RC"
 
 echo "=== T24b (regression): unknown still loses to a live profile with real free quota ==="
 printf 'idle\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=alpha .*score=20 source=live' 'T24b: a live profile with free quota (20%) still beats an unknown-scored one'
+check_grep "$OUT" '^profile=alpha .*rank_by=consumed_pct_min consumed_pct=20 usable_now=- source=live' 'T24b: a live profile with free quota (20%) still beats an unknown-scored one'
 [[ "$RC" -eq 0 ]] && pass "T24b: exit 0" || fail "T24b exit" "rc=$RC"
 
 # ============================================================================
@@ -642,7 +643,7 @@ printf 'flaky\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$RE
 printf 'steady\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900 run_select $(base_env) LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900
 check_grep "$ERR" 'WARN: profile label=flaky live probe failed; cooling down' 'T25a: the confirmed 401 starts a cooldown (WARN fires)'
-check_grep "$OUT" '^profile=steady .*score=90 source=live' 'T25b: round 1 sanity -- steady (90%/80% worst-of-both) wins over flaky (scores fairly at 100 on its FIRST failure, not yet cooling)'
+check_grep "$OUT" '^profile=steady .*rank_by=consumed_pct_min consumed_pct=90 usable_now=- source=live' 'T25b: round 1 sanity -- steady (90%/80% worst-of-both) wins over flaky (scores fairly at 100 on its FIRST failure, not yet cooling)'
 # Round 2, same CACHE dir (identity/config_dir key persists): rewrite
 # flaky's fixture to a WOULD-BE great score (5%). If cooldown is honored,
 # flaky must not even be re-probed this round -- it stays excluded and
@@ -651,7 +652,7 @@ check_grep "$OUT" '^profile=steady .*score=90 source=live' 'T25b: round 1 sanity
 acct_json 5 5 > "$FIX/flaky.json"
 run_select $(base_env)
 check_grep "$ERR" 'WARN: profile label=flaky cooling down after a recent live probe failure; skipping this round' 'T25c: round 2 -- flaky is skipped (cooling), not re-probed'
-check_grep "$OUT" '^profile=steady .*score=90 source=live' 'T25d: round 2 -- steady wins despite worse quota, because the cooling profile is excluded, not silently re-trusted'
+check_grep "$OUT" '^profile=steady .*rank_by=consumed_pct_min consumed_pct=90 usable_now=- source=live' 'T25d: round 2 -- steady wins despite worse quota, because the cooling profile is excluded, not silently re-trusted'
 [[ "$RC" -eq 0 ]] && pass "T25: exit 0" || fail "T25 exit" "rc=$RC"
 
 # ============================================================================
@@ -681,7 +682,7 @@ acct_json 5 5 > "$FIX/relogina.json"
 run_select $(base_env)
 check_grep "$ERR" 'WARN: profile label=relogina cooldown invalidated: credential fingerprint changed' 'T26b: round 2 -- changed credential invalidates the cooldown (WARN fires)'
 check_nogrep "$ERR" 'WARN: profile label=relogina cooling down after a recent live probe failure; skipping this round' 'T26c: round 2 -- relogina is NOT silently skipped this time'
-check_grep "$OUT" '^profile=relogina .*score=5 source=live' 'T26d: round 2 -- relogina was actually re-probed live and won on its real (good) quota, not defaulted'
+check_grep "$OUT" '^profile=relogina .*rank_by=consumed_pct_min consumed_pct=5 usable_now=- source=live' 'T26d: round 2 -- relogina was actually re-probed live and won on its real (good) quota, not defaulted'
 [[ "$RC" -eq 0 ]] && pass "T26: exit 0" || fail "T26 exit" "rc=$RC"
 
 echo "=== T27 (mandatory paired negative control): unchanged credential -- cooldown still applies ==="
@@ -697,7 +698,7 @@ acct_json 5 5 > "$FIX/reloginc.json"
 run_select $(base_env)
 check_nogrep "$ERR" 'WARN: profile label=reloginc cooldown invalidated' 'T27b: round 2 -- unchanged credential does NOT invalidate the cooldown'
 check_grep "$ERR" 'WARN: profile label=reloginc cooling down after a recent live probe failure; skipping this round' 'T27c: round 2 -- reloginc is still skipped (cooling), exactly like T25 -- the protection is not disabled by this fix'
-check_grep "$OUT" '^profile=steadyd .*score=90 source=live' 'T27d: round 2 -- steadyd still wins; the phantom 5%% never actually re-verified'
+check_grep "$OUT" '^profile=steadyd .*rank_by=consumed_pct_min consumed_pct=90 usable_now=- source=live' 'T27d: round 2 -- steadyd still wins; the phantom 5%% never actually re-verified'
 [[ "$RC" -eq 0 ]] && pass "T27: exit 0" || fail "T27 exit" "rc=$RC"
 
 # T28: mutation control -- if the fingerprint comparison in the fix is

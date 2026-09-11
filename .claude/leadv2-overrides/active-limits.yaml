@@ -1,0 +1,18 @@
+# Per-repo override for /leadv2 session limits — leadv2 (the plugin repo itself).
+#
+# Created 2026-09-11. Reason: the four CONTROL-PLANE-REVIEW-01 fixes all write
+# plugins/leadv2/scripts/**, which only exists in THIS repo. Dispatching them from
+# persona-engine gave each lane a persona-engine worktree where the declared write
+# paths do not exist at all — measured: d63a6dd52ef1 and 380a9bfbee34 both ran a
+# full worker (69 and 59 turns), reported DELIVERABLE_COMPLETE, and left nothing but
+# their anchor commit, because there was nowhere to write. This repo had no override
+# at all, so it fell back to meta defaults (hard_limit 3 / standard_max 2), which is
+# below the four lanes those fixes need.
+#
+# Founder 2026-09-11: "весь капасити по линиям у тебя" (the second session closed).
+# Same shape persona-engine has carried since 2026-07-26.
+hard_limit: 5
+standard_max: 4
+heavy_max: 1
+heavy_strategic_solo: false
+light_max: 3

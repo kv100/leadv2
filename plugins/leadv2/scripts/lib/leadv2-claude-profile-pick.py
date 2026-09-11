@@ -31,7 +31,7 @@ ordering is a TIER on top of the existing score, never a score rewrite --
 0 = normal, 1 = demoted, 2 = cooling -- so the session's own account still
 wins whenever every other candidate is worse (confirmed-cooling, or no other
 candidate at all) and a single live account never stalls work. Reported
-`score=` stays the raw window pct; the demotion is visible in the
+`consumed_pct=` stays the raw window pct; the demotion is visible in the
 `demoted=<label>` output field, printed ONLY when a demote column is present
 in the input, so every legacy 6-column caller and fixture keeps a
 byte-identical output line.
@@ -49,33 +49,44 @@ returned a CONFIRMED error and is still within its cooldown window (see
 `cooling` above) -- so a broken credential does not get retried, and does
 not get selected, on the very next round either.
 
-Scores each record independently, preferring the account's own `binding_window`
-(TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01 D2): leadv2-quota-read.py already
-computes, per account, which of five_hour/seven_day will actually constrain it
-first (usable_now = remaining_pct / hours_to_reset -- lowest wins), because a
-window sitting at a high raw pct but resetting in minutes is not the same risk
-as one at the same pct that will not reset for days. Scoring on that window's
-own pct means two accounts in symmetric-but-opposite states (5h=90%/weekly=20%
-vs 5h=20%/weekly=90%) score differently, as they should, instead of both
-collapsing to the same max(). When a payload has no binding_window (older probe
-output, or a hermetic fixture predating this field) this falls back to the
-original max(five_hour_pct, seven_day_pct) worst-of-both, so pre-D2 callers and
-fixtures keep scoring exactly as before. Anything unreadable or status!=ok
-scores the 101 sentinel (source=unknown). One profile's failure never affects
-another — a record that cannot be parsed simply scores unknown, it never blanks
-the run.
+Ranks each record on its binding window's `usable_now` -- remaining
+percentage-points per hour, MORE is better
+(BALANCER-RANKS-BY-THE-WRONG-NUMBER-AND-PRINTS-A-MISLEADING-ONE-01, f1
+finding 2: the old raw-pct ranking only agreed with availability by
+coincidence -- 56%-used/113h-to-reset beat 67%-used/20h-to-reset even
+though the latter has several times the usable capacity per hour).
+leadv2-quota-read.py already computes, per account, which of
+five_hour/seven_day will constrain it first (`binding_window` = the window
+with the LOWEST usable_now); this picker ranks accounts by that window's
+OWN usable_now, highest first.  A record whose binding window carries no
+readable usable_now (older probe output, or a hermetic fixture predating
+the window objects) falls back to the pre-D2 proxy -- ordering on the
+window's own pct, lower first, worst-of-both when there is no binding
+window -- so legacy callers and fixtures keep exactly the selection they
+had.  A measured usable rate always outranks the pct proxy (its order key
+-usable_now is <= 0 while every pct is >= 0).  Anything unreadable or
+status!=ok ranks on the 100/101 sentinel (source=unknown), NEVER as a zero
+(f1 finding 4: a 429 account must not masquerade as 0%-consumed/free
+quota).  One profile's failure never affects another -- a record that
+cannot be parsed simply ranks unknown, it never blanks the run.
 
-Picks the LOWEST score; ties are broken by input (= registry) order, so the
-selection is fully deterministic.  Prints exactly one line:
+Picks the LOWEST order key; ties are broken by input (= registry) order,
+so the selection is fully deterministic.  Prints exactly one line:
 
-    profile=<label> config_dir=<path> score=<n> source=live|unknown \
-    reason=<reason> candidates=<n> cred=<credential_source> identity=<identity> \
-    binding=<window>:<pct> windows=<label>:<window>=<pct>|<label>:<window>=<pct>...
+    profile=<label> config_dir=<path> rank_by=usable_now_max|consumed_pct_min|none \
+    consumed_pct=<n|-> usable_now=<u|-> source=live|unknown reason=<reason> \
+    candidates=<n> cred=<credential_source> identity=<identity> \
+    binding=<window>:consumed_pct=<p>[,usable_now=<u>] \
+    windows=<label>:<window>=<pct>[,usable_now=<u>]|...
 
-`binding=` names the WINNER's own scoring window and pct. `windows=` lists
-every candidate's window and pct (D2.4: "a routing decision that cannot be
-read back from claude-profile.log did not happen") -- `-` marks a candidate
-with no live/parseable window (unknown score).
+`rank_by=` names WHAT was compared and in which direction (f1 finding 3:
+the old `score=67` was a consumed percentage presented as a score, so the
+number's direction was unreadable from the line).  `binding=` names the
+WINNER's own scoring window with both of its numbers labeled.  `windows=`
+lists every candidate's window, pct and usable_now (D2.4: "a routing
+decision that cannot be read back from claude-profile.log did not
+happen") -- `-` marks a candidate with no live/parseable window (unknown
+rank).
 
 Privacy: config_dir is printed here because it exists ONLY on this stdout and
 is consumed by the caller (claude-subsession.sh); the caller journals the label
@@ -93,10 +104,18 @@ UNKNOWN = UNKNOWN_COOLING  # back-compat alias -- keep the old name resolvable
 
 
 def score_record(record):
-    """Return (score:int, source:"live"|"unknown", window:str|None, pct:float|None)."""
+    """Return (order_key, source, window, pct, usable_now).
+
+    order_key IS the availability comparison (lower ranks first):
+      live + readable usable_now -> -usable_now (MORE remaining pct-points
+        per hour ranks FIRST -- f1 #2);
+      live, no readable rate     -> the window's consumed pct (pre-D2
+        proxy, lower first -- legacy payloads keep their old order);
+      unknown (NEVER 0 -- f1 #4) -> UNKNOWN_TRIABLE, or UNKNOWN_COOLING.
+    """
     label, config_dir, cred, payload_b64 = record[:4]
     cooling = len(record) > 5 and record[5] == "1"
-    unknown_score = UNKNOWN_COOLING if cooling else UNKNOWN_TRIABLE
+    unknown_key = UNKNOWN_COOLING if cooling else UNKNOWN_TRIABLE
     payload = None
     try:
         payload = json.loads(base64.b64decode(payload_b64).decode())
@@ -113,12 +132,21 @@ def score_record(record):
             account = accounts[0]
     if not (isinstance(payload, dict) and payload.get("status") == "ok"
             and isinstance(account, dict) and account.get("status") == "ok"):
-        return unknown_score, "unknown", None, None
+        return unknown_key, "unknown", None, None, None
     binding = account.get("binding_window")
     if binding in ("five_hour", "seven_day"):
+        window = account.get(binding)
+        usable = window.get("usable_now") if isinstance(window, dict) else None
+        if isinstance(usable, (int, float)) and not isinstance(usable, bool):
+            try:
+                u = float(usable)
+                pct = float(account.get(binding + "_pct"))
+                return -u, "live", binding, pct, u
+            except (TypeError, ValueError):
+                pass
         try:
             pct = float(account.get(binding + "_pct"))
-            return int(round(pct)), "live", binding, pct
+            return pct, "live", binding, pct, None
         except (TypeError, ValueError):
             pass  # fall through to worst-of-both below
     values = []
@@ -128,13 +156,17 @@ def score_record(record):
         except (TypeError, ValueError):
             pass
     if not values:
-        return unknown_score, "unknown", None, None
+        return unknown_key, "unknown", None, None, None
     worst = max(values)
-    return int(round(worst)), "live", "worst_of_both", worst
+    return worst, "live", "worst_of_both", worst, None
 
 
 def _fmt_pct(pct):
     return "-" if pct is None else str(int(round(pct)))
+
+
+def _fmt_u(u):
+    return "-" if u is None else "%.3f" % u
 
 
 def main():
@@ -167,32 +199,53 @@ def main():
 
     scored = [(score_record(r), i, r) for i, r in enumerate(records)]
     tiers = [_tier(r) for r in records]
-    # min over (tier, score, registry order) -- fully deterministic, and
-    # byte-identical to the old (score, order) selection whenever no record
-    # is demoted (every legacy input: tiers are all 0 or 2, and tier 2 was
-    # already the strictly-worst 101 sentinel).
+    # min over (tier, order_key, registry order) -- fully deterministic.
+    # order_key (score_record) IS the availability comparison: -usable_now
+    # for live records with a readable rate (highest usable_now first, f1
+    # #2), the consumed pct for pct-only legacy records (lowest first --
+    # byte-identical to the old selection whenever no record carries
+    # usable_now), the 100/101 sentinel for unknown ones.  The tier still
+    # ranks ahead of the number, so a demoted/cooling profile loses
+    # regardless of its usable_now.
     pick = min(range(len(records)), key=lambda i: (tiers[i], scored[i][0][0], i))
-    (score, source, window, pct), _order, record = scored[pick]
+    (order_key, source, window, pct, usable), _order, record = scored[pick]
     # The minimum can only reach UNKNOWN_TRIABLE when EVERY record is unknown.
-    if score >= UNKNOWN_TRIABLE:
+    if source == "unknown":
         reason = "all_unknown"
     elif window in ("five_hour", "seven_day"):
         reason = "binding_window"
     else:
         reason = "worst_window"
-    binding_field = "%s:%s" % (window or "-", _fmt_pct(pct))
+    # f1 #3: rank_by names WHAT ordered the winner and in which direction,
+    # so the numbers printed beside it can never be read backwards (the old
+    # bare score=67 was a consumed percentage posing as a score).
+    if source == "unknown":
+        rank_by = "none"              # nothing numeric was compared
+    elif usable is not None:
+        rank_by = "usable_now_max"    # more remaining pct-points/hour first
+    else:
+        rank_by = "consumed_pct_min"  # legacy fallback: less consumed first
+    usable_str = _fmt_u(usable)
+    if pct is None:
+        binding_field = "-:-"
+    else:
+        binding_field = "%s:consumed_pct=%d" % (window or "-", int(round(pct)))
+        if usable is not None:
+            binding_field += ",usable_now=" + usable_str
     windows_field = "|".join(
-        "%s:%s=%s" % (r[0], w or "-", _fmt_pct(p))
-        for (sc, src, w, p), _o, r in scored
+        "%s:%s=%s%s" % (r[0], w or "-", _fmt_pct(p),
+                        "" if u is None else ",usable_now=" + _fmt_u(u))
+        for (_k, src, w, p, u), _o, r in scored
     )
     # §1.3: printed ONLY when a demote column is present and matched a
     # candidate -- absent means "no demotion in play", which keeps the line
     # byte-identical for every legacy caller and fixture.
     demoted_labels = [r[0] for r in records if len(r) > 6 and r[6] == "1"]
     demoted_field = " demoted=%s" % demoted_labels[0] if demoted_labels else ""
-    print("profile=%s config_dir=%s score=%d source=%s reason=%s candidates=%d cred=%s identity=%s "
+    print("profile=%s config_dir=%s rank_by=%s consumed_pct=%s usable_now=%s source=%s reason=%s candidates=%d cred=%s identity=%s "
           "binding=%s windows=%s%s"
-          % (record[0], record[1], score, source, reason, len(records), record[2], record[4],
+          % (record[0], record[1], rank_by, _fmt_pct(pct), usable_str, source, reason,
+             len(records), record[2], record[4],
              binding_field, windows_field, demoted_field))
 
 

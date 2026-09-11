@@ -1,0 +1,11 @@
+suite=tests/test-arbiter-reads-capability-floor.sh
+file=plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+anchor=s/and _constraint_ok(c)\]//
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: case A out='
+diff_hash=2848c5a91306a9e5f4b80c778d6a6350bd7c76bfbabd12ea3243757f30121429
+lane_diff_hash=a7f49d74028aa0d42eeede3870faa206bc2e047232157f3d7ced750b2252bfc3
+porcelain_clean=yes
+restored=yes

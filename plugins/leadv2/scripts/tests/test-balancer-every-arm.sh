@@ -123,7 +123,7 @@ run_select() { # -> sets OUT / ERR / RC
 echo "=== S1: session burns the BETTER account -> the OTHER must be picked (§1.3) ==="
 write_reg 2
 run_select $(base_env) "CLAUDE_CONFIG_DIR=$tmp/dir-alpha"
-check_grep "$OUT" '^profile=beta .*score=80 source=live .*demoted=alpha$' 'S1-lead-profile-demoted-not-picked: beta (80%%) wins over the session-owned alpha (20%%) and demoted=alpha names it'
+check_grep "$OUT" '^profile=beta .*consumed_pct=80 usable_now=- source=live .*demoted=alpha$' 'S1-lead-profile-demoted-not-picked: beta (80%%) wins over the session-owned alpha (20%%) and demoted=alpha names it'
 [[ "$RC" -eq 0 ]] && pass "S1: exit 0" || fail "S1 exit" "rc=$RC"
 
 echo "=== S2: demoted live beats a confirmed-cooling sibling (demote is not exclusion) ==="
@@ -141,10 +141,10 @@ check_grep "$OUT" '^profile=alpha .*demoted=alpha$' 'S2-demoted-live-beats-cooli
 echo "=== S3: demotion inert — session dir matches nothing, and explicit off ==="
 write_reg 2
 run_select $(base_env) "CLAUDE_CONFIG_DIR=/nonexistent-session-dir"
-check_grep "$OUT" '^profile=alpha .*score=20 ' 'S3a-no-match: no registry row is the session dir -> best window wins, line unchanged'
+check_grep "$OUT" '^profile=alpha .*consumed_pct=20 ' 'S3a-no-match: no registry row is the session dir -> best window wins, line unchanged'
 check_nogrep "$OUT" 'demoted=' 'S3a: no demoted= field when no row matched (legacy line shape)'
 run_select $(base_env) "CLAUDE_CONFIG_DIR=$tmp/dir-alpha" "LEADV2_CLAUDE_PROFILE_DEMOTE_DIR=off"
-check_grep "$OUT" '^profile=alpha .*score=20 ' 'S3b-off: LEADV2_CLAUDE_PROFILE_DEMOTE_DIR=off disables demotion -> alpha (20%%) wins again'
+check_grep "$OUT" '^profile=alpha .*consumed_pct=20 ' 'S3b-off: LEADV2_CLAUDE_PROFILE_DEMOTE_DIR=off disables demotion -> alpha (20%%) wins again'
 check_nogrep "$OUT" 'demoted=' 'S3b: no demoted= field when demotion is off'
 
 # ============================================================================
