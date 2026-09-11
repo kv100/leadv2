@@ -3,7 +3,7 @@
 # Exercise existing foreign records in real linked worktrees, never live state.
 set -uo pipefail
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-T="$(mktemp -d)"
+T="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-phase-record-axis.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 unset PROJECT_ROOT LEADV2_PROJECT_ROOT
 JOURNAL_STUB="$T/journal.sh"
