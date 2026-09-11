@@ -71,6 +71,23 @@ The timeout is an ambient changed-scope gate blocker: the deleted legacy
 core selector, so it falls back to the full suite set. The targeted resolver
 suites are independently green above.
 
+Final self-check raw output:
+
+```text
+--- BASH -N CHANGED EXISTING SHELLS ---
+PASS bash -n plugins/leadv2/scripts/tests/test-state-path-fails-closed.sh
+PASS bash -n plugins/leadv2/scripts/tests/test-state-path-zsh-source.sh
+--- PYTHON COMPILE CHANGED EXISTING PYTHON ---
+PASS no changed Python files
+--- DIFF CHECK / DOD MECHANICS ---
+PASS git diff --check
+PASS runtime-state path policy
+--- CHANGED-SCOPE RUNNER (120s FOREGROUND BOUND) ---
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/518b42814626/plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: delegating scope=changed to plugins/leadv2/scripts/tests/run-core-offline.sh
+changed_scope_rc=124
+```
+
 ### Falsifiability
 
 Both committed suites turned red under the generic assertion-tool failure
@@ -95,3 +112,51 @@ verdict: falsifiable — a failure injection turned the suite red (rc=1)
 
 `bash -n` passed for the changed suite and the resolver; no Python file was
 changed, so `python3 -m py_compile` had no applicable target.
+
+## Lifecycle gates
+
+The lane was merged with `main` at `8cffa53d` before the final review. The
+final review used that frozen merged parent because the local `main` ref moved
+again during the review. The gate returned `rc=0`, `status: pass`, and
+`PASS_WITH_NITS` with no Critical, High, or Medium findings.
+
+The code task's deploy verification is N/A:
+
+```text
+deploy-verify: N/A (task_class=code)
+deploy_verify_rc=3
+```
+
+The plugin-cache deploy hook was attempted with `--write` and failed closed
+when rsync hit sandbox permission errors updating the active cache. No deploy
+success is claimed:
+
+```text
+[2026-09-11 05:16:07] Mode: WRITE (--write)
+rsync(11593): error: tests/quality-engine/fixtures/__pycache__/test_parallel_dispatch.cpython-314-pytest-9.0.3.pyc: unlinkat: Operation not permitted
+rsync(11593): error: docs/leadv2/active.yaml: unlinkat: Operation not permitted
+BLOCK: rsync failed syncing /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/518b42814626/plugins/leadv2 -> /Users/kostiantyn.vlasenko/.claude/plugins/cache/leadv2-local/leadv2/0.5.7
+```
+
+Phase-8 E2E verification was run in the foreground with a 120-second bound:
+
+```text
+[leadv2-phase8-e2e-gate] e2e_gate task=518b42814626 status=ran verdict=timeout rc=124 timeout_s=120 elapsed_s=120 budget_s=120
+leadv2-phase8-e2e-gate: TIMEOUT (tests/run-all.sh --scope changed exceeded 120s; elapsed_s=120 budget_s=120)
+e2e_rc=5
+```
+
+The machine-readable result is `e2e-gate.md` with `status: unknown` and
+`reason: e2e_timeout`; therefore no E2E pass sentinel or close record was
+created, and this lane remains blocked from close pending a green E2E gate.
+
+The close assertion was intentionally not forced without that evidence:
+
+```text
+[2026-09-11 05:19:40] FAIL: A7 E2E gate sentinel missing: docs/handoff/518b42814626/e2e-gate-passed.flag
+[2026-09-11 05:19:41] INFO: A8 N/A (non-deploy): deploy-verify: N/A (task_class=code)
+[2026-09-11 05:19:41] PASS: A6 merge-blocker: absent (Phase 6 clean)
+[2026-09-11 05:19:41] INFO: === Phase 8 assertions for 518b42814626: 4 / 9 HARD checks PASS ===
+GATE FAILED: 5 assertion(s) not satisfied for 518b42814626
+phase8_assert_rc=1
+```
