@@ -1,2 +1,1 @@
-Finding upheld: _best_effort_floor_pool's _review_floor uses the unfiltered review_rank ladder (haiku has review_rank:1) with no DISPATCHABLE_PLAN_ARMS filter, so degraded --plan-pool paths can select haiku.
-Full: full.md
+VERIFY_VERDICT: upheld. Ran the suite in the ONE-PATH-PLAN-RUN-01 worktree: rc=1, 1 pass 1 fail, failure is "PE constants: persona-engine-string" from engine comment at leadv2-plan-run.sh:399. Full: full.md

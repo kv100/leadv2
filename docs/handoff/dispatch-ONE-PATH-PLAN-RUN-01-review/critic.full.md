@@ -1,16 +1,19 @@
-# Verify: review-floor / _best_effort_floor_pool not filtered by DISPATCHABLE_PLAN_ARMS
+# Verify: suite fails as shipped (test-diagnose-no-pe-constants.sh)
 
-## Verdict: UPHELD
+Ran the actual test in the build worktree:
 
-## Evidence
-- `leadv2-glm-policy-resolve.py:1092` (`_dispatchable = DISPATCHABLE_PLAN_ARMS if job == "plan" else DISPATCHABLE_BUILD_ARMS`) only filters the spill path inside `resolve_glm_policy`, and `resolve_review_pool`'s `order` filter (line ~427) only applies when `job == "plan"` is passed explicitly by the caller.
-- The degraded/error paths (`resolver_error` in `_main`'s except block at ~line 853, and the top-level `__main__` except at ~line 869) call `_best_effort_floor_pool(argv)` for both `--review-pool` and `--plan-pool` (diff makes both trigger it).
-- `_best_effort_floor_pool` (line 735) calls `_review_floor(author, rank_table)` where `rank_table` is built straight from `extract_dispatch_ladder(text)` over ALL ladder entries with a `review_rank` field — no job/`DISPATCHABLE_PLAN_ARMS` filtering anywhere in this function.
-- `plugins/leadv2/config/leadv2-routing.yaml` lists `id: haiku` with `review_rank: 1` (line ~163), i.e. haiku is a legitimate member of the review-rank ladder used by `_review_floor`.
-- Therefore: a plan job that hits the resolver-error/degraded path gets its arm from `_review_floor`, which can return `haiku`, `glm`, or `kimi` (any ladder entry) — none of which are in `DISPATCHABLE_PLAN_ARMS = {"codex","sonnet","opus","fable"}`, exactly the arm PLANNER-MODELS-DECISION-01 introduced the set to exclude from planning.
+```
+$ bash plugins/leadv2/scripts/tests/test-diagnose-no-pe-constants.sh
+FAIL: engine contains PE constants: persona-engine-string
+PASS: engine has no journalctl calls
+Results: 1 pass, 1 fail
+```
+rc=1
+
+Root cause confirmed at plugins/leadv2/scripts/leadv2-plan-run.sh:399:
+`# Build diagnose-specific input — no persona-engine constants (design §2.2).`
+
+The test's substring grep (`grep -qi 'persona-engine' "${ENGINE}"`) matches this comment's own text, since the comment itself contains "persona-engine" while explaining that the engine has none. This is a genuine, reproducible red result, not a false claim.
 
 VERIFY_VERDICT: upheld
-
-
 DELIVERABLE_COMPLETE
-# auto-marker added by SOFT_FINISH fallback

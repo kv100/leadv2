@@ -1,4 +1,4 @@
-Review ONLY the diff at docs/handoff/ONE-PATH-PLAN-RUN-01/build-r2.diff. You are independent of the author (glm).
+Review ONLY the diff at docs/handoff/ONE-PATH-PLAN-RUN-01/build.diff. You are independent of the author (glm).
 Report correctness findings by severity (Critical / High / Medium / Low).
 Your review MUST contain these two lines, verbatim format, before any prose:
 REVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>
