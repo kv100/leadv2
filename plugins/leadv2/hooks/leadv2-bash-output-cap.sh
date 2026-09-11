@@ -1,30 +1,60 @@
 #!/usr/bin/env bash
-# PostToolUse hook for Bash: emit warning when output >5KB. Doesn't block (legit cases exist).
-# Each warning makes lead aware so next call can `| head` at source.
+# PostToolUse hook for Bash: cap oversized output BEFORE it enters the transcript.
+#
+# The previous version only warned on stderr, and it never even did that: it read
+# `.tool_output` / `.tool_response.output`, neither of which is the key Claude Code
+# actually sends, so SIZE was always 1 and the hook exited at the first guard. A
+# warning is also the wrong instrument — the bytes are already in the transcript by
+# the time the advice is printed, and the transcript is re-sent on every later turn.
+#
+# This version returns hookSpecificOutput.updatedToolOutput, which REPLACES the tool
+# result the model sees. Full output is written to disk first and the replacement
+# names the path, so nothing is lost and the lead can go read it deliberately.
 set -euo pipefail
 trap 'echo "[$(basename "$0")] error at line $LINENO" >&2; exit 0' ERR
 
 INPUT="$(cat 2>/dev/null || true)"
 [[ -z "$INPUT" ]] && exit 0
 
-# tool_output for Bash is the stdout/stderr concat. Estimate size from the input record.
-SIZE="$(echo "$INPUT" | jq -r '.tool_output // .tool_response.output // empty' 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
-[[ -z "$SIZE" || "$SIZE" -lt 8192 ]] && exit 0
+CAP_BYTES="${LEADV2_BASH_OUTPUT_CAP_BYTES:-12000}"
+HEAD_BYTES="${LEADV2_BASH_OUTPUT_HEAD_BYTES:-7000}"
+TAIL_BYTES="${LEADV2_BASH_OUTPUT_TAIL_BYTES:-3000}"
+[[ "${LEADV2_BASH_OUTPUT_CAP:-1}" == "0" ]] && exit 0
 
-CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null | head -c 200 || echo "")"
-KB=$((SIZE / 1024))
+# Claude Code sends Bash results under .tool_response; the historical keys are kept
+# as fallbacks so this works if the shape differs across versions.
+OUT="$(printf '%s' "$INPUT" | jq -r '
+  (.tool_response.stdout? // empty) as $s
+  | (.tool_response.stderr? // empty) as $e
+  | if ($s|length) > 0 or ($e|length) > 0 then ($s + $e)
+    else (.tool_response.output? // .tool_response? // .tool_output? // empty)
+    end
+  | if type == "string" then . else tostring end' 2>/dev/null || true)"
 
-# Heuristic: did the command try to truncate at source?
-TRUNCATED=0
-echo "$CMD" | grep -qE '\| *(head|tail) | -m | head -[0-9]+| tail -[0-9]+| jq | grep -m | awk' && TRUNCATED=1
+SIZE=${#OUT}
+[[ "$SIZE" -le "$CAP_BYTES" ]] && exit 0
 
-if [[ "$TRUNCATED" -eq 0 ]]; then
-  cat >&2 <<MSG
-[leadv2-bash-output-cap] ${KB}KB output from untruncated command
-  cmd: ${CMD:0:120}...
-  next time: pipe at source — '| head -50' / '| tail -30' / 'grep -m 5' / 'find ... | head'.
-  Output flooding lead context costs 1.25K tokens per KB and stays forever.
-MSG
-fi
+CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null | head -c 200 || true)"
 
+SPILL_DIR="${TMPDIR:-/tmp}/leadv2-bash-spill"
+mkdir -p "$SPILL_DIR"
+SPILL="$SPILL_DIR/$(date +%Y%m%d-%H%M%S)-$$-$RANDOM.txt"
+printf '%s' "$OUT" > "$SPILL"
+
+HEAD_PART="$(printf '%s' "$OUT" | head -c "$HEAD_BYTES")"
+TAIL_PART="$(printf '%s' "$OUT" | tail -c "$TAIL_BYTES")"
+ELIDED=$((SIZE - HEAD_BYTES - TAIL_BYTES))
+
+NOTICE="
+
+[leadv2-bash-output-cap] ${SIZE} bytes of output, capped at ${CAP_BYTES}.
+${ELIDED} bytes elided between the head and tail shown here.
+Full output: ${SPILL}
+Read it with an offset/limit or grep it — do NOT re-run the command.
+Command was: ${CMD}
+
+"
+
+printf '%s' "$HEAD_PART$NOTICE$TAIL_PART" | jq -Rs \
+  '{hookSpecificOutput: {hookEventName: "PostToolUse", updatedToolOutput: .}}'
 exit 0
