@@ -29,6 +29,23 @@ Optima are ~164k persona-engine, ~274k getmany, and the CLI minimum ~100k m3-mar
 
 ## Control and verdict
 
-Claude 2.1.269 exposes `--autocompact <auto|tokens>` (100k-1M); the binary exposes `autoCompactWindow`, and `claude-subsession.sh` already passes a configurable 250k default. Thus the ceiling is ours to move (with auto-compact enabled), per launch or per-repo setting.
+> **CORRECTION, lead, 2026-09-12 — both controls named in this paragraph are fictions.**
+> `--autocompact` is **not a CLI option**: the single bundle match for that string is the
+> telemetry event name `tengu_post_autocompact_turn`, and `claude` silently accepts unknown
+> flags (verified live: `claude --autocompact 250000 -p 'say OK'` -> `OK`, rc=0).
+> `autoCompactWindow` has **0 occurrences** in the 2.1.269 bundle, and so does
+> `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. So the 250k default that `claude-subsession.sh:652`
+> has been passing to every worker for months is inert (row
+> `SUBSESSION-AUTOCOMPACT-FLAG-IS-INERT-01`). It is inert but harmless: workers peak at
+> 240,727 over 68 sessions and never reach any threshold.
+>
+> The real control is the env var `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, a **percentage of the
+> window**, clamped `0 < G <= 100`, and `Math.min(...)`-capped so it can only LOWER the
+> threshold. Measured window `EHA = 479,500`, default threshold **466,500** from 9 live
+> compaction boundaries. Applied in persona-engine as `70` on 2026-09-12; the next
+> compaction fired at a peak of **334,776**, against a predicted 335,650 — the knob works.
+> Full detail: `ANALYSIS-sol-threshold.md`.
+>
+> The conclusion below still stands on its own arithmetic; only the named controls were wrong.
 
 **"Compact earlier" is a real lever; the lead's original dismissal was wrong, but one global 250k threshold is unsafe economics for high-floor getmany sessions.**
