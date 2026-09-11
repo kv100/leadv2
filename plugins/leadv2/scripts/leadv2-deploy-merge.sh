@@ -151,28 +151,20 @@ git pull --ff-only origin main || {
 # Replaces the previous `[[ -x leadv2-merge-safety-gate.sh ]]` call, which
 # never fired: the gate was committed 100644, so the -x guard silently
 # skipped it on every run (a gate that exists only in the commit message).
+# shellcheck source=leadv2-merge-safety-gate.sh
+source "${SCRIPT_DIR}/leadv2-merge-safety-gate.sh"
+
 lv2_probe_main_regressions() {
+  # Delegates to leadv2-merge-safety-gate.sh::lv2_merge_tree_regressions --
+  # the single source of the merged-tree discriminator (leadv2-land.sh and
+  # the product-close T11 merge run the same logic via the gate CLI). The
+  # discriminator lived inline here once; a second copy is how the
+  # 2026-07-29 one-inode defect happened.
   # $1 = default branch, $2 = lane branch.
   # rc 0 = clean; rc 1 = regression (reverted paths on stdout); rc 2 = probe
   # error (merge-tree conflict or git failure -- cannot verify, refuse).
   local default_branch="$1" lane_branch="$2"
-  local merged_tree
-  if ! merged_tree="$(git merge-tree --write-tree "$default_branch" "$lane_branch" 2>/dev/null)"; then
-    printf 'leadv2-deploy-merge: merge-tree probe conflicted/failed for %s into %s\n' \
-      "$lane_branch" "$default_branch" >&2
-    return 2
-  fi
-  local lane_named merged_changed reverted
-  lane_named="$(git log --name-only --no-renames --pretty=format: "${default_branch}..${lane_branch}" 2>/dev/null | sort -u | grep -v '^$' || true)"
-  merged_changed="$(git diff --name-only --no-renames "$default_branch" "$merged_tree" | sort -u | grep -v '^$' || true)"
-  [[ -z "$merged_changed" ]] && return 0
-  # Paths the merge would change that no lane commit ever named.
-  reverted="$(comm -13 <(printf '%s\n' "$lane_named") <(printf '%s\n' "$merged_changed"))"
-  if [[ -n "$(printf '%s' "$reverted" | tr -d '[:space:]')" ]]; then
-    printf '%s\n' "$reverted"
-    return 1
-  fi
-  return 0
+  lv2_merge_tree_regressions "$(pwd)" "$default_branch" "$lane_branch"
 }
 
 PROBE_RC=0

@@ -3,13 +3,20 @@
 # run-all-triggers: leadv2-deploy-merge.sh leadv2-dispatch-product-close.sh
 # test-leadv2-merge-safety-gate.sh — LANE-MERGE-SILENTLY-REVERTS-MAIN-01
 #
-# Hermetic git-sandbox fixtures for leadv2-merge-safety-gate.sh. Reproduces
-# the measured shape (a lane branched before another lane landed a file on
-# main; the lane's own commits never touch that file; a plain merge would
-# make it vanish with no conflict and exit 0) and both required negative
-# controls: the accidental case flips red -> green once main is merged into
-# the lane, and a lane that deliberately deletes its OWN file always lands
-# clean, in both directions.
+# Hermetic git-sandbox fixtures for leadv2-merge-safety-gate.sh. This suite
+# pins the gate's NO-FALSE-POSITIVE and FAIL-CLOSED behaviour under the
+# merged-tree discriminator (tip-diff semantics were replaced 2026-09-10:
+# the gate now computes the would-be merge TREE and refuses only paths the
+# merge would change that no lane commit ever named -- see the gate header
+# for why a branch-tip comparison both over- and under-fires). The
+# refusal path itself -- the five-incident `merge -s ours` wholesale shape
+# -- is owned by test-merge-safety-reverts-main.sh; the wiring through
+# leadv2-deploy-merge.sh end to end is owned by
+# test-merge-does-not-regress-main.sh.
+#
+# Every clean case below is belt-and-suspenders: the gate must say rc 0
+# AND the real `git merge --no-ff` must land what the merge tree
+# predicted, so a verdict is never trusted off the gate's own arithmetic.
 #
 # Each fixture is a from-scratch `git init` in a mktemp -d scratch dir --
 # never `git worktree add` (founder lesson, 2026-08-22): a plain temp repo
@@ -36,14 +43,19 @@ _mk_repo() {
   git -C "$tmp" config user.name t
   printf '%s\n' "$tmp"
 }
+# bash-guard: allow
 
 # ---------------------------------------------------------------------------
-# Case 1: accidental revert. laneB forks from base. main (another lane, A)
-# then adds fileX. laneB's own commits never mention fileX. The gate must
-# refuse and name fileX. Merging main into laneB must flip it green.
+# Case 1: plain fork, no mid-flight merge -- main adds fileX after the lane
+# branched; the lane's commits never mention it. A real 3-way merge KEEPS a
+# path added only on the "ours" side, so the merge tree matches main on
+# fileX and the gate must say rc 0. (The old tip-diff gate refused this --
+# blocking every lane that forked before main moved. The refusal that
+# matters is the `merge -s ours` shape, covered in
+# test-merge-safety-reverts-main.sh.)
 # ---------------------------------------------------------------------------
-test_accidental_revert_refused_then_fixed() {
-  local repo
+test_plain_fork_is_clean_and_merge_keeps_file() {
+  local repo rc
   repo="$(_mk_repo)"
 
   echo base > "${repo}/shared.txt"
@@ -61,52 +73,33 @@ test_accidental_revert_refused_then_fixed() {
   git -C "$repo" add -A && git -C "$repo" commit -qm "laneB work"
 
   bash "$GATE" "$repo" laneB main >/tmp/mgs-case1.out 2>&1
-  local rc=$?
-  if [[ $rc -eq 1 ]] && grep -q 'fileX.txt' /tmp/mgs-case1.out; then
-    _ok "case 1: refuses and names fileX.txt (rc=$rc)"
-  else
-    _fail "case 1: expected rc=1 naming fileX.txt, got rc=$rc: $(cat /tmp/mgs-case1.out)"
-  fi
-
-  # Real merge would in fact still preserve fileX (a plain 3-way merge keeps
-  # a path added only on the "ours" side) -- confirm the gate's refusal
-  # tracks the diff-stat shape a human would see, not a false claim about
-  # git's merge algorithm.
-  git -C "$repo" checkout -q main
-  if git -C "$repo" merge --no-edit --no-ff laneB >/tmp/mgs-case1-merge.out 2>&1; then
-    if [[ -f "${repo}/fileX.txt" ]]; then
-      _ok "case 1: real merge exit 0 and fileX.txt would in fact survive (belt-and-suspenders confirmed)"
-    else
-      _fail "case 1: real merge deleted fileX.txt -- $(cat /tmp/mgs-case1-merge.out)"
-    fi
-  else
-    _fail "case 1: real merge unexpectedly failed -- $(cat /tmp/mgs-case1-merge.out)"
-  fi
-
-  # Fix path: merge main into laneB, then retry -- must go green.
-  git -C "$repo" checkout -q laneB
-  git -C "$repo" merge --no-edit main >/tmp/mgs-case1-fix.out 2>&1 || {
-    _fail "case 1 fix: merge main into laneB failed -- $(cat /tmp/mgs-case1-fix.out)"
-    rm -rf "$repo"
-    return
-  }
-  bash "$GATE" "$repo" laneB main >/tmp/mgs-case1-fixed.out 2>&1
   rc=$?
   if [[ $rc -eq 0 ]]; then
-    _ok "case 1 fix: merge main into laneB flips the gate green"
+    _ok "case 1: plain fork is clean under merged-tree semantics (rc=0)"
   else
-    _fail "case 1 fix: still refused after merging main in: $(cat /tmp/mgs-case1-fixed.out)"
+    _fail "case 1: plain fork wrongly refused (rc=$rc): $(cat /tmp/mgs-case1.out)"
+  fi
+
+  # Belt-and-suspenders: the real merge lands clean and fileX survives --
+  # the gate's rc 0 matched git's actual behaviour.
+  git -C "$repo" checkout -q main
+  if git -C "$repo" merge --no-edit --no-ff laneB >/tmp/mgs-case1-merge.out 2>&1 \
+     && [[ -f "${repo}/fileX.txt" ]]; then
+    _ok "case 1: real merge exit 0 and fileX.txt survives (gate agreed with git)"
+  else
+    _fail "case 1: real merge failed or deleted fileX.txt -- $(cat /tmp/mgs-case1-merge.out)"
   fi
 
   rm -rf "$repo"
 }
 
 # ---------------------------------------------------------------------------
-# Case 2: two files land after fork (WORKER-OUTLIVES round-3 shape) -- the
-# gate names BOTH.
+# Case 2: two files land on main after the fork (WORKER-OUTLIVES round-3
+# shape) -- still clean while the lane never wholesale-merged main: the
+# merge tree keeps both, and so does the real merge.
 # ---------------------------------------------------------------------------
-test_multi_file_accidental_revert_names_both() {
-  local repo
+test_multi_file_plain_fork_is_clean() {
+  local repo rc
   repo="$(_mk_repo)"
 
   echo base > "${repo}/shared.txt"
@@ -125,23 +118,32 @@ test_multi_file_accidental_revert_names_both() {
   git -C "$repo" add -A && git -C "$repo" commit -qm "laneB work"
 
   bash "$GATE" "$repo" laneB main >/tmp/mgs-case2.out 2>&1
-  local rc=$?
-  if [[ $rc -eq 1 ]] && grep -q 'test-suite-one.sh' /tmp/mgs-case2.out && grep -q 'test-suite-two.sh' /tmp/mgs-case2.out; then
-    _ok "case 2: refuses and names both concurrently-landed files"
+  rc=$?
+  if [[ $rc -eq 0 ]]; then
+    _ok "case 2: multi-file plain fork is clean (rc=0)"
   else
-    _fail "case 2: expected rc=1 naming both files, got rc=$rc: $(cat /tmp/mgs-case2.out)"
+    _fail "case 2: wrongly refused (rc=$rc): $(cat /tmp/mgs-case2.out)"
+  fi
+
+  git -C "$repo" checkout -q main
+  if git -C "$repo" merge --no-edit --no-ff laneB >/tmp/mgs-case2-merge.out 2>&1 \
+     && [[ -f "${repo}/test-suite-one.sh" && -f "${repo}/test-suite-two.sh" ]]; then
+    _ok "case 2: real merge keeps both concurrently-landed files (gate agreed with git)"
+  else
+    _fail "case 2: real merge lost a file -- $(cat /tmp/mgs-case2-merge.out)"
   fi
 
   rm -rf "$repo"
 }
+# bash-guard: allow
 
 # ---------------------------------------------------------------------------
 # Case 3: negative control -- a lane that deliberately deletes its OWN file
-# (existed at the merge-base, untouched by main) must always land. Direction
-# A: main never touches the file at all.
+# (existed at the merge-base, untouched by main) must always land: its
+# commit NAMES the path, so the merge-tree change is the lane's decision.
 # ---------------------------------------------------------------------------
 test_intentional_own_deletion_always_lands() {
-  local repo
+  local repo rc
   repo="$(_mk_repo)"
 
   echo base > "${repo}/shared.txt"
@@ -154,7 +156,7 @@ test_intentional_own_deletion_always_lands() {
   git -C "$repo" commit -qm "laneD removes obsolete.txt as part of its own work"
 
   bash "$GATE" "$repo" laneD main >/tmp/mgs-case3.out 2>&1
-  local rc=$?
+  rc=$?
   if [[ $rc -eq 0 ]]; then
     _ok "case 3: lane's own deletion of its own file is allowed to land"
   else
@@ -178,13 +180,15 @@ test_intentional_own_deletion_always_lands() {
 }
 
 # ---------------------------------------------------------------------------
-# Case 4: negative control, reverse direction -- a lane deliberately deletes
-# a file that main ALSO advanced on unrelated paths in the meantime (so the
-# lane is genuinely behind main on other files, but its own deletion of ITS
-# file must still be trusted and land).
+# Case 4: reverse direction -- a lane deliberately deletes a file that main
+# ALSO advanced on unrelated paths in the meantime. The lane is genuinely
+# behind main on other files, but its own named deletion must still be
+# trusted AND the unrelated main file must survive the merge -- both legs
+# hold under merged-tree semantics (the merge tree keeps what main added;
+# it drops only what the lane named).
 # ---------------------------------------------------------------------------
 test_intentional_deletion_lands_even_while_lane_is_behind() {
-  local repo
+  local repo rc
   repo="$(_mk_repo)"
 
   echo base > "${repo}/shared.txt"
@@ -205,34 +209,24 @@ test_intentional_deletion_lands_even_while_lane_is_behind() {
   git -C "$repo" checkout -q laneE
 
   bash "$GATE" "$repo" laneE main >/tmp/mgs-case4.out 2>&1
-  local rc=$?
-  # Must refuse (unrelated-new-file.sh is genuinely missing from laneE, and
-  # laneE never touched it) but must name ONLY the accidental file, never
-  # the lane's own intentional deletion.
-  if [[ $rc -eq 1 ]] && grep -q 'unrelated-new-file.sh' /tmp/mgs-case4.out && ! grep -q 'obsolete.txt' /tmp/mgs-case4.out; then
-    _ok "case 4: refuses on the accidental file only, never on the lane's own deletion"
-  else
-    _fail "case 4: expected rc=1 naming only unrelated-new-file.sh, got rc=$rc: $(cat /tmp/mgs-case4.out)"
-  fi
-
-  # Fix path, then confirm the lane's own deletion still lands (the whole
-  # point of item 3: an intended deletion must survive the fix too).
-  git -C "$repo" merge --no-edit main >/tmp/mgs-case4-fix.out 2>&1 || {
-    _fail "case 4 fix: merge main into laneE failed -- $(cat /tmp/mgs-case4-fix.out)"
-    rm -rf "$repo"
-    return
-  }
-  bash "$GATE" "$repo" laneE main >/tmp/mgs-case4-fixed.out 2>&1
   rc=$?
   if [[ $rc -eq 0 ]]; then
-    _ok "case 4 fix: green after merging main in, obsolete.txt still absent (lane's intent preserved)"
+    _ok "case 4: behind-main lane with its own named deletion is clean (rc=0)"
   else
-    _fail "case 4 fix: still refused after merging main in: $(cat /tmp/mgs-case4-fixed.out)"
+    _fail "case 4: wrongly refused (rc=$rc): $(cat /tmp/mgs-case4.out)"
   fi
-  if [[ ! -f "${repo}/obsolete.txt" ]]; then
-    _ok "case 4 fix: laneE's own deletion of obsolete.txt survived the main-merge"
+
+  # The real merge must land BOTH intents: the lane's deletion AND main's
+  # unrelated addition.
+  git -C "$repo" checkout -q main
+  if git -C "$repo" merge --no-edit --no-ff laneE >/tmp/mgs-case4-merge.out 2>&1; then
+    if [[ ! -f "${repo}/obsolete.txt" && -f "${repo}/unrelated-new-file.sh" ]]; then
+      _ok "case 4: real merge lands the deletion AND keeps unrelated-new-file.sh (gate agreed with git)"
+    else
+      _fail "case 4: real merge lost one of the two intents -- $(cat /tmp/mgs-case4-merge.out)"
+    fi
   else
-    _fail "case 4 fix: obsolete.txt reappeared after merging main in"
+    _fail "case 4: real merge unexpectedly failed -- $(cat /tmp/mgs-case4-merge.out)"
   fi
 
   rm -rf "$repo"
@@ -243,14 +237,14 @@ test_intentional_deletion_lands_even_while_lane_is_behind() {
 # error (rc=2), never a silent pass.
 # ---------------------------------------------------------------------------
 test_unresolvable_branch_is_usage_error() {
-  local repo
+  local repo rc
   repo="$(_mk_repo)"
   echo base > "${repo}/shared.txt"
   git -C "$repo" add -A && git -C "$repo" commit -qm base
   git -C "$repo" branch -m main >/dev/null 2>&1 || true
 
   bash "$GATE" "$repo" does-not-exist main >/tmp/mgs-case5.out 2>&1
-  local rc=$?
+  rc=$?
   if [[ $rc -eq 2 ]]; then
     _ok "case 5: unresolvable lane branch is rc=2, not a silent pass"
   else
@@ -260,8 +254,8 @@ test_unresolvable_branch_is_usage_error() {
   rm -rf "$repo"
 }
 
-test_accidental_revert_refused_then_fixed
-test_multi_file_accidental_revert_names_both
+test_plain_fork_is_clean_and_merge_keeps_file
+test_multi_file_plain_fork_is_clean
 test_intentional_own_deletion_always_lands
 test_intentional_deletion_lands_even_while_lane_is_behind
 test_unresolvable_branch_is_usage_error
@@ -273,3 +267,4 @@ if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
 exit 0
+# bash-guard: allow

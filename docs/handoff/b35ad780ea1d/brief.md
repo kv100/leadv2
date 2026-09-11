@@ -1,47 +1,37 @@
-# LANE-MERGE-SILENTLY-REVERTS-MAIN-01 (ряд `b35ad780ea1d`) + писательская половина `531da1c7d042`
+# LANE-MERGE-SILENTLY-REVERTS-MAIN-01
 
-## Первым делом прочитать улики целиком
-```
-grep -A6  "id: b35ad780ea1d" /Users/kostiantyn.vlasenko/Projects/persona-engine/docs/tasks.yaml
-grep -A16 "id: 531da1c7d042" /Users/kostiantyn.vlasenko/Projects/persona-engine/docs/tasks.yaml
-```
+Wave B0. Files: `plugins/leadv2/scripts/leadv2-merge-safety-gate.sh` (+ its callers).
 
-## Кратко
-Линия, ответвившаяся раньше чужого слияния, при слиянии **молча удаляет** то, что
-легло в main после её ответвления. Пять случаев за сутки, ловилось только руками.
+## Defect
+A lane branched BEFORE someone else's merge silently DELETES what landed on main
+after its branch point, when it is merged. Five occurrences in one day; the only
+thing that ever caught it was a human eyeballing the diff.
 
-## Инструмент, который единственный отвечает на этот вопрос
-Список файлов «ветка против main» ЛЖЁТ: `main..branch` показывает более новые файлы
-main как удаления. Отвечает только дифф **слитого дерева**:
-```
-git diff main "$(git merge-tree --write-tree main <branch>)"
-```
-Всё в этом диффе, что откатывает файл, которого линия не касалась, — регрессия main.
+## Known trap (read before writing the check)
+`git log main..branch` shows main's newer files as DELETIONS — that is the normal
+appearance of an old branch, not proof of a revert. The only sound test is to diff
+the **merge TREE** against main: compute the would-be merge result and assert that
+no path present in main disappears or regresses. A difference has no direction
+until you date it.
 
-## Что сделать
-1. В `plugins/leadv2/scripts/leadv2-deploy-merge.sh` перед слиянием прогнать пробу
-   merge-tree выше. Регрессия → **отказать**: ненулевой rc + перечень откатываемых
-   файлов на stderr. Не сливать.
-2. Флаг `--allow-main-regression` — осознанное продавливание; обязан напечатать
-   полный список того, что откатывается, прежде чем слить.
-3. **Записывать приземление, а не выводить его.** В сообщение коммита слияния
-   добавить трейлеры `Landed-lane: <task-id>` и `Landed-branch: <branch>`.
-   Причина (замер 2026-09-06): внесение переписывает байты (ребейз + разрешение
-   конфликта), поэтому блобы и patch-id честно отличаются, и трёхуровневый тест
-   слитости видит 1 линию из 6. Строгий тест **не ослаблять** — это вернёт ловушку
-   ложного слияния 2026-09-04. Постфактум слитость вывести нельзя, её надо писать.
+## Deliver
+1. A gate function that, given a lane branch and main, computes the merge tree
+   (`git merge-tree`, or a scratch-worktree trial merge) and REFUSES with a
+   non-zero code + a named path list when the merge would remove or revert a path
+   that main gained after the branch point.
+2. Wire it into the landing path so a merge cannot proceed past a refusal.
+   Fail CLOSED: if the check itself cannot run (no origin/main, no merge base),
+   refuse — never assume clean.
+3. Suite: `plugins/leadv2/scripts/tests/test-merge-safety-reverts-main.sh`,
+   building a real scratch repo that reproduces the five-case shape.
 
-## Write set — только эти файлы
-- `plugins/leadv2/scripts/leadv2-deploy-merge.sh`
-- `plugins/leadv2/scripts/tests/test-merge-does-not-regress-main.sh` (новый)
+## Negative control (declare it, and RUN it)
+Mutation: make the gate return "clean" unconditionally inside its body.
+The suite MUST go red. Paste output to `docs/handoff/b35ad780ea1d/round1-red.txt`.
 
-## Off-limits
-`leadv2-lane-salvage.sh`, `leadv2-active-registry.sh`, `lib/*`,
-`leadv2-state-path.sh`, `scripts/waves-refresh.sh` (читателя трейлера пишет другая линия).
+## Off limits
+Do not touch `leadv2-lane-salvage.sh` — another lane owns it this round.
 
-## Приёмка — обязательный негативный контроль
-Фикстура: main получил файл X после ответвления линии; слияние линии откатывает X.
-Проба обязана ОТКАЗАТЬ с ненулевым rc. Второй тест: трейлер `Landed-lane:` реально
-попал в коммит слияния (`git log -1 --format=%B`).
-Негативный контроль: убрать проверку ВНУТРИ тела функции → обе сюиты краснеют.
-В отчёт вставить зелёный и красный прогон целиком. Без красного не принимается.
+## Done
+- suite green clean / red mutated, both pasted
+- the gate refuses on a synthetic revert case AND on an unresolvable base
