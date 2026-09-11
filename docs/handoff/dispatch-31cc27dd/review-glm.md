@@ -1,0 +1,1 @@
+Touched suites are green (3/3, 12+14+24 pass, 0 fail) and the missing-journal mechanism is probe-verified. The sibling census run (phase-gate-inversion / default-class / names-everything / state-layer-silent-write) is still executing in the background — I'll issue the verdict when its completion notification lands.
