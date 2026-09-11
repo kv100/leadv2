@@ -89,12 +89,51 @@ Top-level `"binding_window": null` while every account reports
 `"fetched_at": "2026-09-11T01:01:04Z"`, read at ~01:35Z — a ~34-minute-old cache
 served without the caller asking for cached data.
 
-## S6. The registry is blind to live lanes
+## S6. The registry is NOT blind — the lead's first measurement was wrong
 
-Every `~/.claude/leadv2-state/*/active.yaml` reported 0 lanes while a real codex
-lane (`task-mtw9hku9-9rbxiy`) had been alive 25 minutes. A concurrent session
-recorded the same thing independently at 01:17Z. Write-set collision protection
-therefore is not protecting anything right now.
+**Corrected before any lane read this.** The lead first reported "every
+`active.yaml` shows 0 lanes" and called the registry blind. That was a false zero
+of the lead's own making: the file is a `sessions:` **list** of `- task_id: <id>`
+entries, and the grep used a map-shaped pattern (`^  <12-hex>:`) that can never
+match. Do not carry the "registry is blind" claim into your findings.
+
+What is actually true, measured 2026-09-11 ~01:50Z:
+
+- `^- task_id:` count — `leadv2`: **106**, `persona-engine`: **4**,
+  `getmany-followup-bot`: 1.
+- `persona-engine` lane phases: one `recovered_unowned`, two `spawning`, one
+  `build`.
+- `started_at` spans **2026-09-06 → 2026-09-11**, so entries persist at least
+  five days. Whether that is deliberate history or unreaped accumulation is an
+  open question for M4 — the lead did not establish it.
+
+**Two cap authorities disagree, and only one was fixed.** `active.yaml`'s own
+`meta` block carries `hard_limit: 5`, `standard_max: 4`, `heavy_max: 3`, while
+`~/.claude/settings.json` carries `LEADV2_LANE_CAP: 6`. A concurrent session
+raised settings.json 4→6 last night to honour the founder's "держи до 6 задач",
+and reported the live cap as 4 — that 4 is `standard_max`, a different authority
+its edit never touched. Which one binds, and for which size class, is a finding
+M4 owns. Do not edit `~/.claude/settings.json`.
+
+**The real dispatch blocker, measured on four consecutive refusals:**
+
+    dispatch_refused reason=writeset_pending task=89e8edf3
+      blocked_by=518b42814626 blocked_writes_owner=518b42814626
+      blocked_writes_reason=undeclared writes_reason=undeclared
+      age_s=125 window_s=900
+
+Lane `518b42814626` holds a registry slot whose write set is **undeclared**, so
+the collision checker cannot prove a disjoint set and fails closed for up to 900
+seconds — blocking four unrelated review lanes whose declared writes were single
+files under `docs/handoff/`. Failing closed is correct; the defect is upstream,
+that a lane can be registered with an undeclared write set at all. Related board
+row: `LANE-WRITES-WRITER-IS-ON-THE-DEAD-SUPERVISOR-PATH-01`.
+
+**Parsing trap, and it bit the lead twice.** `phase:` and `dead_at:` also appear
+*nested inside* each lane's `lane_events:` list. A naive `grep -c` over the
+`leadv2` file returns 231 phase lines and 228 `dead_at` lines for 106 lanes.
+Count lanes by `^- task_id:` only, and get lane-level fields by parsing the YAML,
+never by a flat grep.
 
 ## Measurement traps that already produced wrong numbers today — do not repeat
 
