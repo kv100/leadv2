@@ -71,6 +71,7 @@ def _load_yaml_flat(text):
         if not line.strip():
             continue
         stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
         if stripped.startswith("- "):
             if cur_key is None:
                 raise ValueError("list item with no preceding key")
@@ -82,6 +83,21 @@ def _load_yaml_flat(text):
                 raise ValueError("mixed list/scalar for key %r" % cur_key)
             data[cur_key].append(item)
             continue
+        # The fallback deliberately understands only the one nested mapping
+        # this declaration needs.  Keep the old flat form flat: any other
+        # nesting is malformed rather than guessed at.
+        if indent:
+            if cur_key != "archive" or not isinstance(data.get("archive"), dict):
+                raise ValueError("unsupported nesting in line %r" % raw_line)
+            if ":" not in stripped:
+                raise ValueError("unsupported archive member in line %r" % raw_line)
+            key, _, val = stripped.partition(":")
+            key = key.strip()
+            val = val.strip()
+            if not key or not val or val.startswith("[") or val.startswith("{"):
+                raise ValueError("bad archive member in line %r" % raw_line)
+            data["archive"][key] = _unquote(val)
+            continue
         if ":" not in line:
             raise ValueError("no ':' in line %r" % raw_line)
         key, _, val = line.partition(":")
@@ -91,7 +107,7 @@ def _load_yaml_flat(text):
             raise ValueError("empty key")
         if val == "":
             cur_key = key
-            data[key] = None
+            data[key] = {} if key == "archive" else None
             continue
         if val.startswith("[") or val.startswith("{"):
             raise ValueError("flow collection not supported by fallback parser")
@@ -137,12 +153,31 @@ def _validate_declaration(data):
     closed = data.get("closed_statuses")
     if not isinstance(closed, list) or not closed or not all(isinstance(c, str) for c in closed):
         return None, "decl_missing_key:closed_statuses"
+    archive = data.get("archive")
+    archive_decl = None
+    if archive is not None:
+        if not isinstance(archive, dict):
+            return None, "decl_bad_archive"
+        heading = archive.get("heading")
+        item_pattern = archive.get("item_pattern")
+        if not isinstance(heading, str) or not heading.strip() or not isinstance(item_pattern, str) or not item_pattern:
+            return None, "decl_bad_archive"
+        if archive.get("treat_as") != "closed":
+            return None, "decl_bad_archive"
+        try:
+            item_re = re.compile(item_pattern)
+        except re.error:
+            return None, "decl_bad_archive"
+        if "id" not in item_re.groupindex or "status" not in item_re.groupindex:
+            return None, "decl_bad_archive"
+        archive_decl = {"heading": _nfc(heading.strip()), "item_re": item_re}
     return {
         "file": data["file"],
         "id_column": data["id_column"],
         "status_column": data["status_column"],
         "id_pattern": compiled,
         "closed_statuses": {_nfc(c.strip()) for c in closed},
+        "archive": archive_decl,
     }, None
 
 
@@ -174,11 +209,28 @@ def _find_matches(decl, root, task_id):
 
     id_idx = None
     status_idx = None
-    matches = []
+    table_matches = []
+    archive_matches = []
     task_id_norm = _nfc(task_id.strip())
+    in_archive = False
 
     for raw_line in text.splitlines():
         line = raw_line.rstrip("\r\n")
+        stripped = line.strip()
+        archive = decl["archive"]
+        if archive is not None:
+            if stripped == archive["heading"]:
+                in_archive = True
+                continue
+            if in_archive and re.match(r"^#{1,6}(?:\s|$)", stripped):
+                in_archive = False
+            if in_archive:
+                item = archive["item_re"].match(line)
+                if item is not None:
+                    cell_id = _nfc(item.group("id").strip())
+                    if decl["id_pattern"].fullmatch(cell_id) and cell_id == task_id_norm:  # nc-anchor: archive-id-exact
+                        status_text = item.group("status").strip().replace("\t", " ")
+                        archive_matches.append((cell_id, status_text))
         if not line.lstrip().startswith("|"):
             continue
         cells = _split_row(line)
@@ -201,11 +253,11 @@ def _find_matches(decl, root, task_id):
             continue
         status_text = cells[status_idx] if status_idx < len(cells) else "-"
         status_text = status_text.replace("\t", " ")
-        matches.append((cell_id, status_text))
+        table_matches.append((cell_id, status_text))
 
-    if id_idx is None:
+    if id_idx is None and decl["archive"] is None:
         return None, "decl_columns_missing", file_abs
-    return matches, None, file_abs
+    return (table_matches, archive_matches), None, file_abs
 
 
 def resolve(root, task_id):
@@ -230,12 +282,24 @@ def resolve(root, task_id):
     if matches is None:
         return ("none", "-", diag, file_abs if diag == "decl_file_outside_root" else "-")
 
-    if not matches:
+    table_matches, archive_matches = matches
+    if not table_matches and not archive_matches:
         return ("none", "-", "-", "-")
-    if len(matches) >= 2:
-        return ("md_ambiguous", matches[0][0], matches[0][1], file_abs)
+    # A row in both declared shapes is an editing error, not a precedence
+    # decision.  Likewise, duplicates within either shape must stay visible.
+    if table_matches and archive_matches:  # nc-anchor: archive-both-ambiguous
+        return ("md_ambiguous", table_matches[0][0], table_matches[0][1], file_abs)
+    if len(table_matches) >= 2 or len(archive_matches) >= 2:
+        first = table_matches[0] if table_matches else archive_matches[0]
+        return ("md_ambiguous", first[0], first[1], file_abs)
 
-    row_id, status_text = matches[0]
+    if table_matches:
+        row_id, status_text = table_matches[0]
+    else:
+        # Archive membership, not its descriptive parenthetical, is closure.
+        row_id, status_text = archive_matches[0]
+        archive_is_closed = True  # nc-anchor: archive-membership-closed
+        return ("md_closed" if archive_is_closed else "md_open", row_id, status_text, file_abs)
     status_norm = _nfc(status_text.strip())
     closed = status_norm in decl["closed_statuses"]  # nc-anchor: closed-exact
     return ("md_closed" if closed else "md_open", row_id, status_text, file_abs)

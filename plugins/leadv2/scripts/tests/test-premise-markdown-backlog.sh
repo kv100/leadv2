@@ -61,9 +61,10 @@ status_column: "Статус"
 id_pattern: '^[0-9]+$'
 closed_statuses:
   - "в проде"
-  - "не нужна"
-  - "решено"
-  - "разобрано"
+archive:
+  heading: "## Закрыто"
+  item_pattern: '^- \*\*(?P<id>[0-9]+)\*\* \((?P<status>[^)]*)\)'
+  treat_as: closed
 YAML
 
 cat > "${REPO_A}/docs/TASKS.md" <<'MD'
@@ -82,6 +83,14 @@ Some prose between the two tables.
 | 30 | — | task 30 | why | в проде, без потребителя | — | next |
 | 31 | — | dup a | why | в проде | — | next |
 | 31 | — | dup b | why | в проде | — | next |
+| 32 | — | live and archived | why | не начато | — | next |
+
+## Закрыто
+
+- **9** (не нужна) — archived task nine
+- **19** (решено) — archived task nineteen
+- **29** (разобрано) — archived task twenty nine
+- **32** (в проде) — deliberately also in the working table
 MD
 
 _read() { python3 "${READER}" --root "$1" --task-id "$2" 2>"${TMP}/_stderr"; }
@@ -117,6 +126,60 @@ OUT="$(_read "${REPO_A}" 1)"
 # case 7: two rows share id 31 -> md_ambiguous
 OUT="$(_read "${REPO_A}" 31)"
 [[ "${OUT}" == md_ambiguous$'\t'31$'\t'* ]] && pass "A7 id31 duplicate -> md_ambiguous" || fail "A7 id31: '${OUT}'"
+
+# Archive membership is closure, while the parenthetical is report-only.
+OUT="$(_read "${REPO_A}" 9)"
+[[ "${OUT}" == $'md_closed\t9\tне нужна'* ]] && pass "A10 archive-only id9 -> md_closed with status text" || fail "A10 id9: '${OUT}'"
+
+# Archive parsing has its own exact-id path; 9 must not be inferred from 19/29.
+ROW_ID="$(printf '%s' "${OUT}" | cut -f2)"
+[[ "${ROW_ID}" == "9" ]] && pass "A11 archive id9 exactly 9 (not 19/29)" || fail "A11 archive row_id='${ROW_ID}'"
+
+# An id in both declared forms is a founder-file editing error, never precedence.
+OUT="$(_read "${REPO_A}" 32)"
+[[ "${OUT}" == md_ambiguous$'\t'32$'\t'* ]] && pass "A12 table plus archive -> md_ambiguous" || fail "A12 id32: '${OUT}'"
+
+# Archive-looking prose remains invisible unless a declaration opts into it.
+REPO_A13="${TMP}/repoA13"
+mkdir -p "${REPO_A13}/.claude/leadv2-overrides" "${REPO_A13}/docs"
+cat > "${REPO_A13}/.claude/leadv2-overrides/markdown-backlog.yaml" <<'YAML'
+file: docs/TASKS.md
+id_column: "#"
+status_column: "Статус"
+id_pattern: '^[0-9]+$'
+closed_statuses:
+  - "в проде"
+YAML
+cat > "${REPO_A13}/docs/TASKS.md" <<'MD'
+| # | Статус |
+|---|---|
+
+## Закрыто
+- **77** (не нужна) — undeclared archive
+MD
+OUT="$(_read "${REPO_A13}" 77)"
+[[ "${OUT}" == $'none\t-\t-\t-' ]] && pass "A13 undeclared archive-shaped text -> none" || fail "A13: '${OUT}'"
+
+# A declared archive ignores plain and nested bullets which miss item_pattern.
+REPO_A14="${TMP}/repoA14"
+mkdir -p "${REPO_A14}/.claude/leadv2-overrides" "${REPO_A14}/docs"
+cp "${REPO_A}/.claude/leadv2-overrides/markdown-backlog.yaml" "${REPO_A14}/.claude/leadv2-overrides/markdown-backlog.yaml"
+cat > "${REPO_A14}/docs/TASKS.md" <<'MD'
+## Закрыто
+
+- 66 (не нужна) — plain prose bullet
+  - **66** (не нужна) — nested bullet
+MD
+OUT="$(_read "${REPO_A14}" 66)"
+[[ "${OUT}" == $'none\t-\t-\t-' ]] && pass "A14 non-matching archive bullets -> none" || fail "A14: '${OUT}'"
+
+# A declared heading with no matching items is a valid empty archive.
+REPO_A15="${TMP}/repoA15"
+mkdir -p "${REPO_A15}/.claude/leadv2-overrides" "${REPO_A15}/docs"
+cp "${REPO_A}/.claude/leadv2-overrides/markdown-backlog.yaml" "${REPO_A15}/.claude/leadv2-overrides/markdown-backlog.yaml"
+printf '%s\n' '## Закрыто' > "${REPO_A15}/docs/TASKS.md"
+OUT="$(_read "${REPO_A15}" 66)"; RC=$?
+[[ "${RC}" == "0" && "${OUT}" == $'none\t-\t-\t-' ]] && pass "A15 empty declared archive -> none rc0" || fail "A15: rc=${RC} out='${OUT}'"
 
 # case 8: declaration names a missing file -> none, rc 0, no traceback
 REPO_B8="${TMP}/repoB8"
@@ -189,6 +252,81 @@ if [[ -d "${TMP}/repoA-wt" ]]; then
     || fail "A11 worktree: '${OUT}'"
 else
   fail "A11 could not create linked worktree for repoA (git worktree add failed)"
+fi
+
+# ── A16: one deliberately weak live-artifact shape check ───────────────────
+# This is intentionally not a content/count assertion: TASKS.md changes
+# frequently.  It independently collects every declared table/archive id from
+# the live document, then requires the reader to classify each one exactly
+# once as open or closed.  A format drift that leaves a declared archive
+# unparsed therefore goes red without pinning any founder-owned row.
+LIVE_ROOT="${HOME}/Projects/getmany-followup-bot"
+LIVE_FILE="${LIVE_ROOT}/docs/projects/post-booking-pipeline/TASKS.md"
+_live_shape_check() {
+  python3 - "${READER}" "${LIVE_ROOT}" "${LIVE_FILE}" <<'PY'
+import importlib.util
+import re
+import sys
+
+reader_path, root, file_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("markdown_backlog_reader", reader_path)
+reader = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(reader)
+raw = reader._load_declaration(root + "/.claude/leadv2-overrides/markdown-backlog.yaml")
+decl, diag = reader._validate_declaration(raw)
+if decl is None:
+    raise SystemExit("live_shape invalid declaration: " + diag)
+with open(file_path, encoding="utf-8") as fh:
+    lines = [reader._nfc(line.rstrip("\n\r")) for line in fh]
+
+ids = set()
+id_idx = None
+in_archive = False
+archive = decl["archive"]
+for line in lines:
+    stripped = line.strip()
+    if archive is not None:
+        if stripped == archive["heading"]:
+            in_archive = True
+            continue
+        if in_archive and re.match(r"^#{1,6}(?:\s|$)", stripped):
+            in_archive = False
+        if in_archive:
+            match = archive["item_re"].match(line)
+            if match is not None:
+                candidate = reader._nfc(match.group("id").strip())
+                if decl["id_pattern"].fullmatch(candidate):
+                    ids.add(candidate)
+    if not line.lstrip().startswith("|"):
+        continue
+    cells = reader._split_row(line)
+    if decl["id_column"] in cells and decl["status_column"] in cells:
+        id_idx = cells.index(decl["id_column"])
+        continue
+    if id_idx is None or id_idx >= len(cells):
+        continue
+    candidate = reader._nfc(cells[id_idx])
+    if decl["id_pattern"].fullmatch(candidate):
+        ids.add(candidate)
+
+if not ids:
+    raise SystemExit("live_shape reader candidate count is zero")
+bad = []
+for task_id in sorted(ids, key=lambda value: (int(value) if value.isdigit() else value)):
+    status, _, _, _ = reader.resolve(root, task_id)
+    if status not in ("md_open", "md_closed"):
+        bad.append("%s=%s" % (task_id, status))
+if bad:
+    raise SystemExit("live_shape unresolved/ambiguous: " + ",".join(bad))
+print("live_shape ids=%d all=md_open|md_closed" % len(ids))
+PY
+}
+if [[ ! -f "${LIVE_FILE}" ]]; then
+  log "SKIP: A16 live markdown artifact absent: ${LIVE_FILE}"
+else
+  LIVE_OUT="$(_live_shape_check 2>&1)"; LIVE_RC=$?
+  [[ "${LIVE_RC}" == "0" ]] && pass "A16 live artifact shape: ${LIVE_OUT}" \
+    || fail "A16 live artifact shape rc=${LIVE_RC}: ${LIVE_OUT}"
 fi
 
 ########################################################################

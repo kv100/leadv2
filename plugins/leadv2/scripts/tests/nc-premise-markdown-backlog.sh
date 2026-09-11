@@ -2,7 +2,7 @@
 # tests/nc-premise-markdown-backlog.sh — negative control for
 # PREMISE-GATE-MARKDOWN-BACKLOG-01 / test-premise-markdown-backlog.sh.
 #
-# Proves the suite actually detects the two matching bugs it exists to catch,
+# Proves the suite actually detects the matching bugs it exists to catch,
 # not just that its own fixtures happen to be green. Copies the canonical
 # reader to a scratch file, applies one surgical mutation at a time to the
 # exact line an `# nc-anchor: <name>` comment marks in
@@ -61,6 +61,10 @@ run_mutation() {
 
   sed -i.bak -e "${sed_expr}" "${mutant}" || { printf -- 'NC-SETUP-FAIL: sed mutation failed for anchor %s\n' "${anchor}" >&2; exit 1; }
   rm -f "${mutant}.bak"
+  if cmp -s "${CANON_READER}" "${mutant}"; then
+    printf -- 'NC-SETUP-FAIL: mutation pattern did not change anchor %s -- refusing a silent no-op negative control.\n' "${anchor}" >&2
+    exit 1
+  fi
 
   if ! python3 -m py_compile "${mutant}" 2>/dev/null; then
     printf -- 'NC-SETUP-FAIL: mutant for anchor %s does not compile -- mutation is malformed.\n' "${anchor}" >&2
@@ -104,6 +108,20 @@ run_mutation "closed-exact" \
 run_mutation "id-exact" \
   's/if _nfc(cell_id) != task_id_norm:  # nc-anchor: id-exact/if task_id_norm not in _nfc(cell_id):  # nc-anchor: id-exact/' \
   "A6b id1:"
+
+# ── Mutation 3: table/archive collision silently prefers the table ─────────
+# A task simultaneously live and archived must be refused as ambiguous.  If
+# this branch is disabled, the table path below silently reports md_open.
+run_mutation "archive-both-ambiguous" \
+  's/if table_matches and archive_matches:  # nc-anchor: archive-both-ambiguous/if False:  # nc-anchor: archive-both-ambiguous/' \
+  "A12 id32:"
+
+# ── Mutation 4: archive closure gates on descriptive status text ───────────
+# The fixture intentionally omits "не нужна" from closed_statuses: its archive
+# membership alone must close it.  A parenthetical-status gate therefore reddens A10.
+run_mutation "archive-membership-closed" \
+  's/archive_is_closed = True  # nc-anchor: archive-membership-closed/archive_is_closed = _nfc(status_text.strip()) in decl["closed_statuses"]  # nc-anchor: archive-membership-closed/' \
+  "A10 archive-only id9:"
 
 printf -- '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" -eq 0 ]] && exit 0 || exit 1
