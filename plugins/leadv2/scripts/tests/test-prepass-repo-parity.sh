@@ -71,7 +71,12 @@ LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" LEADV2_DISPATCH_ARCHITECT_BIN="$ARCH_SL
 LEADV2_DISPATCH_ARCHITECT_TIMEOUT_SEC=2 LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
 LEADV2_ROUTER_V2=0 LEADV2_EXCLUDED_ARMS=__none__ LEADV2_LANE_SHAPE=off \
   bash "$DISPATCH" 'test PLUGIN-PREPASS-HANGS-01 parity: slow-but-legitimate architect work' \
-  --kind product --protected --writes "a.txt" >"$ROOT/out.log" 2>&1
+  --kind product --protected --writes "a.txt,b.txt" >"$ROOT/out.log" 2>&1
+# writes MUST be >=2 paths: a single-path writeset takes the provably_one_file
+# skip (leadv2-dispatch-code.sh:5674, landed 0f18056a AFTER this suite was
+# written) and never reaches the prepass, so check1 could only see
+# status=skipped. The mission string itself is unchanged -- it hashes to the
+# sig8 the historical journal rows were written under.
 
 if grep -q 'architect_prepass .*status=failed reason=timeout rc=124' "$ROOT/out.log"; then
   echo "[ok] check1: legitimate work exceeding ARCHITECT_PREPASS_TIMEOUT_SEC reproduces rc=124 (matches cd219000/85d0e45e mechanism)"
