@@ -31,8 +31,23 @@ index 0000000..e69de29
 +int main() { return 0; }
 " > "${DIFF_FILE}"
 
+# Refuse to write a mock onto a TRACKED file. On 2026-09-11 this suite wrote its mock to
+# "${SCRIPT_DIR}/../codex-task.sh" -- the real 2417-line production script -- and its trap
+# only removed the temp dir, so the mock STAYED. The plugin working tree is what the symlink
+# farm resolves to in all four repos, so one run left every repo with a code-review gate that
+# answered a fabricated "REVIEW_VERDICT: PASS / critical=0" to everything. HEAD was never
+# touched, so no CI run could have seen it. LEADV2_FP07_MOCK_TARGET exists ONLY so the
+# negative control can aim this at a tracked path and prove the refusal below fires.
+MOCK_TARGET="${LEADV2_FP07_MOCK_TARGET:-${TEST_DIR}/codex-task.sh}"
+if git -C "$(dirname "${MOCK_TARGET}")" ls-files --error-unmatch \
+     "$(basename "${MOCK_TARGET}")" >/dev/null 2>&1; then
+  echo "[TEST] REFUSED: mock target is a TRACKED file: ${MOCK_TARGET}" >&2
+  echo "[TEST] a suite writes its mock into its own sandbox, never onto a source file" >&2
+  exit 2
+fi
+
 # Mock the codex-task.sh to simulate the rg exit 1 scenario
-cat > "${SCRIPT_DIR}/../codex-task.sh" <<'EOF'
+cat > "${MOCK_TARGET}" <<'EOF'
 #!/usr/bin/env bash
 # Mock codex-task.sh that simulates rg exit 1 (no matches) scenario
 
@@ -50,13 +65,13 @@ else
     exit 1
 fi
 EOF
-chmod +x "${SCRIPT_DIR}/../codex-task.sh"
+chmod +x "${MOCK_TARGET}"
 
 # Test execution
 echo "Running FP-07 test: Codex reviewer should not choke on rg exit 1"
 
 # Temporarily point to our mock
-export LEADV2_DISPATCH_CODEX_BIN="${SCRIPT_DIR}/../codex-task.sh"
+export LEADV2_DISPATCH_CODEX_BIN="${MOCK_TARGET}"
 
 # Run the review engine
 "${SCRIPT_DIR}/../leadv2-review-run.sh" \
