@@ -1,4 +1,71 @@
 # Phase-record class validation report
+
+## Receipt-freshness round-cap adjudication
+
+`leadv2-judge` mode `review` returned `APPROVE` at confidence `0.90` in
+`docs/handoff/41d918c32ef0/judge-review.md`. The capped GLM review was
+explicitly scoped to `build-attempt-2.diff`; the current lane includes the
+later `build-attempt-3.diff` remedies. The required fresh Codex
+reconfirmation was attempted but returned `codex_skipped_by_policy` because
+this lane disables Codex.
+
+### Raw red output
+
+```text
+REVIEW_VERDICT: FAIL
+REVIEW_FINDINGS: critical=0 high=2 medium=1 low=4
+```
+
+### Raw green output after the recorded fixes
+
+```text
+$ bash -n plugins/leadv2/scripts/leadv2-codex-session-runner.sh plugins/leadv2/scripts/leadv2-glm-session-runner.sh plugins/leadv2/scripts/leadv2-kimi-session-runner.sh plugins/leadv2/scripts/leadv2-session-runner.sh plugins/leadv2/scripts/lib/leadv2-receipt-freshness.sh plugins/leadv2/scripts/tests/test-stale-receipt-requeue.sh
+$ timeout 180 bash plugins/leadv2/scripts/tests/test-stale-receipt-requeue.sh
+[TEST] PASS: bash -n receipt-freshness lib
+[TEST] PASS: case1: queued -> rc 0 (stale)
+[TEST] PASS: case2: pending -> rc 0 (stale)
+[TEST] PASS: case3: claimed_done -> rc 1 (honour)
+[TEST] PASS: case4: task absent -> rc 1 (honour)
+[TEST] PASS: case5: no tasks.yaml -> rc 1 (honour)
+[TEST] PASS: case6: mapping-shape + queued -> rc 0 (stale)
+[TEST] PASS: case7: kill-switch=0 + receipt untouched
+[TEST] PASS: case8: read-only dir -> rc 2, receipt retained, no stale artifact
+[TEST] PASS: wiring: leadv2-kimi-session-runner.sh sources receipt-freshness lib
+[TEST] PASS: wiring: leadv2-glm-session-runner.sh sources receipt-freshness lib
+[TEST] PASS: wiring: leadv2-session-runner.sh sources receipt-freshness lib
+[TEST] PASS: wiring: leadv2-codex-session-runner.sh sources receipt-freshness lib
+[TEST] PASS: case9: leadv2-kimi-session-runner.sh exits rc 2 after failed rotation
+[TEST] PASS: case9: leadv2-glm-session-runner.sh exits rc 2 after failed rotation
+[TEST] PASS: case9: leadv2-session-runner.sh exits rc 2 after failed rotation
+[TEST] PASS: case9: leadv2-codex-session-runner.sh exits rc 2 after failed rotation
+[TEST] === 26 passed, 0 failed ===
+syntax_rc=0 focused_test_rc=0
+```
+
+### Changed-scope runner — raw output
+
+```text
+$ timeout 240 bash tests/run-all.sh --scope changed
+[CORE-OFFLINE] scope=changed running 10 of 95 suites (base=main@45910f2646, 6 changed files, 0 unmapped)
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-stale-receipt-requeue.sh (scope-selected ad-hoc)
+[TEST] === 26 passed, 0 failed ===
+[CORE-OFFLINE] plugins/leadv2/tests/test-lane-state-wiring.sh (scope-selected ad-hoc)
+FAIL dispatch admission snippet did not exit 3 for a full cap (rc=0)
+[CORE-OFFLINE] Codex quota guardrails (effort/circuit/hook)
+[CODEX-QUOTA-GUARDRAILS] pass=26 fail=3
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-writes-overlap.sh (scope-selected ad-hoc)
+[TEST] 14 passed, 3 failed
+[CORE-OFFLINE] suites passed=6 failed=3 missing=0 known_red_skipped=1 repo=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/41d918c32ef0
+[NOT-KNOWN-RED] core:plugins/leadv2/tests/test-lane-state-wiring.sh (scope-selected ad-hoc)
+[NOT-KNOWN-RED] core:Codex quota guardrails (effort/circuit/hook)
+[NOT-KNOWN-RED] core:plugins/leadv2/scripts/tests/test-writes-overlap.sh (scope-selected ad-hoc)
+```
+
+The changed-scope gate is red in suites outside this receipt-freshness lane;
+deployment and close remain blocked by the deploy precondition that all tests
+pass. The wrapper and its reported child PID were both absent after the bounded
+run, so this report leaves no started job running.
+
 # Hook escalation evidence
 
 ## Scope
@@ -673,4 +740,3 @@ Red/green pair for the behavior change (the brief's mandate):
   `test-one-copy-drift-hook-postsync.sh ── 7 passed, 0 failed ──`,
   live gate `rc=0` (2352 linked, 9 EXPECTED-OVERRIDE) vs paired live red
   `rc=1` (exactly the 9 shadows) without the declarations.
-
