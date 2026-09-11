@@ -33,18 +33,30 @@ if [[ ! -f "$PACKET" ]]; then
 fi
 
 # Heuristic fallback (no API key) or initial fast decision
+#
+# DEPLOY-JUDGE-IS-ADVISORY-AND-NORMALIZES-KNOWN-BAD-01 (f3-judge.md finding
+# 6): this used to read top-level `classification`/`premortem_verdict`/
+# `hack_findings`/`coverage_pct`/`offlimits_touched` that the assembled
+# packet never has -- it is wrapped under `deploy_packet`, coverage lives at
+# `coverage.new_code_pct`, premortem verdict at `premortem.verdict`, and
+# there is no `offlimits_touched` key at all (offlimits is the string
+# "clean" or "block_rc<N>"). Every field below now matches
+# leadv2-llm-judge.sh's actual packet assembly, not a shape that was never
+# produced.
 python3 - "$PACKET" "$OUT" <<'PY'
 import sys, yaml, os
-pkt = yaml.safe_load(open(sys.argv[1])) or {}
+raw = yaml.safe_load(open(sys.argv[1])) or {}
+pkt = raw.get("deploy_packet", raw) if isinstance(raw, dict) else {}
 out_path = sys.argv[2]
 
 classification = pkt.get("classification", "Standard")
-premortem = pkt.get("premortem_verdict", "proceed")
+premortem = (pkt.get("premortem", {}) or {}).get("verdict", "proceed")
 hack = pkt.get("hack_findings", {}) or {}
 blocks = int(hack.get("block", 0))
 warns = int(hack.get("warn", 0))
-coverage = float(pkt.get("coverage_pct", 100))
-offlimits = pkt.get("offlimits_touched", []) or []
+coverage = float((pkt.get("coverage", {}) or {}).get("new_code_pct", 100) or 100)
+offlimits_str = pkt.get("offlimits", "clean")
+offlimits = [] if offlimits_str == "clean" else [offlimits_str]
 
 # Escalate heavy/strategic unconditionally
 if classification in ("Heavy", "Strategic"):

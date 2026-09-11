@@ -80,17 +80,33 @@ Record `context.yaml.deploy_gate.llm_judge_verdict` and `llm_judge_overall_risk`
 
 ### 0. Auto-Gate 2 check (Tier A — silent deploy for low-risk tasks)
 
+**The judge sub-check below is not a checklist item — run it.** It is the ONE
+executable consumer of `docs/handoff/<task-id>/llm-judge.yaml`
+(DEPLOY-JUDGE-IS-ADVISORY-AND-NORMALIZES-KNOWN-BAD-01, f3-judge.md finding
+1: without this call nothing ever reads the verdict, and a `no-go` can be
+written while deploy proceeds anyway):
+
+```bash
+bash .claude/scripts/lv2 leadv2-llm-judge-gate.sh --task-id <task-id>
+judge_gate_rc=$?
+```
+
+`judge_gate_rc == 0` only for verdict `go`/`go-with-caveats` or a legitimate
+Light+clean skip. `judge_gate_rc != 0` for `no-go`, `judge_unavailable`
+(parse error or cost-ceiling hard-stop — a failed/absent judge is a refusal,
+never a silent pass), or a missing/unreadable verdict file.
+
 Requirements — ALL must be true:
 ```
 [ ] task.classification == Light
 [ ] graph_footprint.risk_score == low
 [ ] off_limits check clean (exit 0)
 [ ] coverage.yaml.passed == true  OR  coverage_gate == skipped
-[ ] llm_judge.verdict in [go, go-with-caveats]  OR  llm_judge.skipped == true
+[ ] judge_gate_rc == 0
 ```
 
 If ALL true → proceed silently, log `"auto-Gate-2 passed (Tier A)"` to `LEAD_V2_STATE.md`.
-If `llm_judge.verdict == no-go` → **block deploy**, Tier B decision (default: redesign via architect).
+If `judge_gate_rc != 0` → **block deploy**, Tier B decision (default: redesign via architect).
 Otherwise → compose Tier B decision via `leadv2-founder-input` with recommended = "Deploy (durable)".
 
 ### 0.8. Compress Review outputs before reading

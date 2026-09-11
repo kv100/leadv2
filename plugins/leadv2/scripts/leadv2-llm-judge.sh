@@ -19,16 +19,19 @@
 #   docs/handoff/<task-id>/llm-judge.yaml  (durable output)
 #
 # Exit codes:
-#   0 = verdict go or go-with-caveats (or skipped)
-#   1 = verdict no-go
-#   2 = hard cost ceiling hit — caller should treat as go-with-caveats and log
+#   0 = verdict go or go-with-caveats, or a legitimate Light+clean skip
+#   1 = verdict no-go, OR judge unavailable (hard cost ceiling hit before the
+#       judge ran) — both are refusals; a missing verdict is never a pass.
+#       Consume via leadv2-llm-judge-gate.sh, which treats both identically.
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-temp.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+# Not readonly: --project-root (parsed below) must be able to override the
+# PROJECT_ROOT env default — was a hard crash on any --project-root use.
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
-readonly SCRIPT_DIR PROJECT_ROOT
 
 log()       { printf '[leadv2-llm-judge] %s\n' "$*" >&2; }
 log_warn()  { printf '[leadv2-llm-judge] WARN: %s\n' "$*" >&2; }
@@ -96,34 +99,14 @@ _judge_atomic_flush() {
 }
 
 # ---------------------------------------------------------------------------
-# Dual-path: Haiku first for Light/Standard. Escalate to Opus only if needed.
-# Configured via the routing registry resolved by lib/leadv2-routing-config.sh
-# (canonical plugins/leadv2/config/leadv2-routing.yaml + tenant delta at
-# .claude/ref/leadv2-routing.yaml, merged) -- dual_path.llm_judge.
-# ---------------------------------------------------------------------------
-HAIKU_SCRIPT="${SCRIPT_DIR}/leadv2-llm-judge-haiku.sh"
-if [[ "$TASK_CLASS" =~ ^(Light|Standard)$ ]] && [[ -x "$HAIKU_SCRIPT" ]]; then
-  log "dual-path: trying Haiku first for class=${TASK_CLASS}"
-  # Haiku needs the packet assembled; produce a minimal packet from coverage + premortem files
-  if [[ -f "${HANDOFF_DIR}/deploy-packet.yaml" ]] || [[ -f "/tmp/deploy-packet-${TASK_ID}.yaml" ]]; then
-    PACKET_SRC="${HANDOFF_DIR}/deploy-packet.yaml"
-    [[ ! -f "$PACKET_SRC" ]] && PACKET_SRC="/tmp/deploy-packet-${TASK_ID}.yaml"
-    cp "$PACKET_SRC" "${HANDOFF_DIR}/deploy-packet.yaml" 2>/dev/null || true
-    if bash "$HAIKU_SCRIPT" --task-id "$TASK_ID" >/dev/null 2>&1; then
-      HAIKU_OUT="${HANDOFF_DIR}/llm-judge-haiku.yaml"
-      HVERDICT=$(python3 -c "import yaml,sys; d=yaml.safe_load(open('$HAIKU_OUT')); print(d.get('verdict',''))" 2>/dev/null || echo "")
-      if [[ "$HVERDICT" == "go" ]] || [[ "$HVERDICT" == "no_go" ]]; then
-        log "dual-path: Haiku resolved (verdict=${HVERDICT}) — skipping Opus"
-        cp "$HAIKU_OUT" "$OUTPUT_FILE"
-        exit 0
-      fi
-      log "dual-path: Haiku escalated (verdict=${HVERDICT:-unknown}) — continuing to Opus"
-    fi
-  fi
-fi
-
-# ---------------------------------------------------------------------------
 # Step 1: Assemble deploy packet via Python helper
+#
+# DEPLOY-JUDGE-IS-ADVISORY-AND-NORMALIZES-KNOWN-BAD-01 (f3-judge.md finding
+# 6): the Haiku dual-path used to run BEFORE this assembly step, gated on a
+# packet file that could only exist from a stale prior run (never a fresh
+# one), and it fed Haiku that stale/foreign-shaped file. Haiku expects the
+# unwrapped fields this assembly step writes under `deploy_packet`; it now
+# runs AFTER assembly, against the packet this run just built.
 # ---------------------------------------------------------------------------
 PY_TMP=$(lv2_mktemp_file "leadv2-judge-packet" "py")
 trap 'rm -f "$PY_TMP" "$PACKET_FILE"' EXIT
@@ -345,6 +328,57 @@ log "Packet assembled: $PACKET_FILE"
 log "  can_skip=$can_skip premortem_verdict=$premortem_verdict class=$TASK_CLASS"
 
 # ---------------------------------------------------------------------------
+# Dual-path: Haiku first for Light/Standard, against the packet this run just
+# assembled (never a stale one). Escalate to Opus only if Haiku is unsure.
+# Configured via the routing registry resolved by lib/leadv2-routing-config.sh
+# (canonical plugins/leadv2/config/leadv2-routing.yaml + tenant delta at
+# .claude/ref/leadv2-routing.yaml, merged) -- dual_path.llm_judge.
+# ---------------------------------------------------------------------------
+HAIKU_SCRIPT="${SCRIPT_DIR}/leadv2-llm-judge-haiku.sh"
+if [[ "$can_skip" != "true" ]] && [[ "$TASK_CLASS" =~ ^(Light|Standard)$ ]] && [[ -x "$HAIKU_SCRIPT" ]]; then
+  log "dual-path: trying Haiku first for class=${TASK_CLASS}"
+  cp "$PACKET_FILE" "${HANDOFF_DIR}/deploy-packet.yaml"
+  if bash "$HAIKU_SCRIPT" --task-id "$TASK_ID" >/dev/null 2>&1; then
+    HAIKU_OUT="${HANDOFF_DIR}/llm-judge-haiku.yaml"
+    HVERDICT=$(python3 -c "import yaml,sys; d=yaml.safe_load(open('$HAIKU_OUT')); print(d.get('verdict',''))" 2>/dev/null || echo "")
+    if [[ "$HVERDICT" == "go" ]] || [[ "$HVERDICT" == "no_go" ]]; then
+      log "dual-path: Haiku resolved (verdict=${HVERDICT}) — skipping Opus"
+      NORM_VERDICT="go-with-caveats"
+      [[ "$HVERDICT" == "go" ]] && NORM_VERDICT="go"
+      [[ "$HVERDICT" == "no_go" ]] && NORM_VERDICT="no-go"
+      python3 - "$HAIKU_OUT" "$OUTPUT_FILE" "$TASK_ID" "$NOW" "$NORM_VERDICT" <<'PY'
+import sys, yaml
+from pathlib import Path
+haiku_out, output_file, task_id, now, norm_verdict = (Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5])
+h = yaml.safe_load(haiku_out.read_text()) or {}
+data = {"llm_judge": {
+    "task_id": task_id,
+    "judged_at": now,
+    "model_used": "haiku",
+    "verdict": norm_verdict,
+    "overall_risk": None,
+    "confidence": h.get("confidence", 0.5),
+    "axes": {},
+    "blockers": h.get("reasons", []) if norm_verdict == "no-go" else [],
+    "caveats": h.get("reasons", []) if norm_verdict == "go-with-caveats" else [],
+    "reasoning": "; ".join(str(r) for r in (h.get("reasons") or []))[:200],
+    "skipped": False,
+    "skip_reason": "",
+}}
+output_file.parent.mkdir(parents=True, exist_ok=True)
+with open(output_file, "w") as fh:
+    yaml.dump(data, fh, default_flow_style=False, sort_keys=False, allow_unicode=True)
+PY
+      _judge_atomic_flush "$OUTPUT_FILE" || exit 1
+      log "Written: $OUTPUT_FILE (haiku verdict=${NORM_VERDICT})"
+      [[ "$NORM_VERDICT" == "no-go" ]] && exit 1
+      exit 0
+    fi
+    log "dual-path: Haiku escalated (verdict=${HVERDICT:-unknown}) — continuing to Opus"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Step 2: Skip gate for Light+clean
 # ---------------------------------------------------------------------------
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -420,10 +454,14 @@ print(json.dumps({'premortem_success': prob}))
 fi
 
 # ---------------------------------------------------------------------------
-# Hard ceiling: skip judge, write synthetic go-with-caveats
+# Hard ceiling: judge unavailable — this is a REFUSAL, not a pass.
+# DEPLOY-JUDGE-IS-ADVISORY-AND-NORMALIZES-KNOWN-BAD-01 (f3-judge.md finding 2):
+# a hard cost ceiling used to be written as go-with-caveats and treated as a
+# clean pass by the gate. It is now a typed judge_unavailable state that
+# leadv2-llm-judge-gate.sh refuses.
 # ---------------------------------------------------------------------------
 if [[ "$ceiling_status" == "hard_stop_95pct" ]]; then
-  log_warn "Cost ceiling reached — LLM-judge skipped (treating as go-with-caveats)"
+  log_warn "Cost ceiling reached — LLM-judge unavailable (refusing, not pass-through)"
   python3 - "$OUTPUT_FILE" "$TASK_ID" "$NOW" "$model" <<'PY'
 import sys, yaml
 from pathlib import Path
@@ -434,13 +472,13 @@ data = {"llm_judge": {
     "task_id": task_id,
     "judged_at": now,
     "model_used": model,
-    "verdict": "go-with-caveats",
-    "overall_risk": 5.0,
-    "confidence": 0.5,
+    "verdict": "judge_unavailable",
+    "overall_risk": None,
+    "confidence": 0.0,
     "axes": {},
-    "blockers": [],
-    "caveats": ["LLM-judge skipped due to cost ceiling — review manually"],
-    "reasoning": "Cost ceiling reached; synthetic go-with-caveats assigned.",
+    "blockers": ["LLM-judge did not run: cost ceiling hard-stop"],
+    "caveats": [],
+    "reasoning": "Cost ceiling reached before judge could run — no verdict, deploy refused.",
     "skipped": True,
     "skip_reason": "cost_ceiling_hard_stop",
 }}
@@ -448,8 +486,8 @@ with open(output_file, "w") as fh:
     yaml.dump(data, fh, default_flow_style=False, sort_keys=False, allow_unicode=True)
 PY
   _judge_atomic_flush "$OUTPUT_FILE" || exit 1
-  log "Written: $OUTPUT_FILE (ceiling skip)"
-  exit 2
+  log "Written: $OUTPUT_FILE (judge_unavailable — cost ceiling)"
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------

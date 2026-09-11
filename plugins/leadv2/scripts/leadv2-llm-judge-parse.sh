@@ -10,14 +10,16 @@
 #
 # Exit codes:
 #   0 = verdict go or go-with-caveats
-#   1 = verdict no-go
-#   3 = parse error (treated as go-with-caveats, parse error logged)
+#   1 = verdict no-go, or a parse error (verdict written as judge_unavailable)
+#       — both are refusals. Consume via leadv2-llm-judge-gate.sh.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+# Not readonly: --project-root (parsed below) must be able to override the
+# PROJECT_ROOT env default — was a hard crash on any --project-root use.
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
-readonly SCRIPT_DIR PROJECT_ROOT
 
 log()       { printf '[leadv2-judge-parse] %s\n' "$*" >&2; }
 log_error() { printf '[leadv2-judge-parse] ERROR: %s\n' "$*" >&2; }
@@ -106,18 +108,22 @@ def safe_int(v, default: int = 5) -> int:
         return default
 
 if parse_error:
-    # Graceful fallback: go-with-caveats, parse error logged
+    # DEPLOY-JUDGE-IS-ADVISORY-AND-NORMALIZES-KNOWN-BAD-01 (f3-judge.md
+    # finding 2): a parse error used to be written as go-with-caveats, an
+    # admissible verdict that a downstream gate would silently pass. It is
+    # now a typed judge_unavailable state that leadv2-llm-judge-gate.sh
+    # refuses — a malformed response must never look like a clean judge.
     output = {
         "llm_judge": {
             "task_id":     task_id,
             "judged_at":   now,
             "model_used":  model_used,
-            "verdict":     "go-with-caveats",
-            "overall_risk": 5.0,
-            "confidence":  0.5,
+            "verdict":     "judge_unavailable",
+            "overall_risk": None,
+            "confidence":  0.0,
             "axes":        {},
-            "blockers":    [],
-            "caveats":     ["LLM-judge response parse error — review manually"],
+            "blockers":    ["LLM-judge response failed to parse — no verdict"],
+            "caveats":     [],
             "reasoning":   f"Parse error: {parse_error[:100]}",
             "skipped":     False,
             "skip_reason": "",
@@ -127,9 +133,9 @@ if parse_error:
     output_file.parent.mkdir(parents=True, exist_ok=True)
     with open(output_file, "w") as fh:
         yaml.dump(output, fh, default_flow_style=False, sort_keys=False, allow_unicode=True)
-    print(f"verdict=go-with-caveats")
+    print(f"verdict=judge_unavailable")
     print(f"parse_error={parse_error[:80]}")
-    sys.exit(3)
+    sys.exit(1)
 
 # Parse fields
 verdict      = str(parsed.get("verdict", "go-with-caveats")).strip().lower()
@@ -229,8 +235,9 @@ fi
 log "Written (atomic): $OUTPUT_FILE"
 
 case "$verdict" in
-  "no-go")          exit 1 ;;
-  "go-with-caveats") exit 0 ;;
-  "go")              exit 0 ;;
-  *)                 exit 0 ;;
+  "no-go")             exit 1 ;;
+  "judge_unavailable")  exit 1 ;;
+  "go-with-caveats")    exit 0 ;;
+  "go")                 exit 0 ;;
+  *)                    exit 0 ;;
 esac
