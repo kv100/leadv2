@@ -73,6 +73,9 @@ CACHE_DIR = os.environ.get("LEADV2_QUOTA_CACHE_DIR",
 TTL = {"glm": int(os.environ.get("LEADV2_QUOTA_TTL_GLM", "60")),
        "codex": int(os.environ.get("LEADV2_QUOTA_TTL_CODEX", "120")),
        "anthropic": int(os.environ.get("LEADV2_QUOTA_TTL_ANTHROPIC", "300"))}
+# How long a NON-ok payload stays cached. Deliberately far below every success
+# TTL: a failed probe should be retried soon, not pinned for the success window.
+FAIL_TTL = int(os.environ.get("LEADV2_QUOTA_TTL_FAIL", "20"))
 
 
 def cache_get(provider):
@@ -90,7 +93,19 @@ def cache_get(provider):
             # ~34-minute-old payload was served).  mtime remains the
             # fallback for legacy payloads without fetched_at.
             fetched = _parse_iso(obj.get("fetched_at")) if isinstance(obj, dict) else None
-            if fetched is None or (datetime.datetime.now(UTC) - fetched).total_seconds() < TTL[provider]:
+            # A FAILED read must not be cached for the success TTL
+            # (STATUSLINE-CACHES-A-FAILURE-AS-LONG-AS-A-SUCCESS-01, 2026-09-11).
+            # Measured: the anthropic probe returned accounts:[] once after an
+            # idle stretch, that "unknown" was cached for the full 300s, and the
+            # status line kept showing "cc ?" for five more minutes AFTER the
+            # token was usable again -- deleting the cache file restored it
+            # instantly. A failure is worth re-trying far sooner than a success
+            # is worth re-fetching; keep a short floor so a genuinely-down
+            # endpoint is still not hammered once per render.
+            ttl = TTL[provider]
+            if isinstance(obj, dict) and obj.get("status") != "ok":
+                ttl = min(ttl, FAIL_TTL)
+            if fetched is None or (datetime.datetime.now(UTC) - fetched).total_seconds() < ttl:
                 return obj
     except Exception:
         pass
