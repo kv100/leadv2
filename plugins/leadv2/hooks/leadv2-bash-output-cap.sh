@@ -1,60 +1,60 @@
 #!/usr/bin/env bash
-# PostToolUse hook for Bash: cap oversized output BEFORE it enters the transcript.
+# PostToolUse hook for Bash: warn when a command returns a lot of output without
+# having truncated at source, so the NEXT call pipes through head/tail/grep -m.
 #
-# The previous version only warned on stderr, and it never even did that: it read
-# `.tool_output` / `.tool_response.output`, neither of which is the key Claude Code
-# actually sends, so SIZE was always 1 and the hook exited at the first guard. A
-# warning is also the wrong instrument — the bytes are already in the transcript by
-# the time the advice is printed, and the transcript is re-sent on every later turn.
+# History, so nobody re-derives it (measured 2026-09-12, 2.1.269):
 #
-# This version returns hookSpecificOutput.updatedToolOutput, which REPLACES the tool
-# result the model sees. Full output is written to disk first and the replacement
-# names the path, so nothing is lost and the lead can go read it deliberately.
+#  1. This hook read `.tool_output` and `.tool_response.output`. Neither key
+#     exists. A captured live payload has
+#     tool_response = {stdout, stderr, interrupted, isImage, noOutputExpected,
+#                      backgroundTaskId, timedOutAfterMs, backgroundCwdHint}
+#     so SIZE was always 1, the size guard always fired, and the hook did
+#     nothing at all. Negative control: the old script emitted nothing on a
+#     40,000-byte payload. It had been inert for its whole life.
+#
+#  2. Returning `hookSpecificOutput.updatedToolOutput` to REPLACE the oversized
+#     result does not work here. Tried and falsified twice: the hook ran (proved
+#     by spill files whose byte counts matched the outputs exactly, 28,771 and
+#     30,074), emitted valid JSON, and the full output still arrived in the
+#     transcript -- in this session and in a fresh headless one. So the
+#     "turn this into a class-C rewriter for -9..12k/turn" lever is dead.
+#     Do not spend another session on it without new evidence from the binary.
+#
+#  3. It is also not needed for the extreme case: Claude Code already persists a
+#     very large Bash result itself and shows only a preview
+#     ("Output too large (385.8KB). Full output saved to ...", first 2KB shown).
+#     What is left for this hook is the middle band -- big enough to hurt when
+#     re-read on every later turn, not big enough for the native cap.
+#
+# Hence: warn, with the key that actually works, and nothing more.
 set -euo pipefail
 trap 'echo "[$(basename "$0")] error at line $LINENO" >&2; exit 0' ERR
 
 INPUT="$(cat 2>/dev/null || true)"
 [[ -z "$INPUT" ]] && exit 0
-
-CAP_BYTES="${LEADV2_BASH_OUTPUT_CAP_BYTES:-12000}"
-HEAD_BYTES="${LEADV2_BASH_OUTPUT_HEAD_BYTES:-7000}"
-TAIL_BYTES="${LEADV2_BASH_OUTPUT_TAIL_BYTES:-3000}"
 [[ "${LEADV2_BASH_OUTPUT_CAP:-1}" == "0" ]] && exit 0
 
-# Claude Code sends Bash results under .tool_response; the historical keys are kept
-# as fallbacks so this works if the shape differs across versions.
+WARN_BYTES="${LEADV2_BASH_OUTPUT_WARN_BYTES:-12000}"
+
 OUT="$(printf '%s' "$INPUT" | jq -r '
-  (.tool_response.stdout? // empty) as $s
-  | (.tool_response.stderr? // empty) as $e
-  | if ($s|length) > 0 or ($e|length) > 0 then ($s + $e)
-    else (.tool_response.output? // .tool_response? // .tool_output? // empty)
-    end
+  ((.tool_response.stdout? // "") + (.tool_response.stderr? // ""))
   | if type == "string" then . else tostring end' 2>/dev/null || true)"
 
 SIZE=${#OUT}
-[[ "$SIZE" -le "$CAP_BYTES" ]] && exit 0
+[[ "$SIZE" -le "$WARN_BYTES" ]] && exit 0
 
 CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null | head -c 200 || true)"
 
-SPILL_DIR="${TMPDIR:-/tmp}/leadv2-bash-spill"
-mkdir -p "$SPILL_DIR"
-SPILL="$SPILL_DIR/$(date +%Y%m%d-%H%M%S)-$$-$RANDOM.txt"
-printf '%s' "$OUT" > "$SPILL"
+# Did the command already bound its output at source?
+if printf '%s' "$CMD" | grep -qE '\| *(head|tail)|head -[0-9]+|tail -[0-9]+|grep -m ?[0-9]+|-c\b|wc -l|jq -r|--stat'; then
+  exit 0
+fi
 
-HEAD_PART="$(printf '%s' "$OUT" | head -c "$HEAD_BYTES")"
-TAIL_PART="$(printf '%s' "$OUT" | tail -c "$TAIL_BYTES")"
-ELIDED=$((SIZE - HEAD_BYTES - TAIL_BYTES))
-
-NOTICE="
-
-[leadv2-bash-output-cap] ${SIZE} bytes of output, capped at ${CAP_BYTES}.
-${ELIDED} bytes elided between the head and tail shown here.
-Full output: ${SPILL}
-Read it with an offset/limit or grep it — do NOT re-run the command.
-Command was: ${CMD}
-
-"
-
-printf '%s' "$HEAD_PART$NOTICE$TAIL_PART" | jq -Rs \
-  '{hookSpecificOutput: {hookEventName: "PostToolUse", updatedToolOutput: .}}'
+KB=$((SIZE / 1024))
+cat >&2 <<MSG
+[leadv2-bash-output-cap] ${KB}KB from a command that did not bound its output.
+  cmd: ${CMD:0:120}
+  These bytes are in the transcript now and are re-sent on every later turn.
+  Next time bound it at source: '| head -50', '| tail -30', 'grep -m 5', '--stat'.
+MSG
 exit 0
