@@ -3,10 +3,13 @@
 # Exercise existing foreign records in real linked worktrees, never live state.
 set -uo pipefail
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-T="$(mktemp -d)"
+T="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-phase-record-axis.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 unset PROJECT_ROOT LEADV2_PROJECT_ROOT
-export LEADV2_JOURNAL_BIN=/dev/null LEADV2_DISPATCH_CACHE_DIR="$T/cache"
+JOURNAL_STUB="$T/journal.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$JOURNAL_STUB"
+chmod +x "$JOURNAL_STUB"
+export LEADV2_JOURNAL_BIN="$JOURNAL_STUB" LEADV2_DISPATCH_CACHE_DIR="$T/cache"
 export HOME="$T/home"
 mkdir -p "$HOME" "$T/repo/scripts/lib" "$T/repo/docs/handoff/dispatch-axis0001/phases.d"
 cp "$SCRIPTS/leadv2-phase-record.sh" "$T/repo/scripts/"

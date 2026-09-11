@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PHASE_RECORD="${SCRIPT_DIR}/../leadv2-phase-record.sh"
 
 # Use a temp project root
-TMP_ROOT="$(mktemp -d)"
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-phase-record.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 # PHASE-GATE-IS-INVERTED-01: a session-exported PROJECT_ROOT diverging from
