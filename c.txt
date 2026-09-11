@@ -1,4 +1,2 @@
 D1 dispatch-14eaba40
 D1 dispatch-14eaba40 landed 2026-09-11T00:12:27Z
-design: surface=file_artifact observable="file exists" authored_at=2026-08-07T00:00:00Z
-re-verified lane 0e3619bc27e0 2026-09-11: files exist, probe rc=0
