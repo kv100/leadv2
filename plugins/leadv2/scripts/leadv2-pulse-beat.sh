@@ -363,6 +363,21 @@ _run_beat() {
       | sed -n 's/.*check complete:.*dispatched=\([0-9][0-9]*\).*/\1/p' | tail -n1)"
     export LEADV2_BROAD_STATUS_DISPATCHED="${dispatched_n:-unavailable}"
   fi
+  # FREEPOOL-ARM-DOWN-PULSE-01: consume the gate's exact arm_down liveness
+  # result immediately before the founder pulse is rendered. The helper is
+  # bounded and fail-silent for observer failures; only a confirmed arm_down
+  # line is appended to the existing deterministic delta, so routing remains
+  # unchanged and an observer failure cannot fabricate an outage.
+  local freepool_pulse_sh="${LEADV2_FREEPOOL_PULSE_BIN:-${SCRIPT_DIR}/leadv2-freepool-pulse.sh}"
+  if [[ -f "$freepool_pulse_sh" ]]; then
+    local freepool_pulse_warning
+    freepool_pulse_warning="$(LEADV2_FREEPOOL_PULSE_GATE_BIN="${LEADV2_FREEPOOL_PULSE_GATE_BIN:-}" \
+      LEADV2_FREEPOOL_PULSE_TIMEOUT_S="${LEADV2_FREEPOOL_PULSE_TIMEOUT_S:-5}" \
+      bash "$freepool_pulse_sh" 2>/dev/null || true)"
+    if [[ -n "$freepool_pulse_warning" ]]; then
+      export LEADV2_BROAD_STATUS_REVIEW_DELTA="${LEADV2_BROAD_STATUS_REVIEW_DELTA:+${LEADV2_BROAD_STATUS_REVIEW_DELTA} }${freepool_pulse_warning}"
+    fi
+  fi
   local rc=0
   if [[ -x "$BROAD_STATUS_SH" ]]; then
     bash "$BROAD_STATUS_SH" >>"$LOG_FILE" 2>&1 || rc=$?
