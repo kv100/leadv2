@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Bounded, append-only cooldown memory for dispatch arms.  Source this file;
-# it intentionally does not change shell options and every public API fails open.
+# it intentionally does not change shell options; reads fail open while
+# mutating APIs reject invalid arm names.
 
 # ── N1B hard bounds (NOT env-derived) ────────────────────────────────────────
 # The whole point of this library: an arm's availability must be decided by a
@@ -39,6 +40,12 @@ _arm_cooldown_valid_arm() {
     ''|*[!A-Za-z0-9_.-]*) return 1 ;;
     *) return 0 ;;
   esac
+}
+
+_arm_cooldown_require_valid_arm() {
+  _arm_cooldown_valid_arm "${1:-}" && return 0
+  printf '%s\n' 'leadv2-arm-cooldown: invalid or empty arm name' >&2
+  return 1
 }
 
 _arm_cooldown_now_epoch() {
@@ -101,7 +108,7 @@ _arm_cooldown_reason() {
 # arm_cooldown_record <arm> <reason> [advisory_until_iso]
 arm_cooldown_record() {
   local arm="${1:-}" reason advisory now default min max effective advisory_epoch label src dir file reprobe line job lockf
-  _arm_cooldown_valid_arm "$arm" || return 0
+  _arm_cooldown_require_valid_arm "$arm" || return 1
   reason="$(_arm_cooldown_reason "${2:-unknown}")"
   advisory="${3:-na}"
   [ -n "$advisory" ] || advisory="na"
@@ -197,7 +204,7 @@ arm_cooldown_state() {
 
 arm_cooldown_clear() {
   local arm="${1:-}" file
-  _arm_cooldown_valid_arm "$arm" || return 0
+  _arm_cooldown_require_valid_arm "$arm" || return 1
   file="$(_arm_cooldown_dir)/${arm}.state"
   mkdir -p "$(_arm_cooldown_dir)" 2>/dev/null || return 0
   : > "$file" 2>/dev/null || true
@@ -207,7 +214,7 @@ arm_cooldown_clear() {
 # One durable observability line; it never participates in gating.
 arm_cooldown_ladder_note() {
   local arm="${1:-}" reason reprobe dir line
-  _arm_cooldown_valid_arm "$arm" || return 0
+  _arm_cooldown_require_valid_arm "$arm" || return 1
   reason="$(_arm_cooldown_reason "${2:-unknown}")"; reprobe="${3:-na}"
   dir="$(_arm_cooldown_dir)"; mkdir -p "$dir" 2>/dev/null || return 0
   line="$(_arm_cooldown_epoch_iso "$(_arm_cooldown_now_epoch)") ARM_COOLDOWN_LADDER arm=${arm} reason=${reason} reprobe_at=${reprobe}"

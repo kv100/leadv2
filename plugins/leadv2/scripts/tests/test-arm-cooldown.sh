@@ -64,6 +64,22 @@ expect "$(arm_cooldown_state codex)" clear 'expired record self-heals to clear'
 printf '%s\n' junk > "$LEADV2_ARM_COOLDOWN_DIR/bad.state"
 expect "$(arm_cooldown_state bad)" clear 'malformed store fails open'
 expect "$(arm_cooldown_state '../escape')" clear 'invalid arm fails open'
+
+# Mutating APIs must reject invalid/empty arm names instead of silently
+# reporting success without changing cooldown state.
+invalid_record_err="$(arm_cooldown_record '' quota 2>&1 >/dev/null)"; invalid_record_rc=$?
+invalid_clear_err="$(arm_cooldown_clear '../escape' 2>&1 >/dev/null)"; invalid_clear_rc=$?
+invalid_note_err="$(arm_cooldown_ladder_note '' quota 2>&1 >/dev/null)"; invalid_note_rc=$?
+if [ "$invalid_record_rc" -ne 0 ] \
+   && [ "$invalid_clear_rc" -ne 0 ] \
+   && [ "$invalid_note_rc" -ne 0 ] \
+   && [ "$invalid_record_err" = 'leadv2-arm-cooldown: invalid or empty arm name' ] \
+   && [ "$invalid_clear_err" = 'leadv2-arm-cooldown: invalid or empty arm name' ] \
+   && [ "$invalid_note_err" = 'leadv2-arm-cooldown: invalid or empty arm name' ]; then
+  pass 'mutating APIs reject invalid/empty arm names'
+else
+  fail "invalid arm rejection (record rc=$invalid_record_rc err=[$invalid_record_err], clear rc=$invalid_clear_rc err=[$invalid_clear_err], note rc=$invalid_note_rc err=[$invalid_note_err])"
+fi
 arm_cooldown_ladder_note codex quota 2001-09-09T02:01:40Z >/dev/null
 [ -s "$LEADV2_ARM_COOLDOWN_DIR/codex.journal" ] && pass 'ladder journal is durable' || fail 'ladder journal is durable'
 
