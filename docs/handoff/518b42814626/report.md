@@ -160,3 +160,64 @@ The close assertion was intentionally not forced without that evidence:
 GATE FAILED: 5 assertion(s) not satisfied for 518b42814626
 phase8_assert_rc=1
 ```
+
+## Phase 6-8 continuation (2026-09-11)
+
+`main` was merged into this lane before deployment:
+
+```text
+a4bc9e8f Merge branch 'main' into worktree-518b42814626
+```
+
+The official plugin-cache deployment was retried in explicit write mode. It
+failed closed because the sandbox denied rsync mutations to the active cache;
+the raw artifact is `/private/tmp/518b42814626-deploy-write-wrapper.log`.
+
+```text
+[2026-09-11 05:52:15] Mode: WRITE (--write)
+rsync(56369): error: docs/leadv2/active.yaml: unlinkat: Operation not permitted
+BLOCK: rsync failed syncing /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/518b42814626/plugins/leadv2 -> /Users/kostiantyn.vlasenko/.claude/plugins/cache/leadv2-local/leadv2/0.5.7
+deploy_write_wrapper_rc=1
+```
+
+### Continuation self-check: red then green
+
+The first syntax census was deliberately kept as red evidence: it tried to
+parse a deleted shell test named by the merge-base diff.
+
+```text
+--- BASH -N CHANGED SHELL FILES ---
+PASS bash -n plugins/leadv2/scripts/tests/test-state-path-fails-closed.sh
+bash: plugins/leadv2/scripts/tests/test-state-path-zsh-refusal.sh: No such file or directory
+selfcheck_syntax_rc=1
+```
+
+The corrected census excludes deletions and preserves paths as lines. Its raw
+green output is:
+
+```text
+--- BASH -N CHANGED EXISTING SHELL FILES ---
+PASS bash -n plugins/leadv2/scripts/tests/test-state-path-fails-closed.sh
+PASS bash -n plugins/leadv2/scripts/tests/test-state-path-zsh-source.sh
+--- PYTHON COMPILE CHANGED PYTHON FILES ---
+PASS no changed Python files
+--- DIFF CHECK ---
+PASS git diff --check
+```
+
+### Changed-scope runner / live gate
+
+The required Phase-8 E2E runner completed in the foreground with its 900s
+bound. The two resolver suites were green, but the aggregate runner failed,
+so no E2E sentinel was written and Phase 8 must not be forced.
+
+```text
+[TEST] RESULTS: 6 passed, 0 failed
+[PASS] plugins/leadv2/scripts/tests/test-state-path-fails-closed.sh
+[TEST] RESULTS: 4 passed, 0 failed
+[PASS] plugins/leadv2/scripts/tests/test-state-path-zsh-source.sh
+  Failures (blocking):
+    - plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: 5 passed, 1 failed, 0 known-red (allow-listed, non-blocking), 14 known-red-skipped (budget mode, still run by --scope all), 0 gone-green (remove from allow-list), scope=changed
+e2e_gate task=518b42814626 verdict=fail elapsed_s=798 budget_s=900
+```
