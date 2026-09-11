@@ -48,4 +48,8 @@
 
 - `test-lane-truth-batch-01.sh`: **pass=16 fail=0**
 - Row 1 behavioral mutation proof: HEAD registry/liveness run **rc=0**; `pulse.md` mutant run **rc!=0**.
-- `run-core-offline.sh`: **suites passed=44 failed=0 missing=0** (rc=0)
+- `run-core-offline.sh` after the required rebase: **suites passed=41 failed=3 missing=0** (rc=1). The lane-truth suite passed; the three failures are outside this lane's files: `hook token + mode isolation` has three failing assertions, and the two supervisor suites cannot execute `ps` in this sandbox (`PermissionError: [Errno 1] Operation not permitted: 'ps'`).
+
+## Delivery status
+
+**blocked:** the requested full offline rc=0 gate is not satisfied on the rebased current tree for the unrelated failures above. No off-limits or unrelated test/supervisor code was changed to mask them.
