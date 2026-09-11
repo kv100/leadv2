@@ -103,11 +103,21 @@ if ! type leadv2_receipt_is_stale >/dev/null 2>&1; then
   leadv2_receipt_is_stale() { return 1; }
 fi
 
-if leadv2_receipt_is_stale "$TASK_ID" "$COMPLETION_RECEIPT" "" "$LOGF"; then
+receipt_freshness_rc=0
+leadv2_receipt_is_stale "$TASK_ID" "$COMPLETION_RECEIPT" "" "$LOGF" || receipt_freshness_rc=$?
+if [[ "$receipt_freshness_rc" == "0" ]]; then
   log "stale receipt invalidated for re-queued $TASK_ID — proceeding"
-elif sentinel_present; then
-  log "Phase-8 completion proof already present for $TASK_ID — nothing to do"
-  exit 0
+elif [[ "$receipt_freshness_rc" == "1" ]]; then
+  if sentinel_present; then
+    log "Phase-8 completion proof already present for $TASK_ID — nothing to do"
+    exit 0
+  fi
+else
+  # rc 2 means the receipt was proven stale but could not be rotated aside.
+  # Propagate it: treating the still-present receipt as completion is a silent
+  # success, while launching risks executing a re-queued task twice.
+  log_error "stale receipt rotation failed for $TASK_ID (rc=$receipt_freshness_rc); refusing completion"
+  exit "$receipt_freshness_rc"
 fi
 
 if [[ ! -f "$GLM_CODER_BIN" ]]; then

@@ -19,6 +19,8 @@
 #   7. kill-switch LEADV2_RECEIPT_REQUEUE_GUARD=0 + queued -> HONOUR.
 #   8. receipt + read-only completions dir -> STALE but rotation failure (rc 2,
 #      original receipt retained, no stale artifact).
+#   9. all runners preserve rc 2 instead of treating the retained receipt as a
+#      successful completion.
 #
 # Also verifies each of the three runners sources the lib (so the shared
 # behaviour is wired, not just standalone). Run: bash scripts/tests/test-stale-receipt-requeue.sh
@@ -200,6 +202,25 @@ for r in leadv2-kimi-session-runner.sh leadv2-glm-session-runner.sh leadv2-sessi
     fail "wiring: ${r} does NOT source receipt-freshness lib"
   fi
 done
+
+# ── Wiring: rc 2 is propagated, never negated into an honoured receipt ─────
+for r in leadv2-kimi-session-runner.sh leadv2-glm-session-runner.sh; do
+  runner="${SCRIPT_DIR}/${r}"
+  if grep -q 'exit "\$receipt_freshness_rc"' "$runner" \
+     && ! grep -q 'if ! leadv2_receipt_is_stale' "$runner"; then
+    pass "propagation: ${r} exits with failed rotation rc"
+  else
+    fail "propagation: ${r} can hide failed rotation rc"
+  fi
+done
+runner="${SCRIPT_DIR}/leadv2-session-runner.sh"
+if grep -q 'return "\$receipt_freshness_rc"' "$runner" \
+   && [[ "$(grep -c 'elif \[\[ "\$?" -eq 2 \]\]' "$runner")" == "3" ]] \
+   && ! grep -q 'if ! leadv2_receipt_is_stale' "$runner"; then
+  pass "propagation: leadv2-session-runner exits with failed rotation rc"
+else
+  fail "propagation: leadv2-session-runner can hide failed rotation rc"
+fi
 
 log ""
 log "=== ${PASS} passed, ${FAIL} failed ==="
