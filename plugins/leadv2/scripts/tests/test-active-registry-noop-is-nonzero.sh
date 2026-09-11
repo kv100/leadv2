@@ -17,7 +17,7 @@
 # authoritative proof of those six red runs.
 
 set -uo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 source "$SCRIPT_DIR/../leadv2-temp.sh"
 REGISTRY_SH="$SCRIPT_DIR/../leadv2-active-registry.sh"
 STATE_PATH_BIN="$SCRIPT_DIR/../leadv2-state-path.sh"
@@ -46,15 +46,6 @@ run_sb() { # <sandbox> <stderr> <snippet>
 }
 
 value() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | tail -1; }
-
-row_count() {
-  python3 - "$1" <<'PY'
-import sys, yaml
-with open(sys.argv[1], encoding="utf-8") as fh:
-    doc = yaml.safe_load(fh) or {}
-print(len(doc.get("sessions") or []))
-PY
-}
 
 case_1() {
   local sb err out rc
@@ -151,7 +142,7 @@ case_4() {
 }
 
 case_5() {
-  local sb err out rc yaml rows
+  local sb err out rc
   sb="$(new_sb)"; err="$sb/err"
   out="$(run_sb "$sb" "$err" '
     leadv2_active_register REG-SILENT-5 Standard "$LEADV2_PROJECT_ROOT" branch false >/dev/null 2>&1
@@ -159,10 +150,9 @@ case_5() {
     leadv2_active_set_worker_pid REG-SILENT-5-NOPE 12345 birth worker >/dev/null
     echo "RC=$?"
     cmp -s "$yaml" "$yaml.before" && echo "UNCHANGED=yes" || echo "UNCHANGED=no"
-    echo "YAML=$yaml"
-  ')"; rc=$?; yaml="$(value "$out" YAML)"; rows="$(row_count "$yaml")"
+  ')"; rc=$?
   if [[ $rc -eq 0 && "$(value "$out" RC)" == 4 &&
-        "$(value "$out" UNCHANGED)" == yes && "$rows" == 1 ]] &&
+        "$(value "$out" UNCHANGED)" == yes ]] &&
      grep -q 'task=REG-SILENT-5-NOPE.*reason=not-found' "$err"; then
     pass 'case 5 set_worker_pid rejects unknown task without a row change'
   else

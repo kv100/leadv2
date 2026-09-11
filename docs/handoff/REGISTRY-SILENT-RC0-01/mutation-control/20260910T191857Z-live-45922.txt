@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-active-registry-noop-is-nonzero.sh
+file=plugins/leadv2/scripts/leadv2-active-registry.sh
+anchor=/elif op == "update_pulse":/,/elif op == "update_pid":/ s/sys.exit(4)/sys.exit(0)/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: case 4 rc=0 out=MISSING_RC=4
+diff_hash=e31e5d3cedd916b816452c2c1d958685eb0de38e958a9dc2586cda9d70b868d7
+lane_diff_hash=7aba678d265237196b7a2413a13f5af97e726613734893db60bbb682d7d9aeaa
+porcelain_clean=yes
+restored=yes

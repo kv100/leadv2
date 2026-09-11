@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-active-registry-noop-is-nonzero.sh
+file=plugins/leadv2/scripts/leadv2-active-registry.sh
+anchor=/leadv2_active_update_phase()/,/^}/ s/_leadv2_registry_require_file.*update_phase.*|| return/true/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: case 3 rc=0 out=MISSING_RC=4
+diff_hash=6406be39080404c0e149a8df0e845e61c947c37dbd3ed492a974fd964ddc196a
+lane_diff_hash=f0c4a8caaa085384e3fc28a593cee9b10004e69b49bb7c327a0a3d84f782c0f1
+porcelain_clean=yes
+restored=yes
