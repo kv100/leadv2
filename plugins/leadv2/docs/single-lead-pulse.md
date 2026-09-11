@@ -20,17 +20,42 @@ renderer's content quality is owned by a separate lane (`fded7b89`).
   `.*`). Two steps, always in this order: **deliver** (relay the last beat's ready-line into the
   session as `additionalContext`, once, if the artifact actually changed) then **trigger** (kick
   off `leadv2-pulse-beat.sh --check` in the background if due).
+- `scripts/leadv2-pulse-watch.sh` — the bounded watcher run inside a persistent lead-session
+  `Monitor`. It observes the rendered file's mtime and emits only its first line on a rewrite.
+- `hooks/leadv2-pulse-watch-arm.sh` — the SessionStart directive that arms that Monitor for the
+  main-checkout lead only; workers and subagents never create duplicate watchers.
 
-## Why hook-clock, not a daemon or `CronCreate`
+## Why an in-session Monitor, not a daemon or `CronCreate`
 
-A beat only needs to fire while the lead is actually working. A detached 30-minute daemon armed
-via a lead-side `Monitor` would bill the founder for a wake on every remaining turn of an idle
-session, per `~/.claude/CLAUDE.md` §Token discipline rule 5, and `CronCreate` is explicitly out —
-the beat must stay plugin-owned, not lead-owned. Hook-clock means: no background process, no
-orphan to sweep, and the cost during an idle session is exactly zero.
+The former hook-clock-only position is superseded by founder order 2026-08-24. A composed status
+must wake an otherwise idle lead session so the existing delivery hook can relay it. The watcher
+is not a daemon and `CronCreate` remains explicitly out: it is one `persistent=true` Monitor in
+one main-checkout lead session, with one mtime filter and at most one capped line per rewrite.
+Workers and subagents are gated out, so it does not multiply per lane. This answers the
+token-discipline concern without accepting silent delivery rot.
 
-**Consequence:** cadence is "≥30 min, delivered on the lead's next turn after that" — not a
-wall-clock alarm. An idle session produces no beat, and that's correct: nothing is happening.
+**Consequence:** delivery is no longer deferred until the founder types: a composed beat wakes the
+lead and then follows the existing RELAY=full/none rules. Composition still remains hook-driven;
+an idle session alone does not compose a new beat.
+
+## The armed-watcher contract
+
+At SessionStart, the main lead receives `PULSE-WAKE` and arms the named watcher immediately with
+`persistent=true`. A lead session without that watcher armed is in violation. On an mtime event,
+the watcher creates a turn; `leadv2-single-lead-beat.sh` performs the actual relay under the
+existing owner/guest `RELAY=full/none` rules. The watcher never composes a status and never emits
+a synthetic `BROAD_STATUS_READY` line.
+
+## Known limits
+
+The Monitor is scoped to the session lifetime. If the session is killed, compacted into a new
+process, or cleared, its watcher ends; the next SessionStart re-arms it. The residual gap is from
+session death until the founder next starts a session.
+
+The watcher is downstream of the composer. An idle session fires no prompt/tool hook, so no
+composer run may rewrite `founder-status.md`; no mtime change means no wake. This mechanism fixes
+"a composed beat rots undelivered," not "no beat is composed while idle." A composer-triggering
+watcher is a separate scope decision.
 
 ## The idempotency contract
 
@@ -60,6 +85,8 @@ this is accepted rather than built out as session-scoped state.
 |---|---|---|
 | `LEADV2_SINGLE_LEAD_BEAT` | `1` | **The one-step rollback.** `0` disables both the driver and the hook completely — no pump call, no composer call, no state touched. |
 | `LEADV2_SINGLE_LEAD_BEAT_S` | `1800` | Cadence floor, seconds. |
+| `LEADV2_PULSE_WATCH` | `1` | Set to `0` to suppress both SessionStart arming and an already-running watcher. |
+| `LEADV2_PULSE_WATCH_INTERVAL_S` | `60` | Watch poll seconds; malformed values use 60 and values clamp to 5–3600. |
 
 ## Lane worktrees and the sweepers
 
@@ -103,3 +130,12 @@ the backlog pump exactly as `test-broad-status-duty.sh` does. Covers: a real bea
 delivered with matching `at=`/file stamps, a second unchanged fire staying silent, loop-liveness
 making `--due` report `loop-owns` and leaving the throttle stamp untouched, and the kill-switch
 making both the driver and the hook full no-ops.
+
+`bash scripts/tests/test-pulse-watch.sh` covers watcher suppression, rewrite and creation wakes,
+empty-header fallback, switches, SessionStart gates, malformed intervals, and shell syntax.
+
+## Release note
+
+Directory-source plugin caches do not necessarily refresh when content changes without a version
+change. Copy/update the plugin cache and restart the session before relying on the new SessionStart
+hook; otherwise the hook does not run at all.
