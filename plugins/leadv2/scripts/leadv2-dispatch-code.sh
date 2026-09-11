@@ -1153,7 +1153,10 @@ _resolve_pinned_placement() {
       "${_v}" "${_age}" "${_probe_id}" >&2
     printf 'The lane is still running. Re-run once it clears:\n  %s &\n' \
       "${LEADV2_DISPATCH_ARGV_REPLAY}" >&2
-    exit 5
+    # Return to cmd_resolve rather than relying on a function-local `exit`.
+    # The caller owns the one explicit refusal boundary, so a duplicate that
+    # lost placement cannot accidentally continue into reservation or gates.
+    return 5
   fi
   # Dead branch: the pin will proceed (Step 6) -- journal WHY the lane was
   # judged not live, with the same signal vocabulary as the refusal branch.
@@ -1202,6 +1205,45 @@ _resolve_pinned_placement() {
       fi
     fi
   fi
+}
+
+# RESUME-LANE-ACCEPTS-A-MISSION-ITS-WORKTREE-CANNOT-SEE-01: an @mission is
+# repository content, not an ambient-CWD file. Before cmd_resolve reads it,
+# prove that the pinned lane's HEAD contains the requested path.
+_resume_mission_visibility_preflight() { # <raw-mission> <resume-ref>
+  local raw="$1" ref="$2" candidate="" p="" main_has=0
+  RESUME_MISSION_WORKTREE=""
+  [[ "${raw}" == @* && -n "${ref}" ]] || return 0
+  p="${raw#@}"
+  [[ -n "${p}" ]] || return 0
+
+  if [[ "${ref}" == /* ]]; then
+    [[ -d "${ref}" ]] || return 0
+    candidate="$(cd "${ref}" 2>/dev/null && pwd -P || true)"
+  else
+    candidate="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${ref}" 2>/dev/null || true)"
+  fi
+  [[ -n "${candidate}" && -d "${candidate}" ]] || return 0
+  candidate="$(cd "${candidate}" 2>/dev/null && pwd -P || true)"
+  [[ -n "${candidate}" ]] || return 0
+
+  if git -C "${candidate}" ls-tree --name-only HEAD -- "${p}" 2>/dev/null | grep -Fx -- "${p}" >/dev/null 2>&1; then
+    RESUME_MISSION_WORKTREE="${candidate}"
+    return 0
+  fi
+
+  # A committed brief on main but not lane HEAD is a different operator error
+  # from a path that exists nowhere. Untracked content is absent by contract.
+  if git -C "${PROJECT_ROOT}" cat-file -e "main:${p}" 2>/dev/null; then
+    main_has=1
+  fi
+  if [[ "${main_has}" == "1" ]]; then
+    printf '[leadv2-dispatch-code] REFUSE mission: path=%s is present on main but not reachable from lane worktree=%s\n' "${p}" "${candidate}" >&2
+    printf 'Remedy:\n  git -C %s checkout main -- %s && git -C %s commit -- %s\n' "${candidate}" "${p}" "${candidate}" "${p}" >&2
+  else
+    printf '[leadv2-dispatch-code] REFUSE mission: path=%s is absent from both lane worktree=%s and main\n' "${p}" "${candidate}" >&2
+  fi
+  exit 5
 }
 
 # PLACEMENT-PIN-DEFAULT-01: single construction site for the worker-prompt pin prefix.
@@ -8568,11 +8610,20 @@ cmd_resolve() {
     log_err "missing mission (positional arg, @file, or -)"; usage
   fi
   local mission_file=""
+  # Resolve the resume lane's committed mission before ambient @file handling.
+  # This makes a brief added on main after the lane fork a loud refusal rather
+  # than instructions silently supplied from the dispatcher checkout.
+  _resume_mission_visibility_preflight "${raw}" "${placement_lane_ref}"
   if [[ "${raw}" == @* ]]; then
     local p="${raw#@}"
-    [[ -r "$p" ]] || { log_err "cannot read mission file: $p"; exit 1; }
-    mission="$(cat "$p")"
-    mission_file="$p"
+    if [[ -n "${RESUME_MISSION_WORKTREE:-}" ]]; then
+      mission="$(git -C "${RESUME_MISSION_WORKTREE}" show "HEAD:${p}")"
+      mission_file="${p}"
+    else
+      [[ -r "$p" ]] || { log_err "cannot read mission file: $p"; exit 1; }
+      mission="$(cat "$p")"
+      mission_file="$p"
+    fi
   elif [[ "${raw}" == "-" ]]; then
     mission="$(cat)"
   fi
@@ -8722,6 +8773,12 @@ cmd_resolve() {
   # (exit 5) on: nonexistent path, not-a-worktree, foreign repo, live-claimed lane.  No
   # flag set → no-op (returns 0 immediately; ensure path runs byte-identical to today).
   _resolve_pinned_placement
+  local _placement_rc=$?
+  if [[ ${_placement_rc} -ne 0 ]]; then
+    # A placement refusal is not this process's lane. In particular, do not
+    # let a refused duplicate reach any downstream gate or terminal writer.
+    exit "${_placement_rc}"
+  fi
   # LANE-WORKTREE-ISOLATION-01 lane-entry fix (W-1 architect prepass §0.1/§1.1 step 3):
   # this is the ONE call site every lane passes through regardless of who invoked it --
   # fanout's three lead-session launch paths, the detached per-lane launcher, AND a
