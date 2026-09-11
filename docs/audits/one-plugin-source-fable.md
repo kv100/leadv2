@@ -461,3 +461,36 @@ plan can lose work, and the guard already names those files.
 9. Writer of `persona-engine/.claude/leadv2-overrides/.state/trust-alarm.json` — 0 hits in plugin
    dirs; grep persona-engine's own hooks.
 10. Whether Claude Code regenerates `~/.claude/plugins/cache/leadv2-local/` on reload.
+
+## 9. Self-check (raw output)
+
+No shell or Python file was changed, so `bash -n` and `py_compile` had nothing to check.
+
+```
+$ git status --short
+?? docs/audits/one-plugin-source-fable.md
+$ timeout 540 bash tests/run-all.sh --scope changed 2>&1 | tail -25
+test-status-surface-single-lead: 24 passed, 0 failed
+[PASS] .../tests/test-status-surface-single-lead.sh
+[RUN] .../tests/test-status-surface-fast-names.sh
+== T1: resolve_lane_label fallback chain ==
+  ok   - ledger lane_label hit
+  ok   - active.yaml worktree fallback
+  ok   - mission heading fallback (MISSION-HEADING-TASK — implementation de)
+  ok   - miss -> sig8 unchanged
+  ok   - lane_label pipe stripped (got 'AB')
+== T2: cold cache ==
+  ok   - cold cache shows «нет кэша», no spinner
+  ok   - cold render <1s (wall 0s)
+  ok   - cold render kicked a refresh (lock held)
+== T3: warm cache ==
+  ok   - warm cache: label in title+row, no sig8 sub-row
+  ok   - warm render <1s (wall 0s)
+== T4: stale cache ==
+  ok   - stale cache -> «⚠️ кэш устарел»
+== T5: rename hygiene (SELF_PATH) ==
+  ok   - copy-reply bash= path is the .5s.sh and exists
+test-status-surface-fast-names: 12 passed, 0 failed
+[PASS] .../tests/test-status-surface-fast-names.sh
+run-all: 4 passed, 0 failed, scope=changed
+```
