@@ -1,14 +1,13 @@
-Review ONLY the diff at /tmp/leadv2-review-518b42814626-final.diff. You are independent of the author (codex).
+Review ONLY the diff at /tmp/leadv2-review-518b42814626-final2.diff. You are independent of the author (codex).
 Report correctness findings by severity (Critical / High / Medium / Low).
-VERIFICATION-ONLY ROUND 3
+VERIFICATION-ONLY ROUND 4
 
 This diff already went through review. Below are the prior findings from the previous round.
 For each one, verify by execution whether each prior finding below is fixed.
 Admit a NEW finding ONLY if the fixes introduced it. Do not re-litigate pre-existing issues you were not asked to verify.
 
 Prior findings:
-- [High/correctness] docs/handoff/CONTROL-PLANE-REVIEW-01/seed-facts.md:94 S6 reverts a measured correction and re-asserts the proven-false "registry is blind / every active.yaml reported 0 lanes" claim, which drives M4 review missions
-- [High/design] docs/handoff/518b42814626/round1-red.txt:5 Red artifact contains a SKIP line ("resolver override is already guard-mutated") that the committed suite cannot emit — falsification evidence was not regenerated after the final suite rewrite
+- [High/] none:0 
 
 Your review MUST contain these two lines, verbatim format, before any prose:
 REVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>
