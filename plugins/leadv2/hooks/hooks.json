@@ -1,5 +1,5 @@
 {
-  "description": "leadv2 autonomous orchestrator hooks \u2014 guards, counters, delegations, lifecycle",
+  "description": "leadv2 autonomous orchestrator hooks — guards, counters, delegations, lifecycle",
   "hooks": {
     "SessionStart": [
       {
@@ -83,6 +83,13 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-merged-worktree-sweep.sh\"",
             "timeout": 20,
             "statusMessage": "Worktree sweep: removing landed lanes..."
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-hook-registration-guard.sh\"",
+            "timeout": 8,
+            "continueOnBlock": true,
+            "statusMessage": "Checking hook registrations against the repo manifest..."
           }
         ]
       },
