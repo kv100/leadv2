@@ -1,0 +1,11 @@
+MUTATION: _arb_fatal() { return 65; } (diagnostic silenced)
+EXIT_CODE=1
+STDOUT_BYTES=359
+STDERR_BYTES=0
+--- STDOUT ---
+PASS: stdlib YAML-subset loader routes byte-identically to real PyYAML on the real configs
+PASS: subset-unsupported yaml refuses loudly (rc=2, stderr names the line), never routes on a guess
+PASS: invalid LEADV2_ROUTE_ARBITER_YAML_LOADER value is a named refusal (rc=2, stderr bytes > 0)
+FAIL: bash-half refusal out='WRAP_RC=65' err=''
+SUMMARY: pass=3 fail=1
+--- STDERR ---

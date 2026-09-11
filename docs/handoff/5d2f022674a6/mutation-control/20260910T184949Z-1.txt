@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-route-arbiter-loud-refusal.sh
+file=plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+anchor=s|^  _arb_fatal().*|  _arb_fatal() { return 65; }|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: bash-half refusal out='WRAP_RC=65' err=''
+diff_hash=51d6d2b9a8644f5763ef172e16b7a04c7ab6f34f931f08f483dd31a76de398de
+lane_diff_hash=4f04934c2676489ac5f79e1dd93957ea53e8fec9b4d770cf063654a7030cd76f
