@@ -1,0 +1,8 @@
+suite=plugins/leadv2/tests/test-a-dead-codex-job-does-not-park-the-provider.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=/tmp/cau-ctl1.patch
+baseline_rc=0
+mutated_rc=1
+red_line=FileNotFoundError: [Errno 2] No such file or directory: '/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//leadv2-codex-always-up.ptbBnk/lockout.hmQkBX/quota-lockout-codex.json'
+diff_hash=de577094c65a699de102536bb3e647995a497ff8a41c0d9fe3ee24ab22b4f8cd
+lane_diff_hash=bc736772fd2a15c6b8f9ba50bfd3947c41d076c86a7c9c19a42da7161ba37d77
