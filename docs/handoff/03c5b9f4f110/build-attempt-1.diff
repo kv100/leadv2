@@ -1,0 +1,76 @@
+diff --git a/plugins/leadv2/scripts/lib/leadv2-arm-cooldown.sh b/plugins/leadv2/scripts/lib/leadv2-arm-cooldown.sh
+index 014d5c2a..8ad8bb32 100644
+--- a/plugins/leadv2/scripts/lib/leadv2-arm-cooldown.sh
++++ b/plugins/leadv2/scripts/lib/leadv2-arm-cooldown.sh
+@@ -1,6 +1,7 @@
+ #!/usr/bin/env bash
+ # Bounded, append-only cooldown memory for dispatch arms.  Source this file;
+-# it intentionally does not change shell options and every public API fails open.
++# it intentionally does not change shell options; reads fail open while
++# mutating APIs reject invalid arm names.
+ # ── N1B hard bounds (NOT env-derived) ────────────────────────────────────────
+ # The whole point of this library: an arm's availability must be decided by a
+@@ -41,6 +42,12 @@ _arm_cooldown_valid_arm() {
+   esac
+ }
++_arm_cooldown_require_valid_arm() {
++  _arm_cooldown_valid_arm "${1:-}" && return 0
++  printf '%s\n' 'leadv2-arm-cooldown: invalid or empty arm name' >&2
++  return 1
++}
++
+ _arm_cooldown_now_epoch() {
+   local now canon
+   now="${LEADV2_ARM_COOLDOWN_NOW_EPOCH:-}"
+@@ -101,7 +108,7 @@ _arm_cooldown_reason() {
+ # arm_cooldown_record <arm> <reason> [advisory_until_iso]
+ arm_cooldown_record() {
+   local arm="${1:-}" reason advisory now default min max effective advisory_epoch label src dir file reprobe line job lockf
+-  _arm_cooldown_valid_arm "$arm" || return 0
++  _arm_cooldown_require_valid_arm "$arm" || return 1
+   reason="$(_arm_cooldown_reason "${2:-unknown}")"
+   advisory="${3:-na}"
+   [ -n "$advisory" ] || advisory="na"
+@@ -197,7 +204,7 @@ arm_cooldown_state() {
+ arm_cooldown_clear() {
+   local arm="${1:-}" file
+-  _arm_cooldown_valid_arm "$arm" || return 0
++  _arm_cooldown_require_valid_arm "$arm" || return 1
+   file="$(_arm_cooldown_dir)/${arm}.state"
+   mkdir -p "$(_arm_cooldown_dir)" 2>/dev/null || return 0
+   : > "$file" 2>/dev/null || true
+@@ -207,7 +214,7 @@ arm_cooldown_clear() {
+ # One durable observability line; it never participates in gating.
+ arm_cooldown_ladder_note() {
+   local arm="${1:-}" reason reprobe dir line
+-  _arm_cooldown_valid_arm "$arm" || return 0
++  _arm_cooldown_require_valid_arm "$arm" || return 1
+   reason="$(_arm_cooldown_reason "${2:-unknown}")"; reprobe="${3:-na}"
+   dir="$(_arm_cooldown_dir)"; mkdir -p "$dir" 2>/dev/null || return 0
+   line="$(_arm_cooldown_epoch_iso "$(_arm_cooldown_now_epoch)") ARM_COOLDOWN_LADDER arm=${arm} reason=${reason} reprobe_at=${reprobe}"
+diff --git a/plugins/leadv2/scripts/tests/test-arm-cooldown.sh b/plugins/leadv2/scripts/tests/test-arm-cooldown.sh
+index ef825d89..4c1eb85a 100644
+--- a/plugins/leadv2/scripts/tests/test-arm-cooldown.sh
++++ b/plugins/leadv2/scripts/tests/test-arm-cooldown.sh
+@@ -64,6 +64,22 @@ expect "$(arm_cooldown_state codex)" clear 'expired record self-heals to clear'
+ printf '%s\n' junk > "$LEADV2_ARM_COOLDOWN_DIR/bad.state"
+ expect "$(arm_cooldown_state bad)" clear 'malformed store fails open'
+ expect "$(arm_cooldown_state '../escape')" clear 'invalid arm fails open'
++
++# Mutating APIs must reject invalid/empty arm names instead of silently
++# reporting success without changing cooldown state.
++invalid_record_err="$(arm_cooldown_record '' quota 2>&1 >/dev/null)"; invalid_record_rc=$?
++invalid_clear_err="$(arm_cooldown_clear '../escape' 2>&1 >/dev/null)"; invalid_clear_rc=$?
++invalid_note_err="$(arm_cooldown_ladder_note '' quota 2>&1 >/dev/null)"; invalid_note_rc=$?
++if [ "$invalid_record_rc" -ne 0 ] \
++   && [ "$invalid_clear_rc" -ne 0 ] \
++   && [ "$invalid_note_rc" -ne 0 ] \
++   && [ "$invalid_record_err" = 'leadv2-arm-cooldown: invalid or empty arm name' ] \
++   && [ "$invalid_clear_err" = 'leadv2-arm-cooldown: invalid or empty arm name' ] \
++   && [ "$invalid_note_err" = 'leadv2-arm-cooldown: invalid or empty arm name' ]; then
++  pass 'mutating APIs reject invalid/empty arm names'
++else
++  fail "invalid arm rejection (record rc=$invalid_record_rc err=[$invalid_record_err], clear rc=$invalid_clear_rc err=[$invalid_clear_err], note rc=$invalid_note_rc err=[$invalid_note_err])"
++fi
+ arm_cooldown_ladder_note codex quota 2001-09-09T02:01:40Z >/dev/null
+ [ -s "$LEADV2_ARM_COOLDOWN_DIR/codex.journal" ] && pass 'ladder journal is durable' || fail 'ladder journal is durable'
