@@ -1,5 +1,25 @@
 # LEAD-BURN-MECHANISM-01 — the interactive lead is the bill, and the rules against it already exist
 
+> **CORRECTED 2026-09-11 — two headline numbers below are WRONG. Read this first.**
+> `PROPOSAL-fable.md` and `FALSIFY-sol.md` independently found that this brief counted JSONL
+> **lines**, not API **responses**. Claude Code writes one line per content block, all sharing
+> `message.id`. Grouped correctly the six sessions hold **14,931 responses — exactly the DB
+> `turns` sum this brief dismissed as "a different thing"**. It was the right count all along.
+>
+> | claim below | corrected |
+> |---|---|
+> | 11,356 text-only turns (45.8%) | **1,572 (10.5%)** — 7,926 of those lines were redacted `thinking` blocks |
+> | interstitial narration between tool calls | **0** — every text-only response is the turn terminator; the agent loop ends only on a no-tool response |
+> | 0 of 13,437 batched (0.0%) | **74 of 13,359 (0.55%)** — a line can never carry two `tool_use` blocks, so 0 was true by construction, not by behaviour |
+>
+> What survives unchanged: cost per turn is flat, so the lever is turn count; and astra's central
+> finding that no hook fires before emission (`PreToolUse` arrives after the turn is paid), which
+> sol confirmed empirically — 375 real permission denials produced 356 one-tool and 19 zero-tool
+> next responses and **zero** batched corrections.
+>
+> The measured batchable fraction is **≈30% of all turns (95% range 19–44%)**, not the implied
+> 50%. Do not quote the uncorrected numbers below.
+
 Two independent analyses of the same question, one per arm, write sets disjoint so they cannot
 collide. **Do not read the other arm's file.** Disagreement between the two is the point.
 
