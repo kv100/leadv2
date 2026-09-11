@@ -16,10 +16,14 @@
 # lines are never echoed, so a path, service name, or email-shaped label
 # cannot leak through a warning.
 #
-# Fail-open, always: opt-out/unset, missing registry, <2 valid entries, a
-# malformed registry, or a probe budget that every probe consumed end in
-# `profile=- reason=single_profile` (or silence) + exit 0 — the caller then
-# leaves CLAUDE_CONFIG_DIR untouched and the lane runs exactly as before.
+# Fail-open only for an otherwise healthy inherited profile: opt-out/unset,
+# missing registry, <2 valid entries, a malformed registry, or a probe budget
+# that every probe consumed end in `profile=- reason=single_profile` + exit 0.
+# A known-expired/absent inherited credential is different: silently retaining
+# it is a routing decision onto a known-bad default, so that fallback returns
+# `reason=default_token_*` + exit 4.  A probe-qualified registry profile may
+# still launch; stale expiresAt alone is not evidence that a *probed* profile
+# cannot refresh in-process.
 #
 # Env:
 #   LEADV2_CLAUDE_PROFILE_REQUESTED  pin to this ONE registry label instead of
@@ -52,6 +56,19 @@
 #                                   config dir whose token health is warned
 #                                   about (hermetic tests; default
 #                                   ${CLAUDE_CONFIG_DIR:-$HOME/.claude})
+#   LEADV2_CLAUDE_PROFILE_DEMOTE_DIR  W1-BALANCER-COVERS-EVERY-ARM-01 §1.3:
+#                                   the config dir of the session DOING the
+#                                   dispatching (the lead's own account).
+#                                   The registry row whose config_dir equals
+#                                   it is DEMOTED to last in the ranking --
+#                                   never excluded: the lead's spend lands in
+#                                   its window with lag, so the probe reads
+#                                   that account as freer than it is, and a
+#                                   dispatched arm must not land on it while
+#                                   any other candidate exists. Default
+#                                   ${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+#                                   (inherited from the spawning session);
+#                                   `off`/`none`/`-` disables demotion.
 #
 # Registry format (TSV, blank lines and #-comments ignored):
 #   label<TAB>config_dir<TAB>credential_source(optional)<TAB>expect(optional)
@@ -75,13 +92,14 @@
 # account the slot is logged into; it carries NO subscriptionType), while
 # subscriptionType/expiresAt come from the credential's claudeAiOauth
 # (which carries NO email) -- the two are merged.
-# Loud fail-open warns (journal + stderr; selection never blocked):
-#   same_account      two slots resolve to ONE real account (the incident)
+# Loud events (journal + stderr):
+#   same_account      two slots resolve to ONE real account; refuse (exit 4)
 #   label_mismatch    derived identity differs from the `expect` column
 #   identity_email_unresolved  no readable .claude.json -> email unverifiable
-#   default_token_expired / default_token_absent  the inherited slot's
-#                      credential is dead/missing (the lane runs on it
-#                      whenever the selector fails open)
+#   default_token_expired / default_token_absent  inherited fallback is
+#                      refused (exit 4); only a probe-qualified profile may
+#                      launch, making any failover explicit in the selection
+#                      record rather than silently retaining the default.
 #   expiresAt_stale    the credential's `claudeAiOauth.expiresAt` is in the
 #                      past -- NOT treated as proof the slot is dead (D3,
 #                      TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01: measured
@@ -125,7 +143,19 @@ warn() {
       >> "$LEADV2_CLAUDE_PROFILE_JOURNAL" 2>/dev/null || true
   fi
 }
-single_profile() { printf 'profile=- reason=single_profile\n'; exit 0; }
+# Set after the inherited-slot inspection below.  It is deliberately a
+# fallback guard, not a blanket ban on a registry row with a stale expiresAt:
+# the latter may refresh in-process and must be decided by its live probe.
+DEFAULT_FALLBACK_REASON=""
+single_profile() {
+  if [[ -n "$DEFAULT_FALLBACK_REASON" ]]; then
+    warn "FATAL: ${DEFAULT_FALLBACK_REASON} -- refusing inherited single-profile fallback"
+    printf 'profile=- reason=%s\n' "$DEFAULT_FALLBACK_REASON"
+    exit 4
+  fi
+  printf 'profile=- reason=single_profile\n'
+  exit 0
+}
 
 # read_cred_json <credential_source> -> raw credential JSON on stdout, empty
 # on any failure. keychain: goes through $SECURITY_BIN (overridable for
@@ -213,10 +243,12 @@ if [[ "$d_cred" != "1" ]]; then
   IFS=$'\t' read -r d_sub d_email d_exp d_cj d_cred d_uuid d_org d_digest <<<"$def_line"
 fi
 if [[ "$d_cred" != "1" ]]; then
-  warn "WARN: default_token_absent (inherited slot has no readable credential) -- fail-open"
+  DEFAULT_FALLBACK_REASON="default_token_absent"
+  warn "WARN: default_token_absent (inherited slot has no readable credential) -- inherited fallback will refuse"
 elif [[ "$d_exp" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
   if (( ${d_exp%%.*} <= $(date +%s) * 1000 )); then
-    warn "WARN: default_token_expired identity=${d_sub}/${d_email} -- fail-open"
+    DEFAULT_FALLBACK_REASON="default_token_expired"
+    warn "WARN: default_token_expired identity=${d_sub}/${d_email} -- inherited fallback will refuse; probe-qualified profile required"
   fi
 fi
 
@@ -333,6 +365,19 @@ if [[ -n "$REQUESTED_PROFILE" ]]; then
   DIGESTS=("${DIGESTS[$_req_idx]}")
 fi
 
+# --- session-profile demotion (W1-BALANCER-COVERS-EVERY-ARM-01 §1.3) --------
+# The account the DISPATCHING session (usually the lead) is already burning
+# looks freer than it is: its own spend reaches the probe's window with lag,
+# so a dispatched arm can land on the exact account its caller is exhausting.
+# The row whose config_dir equals the session's config dir is demoted to LAST
+# in the ranking (see pick.py's tier ordering) -- demoted, never excluded, so
+# a single live account keeps working and a confirmed-cooling sibling still
+# loses to it. Computed BEFORE the probe loop; carried as the 7th recs column.
+DEMOTE_DIR="${LEADV2_CLAUDE_PROFILE_DEMOTE_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+case "$DEMOTE_DIR" in
+  ""|off|none|-) DEMOTE_DIR="" ;;
+esac
+
 # --- alarm file (2b: TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01) -----------------
 # Persistent, single well-known path -- NOT a handoff log. Written atomically
 # (mktemp + mv) on detect, rm -f on a clean run. No email, no token, no digest
@@ -395,7 +440,7 @@ detect_same_account
 (( SAME_ACCOUNT_HIT )) || clear_alarm
 if (( SAME_ACCOUNT_HIT )); then
   printf 'profile=- reason=same_account\n'
-  exit 0
+  exit 4
 fi
 
 # <2 valid entries => multi-profile is inert; caller keeps its inherited
@@ -434,6 +479,9 @@ i=0
 while (( i < n )); do
   label="${LABELS[$i]}"; dir="${DIRS[$i]}"; cred="${SOURCES[$i]}"; identity="${IDENTITIES[$i]}"
   digest="${DIGESTS[$i]}"
+  # §1.3: 7th column -- demote flag for the dispatching session's own slot.
+  demote=0
+  [[ -n "$DEMOTE_DIR" && "$dir" == "$DEMOTE_DIR" ]] && demote=1
   i=$((i + 1))
   # Quota bucket keying is by IDENTITY, not by the operator-chosen label --
   # two labels resolving to the same real account must share one quota
@@ -484,19 +532,19 @@ while (( i < n )); do
       rm -f "$cooldown_file" "$cooldown_cred_file" 2>/dev/null || true
     else
       warn "WARN: profile label=${label} cooling down after a recent live probe failure; skipping this round (reason=confirmed_live_failure until=${cooldown_until} remaining_s=$(( cooldown_until - $(date +%s) )))"
-      printf '%s\t%s\t%s\t-\t%s\t1\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+      printf '%s\t%s\t%s\t-\t%s\t1\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
       continue
     fi
   fi
   remaining=$(( deadline - $(date +%s) ))
   if (( remaining < 1 )); then
     warn "WARN: profile probe budget exhausted; unprobed entries score unknown"
-    printf '%s\t%s\t%s\t-\t%s\t0\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+    printf '%s\t%s\t%s\t-\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
     continue
   fi
   out="$(mktemp "${TMPDIR:-/tmp}/claude-profile-probe.XXXXXX")"
   if [[ -z "$out" ]]; then
-    printf '%s\t%s\t%s\t-\t%s\t0\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+    printf '%s\t%s\t%s\t-\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
     continue
   fi
   err="${out}.err"
@@ -525,7 +573,7 @@ while (( i < n )); do
   fi
   json="$(cat "$out" 2>/dev/null)"; rm -f "$out" "$err"
   if [[ "$rc" -ne 0 || -z "$json" ]]; then
-    printf '%s\t%s\t%s\t-\t%s\t0\n' "$label" "$dir" "$cred" "$identity" >> "$recs"
+    printf '%s\t%s\t%s\t-\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
     continue
   fi
   completed=$((completed + 1))
@@ -567,8 +615,67 @@ sys.exit(0 if (isinstance(account, dict) and account.get('status') != 'ok' and a
     warn "WARN: profile label=${label} live probe failed; cooling down ${COOLDOWN_S}s (reason=confirmed_live_failure cred=${digest} until=${cooldown_deadline})"
   fi
   b64="$(printf '%s' "$json" | base64 | tr -d '\n')"
-  printf '%s\t%s\t%s\t%s\t%s\t0\n' "$label" "$dir" "$cred" "$b64" "$identity" >> "$recs"
+  printf '%s\t%s\t%s\t%s\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$b64" "$identity" "$demote" >> "$recs"
 done
+
+# SELECTOR-SKIPS-EXHAUSTED-01: a live account whose binding window has no
+# usable capacity is not a lower-ranked candidate.  Remove it before the
+# legacy picker sees the records, so score=100 cannot make a fully exhausted
+# account win a tie with an unknown or healthy account.  The classifier also
+# returns reset timestamps for the all-exhausted refusal below.
+EXHAUSTED_COUNT=0
+EXHAUSTED_RESETS=""
+READABLE_WINDOW_COUNT=0
+filter_exhausted_candidates() {
+  local input="$1" output="$2" classification kind reset line_no
+  : > "$output" || return 1
+  classification="$(python3 -c '
+import json, sys
+
+path = sys.argv[1]
+for line_no, raw in enumerate(open(path), 1):
+    parts = raw.rstrip("\n").split("\t")
+    payload = None
+    try:
+        payload = json.loads(__import__("base64").b64decode(parts[3]).decode())
+    except Exception:
+        pass
+    account = None
+    if isinstance(payload, dict):
+        accounts = payload.get("accounts") or []
+        account = next((a for a in accounts if isinstance(a, dict) and a.get("active")), None)
+        if account is None and len(accounts) == 1 and isinstance(accounts[0], dict):
+            account = accounts[0]
+    exhausted = False
+    readable = False
+    reset = "unknown"
+    if (isinstance(payload, dict) and payload.get("status") == "ok"
+            and isinstance(account, dict) and account.get("status") == "ok"):
+        binding = account.get("binding_window")
+        window = account.get(binding) if binding in ("five_hour", "seven_day") else None
+        usable = window.get("usable_now") if isinstance(window, dict) else None
+        if isinstance(usable, (int, float)) and not isinstance(usable, bool):
+            readable = True
+            if usable == 0.0:
+                exhausted = True
+                reset = (window.get("reset_iso") or
+                         account.get(binding + "_reset_iso") or "unknown")
+    kind = "exhausted" if exhausted else ("window" if readable else "eligible")
+    print("%s\t%s\t%s" % (kind, reset, line_no))
+' "$input")" || return 1
+  while IFS=$'\t' read -r kind reset line_no; do
+    [[ -n "$kind" ]] || continue
+    if [[ "$kind" == "exhausted" ]]; then
+      EXHAUSTED_COUNT=$((EXHAUSTED_COUNT + 1))
+      READABLE_WINDOW_COUNT=$((READABLE_WINDOW_COUNT + 1))
+      if [[ -n "$EXHAUSTED_RESETS" ]]; then EXHAUSTED_RESETS+="|"; fi
+      EXHAUSTED_RESETS+="$(sed -n "${line_no}p" "$input" 2>/dev/null | cut -f1)=${reset}"
+      continue # MUTATION-CONTROL: returning this candidate must make the suite red
+    fi
+    [[ "$kind" == "window" ]] && READABLE_WINDOW_COUNT=$((READABLE_WINDOW_COUNT + 1))
+    sed -n "${line_no}p" "$input" >> "$output"
+  done <<< "$classification"
+}
 
 # Every probe hung/crashed => no signal at all => single_profile (T8), not a
 # blind all_unknown pick that would still pin a config_dir on zero evidence.
@@ -584,8 +691,18 @@ if (( completed == 0 )); then
   fi
   single_profile
 fi
-result="$(python3 "$PICK" < "$recs" 2>/dev/null)" || result=""
-rm -f "$recs"
+eligible_recs="$(mktemp "${TMPDIR:-/tmp}/claude-profile-eligible.XXXXXX")" || eligible_recs=""
+if [[ -z "$eligible_recs" ]] || ! filter_exhausted_candidates "$recs" "$eligible_recs"; then
+  rm -f "$recs" "$eligible_recs"
+  single_profile
+fi
+if (( EXHAUSTED_COUNT > 0 )) && [[ ! -s "$eligible_recs" ]]; then
+  rm -f "$recs" "$eligible_recs"
+  printf 'profile=- reason=all_exhausted candidates=%d resets=%s\n' "$n" "$EXHAUSTED_RESETS"
+  exit 4
+fi
+result="$(python3 "$PICK" < "$eligible_recs" 2>/dev/null)" || result=""
+rm -f "$recs" "$eligible_recs"
 if [[ -z "$result" ]]; then
   if [[ -n "$REQUESTED_PROFILE" ]]; then
     warn "WARN: requested profile label=${REQUESTED_PROFILE} produced no usable pick"
@@ -593,6 +710,17 @@ if [[ -z "$result" ]]; then
     exit 3
   fi
   single_profile
+fi
+# If a readable window was excluded and the remaining candidates are unknown,
+# `all_unknown` would falsely claim that no quota window was read.  Name the
+# mixed outcome after the actual decision: an unknown candidate remained after
+# exhausted candidates were excluded.
+if (( READABLE_WINDOW_COUNT > 0 )); then
+  if (( EXHAUSTED_COUNT > 0 )); then
+    result="$(printf '%s\n' "$result" | sed 's/ reason=all_unknown / reason=unknown_with_exhausted_excluded /')"
+  else
+    result="$(printf '%s\n' "$result" | sed 's/ reason=all_unknown / reason=quota_window_read /')"
+  fi
 fi
 printf '%s\n' "$result"
 exit 0

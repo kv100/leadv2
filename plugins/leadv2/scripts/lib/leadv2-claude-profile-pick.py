@@ -22,6 +22,20 @@ from the credential itself, never from the label -- it is what actually gets
 reported, since a registry label can drift from the account the credential
 now serves (a relabeled/re-logged-in slot).
 
+`demote` (W1-BALANCER-COVERS-EVERY-ARM-01 §1.3, founder 2026-09-09) is "1"
+only on the record whose config_dir IS the config dir of the session doing
+the dispatching (the lead's own account -- the one whose window the probe
+UNDERESTIMATES, because the lead's spend lands in it with lag, so it looks
+freer than it is). The demoted record is ranked LAST but never excluded:
+ordering is a TIER on top of the existing score, never a score rewrite --
+0 = normal, 1 = demoted, 2 = cooling -- so the session's own account still
+wins whenever every other candidate is worse (confirmed-cooling, or no other
+candidate at all) and a single live account never stalls work. Reported
+`score=` stays the raw window pct; the demotion is visible in the
+`demoted=<label>` output field, printed ONLY when a demote column is present
+in the input, so every legacy 6-column caller and fixture keeps a
+byte-identical output line.
+
 TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: the old single UNKNOWN=101 sentinel
 made an unknown-scored profile lose to EVERY live-scored profile regardless
 of how exhausted the live one actually was (a profile at 99% used still
@@ -131,14 +145,34 @@ def main():
             parts = parts + ["unknown/na"]  # pre-T12 caller (no identity column)
         if len(parts) == 5:
             parts = parts + ["0"]  # pre-cooldown caller (no cooling column)
-        if len(parts) != 6:
+        if len(parts) == 6:
+            parts = parts + ["0"]  # pre-demote caller (no demote column, §1.3)
+        if len(parts) != 7:
             continue
         records.append(parts)
     if not records:
         print("profile=- reason=single_profile")
         return
+
+    def _tier(rec):
+        """Rank tier (§1.3): 0 normal, 1 demoted (the dispatching session's
+        own account -- ranked last, never excluded), 2 cooling. Tier 2 below
+        tier 1 keeps the cooldown's own promise: a slot that just failed a
+        live probe is not re-picked merely to avoid the lead's window."""
+        if rec[5] == "1":
+            return 2
+        if len(rec) > 6 and rec[6] == "1":
+            return 1
+        return 0
+
     scored = [(score_record(r), i, r) for i, r in enumerate(records)]
-    (score, source, window, pct), _order, record = min(scored, key=lambda t: (t[0][0], t[1]))
+    tiers = [_tier(r) for r in records]
+    # min over (tier, score, registry order) -- fully deterministic, and
+    # byte-identical to the old (score, order) selection whenever no record
+    # is demoted (every legacy input: tiers are all 0 or 2, and tier 2 was
+    # already the strictly-worst 101 sentinel).
+    pick = min(range(len(records)), key=lambda i: (tiers[i], scored[i][0][0], i))
+    (score, source, window, pct), _order, record = scored[pick]
     # The minimum can only reach UNKNOWN_TRIABLE when EVERY record is unknown.
     if score >= UNKNOWN_TRIABLE:
         reason = "all_unknown"
@@ -151,10 +185,15 @@ def main():
         "%s:%s=%s" % (r[0], w or "-", _fmt_pct(p))
         for (sc, src, w, p), _o, r in scored
     )
+    # §1.3: printed ONLY when a demote column is present and matched a
+    # candidate -- absent means "no demotion in play", which keeps the line
+    # byte-identical for every legacy caller and fixture.
+    demoted_labels = [r[0] for r in records if len(r) > 6 and r[6] == "1"]
+    demoted_field = " demoted=%s" % demoted_labels[0] if demoted_labels else ""
     print("profile=%s config_dir=%s score=%d source=%s reason=%s candidates=%d cred=%s identity=%s "
-          "binding=%s windows=%s"
+          "binding=%s windows=%s%s"
           % (record[0], record[1], score, source, reason, len(records), record[2], record[4],
-             binding_field, windows_field))
+             binding_field, windows_field, demoted_field))
 
 
 if __name__ == "__main__":

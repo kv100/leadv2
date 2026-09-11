@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-dispatch-refuses-a-dead-premise.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s/exit "${PREMISE_DEAD_RC}"/return 0/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: T1 green: expected rc=7 got 0
+diff_hash=da8e094ecd98959ad6bedd39c8a9f5441bd60fcf569fb7dec9cfe35285f54dcc
+lane_diff_hash=d3c8a8bbfba1c2ce6061f86b649a981a453c8e3a4ff2e137323c3caf171d02a9

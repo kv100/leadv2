@@ -4,6 +4,7 @@
 #
 # Usage: leadv2-mission-lint.sh <mission-file>
 # Exit 0 = pass. Exit 2 = too long. Exit 3 = looks like context dup.
+# Exit 9 = brief lacks a decision-complete approach section.
 
 set -euo pipefail
 
@@ -21,6 +22,38 @@ if [[ "$lines" -gt "$MAX_LINES" ]]; then
   echo "→ keep mission ≤${MAX_LINES} lines. Move spec content to context.yaml; reference it: 'see docs/handoff/<id>/context.yaml §plan.steps'"
   exit 2
 fi
+
+check_decision_complete() { # <brief-file> -> rc 0=approach heading present, 9=missing
+  local _file="$1" approach_hits=0
+  # Use grep + a counter rather than grep -c: its rc=1 for zero matches is
+  # correct data here, not a set -e / pipefail failure.
+  while IFS= read -r _line; do approach_hits=$((approach_hits + 1)); done \
+    < <(grep -iE '^#{1,3} *(Подход|Approach|Как делать)' "${_file}" 2>/dev/null || true)
+  if [[ "${approach_hits}" -eq 0 ]]; then
+    echo "MISSION_NOT_DECISION_COMPLETE file=${_file} approach_headings=0"
+    echo "→ brief lacks an execution decision: add a Подход/Approach/Как делать heading; otherwise this costs an extra lane round."
+    return 9
+  fi
+  return 0
+}
+
+check_mutation_without_behaviour() { # <brief-file> -> always rc 0; warn on ambiguous control
+  local _file="$1" mutation_hits=0 behaviour_hits=0
+  while IFS= read -r _line; do mutation_hits=$((mutation_hits + 1)); done \
+    < <(grep -iE 'негативн|mutation|mutation-control' "${_file}" 2>/dev/null || true)
+  while IFS= read -r _line; do behaviour_hits=$((behaviour_hits + 1)); done \
+    < <(grep -iE 'поведени|behaviour|behavior' "${_file}" 2>/dev/null || true)
+  if [[ "${mutation_hits}" -gt 0 && "${behaviour_hits}" -eq 0 ]]; then
+    echo "MISSION_MUTATION_WITHOUT_BEHAVIOUR file=${_file} mutation_signals=${mutation_hits} behaviour_signals=0"
+    echo "→ warning: mutation or negative control is requested but the brief does not name behaviour that changes; continuing because a false refusal costs more than this omission."
+  fi
+  return 0
+}
+
+if ! check_decision_complete "${file}"; then
+  exit 9
+fi
+check_mutation_without_behaviour "${file}"
 
 # Heuristic: missions usually shouldn't contain top-level YAML keys that belong in context.yaml
 # Use grep -qE + counter to avoid grep -c's exit-1-on-no-match (which trips pipefail+set-e).

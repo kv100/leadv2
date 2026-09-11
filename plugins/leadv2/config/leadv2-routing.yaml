@@ -46,7 +46,10 @@
 # CORRECTION to the three lines that follow: no plugin sync copies this file into
 # .claude/ref. Measured 2026-09-05 -- the only writers of that path are two test
 # fixtures (tests/test-kimi-dispatch-spill.sh:23, test-kimi-admission-guard.sh:26).
-# The one tenant copy that exists was made by hand (RECOVER-WAVE1-TEN-01).
+# The one tenant copy that exists was made by hand (RECOVER-WAVE1-TEN-01); since
+# 2026-09-10 (PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01) that copy is a
+# tenant DELTA, and lib/leadv2-routing-config.sh merges it over THIS file for
+# every router-registry reader -- a key the delta lacks is inherited from here.
 # Smart routing v2 additions.  The legacy per-phase routing table remains
 # repo-local at .claude/ref/leadv2-routing.yaml; this canonical registry is
 # copied there by plugin sync when v2 is enabled.
@@ -59,15 +62,14 @@ router_v2:
   active_account: max_20x
 
   # usable_now is remaining percentage-points per hour, not percent used.
-  headroom_weights:
-    - min_usable_now: 8
-      weight: 1.0
-    - min_usable_now: 2
-      weight: 0.7
-    - min_usable_now: 0
-      weight: 0.4
-    - min_usable_now: null
-      weight: 0.2
+  # W1-GRANULARITY-CONTINUOUS-HEADROOM-01 (founder, 2026-09-10): the
+  # headroom weights STEP TABLE that lived here is DELETED. The weight is now
+  # one monotone clipped-linear ramp of usable_now inside the arbiter
+  # (lib/leadv2-route-arbiter.sh, _headroom_ramp): w(u) = 0.2 + 0.8*min(u,8)/8,
+  # same edges the table had (1.0 at u>=8, 0.2 floor). Not configurable on
+  # purpose: the table quantised a continuous input into four baskets and the
+  # third basket swallowed nearly the whole range -- three providers priced
+  # identically while their runways differed.
 
   # ── Quota ceilings, founder decision 2026-08-02 ───────────────────────────
   # Two ceilings per provider: ordinary work, and a HIGHER one for review, because
@@ -202,7 +204,28 @@ router_v2:
     # test authoring. NOT for protected/safety/publish (protected: false here
     # plus `untrusted: true` on the ladder entry below), NOT review/audit/plan,
     # and sizes stop at standard — heavy/bulk stay on glm-5.3/codex/sonnet.
-    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.33, kinds: [code, docs, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [cheap, mechanical], review: false, protected: false, capability: 2 }
+    # GLM-FLASH-DOES-ANY-WORK-01 — прямое решение основателя 2026-09-10, дословно:
+    # «хочу чтобы флеш тоже мог делать все, а там уже пускай все наши механизмы
+    # решают кто что и как». Это РАСШИРЯЕТ GLM-DOES-ANY-WORK-01 (2026-09-04), которое
+    # намеренно не тронуло flash, посчитав его «дешёвым тарифом, а не самим GLM».
+    #
+    # Снимаются РУЧНЫЕ ограничения, а не механизмы:
+    #   protected: false -> true  — flash допущен на защищённые пути;
+    #   review:    false -> true  — flash допущен как рецензент;
+    #   kinds  += review, plan, audit, safety — прежний список отсекал их по имени;
+    #   sizes  += heavy, bulk     — прежний потолок standard отсекал по размеру.
+    # `untrusted: true` снят с его ЛЕСТНИЧНОЙ записи ниже — иначе лестница снимала бы
+    # flash на защищённой цепи раньше, чем арбитр вообще что-то решит.
+    #
+    # НЕ изменено намеренно: `capability: 2` (у glm-5.3 и sonnet — 4). Это и есть
+    # «пусть решают механизмы»: capability_fit держит flash в стороне от работы,
+    # которой он не тянет, по ИЗМЕРЕННОМУ признаку, а не по списку имён. Поднять эту
+    # цифру можно только с замером, а замера нет.
+    #
+    # Откат — один шаг: вернуть в этой строке protected: false, review: false,
+    # прежние kinds/sizes и `untrusted: true` в лестничную запись.
+    # Ледгер: SD-GLM-FLASH-DOES-ANY-WORK-ROLLBACK-01.
+    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.33, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [cheap, mechanical], review: true, protected: true, capability: 2 }
     # recon (ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01, founder 2026-09-04):
     # recon is cheap, high-volume, READ-ONLY exploration — routing intent lives
     # here as rows, not in arbiter code branches. freepool (cost 1) is the
@@ -273,6 +296,10 @@ router_v2:
   # decisions at effort=low, 2026-09-03/04) -- the exact circularity the
   # founder rejected. The pre-split tag rows are preserved below as phase 2
   # so a config that ships only arm rows still resolves.
+  # Internal effort vocabulary.  Consumers compare positions in this list; no
+  # script owns a second copy.  `effort_ceiling` is the emergency spend brake.
+  effort_scale: [none, minimal, low, medium, high, xhigh, max, ultra]
+  effort_ceiling: ultra
   effort_matrix:
     # Phase 1 -- task-keyed, evaluated first (effort follows the TASK).
     - { kinds: [safety], effort: high }
@@ -485,12 +512,16 @@ router:
     # fallback position. `when:` stops at standard: heavy/bulk/strategic
     # fallback legs skip flash (mechanical tier only). Same glm provider =>
     # one lockout record covers both glm arms.
+    # GLM-FLASH-DOES-ANY-WORK-01 (founder 2026-09-10): `when: [all]` and no
+    # `untrusted:` — the ladder no longer strips flash from a protected/safety
+    # chain, and no longer stops its fallback legs at standard. Capability, quota
+    # and price decide instead. Rollback: restore `when: [trivial, light,
+    # standard]` and `untrusted: true`.
     - id: glm-flash
       provider: glm
       model: glm-5.3-flash
-      when: [trivial, light, standard]
+      when: [all]
       effort: standard
-      untrusted: true
     # RETIRED as a build arm (founder order 2026-08-04 «Кими убрать», executed as
     # 3398d11 / DISPATCH-KIMI-ARM-MISMATCH-01). The entry stays so _arm_provider
     # can name the provider if a stale tenant yaml ever hands back arm=kimi, but

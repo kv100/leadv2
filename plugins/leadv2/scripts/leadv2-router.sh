@@ -38,8 +38,13 @@ readonly PROJECT_ROOT
 # behaviour is byte-identical to before and the failure is never silent.
 # shellcheck source=lib/leadv2-phase-policy-path.sh
 source "${SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh"
+# PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the historical-name fallback
+# is the ONE resolver (env override as-is, else tenant delta MERGED over the
+# canonical registry, else canonical). Unresolvable -> empty, and the existing
+# not-found warning below fires -- never a private path rebuild.
 ROUTING_YAML="$(leadv2_phase_policy_path "$PROJECT_ROOT")" \
-  || ROUTING_YAML="$PROJECT_ROOT/.claude/ref/leadv2-routing.yaml"
+  || ROUTING_YAML="$(leadv2_routing_config_path "$PROJECT_ROOT" 2>/dev/null)" \
+  || ROUTING_YAML=""
 readonly ROUTING_YAML
 # T-b (SUPERVISOR-AUDIT-01): single glm_policy/codex_quota_gate resolver, shared with
 # leadv2-dispatch-code.sh:resolve_arm(). Exported so the python helper (a temp file, not
@@ -60,7 +65,9 @@ Usage: leadv2-router.sh --phase <phase> --step <step>
                         [--signals '{"risk":"high","total_lines":600}']
                         [--task-id <id>]
                         [--class <Light|Standard|Heavy|Strategic>]
-       leadv2-router.sh think-model
+       leadv2-router.sh think-model [--role <plan-synthesis|judge|diagnose|learn|po-audit|architect-prepass|lead-main>]
+                                    [--class <Light|Standard|Heavy|Strategic>]
+                                    [--task-id <id>]
 EOF
   exit 1
 }
@@ -69,35 +76,89 @@ readonly MODEL_CAPABILITY_YAML="${LEADV2_MODEL_CAPABILITY_YAML:-${SCRIPT_DIR}/..
 
 # FABLE-THINK-TIER-01: every "value is thinking" role (plan synthesis, judge,
 # diagnose root-cause, learn proposal, PO audit, dispatch architect prepass,
-# lead main model) resolves through this ONE function. R8: LEADV2_THINK_MODEL
-# env is only the DEFAULT candidate, never an outright override — the
-# model-capability.yaml kill switch is checked FIRST and always wins, even
-# over an explicit env pin (see the binding resolution order below); fable is
-# used when the candidate is available, opus (the documented fallback)
-# otherwise. No caller may hardcode `opus` at a think-role spawn site — call
-# this instead.
+# lead main model) resolves through this ONE function. No caller may hardcode
+# `opus` at a think-role spawn site — call this instead.
+#
+# W1-THINK-THROUGH-ARBITER-01 (2026-09-09): the thinking path now goes through
+# the SAME arbiter the build path uses — lib/leadv2-route-arbiter.sh plus the
+# router_v2.capability_matrix in config/leadv2-routing.yaml. One selector, no
+# second model-choice mechanism. What was extended, exactly:
+#   * think_model() consults route_arbiter() whenever no env pin is set, with
+#     a descriptor built from the role (-> matrix kind) and the task class
+#     (-> stakes: size/complexity/pool floor);
+#   * model-capability.yaml gained a `think_stakes:` block — data, not code —
+#     declaring per class what the arbiter sees: an explicit `arms:` pool for
+#     low-stakes classes (the cheap hand is NOT in it — the equivalence
+#     sample measured 6/10 strict, see the block's comment) and tier/provider
+#     floors for high-stakes ones;
+#   * every resolution journals `think_model_resolved role=... arm=...
+#     model=... reason=...` so the thinking share is countable with the same
+#     counter that counts the dispatch model= census rows.
+# Resolution order (the R6 contract kept, one stage inserted):
+#   (1) model-capability.yaml `unavailable: true` still beats everything —
+#       it now filters arms out of the arbiter pool BEFORE the call, so the
+#       arbiter can never hand back a kill-switched arm;
+#   (2) LEADV2_THINK_MODEL env pin, unchanged semantics (a default candidate,
+#       never resurrecting a dead model);
+#   (3) NEW, no pin: route_arbiter() decides cheapest-capable within the
+#       stakes pool. A think-specific last-arm state file keeps the build
+#       path's anti-rotation bookkeeping untouched;
+#   (4) arbiter missing/refused/dead -> fail open to the legacy fable->opus
+#       ladder. Thinking must never stall on a broken probe.
 _think_cap_unavailable() { # $1=candidate model -> prints true/false
   python3 - "${MODEL_CAPABILITY_YAML}" "$1" <<'PY' 2>/dev/null || echo true
-import sys, yaml
+import re, sys
+# PyYAML is a USER-SITE package for the homebrew python3 on this fleet, so an
+# isolated HOME (every hermetic suite) or a bare system python3 loses it --
+# ROUTE-ARBITER-DIES-SILENTLY-ON-LINUX-01 second half (2026-09-09) hit the
+# same dependency and made the arbiter PyYAML-optional. Same treatment here:
+# exact parse with PyYAML, else a strict-enough line scan of the one shape
+# model-capability.yaml actually uses (top-level `key:` blocks with
+# `field: value` rows). Unreadable file -> unavailable (fail-safe, unchanged).
+def _no_comment(line):
+    q = None
+    for i, ch in enumerate(line):
+        if q:
+            if ch == q: q = None
+        elif ch in ('"', "'"): q = ch
+        elif ch == '#' and (i == 0 or line[i - 1] in (' ', '\t')): return line[:i]
+    return line
+def _row(path, key):
+    cur, row = None, {}
+    try:
+        lines = open(path).read().splitlines()
+    except Exception:
+        return None
+    for ln in lines:
+        ln = _no_comment(ln)
+        m = re.match(r'^([A-Za-z0-9_.-]+):', ln)
+        if m:
+            if cur == key: break
+            cur = m.group(1); row = {}
+            continue
+        if cur == key:
+            m2 = re.match(r'^\s+([A-Za-z0-9_]+):\s*(.*?)\s*$', ln)
+            if m2: row[m2.group(1)] = m2.group(2)
+    return row
+key = sys.argv[2]
 try:
+    import yaml
     cfg = yaml.safe_load(open(sys.argv[1])) or {}
-    row = cfg.get(sys.argv[2]) or {}
+    row = cfg.get(key) or {}
     print("true" if row.get("unavailable") else "false")
+except ImportError:
+    row = _row(sys.argv[1], key)
+    print("true" if row is None or row.get("unavailable") == 'true' else "false")
 except Exception:
     print("true")
 PY
 }
-# R6 resolution order (lead decision, binding): (1) model-capability.yaml
-# `unavailable: true` for the candidate skips it ALWAYS — the yaml kill switch
-# beats everything, including an env pin (the settings.json install-time
-# default written by leadv2-repo-install.sh must never resurrect a dead
-# model); (2) LEADV2_THINK_MODEL env, if set and not unavailable; (3)
-# built-in default fable (repo-install feeds the per-repo default through
-# that env var); (4) opus, the documented fallback, only when the preferred
-# candidate is unavailable. LEADV2_THINK_MODEL stays a DEFAULT, never an
-# override that bypasses the capability data.
-think_model() {
-  local candidate="${LEADV2_THINK_MODEL:-fable}"
+# The R6 candidate core (kill switch -> candidate -> fable -> opus), verbatim
+# from the pre-arbiter think_model() body. Still the env-pin path, and the
+# fail-open tail when the arbiter cannot answer. The ONE place an opus
+# fallback may live is unchanged.
+_think_resolve_candidate() { # $1=candidate -> prints the resolved model
+  local candidate="$1"
   local unavailable
   unavailable="$(_think_cap_unavailable "${candidate}")"
   if [[ "${unavailable}" == "true" ]]; then
@@ -112,8 +173,339 @@ think_model() {
   fi
   printf '%s\n' "${candidate}"
 }
+# Think-role vocabulary -> arbiter/matrix vocabulary. This is naming, not
+# policy: what each arm may do and what it costs lives in the matrix. Verdict-
+# shaped roles (judge, diagnose, po-audit, learn) enter as `reviewer` so the
+# arbiter applies its review-side quota ceilings (higher than work-side,
+# routing.yaml quota_ceilings) — a verdict must survive tight quota, not die
+# on it.
+_think_role_kind() { # $1=think role -> "<worker|reviewer> <matrix-kind>"
+  case "$1" in
+    judge|diagnose) printf 'reviewer review\n' ;;
+    learn|po-audit) printf 'reviewer audit\n' ;;
+    *)              printf 'worker plan\n' ;; # plan-synthesis/architect-prepass/lead-main/bare call
+  esac
+}
+# One think_model_resolved line, three surfaces, all fail-open — journaling
+# must never change a resolution:
+#   * stderr log — the same contract the build path's `arm_resolved` line has;
+#   * a durable census sink (LEADV2_THINK_DECISIONS_FILE) so task-less
+#     in-session think calls are still countable. `model=` carries the ARM
+#     token (fable/opus/glm/sonnet/haiku/codex) so think rows merge into the
+#     same census that counts dispatch model= rows;
+#   * the per-task lane journal (leadv2-journal.sh — the append `emit
+#     decision` uses) when a task id is in scope.
+# TESTS-POLLUTE-REAL-JOURNAL-01: a test context must not write the real
+# census sink (test rows would fake a live thinking share); refuse loudly
+# unless the suite redirected LEADV2_THINK_DECISIONS_FILE.
+_think_journal() { # $1=k=v payload (without the think_model_resolved prefix)
+  local line="think_model_resolved $1"
+  log "$line"
+  local real_sink="${HOME}/.claude/leadv2-state/leadv2/think-model-decisions.log"
+  local sink="${LEADV2_THINK_DECISIONS_FILE:-$real_sink}"
+  local _write_sink=1
+  if [[ "$sink" == "$real_sink" ]]; then
+    local _tc_lib="${SCRIPT_DIR}/lib/leadv2-test-context.sh"
+    if [[ -f "$_tc_lib" ]]; then
+      # shellcheck source=lib/leadv2-test-context.sh
+      source "$_tc_lib"
+      if lv2_test_context; then _write_sink=0; fi
+    fi
+  fi
+  if [[ "$_write_sink" -eq 1 ]]; then
+    { mkdir -p "$(dirname "$sink")" 2>/dev/null
+      printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$line" >> "$sink"; } 2>/dev/null || true
+  else
+    log_warn "test context: think census write skipped — redirect LEADV2_THINK_DECISIONS_FILE"
+  fi
+  if [[ -n "${THINK_TASK_ID:-}" && -f "${SCRIPT_DIR}/leadv2-journal.sh" ]]; then
+    # No CLAUDE_PROJECT_ROOT override (unlike dispatch-code's emit()): this
+    # call may be an in-session think query that does not know the task's
+    # repo root — let leadv2-journal.sh resolve it (ambient root > cwd), the
+    # same resolver every reader uses. Fail-open: the census sink above
+    # already holds the line even when the journal path misses.
+    bash "${SCRIPT_DIR}/leadv2-journal.sh" \
+      append "${THINK_TASK_ID}" decision "$line" >/dev/null 2>&1 || true
+  fi
+}
+# Consult the arbiter for a think role. Prints "<arm>|<reason>|<effort>" on success,
+# "|<why>" when the caller must fail open. Nothing else, ever — stdout of the
+# think-model CLI is one model name and must stay that way.
+_think_arbiter_decide() { # $1=role $2=task_class $3=task_id
+  local role="$1" task_class="$2" task_id="$3"
+  local arbiter_lib="${SCRIPT_DIR}/lib/leadv2-route-arbiter.sh"
+  [[ -f "$arbiter_lib" ]] || { printf '|arbiter_lib_missing\n'; return 0; }
+  # shellcheck source=lib/leadv2-route-arbiter.sh
+  source "$arbiter_lib"
+  local arb_routing="${LEADV2_ROUTE_ARBITER_ROUTING_YAML:-${SCRIPT_DIR}/../config/leadv2-routing.yaml}"
+  local arb_role kind desc desc_wide
+  read -r arb_role kind <<<"$(_think_role_kind "$role")"
+  # Stakes pool builder: reads think_stakes + the kill switches from
+  # model-capability.yaml and the capability_matrix cells the arbiter itself
+  # will price. Empty output (no yaml, no stakes data, no cell for this
+  # kind/size) means "fail open to the R6 ladder". $1 == 'widen' drops the
+  # per-class constraint (arms list / floors) but keeps the kill-switch
+  # filter — the retry posture for quota-capped pools.
+  _think_build_desc() { # [$1=widen] -> descriptor json on stdout
+    python3 - "$MODEL_CAPABILITY_YAML" "$arb_routing" "$kind" "${task_class:-}" "$role" "$task_id" "${1:-}" <<'PY'
+import json, re, sys
+# PyYAML-optional (same reasoning as _think_cap_unavailable above and the
+# arbiter's own 2026-09-09 subset loader): exact parse when PyYAML imports,
+# else a strict line scan of the exact shapes these two configs ship —
+# model-capability.yaml's top-level blocks + think_stakes flow rows, and the
+# capability_matrix's single-line flow cells. Anything the scanner cannot
+# recognize is SKIPPED, and a file with no recognizable structure yields
+# empty output -> the caller fails open to the R6 ladder, never guesses.
+def _no_comment(line):
+    q = None
+    for i, ch in enumerate(line):
+        if q:
+            if ch == q: q = None
+        elif ch in ('"', "'"): q = ch
+        elif ch == '#' and (i == 0 or line[i - 1] in (' ', '\t')): return line[:i]
+    return line
+def _split0(s):
+    parts, depth, q, cur = [], 0, None, []
+    for ch in s:
+        if q:
+            cur.append(ch)
+            if ch == q: q = None
+        elif ch in ('"', "'"): q = ch; cur.append(ch)
+        elif ch in '[{': depth += 1; cur.append(ch)
+        elif ch in ']}': depth -= 1; cur.append(ch)
+        elif ch == ',' and depth == 0: parts.append(''.join(cur)); cur = []
+        else: cur.append(ch)
+    if cur or parts: parts.append(''.join(cur))
+    return parts
+def _flow_map(s):
+    d = {}
+    for part in _split0(s):
+        if ':' not in part: continue
+        k, v = part.split(':', 1)
+        d[k.strip()] = v.strip()
+    return d
+def _flow_list(s):
+    s = s.strip()
+    if s.startswith('[') and s.endswith(']'): s = s[1:-1].strip()
+    if not s: return []
+    return [p.strip() for p in _split0(s)]
+def _subset_cap(path):
+    kill, classes, default_class, cur, section = set(), {}, None, None, None
+    try:
+        lines = open(path).read().splitlines()
+    except Exception:
+        return None, None, None
+    for ln in lines:
+        ln = _no_comment(ln)
+        m = re.match(r'^([A-Za-z0-9_.-]+):\s*(.*)$', ln)
+        if m:
+            cur = m.group(1)
+            section = 'stakes' if cur == 'think_stakes' else None
+            continue
+        if section == 'stakes':
+            m1 = re.match(r'^\s+default_class:\s*(\S+)\s*$', ln)
+            if m1: default_class = m1.group(1); continue
+            m2 = re.match(r'^\s+([A-Za-z0-9_-]+):\s*\{(.*)\}\s*$', ln)
+            if m2: classes[m2.group(1)] = _flow_map(m2.group(2)); continue
+        elif cur is not None and re.match(r'^\s+unavailable:\s*true\s*$', ln):
+            kill.add(cur.lower())
+    return kill, default_class, classes
+def _subset_matrix(path):
+    cells, in_m = [], False
+    try:
+        lines = open(path).read().splitlines()
+    except Exception:
+        return None
+    for ln in lines:
+        ln = _no_comment(ln)
+        if re.match(r'^\s*capability_matrix:\s*$', ln): in_m = True; continue
+        if not in_m: continue
+        m = re.match(r'^\s*-\s*\{(.*)\}\s*$', ln)
+        if m: cells.append(_flow_map(m.group(1))); continue
+        if ln.strip() == '' : continue
+        if re.match(r'^\S', ln): in_m = False
+    return cells
+try:
+    import yaml
+    cap = yaml.safe_load(open(sys.argv[1])) or {}
+    data = yaml.safe_load(open(sys.argv[2])) or {}
+    stakes = cap.get('think_stakes') if isinstance(cap, dict) else None
+    classes = (stakes or {}).get('classes') or {}
+    default_class = (stakes or {}).get('default_class')
+    cells = ((data.get('router_v2') or {}).get('capability_matrix') or [])
+    kill = set()
+    for k, v in (cap.items() if isinstance(cap, dict) else []):
+        if isinstance(v, dict) and v.get('unavailable'):
+            kill.add(str(k).lower())
+except ImportError:
+    kill, default_class, classes = _subset_cap(sys.argv[1])
+    cells = _subset_matrix(sys.argv[2])
+    if classes is None or cells is None:
+        sys.exit(0)
+except Exception:
+    sys.exit(0)
+cls = (sys.argv[4] or default_class or 'heavy').lower()
+row = classes.get(cls) or {}
+size = str(row.get('size', 'standard')).lower()
+complexity = str(row.get('complexity', 'standard')).lower()
+tier_floor = str(row.get('tier_floor', 'none')).lower()
+provider_floor = str(row.get('provider', '')).lower()
+def _norm_list(v):
+    if isinstance(v, list):
+        return [str(x).strip().strip('\'"').lower() for x in v]
+    return [p.strip().strip('\'"').lower() for p in _flow_list(str(v or '')) if p.strip()]
+stakes_arms = set(_norm_list(row.get('arms')))
+TIER = {'volume': 0, 'standard': 1, 'high': 2, 'top': 3}
+kind = sys.argv[3]
+def _norm_cells(raw):
+    # one shape for both loaders: PyYAML gives lists, the subset scan gives
+    # the flow-list string verbatim -- normalize before any filtering.
+    out = []
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        kinds, sizes = c.get('kinds'), c.get('sizes')
+        if isinstance(kinds, str): kinds = _flow_list(kinds)
+        if isinstance(sizes, str): sizes = _flow_list(sizes)
+        out.append({'arm': str(c.get('arm', '')).lower(),
+                    'kinds': [str(x).lower() for x in (kinds or [])],
+                    'sizes': [str(x).lower() for x in (sizes or [])],
+                    'tier': str(c.get('tier', 'standard')).lower(),
+                    'provider': str(c.get('provider', '')).lower()})
+    return out
+cells = _norm_cells(cells)
+# Per-class stake constraint, one of two shapes (think_stakes data): an
+# explicit `arms:` list when the class ships one (low-stakes classes), else
+# the tier/provider floors (high-stakes classes). Both are caller-side pool
+# shaping fed to the arbiter — the matrix still owns cost/capability/kinds.
+if stakes_arms:
+    def _strict_ok(c):
+        return c['arm'] in stakes_arms
+else:
+    def _strict_ok(c):
+        if tier_floor in TIER and TIER.get(c['tier'], 1) < TIER[tier_floor]:
+            return False
+        if provider_floor and c['provider'] != provider_floor:
+            return False
+        return True
+def pool(strict):
+    arms = set()
+    for c in cells:
+        if kind not in c['kinds'] or size not in c['sizes']:
+            continue
+        if strict and not _strict_ok(c):
+            continue
+        if c['arm'] and c['arm'] not in kill:
+            arms.add(c['arm'])
+    return sorted(arms)
+if len(sys.argv) > 7 and sys.argv[7] == 'widen':
+    arms = pool(False)
+else:
+    # Never dead-end a think role on an over-narrow constraint: strict pool
+    # first, then the widened one, kill-switch filter kept in both.
+    arms = pool(True) or pool(False)
+if not arms:
+    sys.exit(0)          # no matrix cell for this kind/size at all -> fail open
+desc = {'kind': kind, 'size': size, 'complexity': complexity,
+        'complexity_source': 'judge', 'arm_pool': arms,
+        'subtype': 'think:' + str(sys.argv[5]), 'task': str(sys.argv[6])}
+print(json.dumps(desc))
+PY
+  }
+  desc="$(_think_build_desc)" || desc=""
+  if [[ -z "$desc" ]]; then
+    printf '|stakes_or_data_missing\n'
+    return 0
+  fi
+  local out rc arm arb_reason arb_effort _err="${TMPDIR:-/tmp}/leadv2-think-arb-err.tmp"
+  rm -f "$_err"
+  # Think-specific last-arm state: the anti-rotation bookkeeping of BUILD
+  # dispatches (leadv2-route-arbiter-last-arm) must not be perturbed by
+  # in-session think calls, and vice versa.
+  _arb_call() { # $1=descriptor -> sets out/rc
+    out=""
+    if LEADV2_ROUTE_ARBITER_STATE_FILE="${LEADV2_ROUTE_ARBITER_STATE_FILE:-${TMPDIR:-/tmp}/leadv2-route-arbiter-last-arm-think}" \
+       out="$(route_arbiter "$arb_role" "$1" 2>"$_err")"; then
+      rc=0
+    else
+      rc=$?
+    fi
+  }
+  _arb_call "$desc"
+  if [[ "$rc" -ne 0 ]]; then
+    # Quota pressure (all pooled arms capped) or a refusal: retry ONCE with
+    # the widened pool. The ARBITER still decides the degraded posture — the
+    # R6 constant ladder is for a dead arbiter, not a busy one.
+    desc_wide="$(_think_build_desc widen)" || desc_wide=""
+    if [[ -n "$desc_wide" && "$desc_wide" != "$desc" ]]; then
+      _arb_call "$desc_wide"
+    fi
+  fi
+  if [[ -s "$_err" ]]; then
+    # Loud by doctrine (FREEPOOL ARM DOWN, FATAL rc=…): re-emit on our stderr,
+    # never on stdout — stdout is the single model name.
+    sed 's/^/[leadv2-router] arbiter: /' "$_err" >&2
+  fi
+  rm -f "$_err"
+  arm="$(printf '%s\n' "$out" | grep -oE '(^| )arm=[^ ]+' | head -1 | sed 's/.*=//')"
+  arb_reason="$(printf '%s\n' "$out" | grep -oE '(^| )reason=[^ ]+' | head -1 | sed 's/.*=//')"
+  arb_effort="$(printf '%s\n' "$out" | grep -oE '(^| )effort=[^ ]+' | head -1 | sed 's/.*=//')"
+  if [[ "$rc" -eq 0 && -n "$arm" && "$arm" != "refuse" ]]; then
+    # Kill switch beats the arbiter too — the pool was pre-filtered; this
+    # re-check is belt-and-suspenders and costs one yaml read.
+    if [[ "$(_think_cap_unavailable "$arm")" == "true" ]]; then
+      printf '|arbiter_returned_killswitched_%s\n' "$arm"
+      return 0
+    fi
+    printf '%s|arbiter_%s|%s\n' "$arm" "${arb_reason:-resolved}" "${arb_effort:-unknown}"
+    return 0
+  fi
+  printf '|arbiter_fail_open_rc=%s_%s\n' "$rc" "${arb_reason:-silent}"
+  return 0
+}
+think_model() {
+  local role="${THINK_ROLE:-default}" task_class="${THINK_CLASS:-}"
+  local resolved="" reason="" effort="" verdict verdict_tail
+  # A model pin keeps its historical authority over the selected model, but
+  # does not create a second effort policy: resolve the matrix effort through
+  # the arbiter and retain only that field.
+  verdict="$(_think_arbiter_decide "$role" "$task_class" "${THINK_TASK_ID:-}")"
+  verdict_tail="${verdict#*|}"
+  effort="${verdict_tail#*|}"
+  [[ "$effort" == "$verdict_tail" ]] && effort="unknown"
+  if [[ -n "${LEADV2_THINK_MODEL:-}" ]]; then
+    resolved="$(_think_resolve_candidate "${LEADV2_THINK_MODEL}")"
+    reason="env_pin"
+  else
+    resolved="${verdict%%|*}"
+    reason="${verdict_tail%%|*}"
+    if [[ -z "$resolved" ]]; then
+      resolved="$(_think_resolve_candidate fable)"
+      reason="fail_open_legacy_${reason}"
+    fi
+  fi
+  _think_journal "role=${role} class=${task_class:-default} arm=${resolved} model=${resolved} reason=${reason} effort=${effort}"
+  printf '%s\n' "${resolved}"
+  return 0
+}
 
 if [[ "${1:-}" == "think-model" ]]; then
+  # W1-THINK-THROUGH-ARBITER-01: the query takes optional context. A bare call
+  # keeps its historical meaning (the high-stakes default posture from
+  # think_stakes.default_class), so every existing `$(... think-model)`
+  # capture is byte-compatible.
+  THINK_ROLE="default"
+  THINK_CLASS=""
+  THINK_TASK_ID="${LEADV2_THINK_TASK_ID:-${LEADV2_TASK_ID:-}}"
+  shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --role)    THINK_ROLE="$2";    shift 2 ;;
+      --class)   THINK_CLASS="$2";   shift 2 ;;
+      --task-id) THINK_TASK_ID="$2"; shift 2 ;;
+      *) log_error "unknown think-model arg: $1"; usage ;;
+    esac
+  done
   think_model
   exit 0
 fi

@@ -118,7 +118,7 @@
 #                   not verify. Nothing is written. See
 #                   PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01.
 #
-#   leadv2-phase-record.sh assert <sig8> --class <Trivial|Light|Standard|Heavy>
+#   leadv2-phase-record.sh assert <sig8> --class <canonical phase-record class>
 #       [--waiver <phase>=<reason>]...
 #       [--writes <csv>]
 #       [--at-bootstrap]   ACCEPTED BUT IGNORED (PHASE-GATE-IS-INVERTED-01):
@@ -182,10 +182,45 @@ _VERIFY_PROOF_KIND="verified"
 _log() { printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
 _log_err() { printf '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2; }
 
-_emit() {
-  [[ -x "$JOURNAL_BIN" || -f "$JOURNAL_BIN" ]] || return 0
-  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "$JOURNAL_BIN" "$1" "$2" >/dev/null 2>&1 || true
+# WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01 (P-7): _emit used to pass the event
+# name as $1 and the text as $2 — leadv2-journal.sh reads those as MODE and
+# task-id, so `MODE=phase_recorded` hit "Unknown mode", exit 1, and the `||
+# true` swallowed it: NO phase_*/review_* event has ever reached a journal
+# (dispatch-96d97702, 2026-09-04: zero phase_precondition lines). The
+# signature is now <task-id> <event> <text> and the verb is `append`. The
+# event name is mapped into the journal's type whitelist by prefix and
+# prepended to the text, so a line lands as `- <ts> [phase] phase_recorded
+# phase=... task=...`. Journaling is telemetry: a failure prints its own
+# line, counts into _EMIT_MISS (summarised once at exit by _emit_summary),
+# returns rc 2 — and never changes the record/assert verbs' rc.
+_EMIT_MISS=0
+_emit() { # <task-id> <event> <text>
+  local _e_task="$1" _e_event="$2" _e_text="$3" _e_type
+  case "${_e_event}" in
+    phase_*)  _e_type="phase" ;;
+    review_*) _e_type="finding" ;;
+    *)        _e_type="note" ;;
+  esac
+  if [[ -z "${JOURNAL_BIN}" || ! -f "${JOURNAL_BIN}" ]]; then
+    # No journal binary resolved: nothing was REFUSED, so nothing prints (the
+    # counted lines below are for refused writes only; a skip notice here
+    # broke the success-is-silent contract of test-phase-record-worktree-axis
+    # in hermetic fixtures that have no journal bin).
+    return 0
+  fi
+  if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${JOURNAL_BIN}" append "${_e_task}" "${_e_type}" "${_e_event} ${_e_text}" >/dev/null 2>&1; then
+    printf '[phase-record] journal_write_failed=1 event=%s task=%s\n' "${_e_event}" "${_e_task}" >&2
+    return 2
+  fi
+  return 0
 }
+_emit_summary() {
+  if [[ "${_EMIT_MISS}" -gt 0 ]]; then
+    printf '[phase-record] journal_events_missed=%s\n' "${_EMIT_MISS}" >&2
+  fi
+  return 0
+}
+trap _emit_summary EXIT
 
 _now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
@@ -338,7 +373,7 @@ _read_phases_yaml() {
     printf '{"version":1,"class_overrides":{},"waivers_allowed":[],"steps":{}}'
     return 0
   fi
-  python3 - "$pyfile" <<'PYEOF'
+  LEADV2_PHASE_RECORD_CLASSES="$(_phase_record_valid_classes)" python3 - "$pyfile" <<'PYEOF'
 import json, sys, os
 try:
     import yaml
@@ -356,7 +391,7 @@ except Exception as e:
 
 KNOWN_PHASES = {"classify","diverge","plan","gate1","build","test","review",
                 "deploy","live_verify","e2e","close"}
-KNOWN_CLASSES = {"Trivial","Light","Standard","Heavy"}
+KNOWN_CLASSES = set(os.environ["LEADV2_PHASE_RECORD_CLASSES"].split())
 KNOWN_HOOKS = {"plan.post","gate1.main","build.post","review.pre","review.post",
                "deploy.main","deploy.post","verify.main","e2e.main","close.pre"}
 REMOVAL_KEYS = {"remove","exclude","skip","optional","drop"}
@@ -673,7 +708,7 @@ _verify_artifact() {
             _ledger_rows="$(wc -l < "$ledger_file" 2>/dev/null | tr -d ' ')"
           fi
           if [[ "$_ledger_rows" != "$_recorded_rows" ]]; then
-            _emit "review_ledger_tamper" "repo=${slug} ledger_rows=${_ledger_rows} recorded_rows=${_recorded_rows}"
+            _emit "${task_id:-$sig8}" "review_ledger_tamper" "repo=${slug} ledger_rows=${_ledger_rows} recorded_rows=${_recorded_rows}" || _EMIT_MISS=$((_EMIT_MISS+1))
             return 1
           fi
         fi
@@ -682,10 +717,10 @@ _verify_artifact() {
         # (and later deleted) → tamper, reject.  Only a repo that never used the
         # sidecar mechanism gets the legacy accept.
         if [[ -f "$_adopted" ]]; then
-          _emit "review_sidecar_tamper" "repo=${slug} sidecar=${sidecar##*/} adopted=${_adopted##*/}"
+          _emit "${task_id:-$sig8}" "review_sidecar_tamper" "repo=${slug} sidecar=${sidecar##*/} adopted=${_adopted##*/}" || _EMIT_MISS=$((_EMIT_MISS+1))
           return 1
         fi
-        _emit "review_ledger_unchained" "repo=${slug}"
+        _emit "${task_id:-$sig8}" "review_ledger_unchained" "repo=${slug}" || _EMIT_MISS=$((_EMIT_MISS+1))
       fi
 
       # B1 R1+R2: single python3 pass — checks reviewer allowlist, verdict,
@@ -949,7 +984,7 @@ cmd_record() {
       _log_err "  artifact: ${artifact}"
       _log_err "  nothing was written: an unprovable record does not satisfy the gate AND ends this lane's bootstrap grace, so it leaves the lane worse off than no record at all"
       _log_err "  fix the artifact, then re-run this same command ('leadv2-phase-record.sh assert <sig8> --class <class>' prints the whole required set at once)"
-      _emit "phase_record_refused" "task=${task_id:-$sig8} phase=${phase} reason=artifact_integrity"
+      _emit "${task_id:-$sig8}" "phase_record_refused" "task=${task_id:-$sig8} phase=${phase} reason=artifact_integrity" || _EMIT_MISS=$((_EMIT_MISS+1))
       exit 5
     else
       # Everything else keeps today's behaviour: the artifact is real, but some
@@ -985,17 +1020,17 @@ cmd_record() {
 
   # Journal observability
   local tid="${task_id:-$sig8}"
-  _emit "phase_recorded" "phase=${phase} task=${tid} status=${status}"
+  _emit "${tid}" "phase_recorded" "phase=${phase} task=${tid} status=${status}" || _EMIT_MISS=$((_EMIT_MISS+1))
 
   # Mirror to active.yaml — must never fail a dispatch
   if [[ "$status" == "running" || "$status" == "done" ]]; then
     if [[ -n "$task_id" ]] && declare -F leadv2_active_update_phase >/dev/null 2>&1; then
       if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_update_phase "$task_id" "$phase" >/dev/null 2>&1; then
-        _emit "phase_mirror_miss" "task=${tid} phase=${phase}"
+        _emit "${tid}" "phase_mirror_miss" "task=${tid} phase=${phase}" || _EMIT_MISS=$((_EMIT_MISS+1))
       fi
     elif [[ -n "$task_id" ]] && [[ -f "$ACTIVE_REGISTRY" ]]; then
       if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash -c 'source "%s"; leadv2_active_update_phase "%s" "%s"' "$ACTIVE_REGISTRY" "$task_id" "$phase" >/dev/null 2>&1; then
-        _emit "phase_mirror_miss" "task=${tid} phase=${phase}"
+        _emit "${tid}" "phase_mirror_miss" "task=${tid} phase=${phase}" || _EMIT_MISS=$((_EMIT_MISS+1))
       fi
     fi
   fi
@@ -1048,6 +1083,22 @@ _phase_satisfied() {
 }
 
 # ── assert subcommand ─────────────────────────────────────────────────────────
+# The phase-record class vocabulary has one source.  Keep this helper beside its
+# first consumer so assert and plan-for cannot grow separate case lists; the YAML
+# override parser above also reads it at execution time.
+_phase_record_valid_classes() {
+  local -r classes="Trivial Light Standard Heavy Strategic Bulk"
+  printf '%s\n' "$classes"
+}
+
+_phase_record_class_is_valid() {
+  local cls="$1" candidate
+  for candidate in $(_phase_record_valid_classes); do
+    [[ "$cls" == "$candidate" ]] && return 0
+  done
+  return 1
+}
+
 cmd_assert() {
   local sig8="" cls="" writes="" scope="full" caller_bootstrap=0
   local -a waivers=()
@@ -1074,10 +1125,7 @@ cmd_assert() {
   [[ -n "$sig8" ]] || { _log_err "assert: <sig8> required"; exit 4; }
   [[ -n "$cls" ]] || { _log_err "assert: --class required"; exit 4; }
 
-  case "$cls" in
-    Trivial|Light|Standard|Heavy) ;;
-    *) _log_err "assert: invalid class '$cls'"; exit 4 ;;
-  esac
+  _phase_record_class_is_valid "$cls" || { _log_err "assert: invalid class '$cls'"; exit 4; }
 
   # PHASE-BOOTSTRAP-01 (DISPATCH-PHASE-DEADLOCK-01): capture whether this lane
   # has ANY phase record at all, BEFORE the waiver loop below can create one.
@@ -1120,7 +1168,7 @@ cmd_assert() {
     # The flag is still parsed so old callers do not die on a usage error, but
     # it decides nothing and its presence is journalled.
     if [[ "$caller_bootstrap" == "1" ]]; then
-      _emit "bootstrap_claim_ignored" "task=${sig8} reason=caller_attested_bootstrap_removed"
+      _emit "${sig8}" "bootstrap_claim_ignored" "task=${sig8} reason=caller_attested_bootstrap_removed" || _EMIT_MISS=$((_EMIT_MISS+1))
     fi
   fi
 
@@ -1174,7 +1222,7 @@ for w in (d.get('waivers_allowed') or []):
     # Accepted: write the record
     accepted_waivers+=("$w_phase")
     cmd_record "$sig8" "$w_phase" --status waived --reason "$w_reason"
-    _emit "phase_waived" "task=${sig8} phase=${w_phase} reason=${w_reason}"
+    _emit "${sig8}" "phase_waived" "task=${sig8} phase=${w_phase} reason=${w_reason}" || _EMIT_MISS=$((_EMIT_MISS+1))
   done
 
   # Resolve mandatory set, in THIS scope and — PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01
@@ -1231,7 +1279,7 @@ for w in (d.get('waivers_allowed') or []):
       # very next assert call, once the caller has recorded even one phase
       # (classify at minimum), re-derives _lane_bootstrap=0 and enforces the
       # missing set above exactly as before.
-      _emit "phase_precondition_bootstrap" "task=${sig8} class=${cls} would_be_missing=${csv}"
+      _emit "${sig8}" "phase_precondition_bootstrap" "task=${sig8} class=${cls} would_be_missing=${csv}" || _EMIT_MISS=$((_EMIT_MISS+1))
       # PHASE-GATE-DEFAULT-CLASS-ESCAPES-IT-01 (B): the caller-side trace. _emit
       # above reaches only an argv-agnostic stub under the tests; the real
       # leadv2-journal.sh CLI is `append <task-id> <type> <text>`, so the event
@@ -1302,10 +1350,7 @@ cmd_plan_for() {
   done
   [[ -n "$cls" ]] || { _log_err "plan-for: --class required"; exit 4; }
 
-  case "$cls" in
-    Trivial|Light|Standard|Heavy) ;;
-    *) _log_err "plan-for: invalid class '$cls'"; exit 4 ;;
-  esac
+  _phase_record_class_is_valid "$cls" || { _log_err "plan-for: invalid class '$cls'"; exit 4; }
 
   _resolve_mandatory "$cls" "$writes"
 }

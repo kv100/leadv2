@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-interactive-session-switch.sh
+file=plugins/leadv2/scripts/leadv2-interactive-session-switch.sh
+anchor=s/if \[\[ -n "\$SRC_INO" && "\$SRC_INO" == "\$DST_INO" \]\]; then/if false; then/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] == case 4: ordinary network error on screen -> no_limit, account never touched (screen non-limit)
+diff_hash=c9d401f5c11f92f22ddd5a52ac2d339bd55dc6843d2b1ce91fbe4cdcb811f0f7
+lane_diff_hash=516b1a643dc4679a515797487188783a7714338c58152580b9fe5265d1f0ab49

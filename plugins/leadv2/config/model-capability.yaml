@@ -28,6 +28,7 @@
 # NEVER overrides routing policy (cost-first glm/kimi arms unchanged).
 
 fable:
+  effort_projection: { none: low, minimal: low, low: low, medium: medium, high: high, xhigh: xhigh, max: max, ultra: max }
   model_id: claude-fable-5-1
   underlying_model: claude-fable-5-1
   role: think            # FABLE-THINK-TIER-01: default arm for every thinking role
@@ -81,6 +82,7 @@ fable:
   round2_probed: "2026-09-01T21:03:17Z"
 
 opus:
+  effort_projection: { none: low, minimal: low, low: low, medium: medium, high: high, xhigh: xhigh, max: max, ultra: max }
   model_id: claude-opus-5
   underlying_model: claude-opus-5
   role: think_fallback   # FABLE-THINK-TIER-01: serves think roles only when fable is unavailable/refused
@@ -105,6 +107,7 @@ opus:
   asof: "2026-07-31"
 
 sonnet:
+  effort_projection: { none: low, minimal: low, low: low, medium: medium, high: high, xhigh: xhigh, max: max, ultra: max }
   model_id: claude-sonnet-5
   underlying_model: claude-sonnet-5
   coding_score: 72.7
@@ -130,6 +133,7 @@ sonnet:
   asof: "2026-07-31"
 
 haiku:
+  effort_projection: { none: low, minimal: low, low: low, medium: medium, high: high, xhigh: xhigh, max: max, ultra: max }
   model_id: claude-haiku-4-5-20251001
   underlying_model: claude-haiku-4-5-20251001
   coding_score: 73.3
@@ -154,6 +158,8 @@ haiku:
   asof: "2026-07-31"
 
 codex-standard:
+  arm: codex
+  effort_projection: { none: none, minimal: minimal, low: low, medium: medium, high: high, xhigh: xhigh, max: xhigh, ultra: xhigh }
   underlying_model: gpt-5.5
   coding_score: 76.4
   score_basis: terminal-bench-2.1
@@ -199,6 +205,7 @@ codex-top:
   asof: "2026-07-31"
 
 glm:
+  effort_projection: { low: low, high: high, max: max }
   underlying_model: glm-5.3
   coding_score: null
   score_basis: null
@@ -231,6 +238,7 @@ glm:
   asof: "2026-09-02"
 
 glm-flash:
+  effort_projection: { low: low, high: high, max: max }
   underlying_model: glm-5.3-flash
   coding_score: null
   score_basis: null
@@ -258,6 +266,63 @@ glm-flash:
     - https://docs.z.ai/devpack/teamplan.md
     - https://docs.z.ai/devpack/latest-model.md
   asof: "2026-09-02"
+
+# W1-THINK-THROUGH-ARBITER-01 (2026-09-09): the STAKES ladder for
+# leadv2-router.sh think_model() — the data half of "route the thinking path
+# through the arbiter". think_model() builds the route_arbiter() descriptor
+# from this table; the arbiter + router_v2.capability_matrix
+# (config/leadv2-routing.yaml) stay the ONE selector. No arm names live here.
+#
+# Per class, first half:
+#   size / complexity — what the arbiter's capability_fit sees. The task class
+#     IS judge output (leadv2 classification), so complexity_source=judge, the
+#     strongest provenance the arbiter knows.
+
+# Per class, second half:
+#   arms — an explicit candidate pool (low-stakes classes). Filters the
+#     matrix cells by arm BEFORE the arbiter call; the arbiter still prices,
+#     caps and picks inside it. Matrix tiers/costs cannot express "claude
+#     minus the entry tiers" (haiku shares sonnet's provider and tier), so
+#     the list is the one honest spelling of that pool.
+#   tier_floor / provider — restrict the pool by matrix attributes
+#     (high-stakes classes). Absent = no floor.
+#
+# Light/Standard: mid+top claude hands (sonnet/fable/opus) — the CHEAP hand
+# is deliberately NOT the default here. Founder conditional 2026-09-09:
+# before making the cheap hand the default, prove on a named sample that its
+# verdicts match the expensive hand's. Measured 2026-09-09, sample = the
+# last 10 commits of main (55055035..5eb70630), method = one identical
+# Light-judge prompt per commit (binary REVIEW=yes/no verdict), hands =
+# glm-5.3 vs claude-fable-5-1, both with cwd=/tmp and no repo access.
+# Result: strict agreement 6/10 — NOT equivalent. All four disagreements ran
+# the same way (glm demanded review where fable waved it through; never the
+# reverse), so the gap is cost-side, not safety-side — but the founder's bar
+# was "match", and 6/10 is not match. Raw per-item outputs + the method:
+# docs/handoff/w1-think-through-arbiter/equiv-sample/. Re-run that
+# measurement; if it passes, delete `arms:` from light/standard and the free
+# auction takes over again.
+#
+# Heavy/Strategic: tier_floor high + provider claude — the TOP think hands
+# (fable, opus); the founder's open question «обязана ли думать самая
+# топовая модель?» keeps its conservative answer at these stakes. NOT a
+# doctrine ban: no arm is forbidden (GLM-DOES-EVERYTHING-01, dd9ce9ec —
+# glm's plan/audit/review cells stay in the matrix).
+#
+# Liveness: if EVERY pooled arm is kill-switched (`unavailable: true`
+# above) or quota-capped, think_model drops the constraint and lets the
+# arbiter pick among all capable arms — a think role never dead-ends on an
+# over-narrow pool, and the cheap hand stays reachable as that widened
+# fallback.
+think_stakes:
+  default_class: heavy    # a bare `think-model` call carries no stakes; every
+                          # existing bare call site (llm-judge, session-route
+                          # heavy tier, architect prepass) is a high-stakes
+                          # consumer, so the default is the heavy posture.
+  classes:
+    light:     { size: standard, complexity: trivial, arms: [sonnet, fable, opus] }
+    standard:  { size: standard, complexity: standard, arms: [sonnet, fable, opus] }
+    heavy:     { size: heavy,    complexity: complex, tier_floor: high, provider: claude }
+    strategic: { size: heavy,    complexity: complex, tier_floor: high, provider: claude }
 
 kimi:
   underlying_model: kimi-k3

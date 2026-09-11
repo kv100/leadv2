@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-claude-profile-select.sh
+file=plugins/leadv2/scripts/claude-subsession.sh
+anchor=s/^    exit 4$/    return 0/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: I10b -- capture=CLAUDE_CONFIG_DIR=<unset>
+diff_hash=961bec9ad405c57841ec508616b1c0ddf1cf68d9575f77b6eac9b5252534f9f4
+lane_diff_hash=5b2bef32bf5b559df2c76038913cdb2b00a0fda0fb0aab1df43ff8d9483da40e
+porcelain_clean=yes
+restored=yes

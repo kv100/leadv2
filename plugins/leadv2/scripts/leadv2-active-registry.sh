@@ -153,6 +153,18 @@ _leadv2_yaml_lockfile() {
   fi
 }
 
+# WAVE0-REGISTRY-FAILS-OPEN-01: mutating registry ops treat a missing
+# active.yaml as a failure (rc 4), never as "nothing to do" -- and the python
+# core must not be reached with the file absent, because its auto-create at op
+# dispatch would silently materialise an empty registry out of nothing.
+_leadv2_registry_require_file() {
+  local yaml_file="${1:?yaml_file required}"
+  [[ -f "$yaml_file" ]] && return 0
+  printf 'registry: active.yaml missing at %s
+' "$yaml_file" >&2
+  return 4
+}
+
 # DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01: this used to be a project-
 # root-relative literal (docs/LEAD_V2_STATE.md), which lands INSIDE whichever
 # lane worktree happens to be LEADV2_PROJECT_ROOT for this invocation. Every
@@ -791,16 +803,26 @@ try:
             return False
         _before = len(sessions)
         data["sessions"] = [s for s in sessions if not _unreg_matches(s)]
-        print(f"unregistered {_before - len(data['sessions'])} row(s) task={task_id} selector={sel_kind or 'all'}", file=sys.stderr)
+        _removed = _before - len(data["sessions"])
+        print(f"unregistered {_removed} row(s) task={task_id} selector={sel_kind or 'all'}", file=sys.stderr)
+        if _removed == 0:
+            # WAVE0-REGISTRY-FAILS-OPEN-01: zero rows matched is rc 4, not a
+            # success -- and the atomic rewrite below must NOT run, or a no-op
+            # is indistinguishable from a real removal.
+            sys.exit(4)
 
     elif op == "set_worktree":
         task_id, worktree = args
         row = next((s for s in sessions if s.get("task_id") == task_id), None)
         if row is None:
             # A launcher can resolve its lane before its direct fanout
-            # registration has committed. Treat that ordering race as a
-            # harmless no-op; the post-register retry supplies the value.
-            sys.exit(0)
+            # registration has committed (LANE-REGISTRY-SELF-DEADLOCK-01).
+            # WAVE0-REGISTRY-FAILS-OPEN-01: that ordering race is rc 4, not a
+            # silent rc 0 -- no row is created, the caller survives (every
+            # fanout call site keeps `|| true`), and the post-register retry
+            # supplies the value.
+            print(f"registry: set_worktree: task not registered task={task_id}", file=sys.stderr)
+            sys.exit(4)
         row["worktree"] = worktree
         row["updated_at"] = _now_iso()
 
@@ -869,6 +891,11 @@ try:
                 s["last_pulse_at"] = ts
                 s["updated_at"] = ts
                 break
+        else:
+            # WAVE0-REGISTRY-FAILS-OPEN-01: unknown task_id must not read as a
+            # recorded pulse. rc 4, no write, no created row.
+            print(f"registry: update_pulse: task not registered task={task_id}", file=sys.stderr)
+            sys.exit(4)
 
     elif op == "update_pid":
         task_id, pid_str = args
@@ -1039,9 +1066,10 @@ try:
 
     # LANE-REGISTRY-SELF-DEADLOCK-01: stamp the SPAWNED WORKER's pid + birth
     # onto the lane's row after a successful spawn. Mirrors set_worktree's
-    # ordering-race contract (stated at the register op): an unknown task_id is
-    # a SILENT no-op, rc 0 -- never an error, never a created row. A malformed
-    # pid string degrades to worker_pid=None without relabelling pid_role.
+    # ordering-race contract (stated at the register op): an unknown task_id
+    # is rc 4 -- never a created row, never a killed caller (every call site
+    # keeps `|| true`). A malformed pid string degrades to worker_pid=None
+    # without relabelling pid_role.
     elif op == "set_worker_pid":
         task_id, pid_str, birth = args[0], args[1], args[2]
         # FORK-STORM-KILLS-HOOKS-01: 4th arg stamps WHICH KIND of process this
@@ -1054,7 +1082,8 @@ try:
             _role = "worker"
         target = next((s for s in sessions if s.get("task_id") == task_id), None)
         if target is None:
-            sys.exit(0)
+            print(f"registry: set_worker_pid: task not registered task={task_id}", file=sys.stderr)
+            sys.exit(4)
         try:
             wpid = int(pid_str) if pid_str not in ("", "null", "None") else None
         except (TypeError, ValueError):
@@ -1272,11 +1301,13 @@ leadv2_active_check_writes_conflict() {
 }
 
 # leadv2_active_set_worktree <task_id> <worktree>
-# Idempotently records where this lane actually runs. Unknown task IDs are a
-# no-op in the python op so launcher/register ordering races never kill a lane.
+# Idempotently records where this lane actually runs. A worktree path that is
+# not a directory is rc 2 here; an unknown task ID is rc 4 in the python op --
+# callers keep `|| true` so launcher/register ordering races never kill a lane.
 leadv2_active_set_worktree() {
   local task_id="${1:?task_id required}" wt="${2:?worktree required}"
-  [[ -d "$wt" ]] || return 0
+  [[ -d "$wt" ]] || { printf 'registry: set_worktree: not a directory: %s
+' "$wt" >&2; return 2; }
   _leadv2_yaml_py_lock "$(_leadv2_yaml_lockfile)" "$(_leadv2_yaml_file)" set_worktree "$task_id" "$wt"
 }
 
@@ -1298,14 +1329,26 @@ leadv2_active_set_log_path() {
 #   leadv2_active_unregister <id> --dead            only provably-dead-pid rows
 #   leadv2_active_unregister <id> --session-id <sid>
 #   leadv2_active_unregister <id> --pid <pid>
+# WAVE0-REGISTRY-FAILS-OPEN-01: rc 4 = active.yaml missing, or no row matched
+# (no rewrite, no index re-render); rc 0 = at least one row removed.
 leadv2_active_unregister() {
   local task_id="${1:?task_id required}"
   shift
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
-  [[ -f "$yaml_file" ]] || return 0
-  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" unregister "$task_id" "$@"
+  # WAVE0-REGISTRY-FAILS-OPEN-01: missing active.yaml = rc 4, never rc 0 --
+  # and the python core must not run here at all, or it silently materialises
+  # an empty registry out of nothing.
+  _leadv2_registry_require_file "$yaml_file" || return
+  local _rc=0
+  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" unregister "$task_id" "$@" || _rc=$?
+  if [[ "$_rc" -ne 0 ]]; then
+    # Failed unregister (e.g. rc 4 = no row matched): return BEFORE render, or
+    # render_index would re-publish the stale row as fresh output and hide
+    # the failure.
+    return "$_rc"
+  fi
 
   # Auto-refresh LEAD_V2_STATE.md on every unregister — non-fatal to unregister itself
   _render_log="/tmp/lv2-render-$(date +%s).log"
@@ -1325,9 +1368,9 @@ leadv2_active_unregister() {
 # stamped onto the row's lane_events entry. Both forms converge on the same
 # python op — normalize here, not in the python core.
 # D1-SINGLE-WRITER-FOR-LANE-STATE: this is the SINGLE owner of phase
-# advances. rc=4 = row missing or closed (frozen phase); rc=8 = refused,
-# recovery-owned row. Callers that mirror phase as best-effort keep their
-# `|| true` / `if !` handling and are unaffected.
+# advances. rc=4 = active.yaml missing, row missing or closed (frozen phase);
+# rc=8 = refused, recovery-owned row. Callers that mirror phase as best-effort
+# keep their `|| true` / `if !` handling and are unaffected.
 leadv2_active_update_phase() {
   local task_id phase model detail
   if [[ $# -ge 2 ]]; then
@@ -1344,11 +1387,13 @@ leadv2_active_update_phase() {
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
-  [[ -f "$yaml_file" ]] || return 0
+  _leadv2_registry_require_file "$yaml_file" || return
   _leadv2_yaml_py_lock "$lockfile" "$yaml_file" update_phase "$task_id" "$phase" "$model" "$detail"
 }
 
 # leadv2_active_update_pulse <task_id>
+# WAVE0-REGISTRY-FAILS-OPEN-01: rc 4 = active.yaml missing or task not
+# registered -- no write, no created row.
 leadv2_active_update_pulse() {
   local task_id="${1:?task_id required}"
   local ts
@@ -1356,7 +1401,7 @@ leadv2_active_update_pulse() {
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
-  [[ -f "$yaml_file" ]] || return 0
+  _leadv2_registry_require_file "$yaml_file" || return
   _leadv2_yaml_py_lock "$lockfile" "$yaml_file" update_pulse "$task_id" "$ts"
 }
 
@@ -1436,9 +1481,10 @@ leadv2_active_set_attempt() {
 
 # leadv2_active_set_worker_pid <task_id> <pid> <pid_birth> [role]
 # LANE-REGISTRY-SELF-DEADLOCK-01: post-spawn stamp of the WORKER process
-# identity onto the lane's active.yaml row. Unknown task_id is a silent no-op
-# in the python op (register/spawn ordering races must never kill a lane), so
-# callers run this with `|| true` -- a stamp failure must never fail a dispatch.
+# identity onto the lane's active.yaml row. Unknown task_id or a missing
+# active.yaml is rc 4 -- still never a created row, and register/spawn ordering
+# races still never kill a lane, because callers run this with `|| true`:
+# a stamp failure must never fail a dispatch.
 # FORK-STORM-KILLS-HOOKS-01: optional 4th arg `role` -- "worker" (default) or
 # "watcher". The dispatcher-owned lane-pulse watcher is NOT a worker: a row
 # pinned to it must never read as process-liveness evidence (the closed loop
@@ -1449,7 +1495,7 @@ leadv2_active_set_worker_pid() {
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
-  [[ -f "$yaml_file" ]] || return 0
+  _leadv2_registry_require_file "$yaml_file" || return
   _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_worker_pid "$task_id" "$pid" "$pid_birth" "$role"
 }
 

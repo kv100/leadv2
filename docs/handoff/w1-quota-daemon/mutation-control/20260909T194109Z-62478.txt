@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-quota-model-tier-granularity.sh
+file=plugins/leadv2/scripts/leadv2-quota-read.py
+anchor=s/    for m in names:/    for m in names[:1]:/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: glm-models-both-keys-present -- ['glm-5.3']
+diff_hash=e8cec3b5eb5832c05ae88394a7085b687f139af6af8c1338fb0f2a1f79f41855
+lane_diff_hash=fc1539d9ffc3b8d5e1893d2a55486919f53eda8ea325252286e480d3bd5a1de2

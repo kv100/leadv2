@@ -759,10 +759,19 @@ printf 'raise ImportError("simulated: PyYAML not installed")\n' > "$NOYAML/yaml.
 printf 'fable:\n  unavailable: false\n' > "$TMP/cap-available.yaml"
 out="$(PYTHONPATH="$NOYAML" LEADV2_MODEL_CAPABILITY_YAML="$TMP/cap-available.yaml" \
   bash "$ROUTER" think-model 2>/dev/null)"
-if [[ "$out" == "opus" ]]; then
-  pass "resolver fails CLOSED when PyYAML missing: fable available -> opus (via unavailable:true degradation)"
+# W1-THINK-THROUGH-ARBITER-01 (2026-09-09): contract UPDATED. The pre-arbiter
+# resolver treated "PyYAML unimportable" as "capability data unreadable" and
+# degraded EVERY candidate to unavailable -> opus. The arbiter itself dropped
+# that posture the same week (ROUTE-ARBITER-DIES-SILENTLY-ON-LINUX-01 second
+# half: PyYAML optional, strict stdlib subset loader, parse-or-refuse) and
+# think_model() now follows it: with no yaml module the kill switch reads the
+# file via the same subset scan, so a readable `unavailable: false` row means
+# fable AVAILABLE -> fable. The kill switch itself stays binding without
+# PyYAML -- that is the sibling case right below (unavailable -> opus).
+if [[ "$out" == "fable" ]]; then
+  pass "PyYAML missing: subset scan reads the kill switch, fable available -> fable"
 else
-  fail "resolver fails OPEN when PyYAML missing: expected opus, got '${out:-<empty>}'"
+  fail "PyYAML missing: expected subset-scanned fable, got '${out:-<empty>}'"
 fi
 out="$(PYTHONPATH="$NOYAML" LEADV2_MODEL_CAPABILITY_YAML="$TMP/cap-unavailable.yaml" \
   bash "$ROUTER" think-model 2>/dev/null)"

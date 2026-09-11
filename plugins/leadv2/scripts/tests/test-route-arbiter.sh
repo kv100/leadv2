@@ -9,7 +9,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ARBITER="${SCRIPTS_DIR}/lib/leadv2-route-arbiter.sh"
 ROUTING="${SCRIPTS_DIR}/../config/leadv2-routing.yaml"
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+# The sandboxed CI runner cannot create under macOS's inherited per-user
+# TMPDIR.  Keep the normal /tmp default but expose a narrow fixture-only seam.
+TMP_BASE="${LEADV2_TEST_TMPDIR:-/tmp}"
+TMP="$(mktemp -d "${TMP_BASE%/}/test-route-arbiter.XXXXXX")"; trap 'rm -rf "$TMP"' EXIT
+export LEADV2_ROUTE_ARBITER_EVENTS_JOURNAL="$TMP/events.jsonl"
+# W1-ARBITER-SUITE-THREE-RED-01 round 2 (lead correction 2026-09-10): every
+# run must self-identify WHICH arbiter bytes it sourced. The round-2 rejection
+# was measured, not guessed: the lead's acceptance mutation (collapse
+# no_capable_cell into pool_empty_all_excluded, lib:1294-1295) was applied to
+# the CANONICAL checkout while this suite -- then unmerged, live only in the
+# lane worktree at 893193cc -- sourced the lane's clean lib: SUMMARY
+# pass=27 fail=0, and nothing in the output could show the two halves had run
+# in different trees. One line closes the class: green and red artifacts
+# alike carry the sourced file's path and sha256 prefix, so a mutation
+# applied anywhere else is visible as a hash that did not move.
+printf 'arbiter_under_test=%s sha256=%s\n' "$ARBITER" "$(shasum -a 256 "$ARBITER" 2>/dev/null | awk '{print substr($1,1,16)}')"
 PASS=0; FAIL=0
 # ROUTE-ARBITER-SUITE-FLAKY-UNDER-CONCURRENCY-01: under `set -e` this suite could
 # exit mid-run printing NOTHING -- no SUMMARY, no case name, no line number -- and a
@@ -47,6 +62,50 @@ print(json.dumps({'glm':{'status':'ok','five_hour':{'pct':g},'weekly':{'pct':g}}
 PY
 }
 run(){ LEADV2_ROUTE_ARBITER_ROUTING_YAML="$ROUTING" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state" ROUTE_TEST_QUOTA="$1" ROUTE_TEST_FREE_RC="${2:-0}" bash -c 'source "$0"; route_arbiter worker "$1"' "$ARBITER" "$3"; }
+
+# REFUSAL-REASON-EMITTER-IS-NOT-WHERE-GREP-FINDS-IT-01: a focused direct
+# probe for the acceptance mutation. It runs the real sourced function from
+# isolated copies, never an emulation of its Python body.
+if [[ "${LEADV2_ROUTE_ARBITER_FOCUS:-}" == "refusal-emitter" ]]; then
+  cat >"$TMP/refusal-emitter.yaml" <<'YML'
+router_v2:
+  quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  effort_scale: [none, minimal, low, medium, high, xhigh, max, ultra]
+  effort_ceiling: ultra
+  effort_matrix: [{default: true, effort: medium}]
+  capability_matrix:
+    - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: false, sizes: [standard], kinds: [code]}
+YML
+  run_reason_probe(){ # <arbiter copy> <descriptor> -> stdout/stderr
+    LEADV2_ROUTE_ARBITER_ROUTING_YAML="$TMP/refusal-emitter.yaml" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state" ROUTE_TEST_QUOTA="$(quota 13 20 45)" ROUTE_TEST_FREE_RC=0 bash -c 'source "$0"; route_arbiter worker "$1"' "$1" "$2" 2>&1
+  }
+  DOCS_MUT="$TMP/refusal-docs-mut.sh"
+  POOL_MUT="$TMP/refusal-pool-mut.sh"
+  cp "$ARBITER" "$DOCS_MUT"; cp "$ARBITER" "$POOL_MUT"
+  python3 - "$DOCS_MUT" "$POOL_MUT" <<'PY'
+import sys
+for path, old, new in ((sys.argv[1], "refusal_reason='no_capable_cell'", "refusal_reason='emitter_probe_docs'"),
+                       (sys.argv[2], "refusal_reason='pool_empty_all_excluded'", "refusal_reason='emitter_probe_pool'")):
+    text = open(path).read()
+    n = text.count(old)
+    if n != 1:
+        raise SystemExit('%s anchor count=%d (expected 1)' % (old, n))
+    open(path, 'w').write(text.replace(old, new))
+PY
+  rm -f "$TMP/state"; docs_mut_out="$(run_reason_probe "$DOCS_MUT" '{"kind":"docs","size":"standard","protected":true}' || true)"
+  rm -f "$TMP/state"; pool_mut_out="$(run_reason_probe "$POOL_MUT" '{"kind":"code","size":"standard","protected":true}' || true)"
+  printf 'MUTATION docs: %s\nMUTATION code: %s\n' "$docs_mut_out" "$pool_mut_out"
+  if [[ "$docs_mut_out" == *'reason=emitter_probe_docs'* && "$docs_mut_out" != *'reason=no_capable_cell'* \
+     && "$pool_mut_out" == *'reason=emitter_probe_pool'* && "$pool_mut_out" != *'reason=pool_empty_all_excluded'* ]]; then
+    pass 'refusal reason source mutations change the direct docs and code outputs'
+  else
+    fail "refusal reason mutation did not reach direct output docs=$docs_mut_out | pool=$pool_mut_out"
+  fi
+  SUMMARY_PRINTED=1
+  printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
+  [[ "$FAIL" -eq 0 ]]
+  exit $?
+fi
 
 # (a) Codex capped: a capable non-Codex worker is selected, never parked.
 # GLM-53-FLASH-ARM-01: glm-flash (cost 0.4) is the expected winner among the
@@ -89,12 +148,21 @@ two="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"bulk"}')"
 three="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"bulk"}')"
 arms="$(printf '%s\n%s\n%s\n' "$one" "$two" "$three" | sed -n 's/.*arm=\([^ ]*\).*/\1/p' | sort -u | wc -l | tr -d ' ')"
 if [[ "$arms" -gt 1 ]]; then pass 'anti-sticky identical tasks rotate arms'; else fail "anti-sticky outputs=$one | $two | $three"; fi
-# (d2) And the standard cell is deterministic-cheap, not sticky: glm-flash
-# wins every time BECAUSE it is cheapest, never because it ran last.
+# (d2) The standard cell is deterministic, not sticky, under the LIVE ranking
+# rule. Since 9bd9c66ca (2026-09-07, F1-ARBITER-SCORING step 4 -- founder-
+# approved flip, docs/handoff/F1-ARBITER-SCORING-20260907/step4-flip.md)
+# capability_fit is on, and per the founder's ARBITER-ARCHITECTURE-DIRECTIVE
+# (2026-09-06) cost is one weighted condition among several, not the whole
+# rank: for an unknown-complexity code/standard request glm-flash sits one fit
+# bucket below req_eff (capability 2 < 3.0), so glm wins every time --
+# deterministically, for the ranked reason (reason=capability_fit,
+# fit_pick=glm), never because it ran last. Re-expecting glm-flash "because
+# cheapest" would re-assert the cost-only ranking the founder superseded.
 rm -f "$TMP/state"
 s1="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"standard"}')"
 s2="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"standard"}')"
-if [[ "$s1" == *'arm=glm-flash '* && "$s2" == *'arm=glm-flash '* ]]; then pass 'standard cell deterministically picks glm-flash (cost, not stickiness)'; else fail "standard-cell outputs=$s1 | $s2"; fi
+if [[ "$s1" == *'arm=glm '* && "$s2" == *'arm=glm '* \
+   && "$s1" == *'reason=capability_fit'* && "$s2" == *'reason=capability_fit'* ]]; then pass 'standard cell deterministically picks glm (capability_fit rank, not stickiness)'; else fail "standard-cell outputs=$s1 | $s2"; fi
 
 # (e) The dispatcher must retain the ladder when its arbiter file is absent.
 # TEST-ROUTE-ARBITER-CASE-E-RED-ON-MAIN-01: this case was red on main from
@@ -363,8 +431,10 @@ fi
 # codex and claude sit at the SAME 20% used: the cliff has nothing to separate
 # them and cost alone always picks codex (3) over sonnet (5). The ONLY variable
 # between the two runs is codex's remaining percentage-points per HOUR -- 20/h
-# (weight 1.0, cost stays 3) vs 0.5/h (weight 0.4 from router_v2.headroom_weights,
-# cost 3/0.4 = 7.5 > 5).
+# (weight 1.0, cost stays 3) vs 0.5/h (weight 0.25 from the continuous headroom
+# ramp, W1-GRANULARITY-CONTINUOUS-HEADROOM-01, cost 3/0.25 = 12 > 5). The ramp
+# replaced the router_v2.headroom_weights step table, so 0.25 is a point on a
+# line, not a basket: the same run at 1.5/h now prices differently.
 # The control is the point of the case, not decoration: at equal headroom the
 # choice must be the OLD one and the line must carry NO headroom_priced= token,
 # or what we built is a bias against codex rather than a gradient.
@@ -381,7 +451,7 @@ PY
 }
 starve="$(run "$(quota_headroom 0.5 20)" 1 '{"work_kind":"code","size":"standard","task":"t"}')"
 plenty="$(run "$(quota_headroom 20 20)" 1 '{"work_kind":"code","size":"standard","task":"t"}')"
-if [[ "$starve" == *'arm=sonnet '* && "$starve" == *'headroom_priced=codex:0.4'* \
+if [[ "$starve" == *'arm=sonnet '* && "$starve" == *'headroom_priced=codex:0.25'* \
       && "$plenty" == *'arm=codex '* && "$plenty" != *'headroom_priced='* ]]; then
   pass 'equal ceilings, different runway: the arm with hours left wins, and the price is named'
 else
@@ -433,14 +503,26 @@ fi
 # healthy one produced byte-identical output, and case (e) above went red for six
 # days with its failure naming no cause. Control: an untouched run resolves its
 # own arbiter and must NOT claim a substitution.
+# HERMETIC-CANONICAL-ROOT (round 2, 2026-09-10): the canonical fallback resolves
+# via ${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}, so this case silently
+# depended on the OPERATOR's real $HOME — green standalone, red under
+# run-core-offline.sh's hermetic gate (scrubbed LEADV2_* + fake HOME): the
+# canonical arbiter then does not exist, dispatch prints arbiter_lib_absent
+# instead of arbiter_lib_substituted, and (s2) fails with sub=0. Measured
+# pre-existing at the lane branch point (8dcb2d43: nested pass=23 fail=4).
+# Pinning LEADV2_CANONICAL_ROOT to this suite's own tree makes the case measure
+# the substitution, not the machine it runs on.
+LANE_ROOT="$(cd "${SCRIPTS_DIR}/../../.." && pwd)"
 sub_out="$(CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-sub" \
   LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
+  LEADV2_CANONICAL_ROOT="$LANE_ROOT" \
   LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" LEADV2_ROUTE_ARBITER_LIB="$TMP/deleted-route-arbiter.sh" \
   bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'substitution test' --kind code --no-spawn --writes src/x.py 2>&1 || true)"
 plain_out="$(CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-plain" \
   LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
+  LEADV2_CANONICAL_ROOT="$LANE_ROOT" \
   LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
   bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'plain test' --kind code --no-spawn --writes src/x.py 2>&1 || true)"
 if [[ "$sub_out" == *'arbiter_lib_substituted'* && "$plain_out" != *'arbiter_lib_substituted'* ]]; then
@@ -461,6 +543,9 @@ fi
 cat >"$TMP/untrusted-glm.yaml" <<'YML'
 router_v2:
   quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  effort_scale: [none, minimal, low, medium, high, xhigh, max, ultra]
+  effort_ceiling: ultra
+  effort_matrix: [{default: true, effort: medium}]
   capability_matrix:
     - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: false, sizes: [standard], kinds: [code]}
     - {arm: sonnet, provider: claude, model: sonnet, cost: 5, protected: true, sizes: [standard], kinds: [code]}
@@ -470,17 +555,44 @@ rm -f "$TMP/state"
 g7p="$(run_y "$TMP/untrusted-glm.yaml" "$(quota 13 20 45)" '{"kind":"code","size":"standard","protected":true}')"
 rm -f "$TMP/state"
 g7c="$(run_y "$TMP/untrusted-glm.yaml" "$(quota 13 20 45)" '{"kind":"code","size":"standard"}')"
+# 2026-09-10 (W1-ARBITER-SUITE-THREE-RED-01): "silent when nothing was cut"
+# is re-cut against the typed-stage vocabulary of test-exclusion-stages.sh §5
+# -- arm_excluded may name auction losers (sonnet:price_ratio), but it must
+# stay free of CUT stages (untrusted/not_in_pool/not_launchable) when no
+# filter cut anything. The same pinned matrix also proves the other half of
+# the contract: a real vocabulary hole (kind=docs has no cell here) refuses
+# no_capable_cell and stays silent, so a green (g7) means both the cut-naming
+# and the hole-silence hold.
+# Round-2 negative control, lead-named (2026-09-10): collapsing the
+# no_capable_cell emit (lib:1294-1295) into pool_empty_all_excluded MUST
+# redden this case -- the hole half (g7h) loses its reason token. Verified
+# in-place on the lane lib; artifact in the task's mutation-control/.
+rm -f "$TMP/state"
+g7h="$(run_y "$TMP/untrusted-glm.yaml" "$(quota 13 20 45)" '{"kind":"docs","size":"standard"}' || true)"
 if [[ "$g7p" == *'arm=sonnet '* && "$g7p" == *'arm_excluded=glm:untrusted'* \
-   && "$g7c" == *'arm=glm '* && "$g7c" != *'arm_excluded='* ]]; then
-  pass 'a require_trusted cut names the arm it removed (and is silent when nothing was cut)'
+   && "$g7c" == *'arm=glm '* && "$g7c" != *'untrusted'* && "$g7c" != *'not_in_pool'* \
+   && "$g7h" == *'reason=no_capable_cell'* && "$g7h" != *'arm_excluded='* ]]; then
+  pass 'a require_trusted cut names the arm it removed; nothing-cut and a real vocabulary hole stay unaccused'
 else
-  fail "arm_excluded protected=$g7p | unprotected=$g7c"
+  fail "arm_excluded protected=$g7p | unprotected=$g7c | hole=$g7h"
 fi
 
-# (g7-gap) The same fact on the refusal line. `no_capable_cell` is read as a
-#      routing.yaml vocabulary gap; when a POLICY filter emptied the set instead,
-#      the refusal must say which arms it emptied it of, or the accusation lands
-#      on the config.
+# (g7-gap) The same fact on the refusal line, against the three-state reason
+#      dictionary cut 2026-09-07 (T17 C1 split, contract-tested by
+#      test-exclusion-stages.sh) and pinned here 2026-09-10: `no_capable_cell`
+#      is EXCLUSIVELY the vocabulary gap -- the matrix cannot express this
+#      work, nothing was cut, the line stays silent. A POLICY filter that
+#      emptied the set instead refuses `pool_empty_all_excluded` and
+#      enumerates which arms it emptied it of (arm:stage per stripped arm), so
+#      the accusation never lands on the config. One fixture, two descriptors:
+#      the only difference is WHICH filter empties the set, and the two
+#      refusals must differ by the reason token itself -- a dispatch fail-open
+#      journal carries the reason alone (arb_reason=...), and the two
+#      diagnoses have opposite repairs (fix the policy vs fix the matrix).
+#      Round-2 negative control, lead-named (2026-09-10): the same collapse
+#      (lib:1294-1295 -> pool_empty_all_excluded) MUST redden this case on
+#      the vocabulary descriptor (g7gc): both descriptors would then agree
+#      on one token, which is exactly what this case exists to forbid.
 cat >"$TMP/untrusted-only.yaml" <<'YML'
 router_v2:
   quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
@@ -491,13 +603,12 @@ rm -f "$TMP/state"
 g7g="$(run_y "$TMP/untrusted-only.yaml" "$(quota 13 20 45)" '{"kind":"code","size":"standard","protected":true}' || true)"
 rm -f "$TMP/state"
 g7gc="$(run_y "$TMP/untrusted-only.yaml" "$(quota 13 20 45)" '{"kind":"docs","size":"standard","protected":true}' || true)"
-if [[ "$g7g" == *'reason=no_capable_cell'* && "$g7g" == *'arm_excluded=glm:untrusted'* \
+if [[ "$g7g" == *'reason=pool_empty_all_excluded'* && "$g7g" == *'arm_excluded=glm:untrusted'* \
    && "$g7gc" == *'reason=no_capable_cell'* && "$g7gc" != *'arm_excluded='* ]]; then
-  pass 'no_capable_cell separates a policy cut from a real config gap'
+  pass 'a policy cut refuses pool_empty_all_excluded (enumerated); a vocabulary gap refuses no_capable_cell, silent -- same fixture'
 else
-  fail "no_capable_cell policy=$g7g | vocabulary=$g7gc"
+  fail "refusal-dictionary policy=$g7g | vocabulary=$g7gc"
 fi
-
 
 # (g8) SONNET-WON-21-MEASURED-GLM-LINES-ON-0905-01, hole 1: a decision line names
 #      no version of anything, so a line cannot be tied to the code or the matrix
@@ -510,6 +621,9 @@ fi
 cat >"$TMP/alt-matrix.yaml" <<'YML'
 router_v2:
   quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  effort_scale: [none, minimal, low, medium, high, xhigh, max, ultra]
+  effort_ceiling: ultra
+  effort_matrix: [{default: true, effort: medium}]
   capability_matrix:
     - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: true, sizes: [standard], kinds: [code]}
 YML
@@ -540,6 +654,9 @@ fi
 cat >"$TMP/empty-matrix.yaml" <<'YML'
 router_v2:
   quota_ceilings: {glm: {work_pct: 80, review_pct: 90}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 90, review_pct: 95}}
+  effort_scale: [none, minimal, low, medium, high, xhigh, max, ultra]
+  effort_ceiling: ultra
+  effort_matrix: [{default: true, effort: medium}]
   capability_matrix:
     - {arm: glm, provider: glm, model: glm-5.3, cost: 1, protected: true, sizes: [standard], kinds: [docs]}
 YML
@@ -576,6 +693,76 @@ if [[ "$out" != *'reason=all_arms_capped'* && "$out" == *'probe_outage='* ]]; th
   pass 'a total probe outage is named probe_outage=, never reported as an exhausted quota'
 else
   fail "all-probes-broken output=$out"
+fi
+
+# EFFORT-SCALE-IS-THREE-BUCKETS-01: one ordered internal scale, an emergency
+# ceiling, and an arm-local provider projection. These fixtures exercise the
+# real arbiter with only config bytes changed.
+effort_yaml(){ # <rule effort> <ceiling> <destination>
+  python3 - "$ROUTING" "$1" "$2" "$3" <<'PY'
+import sys, yaml
+src, effort, ceiling, dst = sys.argv[1:]
+data = yaml.safe_load(open(src))
+data['router_v2']['effort_matrix'][0]['effort'] = effort # safety rule
+data['router_v2']['effort_ceiling'] = ceiling
+yaml.safe_dump(data, open(dst, 'w'))
+PY
+}
+effort_run(){ # <arbiter> <routing yaml> <descriptor>
+  LEADV2_ROUTE_ARBITER_ROUTING_YAML="$2" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" \
+  LEADV2_ROUTE_ARBITER_MODEL_CAPABILITY_YAML="$SCRIPTS_DIR/../config/model-capability.yaml" \
+  LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/effort-state-$RANDOM" \
+  ROUTE_TEST_QUOTA="$(quota 1 1 1)" ROUTE_TEST_FREE_RC=1 bash -c 'source "$0"; route_arbiter worker "$1"' "$1" "$3" 2>&1
+}
+EFFORT_CAP="$TMP/effort-cap.yaml"; effort_yaml ultra high "$EFFORT_CAP"
+ecap="$(effort_run "$ARBITER" "$EFFORT_CAP" '{"kind":"safety","size":"standard"}')"
+if [[ "$ecap" == *' effort=high capped_from=ultra '* ]]; then
+  pass 'ultra safety effort is capped at high and names capped_from=ultra'
+else
+  fail "effort ceiling output=$ecap"
+fi
+EFFORT_OPEN="$TMP/effort-open.yaml"; effort_yaml high ultra "$EFFORT_OPEN"
+eopen="$(effort_run "$ARBITER" "$EFFORT_OPEN" '{"kind":"safety","size":"standard"}')"
+if [[ "$eopen" == *' effort=high '* && "$eopen" != *' capped_from='* ]]; then
+  pass 'high effort below an ultra ceiling remains uncapped'
+else
+  fail "effort ceiling control output=$eopen"
+fi
+EFFORT_PROJECT="$TMP/effort-project.yaml"; effort_yaml xhigh ultra "$EFFORT_PROJECT"
+eproject="$(effort_run "$ARBITER" "$EFFORT_PROJECT" '{"kind":"safety","size":"standard"}')"
+if [[ "$eproject" == *'arm=glm '* && "$eproject" == *' effort=high '* && "$eproject" != *' capped_from='* ]]; then
+  pass 'glm low|high|max projection rounds internal xhigh down to provider high'
+else
+  fail "effort projection output=$eproject"
+fi
+EFFORT_BAD="$TMP/effort-bad.yaml"; effort_yaml ultra ultra "$EFFORT_BAD"
+python3 - "$EFFORT_BAD" <<'PY'
+import sys, yaml
+p=sys.argv[1]; data=yaml.safe_load(open(p)); data['router_v2']['effort_matrix'][0]['effort']='not-a-level'; yaml.safe_dump(data, open(p,'w'))
+PY
+set +e
+ebad="$(effort_run "$ARBITER" "$EFFORT_BAD" '{"kind":"safety","size":"standard"}')"; ebad_rc=$?
+set -e
+if [[ "$ebad_rc" -ne 0 && "$ebad" == *'effort_level_unknown'* && "$ebad" == *'not-a-level'* ]]; then
+  pass 'an unknown effort name rejects config and names the bad level'
+else
+  fail "unknown effort output rc=$ebad_rc output=$ebad"
+fi
+# Mutation control: replacing scale-index comparison with string comparison
+# incorrectly caps xhigh under ultra (xhigh sorts after ultra). The named
+# positive fixture must observe that red mutation.
+EFFORT_MUT="$TMP/effort-string-compare-mutant.sh"; cp "$ARBITER" "$EFFORT_MUT"
+python3 - "$EFFORT_MUT" <<'PY'
+import sys
+p=sys.argv[1]; s=open(p).read(); old="return _effort_scale.index(_name)"; new="return _name"
+if s.count(old) != 1: raise SystemExit('mutation anchor count=%d' % s.count(old))
+open(p,'w').write(s.replace(old,new))
+PY
+emut="$(effort_run "$EFFORT_MUT" "$EFFORT_PROJECT" '{"kind":"safety","size":"standard"}' || true)"
+if [[ "$emut" == *'effort=max capped_from=xhigh'* ]]; then
+  pass 'mutation control: string comparison reddens the xhigh-under-ultra projection case'
+else
+  fail "string-comparison mutant escaped output=$emut"
 fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"

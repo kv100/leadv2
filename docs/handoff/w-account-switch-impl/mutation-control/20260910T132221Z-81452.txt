@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-account-switch.sh
+file=plugins/leadv2/scripts/leadv2-account-switch.sh
+anchor=s,if \[\[ "$OBSERVED_NEXT" != "$TARGET_LABEL" \]\]; then,if false; then,
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] == case 6: switch cannot take (b exhausts after confirmation) -> FAILED, never silent success
+diff_hash=bca5e06ed5053aed2781abe2ba9538a56234a5a2700fdae460aac8ab1d396034
+lane_diff_hash=ce92b6ac8473ec4d596b30cf22322449cba4dd340c179aa4a46bf0dea8b45a70

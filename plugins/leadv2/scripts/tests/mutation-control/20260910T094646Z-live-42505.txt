@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-phase-record-class.sh
+file=plugins/leadv2/scripts/leadv2-phase-record.sh
+anchor=s|local -r classes="Trivial Light Standard Heavy Strategic Bulk"|local -r classes="Trivial Light Standard Heavy Bulk"|
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=PASS: assert class=Trivial rc=0
+diff_hash=037d6db3f93b74602b96039878d30eb93470ad35240107c17fdd1fc4814e71bb
+lane_diff_hash=45997e503da4d74d508ca75404ae233735f539acf9be2a5049a363ef7a92cc51
+porcelain_clean=yes
+restored=yes

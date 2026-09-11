@@ -494,7 +494,7 @@ MAX_TURNS="${LEADV2_SUBSESSION_MAX_TURNS:-110}"
 # ---------------------------------------------------------------------------
 _CLAUDE_PROFILE_SELECT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-claude-profile-select.sh"
 leadv2_select_claude_profile() {
-  local sel label dir score src cands cred cred_kind iso out rc pid elapsed tmo sel_rc=0
+  local sel label dir score src cands cred cred_kind iso out rc pid elapsed tmo reason sel_rc=0
   # Opt-in gate mirrors the selector's own: flag unset => fully inert — no
   # stderr line, no handoff log, no subprocess. The lane runs exactly as
   # before multi-profile existed. A --requested-profile pin bypasses this
@@ -529,7 +529,15 @@ leadv2_select_claude_profile() {
       if kill -0 "$pid" 2>/dev/null; then
         kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; sel_rc=124
       else
-        wait "$pid" 2>/dev/null; sel_rc=$?
+        # A selector refusal is an expected, actionable result.  Capture a
+        # non-zero status through `if` so `set -e` does not terminate this
+        # caller before it can distinguish a hard refusal (4) from a soft
+        # timeout/unknown result (124).
+        if wait "$pid" 2>/dev/null; then
+          sel_rc=0
+        else
+          sel_rc=$?
+        fi
       fi
       sel="$(head -1 "$out" 2>/dev/null)"
       rm -f "$out"
@@ -544,6 +552,11 @@ leadv2_select_claude_profile() {
     cands="$(printf '%s' "$sel" | sed -n 's/.*candidates=\([0-9][0-9]*\).*/\1/p')"
     cred="$(printf '%s' "$sel" | sed -n 's/.*[[:space:]]cred=\([^[:space:]]*\).*/\1/p')"
     identity="$(printf '%s' "$sel" | sed -n 's/.*[[:space:]]identity=\([^[:space:]]*\).*/\1/p')"
+    # W1-BALANCER-COVERS-EVERY-ARM-01 §1.3: the selector's demoted= field
+    # names the dispatching session's own account (present only when a
+    # registry row matched it). Riding the same log line keeps "was the arm
+    # kept off the lead's window" measurable from claude-profile.log alone.
+    demoted="$(printf '%s' "$sel" | sed -n 's/.*[[:space:]]demoted=\([^[:space:]]*\).*/\1/p')"
     cred_kind=unknown
     case "$cred" in
       keychain:?*)
@@ -553,6 +566,11 @@ leadv2_select_claude_profile() {
       file:/*) cred_kind=file ;;
     esac
     line_log="[claude-profile] selected=${label} score=${score} source=${src} candidates=${cands:-?} cred_kind=${cred_kind} identity=${identity:-unknown/na}"
+    # §1.3: appended ONLY when the selector actually demoted a registry row
+    # (the dispatching session's own account) -- absent means "no demotion in
+    # play", which keeps the line byte-identical for every legacy caller and
+    # the suites that pin its shape.
+    [[ -n "${demoted:-}" ]] && line_log="${line_log} demoted=${demoted}"
     # NO-WAY-TO-PIN-A-DISPATCH-TO-A-NAMED-ACCOUNT-01: defense-in-depth, not
     # the primary enforcement (the selector already refuses on a mismatch) --
     # a request answered by a DIFFERENT label than asked for is the exact
@@ -580,6 +598,19 @@ leadv2_select_claude_profile() {
     printf '%s [claude-profile] FATAL requested=%s selector_rc=%s unparsed_or_unavailable\n' "$iso" "$REQUESTED_PROFILE" "${sel_rc:-?}" \
       >> "$HANDOFF_DIR/claude-profile.log" 2>/dev/null || true
     exit 5
+  fi
+  # The selector's rc=4 is a deliberate refusal (for example same_account or
+  # default_token_expired), not an unparseable single-profile fallback.  Do
+  # not treat `profile=-` as a selection: its shape remains deliberately
+  # outside re_sel for legacy callers.  rc=124 is the wrapper's own timeout
+  # sentinel and intentionally reaches the soft fallback below.
+  if (( sel_rc == 4 )); then
+    reason="$(printf '%s' "$sel" | sed -n 's/^profile=-[[:space:]]reason=\([^[:space:]]*\).*$/\1/p')"
+    [[ -n "$reason" ]] || reason=unparsed_refusal
+    echo "[claude-subsession] FATAL: profile selector refused launch (reason=${reason})" >&2
+    printf '%s [claude-profile] FATAL reason=%s selector_rc=4\n' "$iso" "$reason" \
+      >> "$HANDOFF_DIR/claude-profile.log" 2>/dev/null || true
+    exit 4
   fi
   # Absent, unparseable, or the selected dir is unreadable: single-profile.
   printf '[claude-profile] single-profile fallback\n' >&2

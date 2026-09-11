@@ -247,7 +247,10 @@ def _resolve_routing_yaml_path(explicit: str):
     """D1: first-existing-file-wins search. Returns (path_or_None, source) where
     source is one of tenant|plugin|canonical|none. Deliberately does NOT know about
     ${ROOT}/.claude/ref/leadv2-routing.yaml -- that tenant-override tier is resolved
-    bash-side (resolve_review_pool_call) BEFORE --routing-yaml is even passed here;
+    bash-side by lib/leadv2-routing-config.sh (PLUGIN-REPO-CARRIES-A-SHADOW-
+    ROUTING-CONFIG-01, 2026-09-10: a tenant file at that path is now a DELTA
+    MERGED over this canonical config and materialized before it is passed
+    here as --routing-yaml) BEFORE --routing-yaml is even passed here;
     this is the safety net for callers that hand this script a stale/missing path."""
     candidates = []
     if explicit:

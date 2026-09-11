@@ -77,11 +77,18 @@ PROJECT_ROOT="${PROJECT_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 # repo glm_policy resolved to {} (no policy bans at all), in a tenant repo
 # router_v2.arms resolved to [] and the script died. Now each key is read from
 # the document that actually holds it.
-ROUTING_YAML="${LEADV2_ROUTING_YAML:-${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml}"
-if [[ ! -f "${ROUTING_YAML}" && -f "${SCRIPT_DIR}/../config/leadv2-routing.yaml" ]]; then
-  # Same file-level fallback leadv2-dispatch-code.sh:575 already uses for the
-  # router registry, so a repo without a tenant copy is routed, not refused.
-  ROUTING_YAML="${SCRIPT_DIR}/../config/leadv2-routing.yaml"
+# PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the ONE resolver for the
+# router registry -- env override as-is, else tenant delta MERGED over the
+# canonical registry (the old private chain SUBSTITUTED a tenant copy and fell
+# back file-level to the plugin config), else canonical as-is. A broken tenant
+# delta dies loudly here: filter mode must not silently read stale cells.
+# shellcheck source=lib/leadv2-routing-config.sh
+source "${SCRIPT_DIR}/lib/leadv2-routing-config.sh"
+ROUTING_YAML="$(leadv2_routing_config_path "${PROJECT_ROOT}")" || ROUTING_YAML=""
+if [[ -z "${ROUTING_YAML}" ]]; then
+  # die() is not defined yet at this point; inline the same shape it uses.
+  printf '[leadv2-router-v2] no routing config resolved (root=%s) -- set LEADV2_ROUTING_YAML or provide a tenant/canonical file\n' "${PROJECT_ROOT}" >&2
+  exit 2
 fi
 # shellcheck source=lib/leadv2-phase-policy-path.sh
 source "${SCRIPT_DIR}/lib/leadv2-phase-policy-path.sh"

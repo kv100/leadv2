@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-route-arbiter.sh
+file=plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+anchor=1037s/if not _stages: return ''/if True: return ''/
+baseline_rc=0
+mutated_rc=1
+red_line=PASS: broken glm probe (status!=ok) is fail-closed, never selected
+diff_hash=fc2e91c4df13a416f5da73a73db59df373ecdf8bdbd5fad1608d1b66e37d969c
+lane_diff_hash=91bac361b36f480b3fe288e5ccc36f72c1cd79893fb3e9313c9ae6259569321d

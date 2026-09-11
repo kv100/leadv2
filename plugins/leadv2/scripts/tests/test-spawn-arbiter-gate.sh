@@ -69,18 +69,35 @@ for token in "leadv2-route-arbiter.sh" "leadv2-dispatch-code.sh" "LEADV2_ROUTE_E
   [[ "$r" == *"$token"* ]] && pass "case1 refusal names $token" || fail "case1 refusal missing $token: $r"
 done
 # (2) consult -> same spawn passes; decision readable back from the journal.
-consult "$OKQ" 0 '{"work_kind":"build","size":"standard","subtype":"developer","task":"case2"}' >/dev/null
-v="$(verdict "$OKQ" '{"tool_name":"Agent","tool_input":{"subagent_type":"developer","model":"glm-5.3-flash"}}')"
-c="$(ctx "$OKQ" '{"tool_name":"Agent","tool_input":{"subagent_type":"developer","model":"glm-5.3-flash"}}')"
+# The decided arm/model is READ from the consult line, not hardcoded: economics
+# drift (capability_fit on, 2026-09-07) moved the build winner glm-flash -> glm
+# and broke this case twice before -- the contract under test is the ROUND TRIP
+# (spawn with the decided model passes), not which arm is cheapest today.
+dec="$(consult "$OKQ" 0 '{"work_kind":"build","size":"standard","subtype":"developer","task":"case2"}')"
+dec_arm="$(printf '%s' "$dec" | grep -oE '^arm=[^ ]+' | sed 's/^arm=//')"
+dec_model="$(printf '%s' "$dec" | grep -oE '(^| )model=[^ ]+' | head -1 | sed 's/.*model=//')"
+if [[ -n "$dec_arm" && -n "$dec_model" && "$dec_arm" != "refuse" ]]; then
+  pass "case2 consult decided arm=$dec_arm model=$dec_model"
+else
+  fail "case2 consult line unusable: $dec"
+fi
+v="$(verdict "$OKQ" "{\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"developer\",\"model\":\"$dec_model\"}}")"
+c="$(ctx "$OKQ" "{\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"developer\",\"model\":\"$dec_model\"}}")"
 [[ "$v" == "allow" ]] && pass 'case2 consulted spawn -> allow' || fail "case2 verdict=$v"
-[[ "$c" == *'arm=glm-flash'* && "$c" == *'kind=build'* ]] && pass 'case2 allow context names the recorded decision' || fail "case2 ctx=$c"
+[[ "$c" == *"arm=$dec_arm"* && "$c" == *'kind=build'* ]] && pass 'case2 allow context names the recorded decision' || fail "case2 ctx=$c"
 grep -q '"subtype": "developer"' "$LEADV2_ROUTE_ARBITER_DECISIONS_FILE" && pass 'case2 decision readable back from journal' || fail 'case2 journal read-back missing developer record'
-# (3) general-purpose write-capable, no decision -> deny.
+# (3) general-purpose, model-less, no decision: since BUILTIN-AGENT-SPAWN-
+# DEADLOCK-01 the gate consults the arbiter itself, and a model-less spawn
+# matches any fresh record for its subtype -> allow at THIS hook. The no-model
+# denial for built-ins is the sibling model-inherit-guard's contract, not this
+# gate's (two hooks, two jobs).
 v="$(verdict "$OKQ" '{"tool_name":"Agent","tool_input":{"subagent_type":"general-purpose"}}')"
-[[ "$v" == "deny" ]] && pass 'case3 general-purpose -> deny' || fail "case3 verdict=$v"
-# (4) non-Claude arms without a decision -> deny (the door nobody names).
+[[ "$v" == "allow" ]] && pass 'case3 general-purpose model-less -> allow via gate consult (inherit-guard owns no-model)' || fail "case3 verdict=$v"
+# (4) non-speakable arms without a decision -> deny (the door nobody names).
+# Fresh subtype per model: case2's consult leaves a developer record whose
+# decided model may BE glm-5.3, which would legitimately unlock that spawn.
 for m in kimi-k2 glm-5.3 freepool-default; do
-  v="$(verdict "$OKQ" "{\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"developer\",\"model\":\"$m\"}}")"
+  v="$(verdict "$OKQ" "{\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"NoRecord-$m\",\"model\":\"$m\"}}")"
   [[ "$v" == "deny" ]] && pass "case4 model=$m -> deny" || fail "case4 model=$m verdict=$v"
 done
 # (5) recon: consult -> cheap arm -> spawn proceeds (NOT denied).
@@ -94,17 +111,29 @@ v="$(LEADV2_ROUTE_ENFORCE=0 verdict "$OKQ" '{"tool_name":"Agent","tool_input":{"
 echo "== hardening: the holes a name list would leave =="
 v="$(verdict "$OKQ" '{"tool_name":"Agent","tool_input":{"subagent_type":"developer","model":"sonnet"}}')"
 [[ "$v" == "deny" ]] && pass 'model mismatch vs decided model -> deny (model_requested never matches)' || fail "mismatch verdict=$v"
-# stale record is not a decision.
+# stale record is not a decision -- and since the gate consults on absence
+# (BUILTIN-AGENT-SPAWN-DEADLOCK-01), staleness must hold BOTH ways: with the
+# consult off the stale record alone denies; with it on, the gate re-decides
+# fresh and the spawn passes on the NEW record, never on the stale one.
 consult "$OKQ" 0 '{"work_kind":"recon","size":"standard","subtype":"StaleSub","task":"stale"}' >/dev/null
 sleep 2
+v="$(LEADV2_ROUTE_DECISION_TTL_OVERRIDE=1 LEADV2_SPAWN_GATE_AUTO_CONSULT=0 verdict "$OKQ" '{"tool_name":"Agent","tool_input":{"subagent_type":"StaleSub"}}')"
+[[ "$v" == "deny" ]] && pass 'expired record alone -> deny (consult off)' || fail "stale verdict=$v"
 v="$(LEADV2_ROUTE_DECISION_TTL_OVERRIDE=1 verdict "$OKQ" '{"tool_name":"Agent","tool_input":{"subagent_type":"StaleSub"}}')"
-[[ "$v" == "deny" ]] && pass 'expired record -> deny' || fail "stale verdict=$v"
-# a refusal record must never unlock a spawn.
+[[ "$v" == "allow" ]] && pass 'expired record + gate consult -> allow on a FRESH re-decision' || fail "stale+auto verdict=$v"
+# a refusal record must never unlock a spawn. The refusal is produced
+# deterministically by a requested_arm pin on an arm with NO matrix cell
+# (kimi, requested_arm_incapable) -- the old 99%-quota shape stopped refusing
+# when the anthropic stub began reading as unknown-not-capped and sonnet won.
 : > "$LEADV2_ROUTE_ARBITER_DECISIONS_FILE"
-consult "$(quota 99 99 99)" 1 '{"work_kind":"build","size":"standard","subtype":"RefusedSub","task":"refused"}' >/dev/null 2>&1 || true
+consult "$OKQ" 0 '{"work_kind":"build","size":"standard","subtype":"RefusedSub","task":"refused","requested_arm":"kimi"}' >/dev/null 2>&1 || true
 grep -q '"arm": "refuse"' "$LEADV2_ROUTE_ARBITER_DECISIONS_FILE" && pass 'refusal recorded' || fail 'refusal not recorded'
+v="$(LEADV2_SPAWN_GATE_AUTO_CONSULT=0 verdict "$OKQ" '{"tool_name":"Agent","tool_input":{"subagent_type":"RefusedSub"}}')"
+[[ "$v" == "deny" ]] && pass 'refuse record does not unlock the spawn (consult off)' || fail "refuse verdict=$v"
+# with the consult ON the gate re-decides fresh and the spawn passes on the
+# NEW record -- the refuse row stays inert either way.
 v="$(verdict "$OKQ" '{"tool_name":"Agent","tool_input":{"subagent_type":"RefusedSub"}}')"
-[[ "$v" == "deny" ]] && pass 'refuse record does not unlock the spawn' || fail "refuse verdict=$v"
+[[ "$v" == "allow" ]] && pass 'refuse record + gate consult -> allow on fresh re-decision' || fail "refuse+auto verdict=$v"
 # NEGATIVE CONTROL: flip the emission site to allow and case 1 must PASS;
 # restore and it must deny again. An inert guard is indistinguishable by silence.
 sed 's/emit_decision "deny" "\$DENY"/emit_decision "allow" "$DENY"/' "$HOOK" > "$TMP/hook.negctl"

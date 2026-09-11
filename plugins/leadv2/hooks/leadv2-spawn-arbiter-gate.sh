@@ -51,6 +51,16 @@ PLUGIN_ROOT="$(cd "$HOOK_DIR/.." && pwd)"
 ARBITER_CLI="$PLUGIN_ROOT/scripts/lib/leadv2-route-arbiter.sh"
 DISPATCHER="$PLUGIN_ROOT/scripts/leadv2-dispatch-code.sh"
 
+# BUILTIN-AGENT-SPAWN-DEADLOCK-01 (2026-09-10): the built-in Agent tool can
+# only pronounce a finite model enumeration. Declared ONCE, here -- not a
+# second yaml -- and handed to the arbiter as the pool the decision is drawn
+# from (descriptor field speakable_models), so a recorded decision is always
+# physically speakable by the executor. The arbiter still ranks cheapest
+# capable; it just cannot return "use freepool-default" to a caller whose
+# tool has no such value. An empty pool after this filter is the arbiter's
+# loud pool_empty_all_excluded refusal -- never a silent fallback model.
+SPEAKABLE_MODELS="sonnet opus haiku fable"
+
 # Kill switch FIRST: one env var, named in every refusal text below.
 if [[ "${LEADV2_ROUTE_ENFORCE:-1}" == "0" ]]; then
   emit_decision "allow" "[leadv2-spawn-arbiter-gate] enforcement disabled (LEADV2_ROUTE_ENFORCE=0) -- spawn allowed without an arbiter decision."
@@ -65,10 +75,14 @@ MODEL="$(echo "$INPUT" | jq -r '.tool_input.model // empty' 2>/dev/null || echo 
 #   subagent_type exactly (a record with no subtype binds nothing), the record
 #   is fresher than the TTL, and -- when the spawn pins a model -- the DECIDED
 #   model equals it (model_requested is provenance only and never matches).
-LOOKUP="$(SUBTYPE="$SUBTYPE" MODEL="$MODEL" \
-JOURNAL="${LEADV2_ROUTE_ARBITER_DECISIONS_FILE:-${TMPDIR:-/tmp}/leadv2-route-arbiter-decisions.jsonl}" \
-TTL="${LEADV2_ROUTE_DECISION_TTL:-900}" \
-python3 - <<'PY'
+# A function since BUILTIN-AGENT-SPAWN-DEADLOCK-01: after the gate's own
+# arbiter consult the SAME predicate re-runs, so a fresh record is judged by
+# byte-identical logic -- no second, softer check for the auto-consult path.
+lookup_decision() {
+  SUBTYPE="$SUBTYPE" MODEL="$MODEL" \
+  JOURNAL="${LEADV2_ROUTE_ARBITER_DECISIONS_FILE:-${TMPDIR:-/tmp}/leadv2-route-arbiter-decisions.jsonl}" \
+  TTL="${LEADV2_ROUTE_DECISION_TTL:-900}" \
+  python3 - <<'PY'
 import json, os, sys, time
 subtype, model = os.environ['SUBTYPE'], os.environ['MODEL']
 journal, ttl = os.environ['JOURNAL'], float(os.environ['TTL'])
@@ -100,7 +114,8 @@ except OSError:
     pass  # unreadable journal -> fail open (stderr note printed by caller)
 print(hit)
 PY
-)" || LOOKUP=""
+}
+LOOKUP="$(lookup_decision)" || LOOKUP=""
 
 if [[ -z "$LOOKUP" ]]; then
   # Distinguish clean absence (deny) from infrastructure fault (fail open):
@@ -111,15 +126,58 @@ if [[ -z "$LOOKUP" ]]; then
     exit 0
   fi
 
+  # BUILTIN-AGENT-SPAWN-DEADLOCK-01 (2026-09-10): absence is no longer a
+  # bounce to a separate CLI trip. The gate consults the arbiter ONCE itself,
+  # inside the speakable pool, pinning the spawn's own model when it has one
+  # (honoured or refused honestly -- the arbiter never substitutes). If the
+  # fresh decision satisfies the SAME (subtype, model) predicate above, this
+  # spawn passes NOW; otherwise the denial below carries the arbiter's line
+  # verbatim. kind=recon is the gate's stated assumption: a bare spawn that
+  # already passed the write-capable direct-spawn gate is read-only in
+  # platform truth, and lane work belongs to the dispatcher path either way.
+  AUTO_RC=""
+  AUTO_LINE=""
+  if [[ "${LEADV2_SPAWN_GATE_AUTO_CONSULT:-1}" == "1" && -f "$ARBITER_CLI" ]]; then
+    DESC="$(python3 - "$SUBTYPE" "$SPEAKABLE_MODELS" "$MODEL" <<'PY'
+import json,sys
+subtype, speakable, model = sys.argv[1], sys.argv[2].split(), sys.argv[3]
+d={"work_kind":"recon","size":"standard","subtype":subtype,
+   "task":"spawn-gate auto-consult (BUILTIN-AGENT-SPAWN-DEADLOCK-01)",
+   "speakable_models":speakable,"model_requested":model}
+if model: d["requested_model"]=model
+print(json.dumps(d))
+PY
+)"
+    if AUTO_OUT="$(bash "$ARBITER_CLI" worker "$DESC" 2>&1)"; then AUTO_RC=0; else AUTO_RC=$?; fi
+    # grep exits 1 on no match; under pipefail that would kill the hook here
+    # (measured live by suite case E1: a garbage arbiter prints no arm= line).
+    AUTO_LINE="$(printf '%s\n' "$AUTO_OUT" | grep -E '^(arm=|\[route-arbiter\] FATAL)' | head -1 || true)"
+    LOOKUP2="$(lookup_decision)"
+    if [[ -n "$LOOKUP2" ]]; then LOOKUP="$LOOKUP2"; fi
+  fi
+fi
+
+if [[ -z "$LOOKUP" ]]; then
   # set -e hazard: a `$( [[ cond ]] && cmd )` substitution whose condition is
   # false returns rc=1 and kills the hook via the assignment (caught live by
   # acceptance case 3 -- the model-less spawn). An `if` block is exempt.
   MODEL_PART=""
   if [[ -n "$MODEL" ]]; then MODEL_PART=" model=$MODEL"; fi
   DENY="[leadv2-spawn-arbiter-gate] DENIED: no route-arbiter decision is on record for this spawn (subagent_type=${SUBTYPE:-<none>}${MODEL_PART}). FOUNDER 2026-09-04: every agent spawn goes through the arbiter."
+  if [[ -n "$AUTO_RC" ]]; then
+    DENY="$DENY
+Gate consult (one call, no separate CLI trip; kind=recon assumed for a bare read-only spawn; speakable pool: ${SPEAKABLE_MODELS}): this spawn still matches no fresh decision."
+    if [[ -n "$AUTO_LINE" ]]; then
+      DENY="$DENY
+  $AUTO_LINE"
+    else
+      DENY="$DENY
+  the arbiter produced no decision line (rc=${AUTO_RC}) -- routing is UNDECIDED, do not guess a model."
+    fi
+  fi
   if [[ -f "$ARBITER_CLI" ]]; then
     DENY="$DENY
-Way forward (plain spawn): consult the arbiter, then re-issue this spawn with the decided model (or no model):
+Way forward (plain spawn, e.g. when the work is NOT recon -- the gate consults as recon and the true kind differs): consult the arbiter for the true kind, then re-issue this spawn with the decided model (or no model):
   bash $ARBITER_CLI worker '{\"work_kind\":\"build|recon|review|plan\",\"size\":\"standard\",\"subtype\":\"$SUBTYPE\",\"task\":\"one line\"}'"
   fi
   if [[ -f "$DISPATCHER" ]]; then
@@ -132,7 +190,7 @@ Way forward (lane work: worktree + registry + gates): route through the dispatch
 Way forward: this hook is installed without its plugin scripts -- re-install the leadv2 plugin (both consult and dispatch paths are missing)."
   fi
   DENY="$DENY
-Kill switch: export LEADV2_ROUTE_ENFORCE=0 disables this gate (founder-level escape hatch, one step, no file edit)."
+Kill switch: export LEADV2_ROUTE_ENFORCE=0 disables this gate (founder-level escape hatch, one step, no file edit). Auto-consult switch: LEADV2_SPAWN_GATE_AUTO_CONSULT=0 reverts to deny-without-consulting."
   emit_decision "deny" "$DENY"
   exit 0
 fi

@@ -311,20 +311,32 @@ PYPROBE
   # state_write_error. Regression (test-supervise-failclosed.sh Test 5):
   # this block used to die under `set -e` on a failed redirect/mv before the
   # typed-error path ever ran, producing rc=1 with EMPTY stdout instead of
-  # {"error":"state_write_error",...}. Every write attempt below is now
-  # guarded so a permission failure degrades silently and falls through to
-  # the real fail-closed check.
+  # {"error":"state_write_error",...}. Every write attempt below is guarded
+  # so a permission failure degrades to a PRINTED skip line (S-6,
+  # WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01: silently dropping the cache file
+  # made "wrote nothing" indistinguishable from "nothing to write") and
+  # falls through to the real fail-closed check. Script rc and stdout are
+  # UNCHANGED either way — this block never fails the snapshot.
   TRUTH_BREACHES_FILE="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-state-path.sh" truth-breaches-last.json)"
-  mkdir -p "$(dirname "$TRUTH_BREACHES_FILE")" 2>/dev/null || true
+  _tb_skip=0
+  mkdir -p "$(dirname "$TRUTH_BREACHES_FILE")" 2>/dev/null \
+    || { printf '[lanes-snapshot] truth_breaches_cache wrote=0 reason=mkdir path=%s\n' "$TRUTH_BREACHES_FILE" >&2; _tb_skip=1; }
   _TB_TMP="${TRUTH_BREACHES_FILE}.tmp.$$"
   python3 -c '
 import json, sys, datetime
 d = json.loads(sys.argv[1])
 d["observed_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 print(json.dumps(d))
-' "$TRUTH_BREACHES_JSON" > "$_TB_TMP" 2>/dev/null || printf -- '%s' "$TRUTH_BREACHES_JSON" > "$_TB_TMP" 2>/dev/null || true
-  if [[ -f "$_TB_TMP" ]]; then
-    mv "$_TB_TMP" "$TRUTH_BREACHES_FILE" 2>/dev/null || rm -f "$_TB_TMP" 2>/dev/null || true
+' "$TRUTH_BREACHES_JSON" > "$_TB_TMP" 2>/dev/null \
+    || printf -- '%s' "$TRUTH_BREACHES_JSON" > "$_TB_TMP" 2>/dev/null \
+    || { printf '[lanes-snapshot] truth_breaches_cache wrote=0 reason=write path=%s\n' "$TRUTH_BREACHES_FILE" >&2; _tb_skip=1; }
+  if [[ "${_tb_skip}" -eq 0 ]]; then
+    if mv "$_TB_TMP" "$TRUTH_BREACHES_FILE" 2>/dev/null; then
+      printf '[lanes-snapshot] truth_breaches_cache wrote=1 path=%s\n' "$TRUTH_BREACHES_FILE" >&2
+    else
+      rm -f "$_TB_TMP" 2>/dev/null || true
+      printf '[lanes-snapshot] truth_breaches_cache wrote=0 reason=mv path=%s\n' "$TRUTH_BREACHES_FILE" >&2
+    fi
   fi
 fi
 

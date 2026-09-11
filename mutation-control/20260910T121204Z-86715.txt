@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-one-copy-tenant-delta.sh
+file=plugins/leadv2/scripts/leadv2-one-copy-convert.sh
+anchor=/^cmd_check()/,/^}/ s/if is_exception "\${key}\/\${relpath}"; then/if false; then/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: T2 same declared copy -> EXPECTED-OVERRIDE, exit 0 (rc=1) OUT=[one-copy] DIVERGED: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//tenant-delta-fixture.AVZghv/repo-a/.claude/ref/leadv2-main-model.yaml differs from canonical (/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tenant-delta-fixture.AVZghv/canon/plugins/leadv2/ref/leadv2-main-model.yaml) — not on exception list
+diff_hash=fd6e52fe5897804df046fb5ce0b607593531d44f1ba0c5fb77404e7c2357d90b
+lane_diff_hash=437d49ce176e9de1a265e90c228f23a0da83cd2ca22fd6dc4819a20cbccde58e

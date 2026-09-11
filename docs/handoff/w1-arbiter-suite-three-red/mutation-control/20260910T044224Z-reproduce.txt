@@ -1,0 +1,67 @@
+root=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/633d067d3f98
+== GREEN half (unmutated) ==
+arbiter_under_test=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/633d067d3f98/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh sha256=5b4e4eaaa7ae161b
+PASS: codex 99% routes to a capable non-codex arm
+PASS: all capped (all three MEASURED) refuses all_arms_capped
+PASS: protected chain excludes freepool and admits glm
+PASS: anti-sticky identical tasks rotate arms
+PASS: standard cell deterministically picks glm (capability_fit rank, not stickiness)
+PASS: missing arbiter falls open to ladder and dispatch resolves
+PASS: unknown --kind normalizes to code and resolves
+PASS: fanout-class-funnel kind resolves an arm
+PASS: backlog-pump kind resolves an arm
+PASS: broken glm probe (status!=ok) is fail-closed, never selected
+PASS: answering probe with no numbers reads unknown, not free
+PASS: coerced work_kind is named on the decision line, and a known kind is not
+PASS: headroom read from only some windows says so
+PASS: a winner with no configured ceiling is named
+PASS: broken-active claude account falls back to the real ok account, not pct=0
+PASS: (g) rc=68 fail-open journals the arbiter reason by name
+PASS: (g) the route produced by a fail-open is marked and can be counted
+PASS: (g-red) with the detail stripped, both the reason and the marker disappear
+PASS: equal ceilings, different runway: the arm with hours left wins, and the price is named
+PASS: LEADV2_ARBITER_HEADROOM_GRADIENT=0 restores the cliff in one flag
+PASS: an unreadable input names itself instead of exiting mute
+PASS: a dispatcher running someone else's arbiter says so
+PASS: a require_trusted cut names the arm it removed; nothing-cut and a real vocabulary hole stay unaccused
+PASS: a policy cut refuses pool_empty_all_excluded (enumerated); a vocabulary gap refuses no_capable_cell, silent -- same fixture
+PASS: (g8) the decision line names the arbiter bytes and the matrix bytes, and each moves only with its own file
+PASS: (g8-refuse) a refusal names the same arbiter bytes, and does not die building the token
+PASS: a total probe outage is named probe_outage=, never reported as an exhausted quota
+SUMMARY: pass=27 fail=0
+green_rc=0
+== apply lead's substitution: no_capable_cell emit -> pool_empty_all_excluded ==
+grep -c no_capable_cell: 2 (expected: baseline minus 2)
+== RED half (mutated real file) ==
+arbiter_under_test=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/633d067d3f98/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh sha256=11ee23f6a2c6c4a6
+PASS: codex 99% routes to a capable non-codex arm
+PASS: all capped (all three MEASURED) refuses all_arms_capped
+PASS: protected chain excludes freepool and admits glm
+PASS: anti-sticky identical tasks rotate arms
+PASS: standard cell deterministically picks glm (capability_fit rank, not stickiness)
+PASS: missing arbiter falls open to ladder and dispatch resolves
+PASS: unknown --kind normalizes to code and resolves
+PASS: fanout-class-funnel kind resolves an arm
+PASS: backlog-pump kind resolves an arm
+PASS: broken glm probe (status!=ok) is fail-closed, never selected
+PASS: answering probe with no numbers reads unknown, not free
+PASS: coerced work_kind is named on the decision line, and a known kind is not
+PASS: headroom read from only some windows says so
+PASS: a winner with no configured ceiling is named
+PASS: broken-active claude account falls back to the real ok account, not pct=0
+FAIL: (g) rc=68 fail-open did not name its reason
+PASS: (g) the route produced by a fail-open is marked and can be counted
+FAIL: (g-red) control NOT EVALUATED — the green half did not hold, so the mutation had nothing to remove
+PASS: equal ceilings, different runway: the arm with hours left wins, and the price is named
+PASS: LEADV2_ARBITER_HEADROOM_GRADIENT=0 restores the cliff in one flag
+PASS: an unreadable input names itself instead of exiting mute
+PASS: a dispatcher running someone else's arbiter says so
+FAIL: arm_excluded protected=arm=sonnet kind=code model=sonnet tier=standard effort=medium reason=cheapest_capable chain=sonnet util_glm=13 util_codex=20 util_claude=45 util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=5.00h_default_full_period reset_freepool=n/a headroom_w=1 headroom_unknown=no_usable_now claude_account_state=ok claude_probe_penalty=0 claude_priced_from=measured arm_excluded=glm:untrusted arb_rev=11ee23f6a2c6 matrix_rev=1f86303bf30e floor_mode=bulk_only floor_mode_source=default test_only=0 complexity=unknown duration_class=unknown complexity_policy=none remaining=55.0 reset_in=5.00h reset_basis=default_full_period failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=off fit_pick=sonnet fit_differs=0 fit_bucket=sonnet:0 cap_default=sonnet forecast_basis=journal_unavailable forecast_class=standard/unknown | unprotected=arm=glm kind=code model=glm-5.3 tier=standard effort=medium reason=cheapest_capable chain=glm,sonnet util_glm=13 util_codex=20 util_claude=45 util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=5.00h_default_full_period reset_freepool=n/a headroom_w=1 headroom_unknown=no_usable_now claude_account_state=ok claude_probe_penalty=0 claude_priced_from=measured arm_excluded=sonnet:price_ratio arb_rev=11ee23f6a2c6 matrix_rev=1f86303bf30e floor_mode=bulk_only floor_mode_source=default test_only=0 complexity=unknown duration_class=unknown complexity_policy=none remaining=87.0 reset_in=5.00h reset_basis=default_full_period failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=off fit_pick=glm fit_differs=0 fit_bucket=glm:0,sonnet:0 cap_default=glm,sonnet forecast_basis=journal_unavailable forecast_class=standard/unknown | hole=arm=refuse model=none tier=none reason=pool_empty_all_excluded kind=docs chain= util_glm=13 util_codex=20 util_claude=45 util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=5.00h_default_full_period reset_freepool=n/a failure_memory=absent_key arb_rev=11ee23f6a2c6 matrix_rev=1f86303bf30e
+FAIL: refusal-dictionary policy=arm=refuse model=none tier=none reason=pool_empty_all_excluded kind=code chain= util_glm=13 util_codex=20 util_claude=45 util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=5.00h_default_full_period reset_freepool=n/a failure_memory=absent_key arm_excluded=glm:untrusted arb_rev=11ee23f6a2c6 matrix_rev=dc964ffefb99 | vocabulary=arm=refuse model=none tier=none reason=pool_empty_all_excluded kind=docs chain= util_glm=13 util_codex=20 util_claude=45 util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=5.00h_default_full_period reset_freepool=n/a failure_memory=absent_key arb_rev=11ee23f6a2c6 matrix_rev=dc964ffefb99
+PASS: (g8) the decision line names the arbiter bytes and the matrix bytes, and each moves only with its own file
+FAIL: (g8-refuse) refusal=arm=refuse model=none tier=none reason=pool_empty_all_excluded kind=code chain= util_glm=13 util_codex=20 util_claude=45 util_freepool=0 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claud
+PASS: a total probe outage is named probe_outage=, never reported as an exhausted quota
+SUMMARY: pass=22 fail=5
+red_rc=1
+== restore ==
+restore OK: lib byte-identical to HEAD

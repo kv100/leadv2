@@ -36,6 +36,14 @@ Env overrides:
   LEADV2_ANTHROPIC_FORCE_UNRESOLVED=1 -- test the configured-pin fallback
   LEADV2_ROUTING_CONFIG -- router config containing router_v2.active_account
   CODEX_HOME (~/.codex)  ZAI_AUTH_TOKEN  LEADV2_ZAI_ENV (~/.claude/secrets/zai.env)
+  LEADV2_QUOTA_DAEMON_DIR (~/.claude/state/leadv2/quota-daemon)  -- daemon snapshot
+             consult (W1-QUOTA-DAEMON-01 part B): a fresh-enough snapshot.json for
+             the requested source is served instead of a live call
+  LEADV2_QUOTA_DAEMON=0  -- never consult the daemon (the daemon sets this on its
+             own polls so it cannot recurse into its own snapshot)
+  LEADV2_QUOTA_CODEX_ACCESS_REUSE_S (2700)  -- reuse the on-disk codex access token
+             for this many seconds instead of refreshing (rotating) every read
+  LEADV2_QUOTA_GLM_MODELS ("glm-5.3 glm-5.3-flash")  -- per-model attribution keys
 """
 import datetime, json, os, subprocess, sys, tempfile, time, urllib.request, urllib.error
 
@@ -151,6 +159,154 @@ def binding_window(windows):
     return min(known, key=lambda item: item[1])[0] if known else None
 
 
+# ── granularity (W1-QUOTA-DAEMON-01 part A) ─────────────────────────────────
+# Live probes 2026-09-09 (artifacts in docs/handoff/w1-quota-daemon/report.md):
+# z.ai's quota endpoint ignores ?model= and returns two account-level
+# TOKENS_LIMIT windows for the whole plan (docs.z.ai/devpack/overview: "All
+# plans support GLM-5.3, GLM-5.3-Flash" on one shared 5-hour + weekly
+# allowance); OpenAI meters the ChatGPT plan at ACCOUNT level with a single
+# 168h window and no 5h burst window (CODEX-TIER-100-NO-BURST-WINDOW-01).
+# The provider keys below therefore stay AGGREGATES -- every existing reader
+# (the arbiter's _uraw[provider], the gates) is untouched -- while the
+# ADDITIVE per-model / per-tier sub-objects carry each key's OWN windows with
+# their real periods.
+
+GLM_MODELS_DEFAULT = ("glm-5.3", "glm-5.3-flash")
+# Tier names are the routing matrix's own (leadv2-routing.yaml arm=codex rows;
+# codex-task.sh accepts top|standard|volume only -- founder 2026-04-28). Costs
+# keep the astra-era ladder 3/4/7 (CODEX-TIERS-COLLAPSED-ONTO-ASTRA part B).
+CODEX_TIERS = (("volume", "gpt-5.6-luna", 3),
+               ("standard", "gpt-5.6-terra", 4),
+               ("top", "gpt-5.6-sol", 7))
+_CODEX_WINDOW_LABELS = {18000: "five_hour", 604800: "weekly"}
+
+
+def glm_model_names():
+    raw = os.environ.get("LEADV2_QUOTA_GLM_MODELS", "")
+    names = tuple(n.strip() for n in raw.split() if n.strip())
+    return names or GLM_MODELS_DEFAULT
+
+
+def _window_start_iso(window, period_hours):
+    """ISO cutoff = reset - period (clamped at epoch 0): the window's start."""
+    reset = _parse_iso((window or {}).get("reset_iso"))
+    if reset is None:
+        return None
+    start = reset - datetime.timedelta(hours=period_hours)
+    return max(start, datetime.datetime.fromtimestamp(0, UTC)).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def glm_attribution(models, window_start_iso):
+    """Per-model share of the pooled GLM spend over one provider window.
+
+    The provider counts both models into ONE pool, so the only honest
+    per-model number is an ATTRIBUTION: our own turn_events token counts
+    (input+output) split the pooled utilization by measured spend. Burn DB
+    missing/empty for the window -> share_pct None (never fabricated, never
+    zero).
+    """
+    import sqlite3
+    shares = {m: {"tokens": None, "share_pct": None} for m in models}
+    if not window_start_iso or not models:
+        return shares
+    db = os.environ.get("LEADV2_BURN_DB",
+                        os.path.expanduser("~/.claude/burn/history.db"))
+    totals = {}
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+        try:
+            q = ("SELECT model, SUM(COALESCE(input,0)+COALESCE(output,0)) "
+                 "FROM turn_events WHERE ts >= ? AND model IN (%s) GROUP BY model"
+                 % ",".join("?" * len(models)))
+            totals = {m: (t or 0) for m, t in
+                      con.execute(q, [window_start_iso] + list(models)).fetchall()}
+        finally:
+            con.close()
+    except Exception:
+        return shares
+    grand = sum(totals.values())
+    if grand:
+        for m in models:
+            t = totals.get(m, 0)
+            shares[m]["tokens"] = t
+            shares[m]["share_pct"] = round(100.0 * t / grand, 2)
+    return shares
+
+
+def _attributed_window(window, share):
+    if not isinstance(window, dict):
+        return {"utilization_pct": None, "share_pct": None, "basis": "no_window"}
+    pct = window.get("pct")
+    if share.get("share_pct") is None:
+        return {"utilization_pct": None, "share_pct": None,
+                "basis": "burn-db-unavailable"}
+    if pct is None:
+        return {"utilization_pct": None, "share_pct": share["share_pct"],
+                "tokens": share.get("tokens"), "basis": "no-provider-pct"}
+    # The pool percentage points this model's measured spend caused.
+    return {"utilization_pct": round(float(pct) * share["share_pct"] / 100.0, 2),
+            "share_pct": share["share_pct"], "tokens": share.get("tokens"),
+            "basis": "burn-db-turn-events"}
+
+
+def build_glm_models(five_hour_window, weekly_window):
+    """Per-model view of the SHARED GLM pool (W1-QUOTA-DAEMON-01 part A).
+
+    Each model key carries its own windows -- the pool's real 5h and weekly
+    windows with their true periods -- plus that model's ATTRIBUTED
+    utilization. Collapsing the models back into one shared entry inside this
+    body is the exact regression test-quota-model-tier-granularity.sh names
+    (glm-models-distinct-attributed-utilization).
+    """
+    names = glm_model_names()
+    att5 = glm_attribution(names, _window_start_iso(five_hour_window, 5.0))
+    attw = glm_attribution(names, _window_start_iso(weekly_window, 168.0))
+    binding = binding_window({"five_hour": five_hour_window, "weekly": weekly_window})
+    models = {}
+    for m in names:
+        models[m] = {"model": m, "metering": "shared_pool_attribution",
+                     "five_hour": dict(five_hour_window) if five_hour_window else None,
+                     "weekly": dict(weekly_window) if weekly_window else None,
+                     "binding_window": binding,
+                     "attributed": {"five_hour": _attributed_window(five_hour_window, att5[m]),
+                                    "weekly": _attributed_window(weekly_window, attw[m])}}
+    return models
+
+
+def _codex_window_label(window):
+    """Name a codex window by its MEASURED period (limit_window_seconds), never
+    an assumed one -- no 5h window is invented for a plan that reports only a
+    weekly one (CODEX-TIER-100-NO-BURST-WINDOW-01, founder 2026-09-06)."""
+    try:
+        secs = int((window or {}).get("limit_window_seconds"))
+    except (TypeError, ValueError):
+        return "window_unknown_s"
+    return _CODEX_WINDOW_LABELS.get(secs, "window_%ds" % secs)
+
+
+def build_codex_tiers(windows):
+    """Per-tier view of the SHARED codex account window (W1-QUOTA-DAEMON-01 A).
+
+    OpenAI meters the ChatGPT plan at ACCOUNT level, so every tier key carries
+    the same real account window(s), named by their measured periods; the tier
+    dimension is preserved for (arm,tier)-keyed readers, quota is never
+    fabricated per tier.
+    """
+    by_label = {}
+    for w in windows or []:
+        if isinstance(w, dict):
+            by_label[_codex_window_label(w)] = w
+    shape = "+".join(sorted(by_label)) or "no_window"
+    binding = binding_window(by_label)
+    tiers = {}
+    for tier, model, cost in CODEX_TIERS:
+        tiers[tier] = {"model": model, "cost": cost,
+                       "windows": {label: dict(w) for label, w in by_label.items()},
+                       "binding_window": binding, "window_shape": shape,
+                       "shared_account_pool": True}
+    return tiers
+
+
 # ── GLM ─────────────────────────────────────────────────────────────────────
 def read_glm():
     tok = os.environ.get("ZAI_AUTH_TOKEN")
@@ -210,6 +366,11 @@ def read_glm():
            "level": (doc.get("data") or {}).get("level"), "fetched_at": iso_now(),
            "five_hour": five_hour_window, "weekly": weekly_window,
            "binding_window": binding_window({"five_hour": five_hour_window, "weekly": weekly_window})}
+    # W1-QUOTA-DAEMON-01 part A: the provider meters ONE pool per plan, so the
+    # aggregate keys above stay THE provider truth; the per-model view is an
+    # additive attribution (see build_glm_models).
+    out["metering"] = "shared_pool"
+    out["models"] = build_glm_models(five_hour_window, weekly_window)
     if search:
         out["search_credits"] = {"percentage": search.get("percentage"),
                                  "usage": search.get("usage"),
@@ -226,33 +387,56 @@ def read_glm():
 
 
 # ── Codex ───────────────────────────────────────────────────────────────────
-def read_codex():
-    aj = os.path.join(os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex")), "auth.json")
-    try:
-        d = json.load(open(aj))
-        rtok = d["tokens"]["refresh_token"]
-    except Exception as e:
-        return unknown("codex", "auth.json unreadable: %s" % e, needs_login=True)
+def _codex_auth_path():
+    return os.path.join(os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex")), "auth.json")
 
+
+def _codex_reuse_window_s():
+    # Access tokens live ~1h; reusing the on-disk one for 45 min keeps even a
+    # 45 s daemon poll cadence down to ~one OAuth rotation per hour.
+    try:
+        return int(os.environ.get("LEADV2_QUOTA_CODEX_ACCESS_REUSE_S", "2700"))
+    except ValueError:
+        return 2700
+
+
+def _codex_access_from_disk():
+    """(access_token, age_s) from auth.json, no network, no rotation.
+
+    read_codex stamps `last_refresh` on every rotation, so a file younger than
+    the reuse window still holds a live access token. Re-reading from disk each
+    call also picks up a rotation done by the codex CLI between our polls.
+    """
+    try:
+        d = json.load(open(_codex_auth_path()))
+        at = d["tokens"]["access_token"]
+        ts = _parse_iso(d.get("last_refresh"))
+        if at and ts is not None:
+            return at, (datetime.datetime.now(UTC) - ts).total_seconds()
+    except Exception:
+        pass
+    return None, None
+
+
+def _codex_refresh_now():
+    """Rotate now: fresh disk read (never clobber a concurrent CLI refresh),
+    POST the refresh, write the rotated tokens back atomically. Token bytes
+    never leave this function except into auth.json."""
+    aj = _codex_auth_path()
+    d = json.load(open(aj))
+    rtok = d["tokens"]["refresh_token"]
     body = json.dumps({"grant_type": "refresh_token",
                        "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
                        "refresh_token": rtok,
                        "scope": "openid profile email offline_access"}).encode()
-    try:
-        _, rbody = http_json("https://auth.openai.com/oauth/token", method="POST", data=body,
-                             headers={"Content-Type": "application/json",
-                                      "User-Agent": "codex_cli_rs/0.0.0 (leadv2-quota)"})
-        tok = json.loads(rbody)
-    except urllib.error.HTTPError as e:
-        return unknown("codex", "refresh http %d" % e.code, needs_login=True)
-    except Exception as e:
-        return unknown("codex", "refresh: %s" % e, needs_login=True)
-
+    _, rbody = http_json("https://auth.openai.com/oauth/token", method="POST", data=body,
+                         headers={"Content-Type": "application/json",
+                                  "User-Agent": "codex_cli_rs/0.0.0 (leadv2-quota)"})
+    tok = json.loads(rbody)
     access = tok.get("access_token")
-    new_refresh = tok.get("refresh_token") or rtok
     if not access:
-        return unknown("codex", "no access_token in refresh response", needs_login=True)
-
+        raise ValueError("no access_token in refresh response")
+    new_refresh = tok.get("refresh_token") or rtok
     # Rotation invalidated the old refresh_token — write the new one back so the
     # CLI's refresh chain survives. chmod 600. Token never printed/logged.
     wrote_back = False
@@ -271,16 +455,51 @@ def read_codex():
         wrote_back = True
     except Exception:
         pass  # token still held in memory for the single usage call below
+    return access, wrote_back
 
+
+def read_codex():
+    # W1-QUOTA-DAEMON-01 part B: "login once". The usage endpoint may be polled
+    # on the daemon cadence, but the OAuth refresh (which ROTATES the
+    # refresh_token) runs at most once per reuse window; a reused access token
+    # the endpoint rejects (401/403) forces exactly one rotation and one retry
+    # before failing open.
+    refreshed, wrote_back, access_reused = False, False, False
     try:
+        cached_at, cached_age = _codex_access_from_disk()
+        if cached_at is not None and cached_age <= _codex_reuse_window_s():
+            access, access_reused = cached_at, True
+        else:
+            access, wrote_back = _codex_refresh_now()
+            refreshed = True
+    except urllib.error.HTTPError as e:
+        return unknown("codex", "refresh http %d" % e.code, needs_login=True)
+    except Exception as e:
+        return unknown("codex", "auth/refresh: %s" % e, needs_login=True)
+
+    def _usage():
         _, ubody = http_json("https://chatgpt.com/backend-api/wham/usage",
                              headers={"Authorization": "Bearer " + access,
                                       "User-Agent": "codex_cli_rs/0.0.0 (leadv2-quota)"})
-        u = json.loads(ubody)
+        return json.loads(ubody)
+
+    try:
+        u = _usage()
     except urllib.error.HTTPError as e:
-        return unknown("codex", "usage http %d" % e.code, refreshed=True, wrote_back=wrote_back)
+        if access_reused and e.code in (401, 403):
+            # The reused token died mid-window: one rotation, one retry.
+            try:
+                access, wrote_back = _codex_refresh_now()
+                refreshed = True
+                u = _usage()
+            except Exception as e2:
+                return unknown("codex", "usage http %d, retry refresh: %s" % (e.code, e2),
+                               refreshed=refreshed, wrote_back=wrote_back)
+        else:
+            return unknown("codex", "usage http %d" % e.code,
+                           refreshed=refreshed, wrote_back=wrote_back)
     except Exception as e:
-        return unknown("codex", "usage: %s" % e, refreshed=True, wrote_back=wrote_back)
+        return unknown("codex", "usage: %s" % e, refreshed=refreshed, wrote_back=wrote_back)
 
     rl = u.get("rate_limit") or {}
     pw = rl.get("primary_window") or {}
@@ -299,9 +518,12 @@ def read_codex():
                         "reset_iso": iso_from_epoch(sw.get("reset_at"))}, "used_percent"))
     cr = u.get("credits") or {}
     return {"provider": "codex", "status": "ok", "plan_type": u.get("plan_type"),
-            "fetched_at": iso_now(), "refreshed": True, "wrote_back": wrote_back,
+            "fetched_at": iso_now(), "refreshed": refreshed,
+            "access_reused": access_reused, "wrote_back": wrote_back,
             "limit_reached": rl.get("limit_reached"), "allowed": rl.get("allowed"),
             "windows": windows,
+            "metering": "account_pool",
+            "tiers": build_codex_tiers(windows),
             "binding_window": binding_window({w["kind"]: w for w in windows}),
             "credits": {"has_credits": cr.get("has_credits"), "balance": cr.get("balance")}}
 
@@ -696,6 +918,15 @@ def normalize_payload(obj):
             obj[name] = with_window_truth(obj.get(name), "pct")
         obj["binding_window"] = binding_window({name: obj.get(name)
                                                  for name in ("five_hour", "weekly")})
+        models = obj.get("models")
+        if isinstance(models, dict):
+            for mentry in models.values():
+                if not isinstance(mentry, dict):
+                    continue
+                for name in ("five_hour", "weekly"):
+                    w = mentry.get(name)
+                    if isinstance(w, dict):
+                        mentry[name] = with_window_truth(w, "pct")
     elif provider == "codex":
         windows = []
         for window in obj.get("windows") or []:
@@ -704,6 +935,16 @@ def normalize_payload(obj):
                 windows.append(enriched)
         obj["windows"] = windows
         obj["binding_window"] = binding_window({w.get("kind", "unknown"): w for w in windows})
+        tiers = obj.get("tiers")
+        if isinstance(tiers, dict):
+            for tentry in tiers.values():
+                if not isinstance(tentry, dict):
+                    continue
+                tw = tentry.get("windows")
+                if isinstance(tw, dict):
+                    for label, w in tw.items():
+                        if isinstance(w, dict):
+                            tw[label] = with_window_truth(w, "used_percent")
     elif provider == "anthropic":
         accounts = obj.get("accounts") or []
         pin = configured_active_account()
@@ -729,6 +970,28 @@ def normalize_payload(obj):
         obj["active_account"] = active.get("account_label") if active else pin
         obj["binding_window"] = active.get("binding_window") if active else None
     return obj
+
+
+def _daemon_snapshot_get(key, max_age_s):
+    """Fresh-enough payload from the quota daemon's snapshot, else None.
+
+    Pure file read of the atomically-replaced snapshot.json (the daemon's data
+    plane) -- no socket, no spawn, no network. Tokens are never in this file:
+    the daemon stores only the reader's normalized output.
+    """
+    d = os.environ.get("LEADV2_QUOTA_DAEMON_DIR",
+                       os.path.expanduser("~/.claude/state/leadv2/quota-daemon"))
+    try:
+        with open(os.path.join(d, "snapshot.json")) as f:
+            snap = json.load(f)
+        src = (snap.get("sources") or {}).get(key)
+        ts = (snap.get("updated_at") or {}).get(key)
+        if isinstance(src, dict) and isinstance(ts, (int, float)) \
+                and time.time() - ts <= max_age_s:
+            return normalize_payload(src)
+    except Exception:
+        pass
+    return None
 
 
 def main():
@@ -772,6 +1035,25 @@ def main():
             sys.stderr.write("--credential-file requires a path\n")
             sys.exit(2)
         credential_file = args[i + 1]
+    # W1-QUOTA-DAEMON-01 part B: consult the always-live daemon's snapshot
+    # before our own cache/live read. Same freshness rule as the disk cache
+    # (per-provider TTL), so behaviour only changes while a daemon is actually
+    # serving; with none running this is a stat+read that fails open to the
+    # pre-existing path. The daemon polls with --no-cache and
+    # LEADV2_QUOTA_DAEMON=0, so it can never recurse into this branch.
+    if os.environ.get("LEADV2_QUOTA_DAEMON", "1") != "0" and "--no-cache" not in args:
+        key = provider
+        if provider == "anthropic":
+            if credential_file:
+                key = "anthropic:file:" + credential_file
+            else:
+                svc = os.environ.get("LEADV2_ANTHROPIC_ACTIVE_SERVICE", "").strip()
+                if svc:
+                    key = "anthropic:service:" + svc
+        snap = _daemon_snapshot_get(key, TTL[provider])
+        if snap is not None:
+            print(json.dumps(snap))
+            return
     if "--no-cache" not in args:
         cached = cache_get(provider)
         if cached is not None:

@@ -79,26 +79,67 @@ _lv2_epilogue_path_in_scope() {
 # LANE_WRITES are left dirty and named in progress.log as foreign_dirty.
 # Writes worker_exit=clean|dirty, auto_committed=<n>, foreign_dirty=<n> to
 # both progress.log and meta.yaml so the outcome classifier and any human
-# reading the run dir see the same facts. Always returns 0.
+# reading the run dir see the same facts. Returns 0 when every progress.log/
+# meta.yaml append landed, and 2 when any append failed or run_dir was
+# missing (E-9, WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01: rc 0 with a vanished
+# run_dir made "wrote nothing" indistinguishable from "nothing to write").
+# Every current caller keeps `|| true`, so this stays best-effort for the
+# caller; the `[epilogue] wrote=<n> write_failed=<m>` stderr line is the
+# signal that survives the swallow.
 # $4 (optional): mission/prompt-file path to read LANE_WRITES from, when it
 # is not <run_dir>/prompt.txt (claude-subsession.sh passes its MISSION_FILE).
 leadv2_worker_commit_epilogue() {
   local run_dir="$1" cwd_dir="$2" label="${3:-lane}" prompt_file="${4:-${run_dir}/prompt.txt}"
+  local _ep_wrote=0 _ep_failed=0
+
+  # E-9: every progress.log/meta.yaml append goes through _ep_append, which
+  # counts success and failure instead of swallowing the redirect error.
+  # Counted per append operation ("сколько именно сделано"), not per file.
+  _ep_append() { # <file> <line>
+    if printf -- '%s\n' "$2" >> "$1" 2>/dev/null; then
+      _ep_wrote=$((_ep_wrote + 1))
+    else
+      _ep_failed=$((_ep_failed + 1))
+      printf '[epilogue] append_failed=1 path=%s line=%s\n' "$1" "$2" >&2
+    fi
+    return 0
+  }
+
+  # Checked BEFORE the git probe so the no_lane branch reports too.
+  if [[ ! -d "${run_dir}" ]]; then
+    printf '[epilogue] wrote=0 write_failed=0 reason=run_dir_missing path=%s\n' "${run_dir}" >&2
+    return 2
+  fi
 
   if ! git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     # No lane worktree at this cwd (e.g. --protected mode writes elsewhere).
-    echo "worker_exit=no_lane auto_committed=0 foreign_dirty=0" >> "${run_dir}/progress.log" 2>/dev/null || true
-    { echo "worker_exit: no_lane"; echo "auto_committed: 0"; } >> "${run_dir}/meta.yaml" 2>/dev/null || true
-    return 0
+    _ep_append "${run_dir}/progress.log" "worker_exit=no_lane auto_committed=0 foreign_dirty=0"
+    _ep_append "${run_dir}/meta.yaml" "worker_exit: no_lane"
+    _ep_append "${run_dir}/meta.yaml" "auto_committed: 0"
+  else
+    local status_out
+    status_out="$(git -C "${cwd_dir}" status --porcelain --untracked-files=all 2>/dev/null || true)"
+    if [[ -z "${status_out}" ]]; then
+      _ep_append "${run_dir}/progress.log" "worker_exit=clean auto_committed=0 foreign_dirty=0"
+      _ep_append "${run_dir}/meta.yaml" "worker_exit: clean"
+      _ep_append "${run_dir}/meta.yaml" "auto_committed: 0"
+    else
+      _epilogue_dirty_path "${run_dir}" "${prompt_file}" "${cwd_dir}" "${label}" "${status_out}"
+    fi
   fi
 
-  local status_out
-  status_out="$(git -C "${cwd_dir}" status --porcelain --untracked-files=all 2>/dev/null || true)"
-  if [[ -z "${status_out}" ]]; then
-    echo "worker_exit=clean auto_committed=0 foreign_dirty=0" >> "${run_dir}/progress.log" 2>/dev/null || true
-    { echo "worker_exit: clean"; echo "auto_committed: 0"; } >> "${run_dir}/meta.yaml" 2>/dev/null || true
+  printf '[epilogue] wrote=%s write_failed=%s path=%s\n' "${_ep_wrote}" "${_ep_failed}" "${run_dir}" >&2
+  if [[ "${_ep_failed}" -eq 0 ]]; then
     return 0
   fi
+  return 2
+}
+
+# E-9 helper: the dirty-tree path, split out only so the rc/counting tail of
+# leadv2_worker_commit_epilogue stays one screen. Shares the caller's
+# _ep_append/_ep_wrote/_ep_failed (dynamic scoping); never returns non-zero.
+_epilogue_dirty_path() { # <run_dir> <prompt_file> <cwd_dir> <label> <status_out>
+  local run_dir="$1" prompt_file="$2" cwd_dir="$3" label="$4" status_out="$5"
 
   local lw_file
   lw_file="$(mktemp 2>/dev/null || echo "${run_dir}/.epilogue_lw.tmp")"
@@ -107,8 +148,9 @@ leadv2_worker_commit_epilogue() {
   if [[ ! -s "${lw_file}" ]]; then
     # No LANE_WRITES declared -- cannot scope a safe auto-commit. Report and
     # stop; never guess which dirty files belong to this mission.
-    echo "worker_exit=dirty auto_committed=0 foreign_dirty=undeclared_lane_writes" >> "${run_dir}/progress.log" 2>/dev/null || true
-    { echo "worker_exit: dirty"; echo "auto_committed: 0"; } >> "${run_dir}/meta.yaml" 2>/dev/null || true
+    _ep_append "${run_dir}/progress.log" "worker_exit=dirty auto_committed=0 foreign_dirty=undeclared_lane_writes"
+    _ep_append "${run_dir}/meta.yaml" "worker_exit: dirty"
+    _ep_append "${run_dir}/meta.yaml" "auto_committed: 0"
     rm -f "${lw_file}" 2>/dev/null || true
     return 0
   fi
@@ -131,24 +173,27 @@ leadv2_worker_commit_epilogue() {
   rm -f "${lw_file}" 2>/dev/null || true
 
   if [[ "${#in_scope[@]}" -eq 0 ]]; then
-    echo "worker_exit=dirty auto_committed=0 foreign_dirty=${#foreign[@]}" >> "${run_dir}/progress.log" 2>/dev/null || true
-    { echo "worker_exit: dirty"; echo "auto_committed: 0"; } >> "${run_dir}/meta.yaml" 2>/dev/null || true
+    _ep_append "${run_dir}/progress.log" "worker_exit=dirty auto_committed=0 foreign_dirty=${#foreign[@]}"
+    _ep_append "${run_dir}/meta.yaml" "worker_exit: dirty"
+    _ep_append "${run_dir}/meta.yaml" "auto_committed: 0"
     if [[ "${#foreign[@]}" -gt 0 ]]; then
-      printf 'foreign_dirty=%s\n' "$(IFS=,; echo "${foreign[*]}")" >> "${run_dir}/progress.log" 2>/dev/null || true
+      _ep_append "${run_dir}/progress.log" "foreign_dirty=$(IFS=,; echo "${foreign[*]}")"
     fi
     return 0
   fi
 
   if git -C "${cwd_dir}" add -- "${in_scope[@]}" >/dev/null 2>&1 \
      && git -C "${cwd_dir}" commit -m "${label}: auto-commit (worker exited dirty)" >/dev/null 2>&1; then
-    echo "worker_exit=dirty auto_committed=${#in_scope[@]} foreign_dirty=${#foreign[@]}" >> "${run_dir}/progress.log" 2>/dev/null || true
-    { echo "worker_exit: dirty"; printf 'auto_committed: %s\n' "${#in_scope[@]}"; } >> "${run_dir}/meta.yaml" 2>/dev/null || true
+    _ep_append "${run_dir}/progress.log" "worker_exit=dirty auto_committed=${#in_scope[@]} foreign_dirty=${#foreign[@]}"
+    _ep_append "${run_dir}/meta.yaml" "worker_exit: dirty"
+    _ep_append "${run_dir}/meta.yaml" "auto_committed: ${#in_scope[@]}"
   else
-    echo "worker_exit=dirty auto_committed=0 foreign_dirty=${#foreign[@]} commit_failed=1" >> "${run_dir}/progress.log" 2>/dev/null || true
-    { echo "worker_exit: dirty"; echo "auto_committed: 0"; } >> "${run_dir}/meta.yaml" 2>/dev/null || true
+    _ep_append "${run_dir}/progress.log" "worker_exit=dirty auto_committed=0 foreign_dirty=${#foreign[@]} commit_failed=1"
+    _ep_append "${run_dir}/meta.yaml" "worker_exit: dirty"
+    _ep_append "${run_dir}/meta.yaml" "auto_committed: 0"
   fi
   if [[ "${#foreign[@]}" -gt 0 ]]; then
-    printf 'foreign_dirty=%s\n' "$(IFS=,; echo "${foreign[*]}")" >> "${run_dir}/progress.log" 2>/dev/null || true
+    _ep_append "${run_dir}/progress.log" "foreign_dirty=$(IFS=,; echo "${foreign[*]}")"
   fi
   return 0
 }

@@ -113,9 +113,14 @@ fi
 # (d) Per-provider reset_<provider>= tokens are present even on a refusal
 # path (ufmt() feeds both the win line and the two refusal prints) — a
 # refused round is diagnosable from the journal too, not just a win.
+# REPAIRED pre-existing red (measured red on pristine main 2026-09-10): the
+# suite's anthropic stub shape no longer parses as a cap, so the bare
+# all_arms_capped refusal stopped firing (sonnet won cheapest_capable). The
+# pin of a capped arm (glm at 96 > 80 ceiling) refuses deterministically
+# through the SAME two prints, so the assertion surface is unchanged.
 rm -f "$TMP/state"
-out_refuse="$(run_with "$ARBITER" "$(quota_reset 96 96 96 96)" '{"kind":"code","size":"standard"}' 1 || true)"
-if [[ "$out_refuse" == *'reason=all_arms_capped'* && "$out_refuse" == *'reset_glm='* ]]; then
+out_refuse="$(run_with "$ARBITER" "$(quota_reset 96 96 96 96)" '{"kind":"code","size":"standard","requested_arm":"glm"}' 1 || true)"
+if [[ "$out_refuse" == *'reason=requested_arm_capped'* && "$out_refuse" == *'reset_glm='* ]]; then
   pass '(d) refusal path still names each provider reset_<provider>='
 else
   fail "(d) refusal path missing reset_ tokens: $out_refuse"

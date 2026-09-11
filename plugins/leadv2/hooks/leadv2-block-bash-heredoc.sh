@@ -18,6 +18,15 @@ except Exception:
 
 [[ -z "$CMD" ]] && exit 0
 
+SESSION_ID=$(printf '%s' "$INPUT" | python3 -c "
+import sys, json
+try:
+    r = json.loads(sys.stdin.read())
+    print(r.get('session_id', ''))
+except Exception:
+    pass
+" 2>/dev/null || true)
+
 # Allow explicit override
 if printf '%s' "$CMD" | grep -q '# bash-guard: allow'; then exit 0; fi
 
@@ -26,6 +35,16 @@ LEN=${#CMD}
 
 # Detect heredoc patterns
 if printf '%s' "$CMD" | grep -Eq "<<-? *['\"\\\\]?[A-Za-z_][A-Za-z0-9_]*"; then
+  # This is deliberately after the real deny predicate: an escalation on an
+  # already-allowed command must leave no journal noise.
+  ESCALATION_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/leadv2-hook-escalation.sh"
+  if [[ -r "$ESCALATION_LIB" ]]; then
+    # shellcheck source=lib/leadv2-hook-escalation.sh
+    source "$ESCALATION_LIB"
+    if lv2_hook_escalation_try "leadv2-block-bash-heredoc" "$CMD" "$SESSION_ID"; then
+      exit 0
+    fi
+  fi
   cat <<MSG >&2
 [leadv2-block-bash-heredoc] Bash command is ${LEN} bytes with a heredoc body.
 Heredocs in Bash live in the transcript forever (~${LEN} chars × every future turn).
@@ -34,6 +53,7 @@ Use the Write tool instead:
   Write({ file_path: "/abs/path/file.md", content: "..." })
 
 To override (rare): append "# bash-guard: allow" to the command.
+For an auditable one-command passage, set LEADV2_HOOK_ESCALATE to a meaningful reason.
 MSG
   exit 2
 fi

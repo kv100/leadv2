@@ -1,0 +1,360 @@
+#!/usr/bin/env bash
+# tests/test-interactive-session-switch.sh — interactive session leaves an
+# exhausted account (lane 467462db0de5)
+#
+# Hermetic coverage for leadv2-interactive-session-switch.sh +
+# leadv2-interactive-limit-detect.sh.  No network, no real keychain, no real
+# account: registry, config dirs, credential reader
+# (LEADV2_CLAUDE_PROFILE_SECURITY_BIN stub) and live probe
+# (LEADV2_CLAUDE_PROFILE_PROBE stub) are all fixtures under mktemp -d, in the
+# exact shape tests/test-account-switch.sh established.
+#
+# ONE CASE PER GUARD (the §3 round-2 lesson, now standing policy): every
+# refusal path below has its own case AND its own journal word, and the
+# mutation matrix in docs/handoff/w-interactive-session-switch/report.md kills
+# exactly one guard per run — a mutation that reds two cases means two guards
+# share a fixture and the suite is wrong, not the mutation.
+#
+#   case 1  screen banner "Session limit reached · Retrying in 50m · attempt
+#           1/300" (the REAL string from the 2026-09-10 m3-market case) ->
+#           switch + transplant + resume command          [screen matcher]
+#   case 2  live probe says the account is at 100 -> same happy path
+#                                                       [probe threshold]
+#   case 3  limit, but NOTHING is free -> loud propagated refusal, no
+#           transplant                            [refusal propagation]
+#   case 4  ordinary network error on screen -> detector says no_limit,
+#           account never touched                  [screen non-limit]
+#   case 5  probe transport failure -> limit_unknown, account never touched
+#                                               [unknown is never a limit]
+#   case 6  transcript missing -> refused before anything runs
+#                                                  [transcript guard]
+#   case 7  transcript ends in a type=cost-state record (no cwd structurally)
+#           -> resume command still carries the REAL cwd from above it
+#                                                  [cwd backward scan]
+#   case 8  transcript carries NO cwd anywhere -> loud refusal, never cd "-"
+#                                                  [cwd guard]
+#   case 9  both slots share one projects tree (target resolves to the SAME
+#           inode) -> transplant already satisfied by construction, SAID
+#           aloud, resume command still emitted    [same-inode transplant]
+#   case 10 a DIFFERENT file already sits in the target slot -> loud
+#           transplant_target_exists, that session never overwritten
+#                                                  [transplant target guard]
+#
+# run-all-triggers: leadv2-interactive-session-switch leadv2-interactive-limit-detect
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ORCH_BIN="${LEADV2_TEST_INTERACTIVE_SWITCH_BIN:-${SCRIPTS_ROOT}/leadv2-interactive-session-switch.sh}"
+DETECT_BIN="${LEADV2_TEST_LIMIT_DETECT_BIN:-${SCRIPTS_ROOT}/leadv2-interactive-limit-detect.sh}"
+
+PASS=0; FAIL=0
+log()  { printf -- '[TEST] %s\n' "$*"; }
+pass() { PASS=$((PASS + 1)); log "PASS: $1"; }
+fail() { FAIL=$((FAIL + 1)); log "FAIL: $1 -- ${2:-}"; }
+check_grep()  { if grep -qE -- "$2" <<<"$1"; then pass "$3"; else fail "$3" "no match for '$2' in: $1"; fi; }
+check_fixed() { if grep -qF -- "$2" <<<"$1"; then pass "$3"; else fail "$3" "no fixed match for '$2' in: $1"; fi; }
+check_rc()    { if [[ "$1" == "$2" ]]; then pass "$3"; else fail "$3" "rc=$1 want=$2"; fi; }
+check_file()  { if [[ -e "$1" ]]; then pass "$2"; else fail "$2" "missing: $1"; fi; }
+check_nofile(){ if [[ ! -e "$1" ]]; then pass "$2"; else fail "$2" "unexpectedly exists: $1"; fi; }
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/interactive-switch.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+
+unset LEADV2_CLAUDE_MULTIPROFILE LEADV2_ANTHROPIC_ACTIVE_SERVICE \
+      LEADV2_CLAUDE_PROFILE_REQUESTED LEADV2_CLAUDE_PROFILE_DEMOTE_DIR 2>/dev/null || true
+
+# --- fixtures: two registry slots, distinct real accounts (as in §3's suite)
+DIR_A="$tmp/slot-a"; DIR_B="$tmp/slot-b"
+mkdir -p "$DIR_A" "$DIR_B" "$tmp/cache" "$tmp/default-slot"
+printf '{"oauthAccount":{"accountUuid":"uuid-AAAA","organizationUuid":"org-A","emailAddress":"a@test"}}' > "$DIR_A/.claude.json"
+printf '{"oauthAccount":{"accountUuid":"uuid-BBBB","organizationUuid":"org-B","emailAddress":"b@test"}}' > "$DIR_B/.claude.json"
+REG="$tmp/registry.tsv"
+printf 'a\t%s\tkeychain:svc-a\tmax/a@test\nb\t%s\tkeychain:svc-b\tmax/b@test\n' "$DIR_A" "$DIR_B" > "$REG"
+
+# The stuck interactive session's transcript, living in slot a's projects
+# tree (its config dir) -- the only thing the restart must not lose.
+SID="11111111-2222-3333-4444-555555555555"
+PROJ_SEG="-tmp-proj"
+TRANSCRIPT="$DIR_A/projects/$PROJ_SEG/$SID.jsonl"
+mkdir -p "$DIR_A/projects/$PROJ_SEG"
+printf '{"cwd":"/tmp/proj","type":"user","message":{"role":"user","content":"stuck mid-task"}}\n' > "$TRANSCRIPT"
+TRANSPLANT_DEST="$DIR_B/projects/$PROJ_SEG/$SID.jsonl"
+TRANS_SHA="$(shasum -a 256 "$TRANSCRIPT" | cut -d' ' -f1)"
+
+# Credential reader stub: stable bytes per service (a real keychain entry
+# does not mutate between reads).
+FRESH_MS=$(( $(date +%s) * 1000 + 86400000 ))
+export SWITCH_TEST_A_EXPIRES="$FRESH_MS" SWITCH_TEST_B_EXPIRES="$FRESH_MS"
+SECURITY_STUB="$tmp/security-stub.sh"
+cat > "$SECURITY_STUB" <<'SH'
+#!/usr/bin/env bash
+svc=""
+while [[ $# -gt 0 ]]; do case "$1" in -s) svc="$2"; shift 2 ;; *) shift ;; esac; done
+case "$svc" in
+  svc-a) printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture-a","subscriptionType":"max","expiresAt":%s}}' "${SWITCH_TEST_A_EXPIRES:?}" ;;
+  svc-b) printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture-b","subscriptionType":"max","expiresAt":%s}}' "${SWITCH_TEST_B_EXPIRES:?}" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$SECURITY_STUB"
+
+# Scenario file + probe stub: the §3 shapes, plus a.probe_fail=1 (detector
+# transport failure -- case 5 only; the switch is never reached there).
+SCEN="$tmp/scenario.env"
+write_scenario() { # <a5h> <b5h>
+  { printf 'a.five_hour_pct=%s\na.seven_day_pct=40\n' "$1"
+    printf 'b.five_hour_pct=%s\nb.seven_day_pct=20\n' "$2"
+    printf 'a.reset=2027-01-01T00:00:00Z\nb.reset=2027-01-02T00:00:00Z\n'
+  } > "$SCEN"
+}
+PROBE_STUB="$tmp/probe-stub.py"
+cat > "$PROBE_STUB" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+scen = {}
+with open(os.environ.get("SWITCH_TEST_SCEN", "/dev/null"), "r") as fh:
+    for line in fh:
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        scen[k] = v
+label = os.environ.get("LEADV2_CLAUDE_PROFILE_LABEL", "")
+svc = os.environ.get("LEADV2_ANTHROPIC_ACTIVE_SERVICE", "")
+if not label:
+    label = {"svc-a": "a", "svc-b": "b"}.get(svc, "")
+if scen.get("%s.probe_fail" % label) == "1":
+    sys.exit(1)
+def win(pct, reset):
+    rem = max(0.0, 100.0 - float(pct))
+    return {"pct": float(pct), "reset_iso": reset, "remaining_pct": rem,
+            "hours_to_reset": 5.0, "usable_now": rem / 5.0}
+five_hour_pct = float(scen.get("%s.five_hour_pct" % label, 50))
+seven_day_pct = float(scen.get("%s.seven_day_pct" % label, 50))
+reset = scen.get("%s.reset" % label, "2027-01-01T00:00:00Z")
+binding = "five_hour" if five_hour_pct >= seven_day_pct else "seven_day"
+acct = {"service": svc or label, "active": True, "status": "ok",
+        "five_hour_pct": five_hour_pct, "seven_day_pct": seven_day_pct,
+        "five_hour_reset_iso": reset, "seven_day_reset_iso": "2027-01-08T00:00:00Z",
+        "five_hour": win(five_hour_pct, reset),
+        "seven_day": win(seven_day_pct, "2027-01-08T00:00:00Z"),
+        "binding_window": binding}
+print(json.dumps({"provider": "anthropic", "status": "ok",
+                  "accounts": [acct], "binding_window": binding}))
+PY
+
+# Stub detector for case 3 ONLY: pins the limit verdict so that case's guard
+# (refusal propagation) stands on NO detector guard — a mutation of either
+# detector input must leave case 3 green (one mutation, exactly one red case).
+STUB_DET="$tmp/stub-detector.sh"
+printf '#!/usr/bin/env bash\nprintf "verdict=limit source=stub label=a pct=100\\n"\nexit 0\n' > "$STUB_DET"
+chmod +x "$STUB_DET"
+
+# Fresh handoff per case (cases must not read each other's journals); the
+# counter is bumped OUTSIDE command substitution (fixture-counter trap).
+HANDOFF_SEQ=0
+mk_handoff() { # <tag>
+  HANDOFF_SEQ=$((HANDOFF_SEQ + 1))
+  MK_HANDOFF_OUT="$tmp/handoff-$1-$HANDOFF_SEQ"
+  mkdir -p "$MK_HANDOFF_OUT"
+}
+export_env() { # <handoff-dir>
+  export LEADV2_CLAUDE_PROFILES_FILE="$REG"
+  export LEADV2_CLAUDE_PROFILE_SECURITY_BIN="$SECURITY_STUB"
+  export LEADV2_CLAUDE_PROFILE_PROBE="$PROBE_STUB"
+  export LEADV2_QUOTA_CACHE_DIR="$tmp/cache"
+  export LEADV2_CLAUDE_ACCOUNT_ALARM_FILE="$tmp/alarm.json"
+  export LEADV2_CLAUDE_PROFILE_DEFAULT_DIR="$tmp/default-slot"
+  export LEADV2_CLAUDE_PROFILE_TIMEOUT=10
+  export SWITCH_TEST_SCEN="$SCEN"
+  export SWITCH_TEST_TMP="$tmp"
+  export LEADV2_HANDOFF_DIR="$1"
+}
+reset_case() { rm -rf "$tmp/cache"; mkdir -p "$tmp/cache"; rm -f "$tmp"/probe-count-* "$tmp/alarm.json"; rm -rf "$DIR_B/projects"; }
+
+MARKER_A="$tmp/cache/identity-max_a_test/probe-cooldown-until"
+BANNER="Session limit reached · Retrying in 50m · attempt 1/300"
+
+# =============================================================================
+log "== case 1: the REAL banner string -> switch + transplant + resume (screen matcher)"
+write_scenario 100 30
+reset_case
+mk_handoff c1; H="$MK_HANDOFF_OUT"
+export_env "$H"
+OUT="$(bash "$ORCH_BIN" --transcript "$TRANSCRIPT" --config-dir "$DIR_A" --screen-text "$BANNER" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 0 "case1 rc=0 (switched + transplanted)"
+check_grep "$OUT" 'OK switched from=a to=b' "case1 names the switch a -> b"
+check_grep "$OUT" 'detector: verdict=limit source=screen label=a' "case1 detector matched the banner (screen source)"
+check_grep "$OUT" "attempt=1/300" "case1 detector reports the banner's attempt counter"
+check_fixed "$OUT" "resume: cd \"/tmp/proj\" && CLAUDE_CONFIG_DIR=\"$DIR_B\" claude --resume $SID" "case1 emits the exact resume command pinned to slot b"
+check_file "$TRANSPLANT_DEST" "case1 transcript transplanted into slot b"
+DEST_SHA="$(shasum -a 256 "$TRANSPLANT_DEST" 2>/dev/null | cut -d' ' -f1)"
+[[ "$DEST_SHA" == "$TRANS_SHA" ]] && pass "case1 transplant byte-identical" || fail "case1 transplant byte-identical" "sha $DEST_SHA != $TRANS_SHA"
+check_file "$MARKER_A" "case1 cooldown marker armed for exhausted a (the switch happened)"
+check_grep "$(cat "$H/interactive-switch.log" 2>/dev/null)" 'switched from=a to=b.*session=' "case1 journal: switch + session named"
+J1_N="$(grep -c 'switched from=a to=b' "$H/interactive-switch.log" 2>/dev/null || echo 0)"
+[[ "$J1_N" == "1" ]] && pass "case1 journal: exactly ONE switched line (no duplicate decision)" || fail "case1 journal: exactly ONE switched line (no duplicate decision)" "found $J1_N switched lines"
+check_file "$H/account-switch.log" "case1 account-switch ran and journalled"
+
+# =============================================================================
+log "== case 2: live probe at 100 -> same happy path (probe threshold)"
+write_scenario 100 30
+reset_case
+mk_handoff c2; H="$MK_HANDOFF_OUT"
+export_env "$H"
+OUT="$(bash "$ORCH_BIN" --transcript "$TRANSCRIPT" --config-dir "$DIR_A" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 0 "case2 rc=0 (live-detected limit switched)"
+check_grep "$OUT" 'detector: verdict=limit source=live label=a pct=100' "case2 detector decided from the LIVE probe (not screen)"
+check_file "$TRANSPLANT_DEST" "case2 transcript transplanted"
+check_fixed "$OUT" "CLAUDE_CONFIG_DIR=\"$DIR_B\" claude --resume $SID" "case2 resume command pinned to slot b"
+
+# =============================================================================
+log "== case 3: limit, NOTHING free -> loud propagated refusal, no transplant (refusal propagation)"
+# Limit verdict pinned via the stub detector: this case's guard is the refusal
+# propagation alone — mutations of either detector input must leave it green.
+write_scenario 100 100
+reset_case
+mk_handoff c3; H="$MK_HANDOFF_OUT"
+export_env "$H"
+OUT="$(LEADV2_TEST_LIMIT_DETECT_BIN="$STUB_DET" bash "$ORCH_BIN" --transcript "$TRANSCRIPT" --config-dir "$DIR_A" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 3 "case3 rc=3 (refused)"
+check_grep "$OUT" 'REFUSED reason=switch_refused detail=no_free_alternative' "case3 propagates the account-switch refusal word"
+check_nofile "$TRANSPLANT_DEST" "case3 nothing transplanted on refusal"
+check_nofile "$MARKER_A" "case3 no steering marker (the switch itself refused)"
+J3="$(cat "$H/interactive-switch.log" 2>/dev/null)"
+check_grep "$J3" 'REFUSED reason=switch_refused detail=no_free_alternative' "case3 journal names WHICH guard (switch_refused + no_free_alternative)"
+
+# =============================================================================
+log "== case 4: ordinary network error on screen -> no_limit, account never touched (screen non-limit)"
+write_scenario 100 30
+reset_case
+mk_handoff c4; H="$MK_HANDOFF_OUT"
+export_env "$H"
+NETERR="API Error: Connection error. Please check your internet connection and try again."
+OUT="$(bash "$ORCH_BIN" --transcript "$TRANSCRIPT" --config-dir "$DIR_A" --screen-text "$NETERR" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 3 "case4 rc=3 (refused)"
+check_grep "$OUT" 'REFUSED reason=not_limit' "case4 refuses: a network error is not a limit"
+check_nofile "$H/account-switch.log" "case4 account-switch NEVER invoked"
+check_nofile "$MARKER_A" "case4 account untouched (no marker)"
+check_nofile "$TRANSPLANT_DEST" "case4 nothing transplanted"
+check_grep "$(cat "$H/interactive-switch.log" 2>/dev/null)" 'REFUSED reason=not_limit detail=detector_no_limit' "case4 journal names the not_limit guard"
+# detector unit, same guard: "Approaching" is not "reached", and a file input works
+printf 'Approaching your usage limit. You still have capacity left.' > "$tmp/screen.txt"
+DOUT="$(bash "$DETECT_BIN" --screen-text "@$tmp/screen.txt" --config-dir "$DIR_A" 2>&1)"; DRC=$?
+check_rc "$DRC" 1 "case4-unit approaching-usage-limit is no_limit"
+check_grep "$DOUT" 'verdict=no_limit' "case4-unit names no_limit"
+
+# =============================================================================
+log "== case 5: probe transport failure -> limit_unknown, account never touched (unknown is never a limit)"
+write_scenario 100 30
+printf 'a.probe_fail=1\n' >> "$SCEN"
+reset_case
+mk_handoff c5; H="$MK_HANDOFF_OUT"
+export_env "$H"
+OUT="$(bash "$ORCH_BIN" --transcript "$TRANSCRIPT" --config-dir "$DIR_A" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 3 "case5 rc=3 (refused)"
+check_grep "$OUT" 'REFUSED reason=limit_unknown detail=probe_transport' "case5 refuses on unknown: a network failure must never trigger a switch"
+check_nofile "$H/account-switch.log" "case5 account-switch NEVER invoked"
+check_nofile "$MARKER_A" "case5 account untouched (no marker)"
+check_nofile "$TRANSPLANT_DEST" "case5 nothing transplanted"
+check_grep "$(cat "$H/interactive-switch.log" 2>/dev/null)" 'REFUSED reason=limit_unknown detail=probe_transport' "case5 journal names the limit_unknown guard"
+sed -i '' '/^a.probe_fail=1$/d' "$SCEN"
+
+# =============================================================================
+log "== case 6: transcript missing -> refused before anything runs (transcript guard)"
+write_scenario 100 30
+reset_case
+mk_handoff c6; H="$MK_HANDOFF_OUT"
+export_env "$H"
+OUT="$(bash "$ORCH_BIN" --transcript "$tmp/does-not-exist.jsonl" --config-dir "$DIR_A" --screen-text "$BANNER" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 5 "case6 rc=5 (refused)"
+check_grep "$OUT" 'REFUSED reason=transcript_missing' "case6 names transcript_missing"
+check_nofile "$H/account-switch.log" "case6 nothing ran downstream of the guard"
+check_nofile "$MARKER_A" "case6 no marker (the guard fires FIRST)"
+check_grep "$(cat "$H/interactive-switch.log" 2>/dev/null)" 'REFUSED reason=transcript_missing' "case6 journal names the transcript guard"
+
+# =============================================================================
+log "== case 7: transcript ends in type=cost-state (no cwd) -> resume carries the REAL cwd (cwd backward scan)"
+# The live 2026-09-10 m3-market shape: 14255/19904 lines carry the cwd, but the
+# LAST line of a completed session is a cost-state record with no cwd key --
+# tail -n 1 saw none and the emitted resume command said cd "-".  The scan must
+# walk past the cost-state tail to the real directory.
+write_scenario 100 30
+reset_case
+mk_handoff c7; H="$MK_HANDOFF_OUT"
+export_env "$H"
+SID7="99999999-8888-7777-6666-555555555555"
+T7="$DIR_A/projects/$PROJ_SEG/$SID7.jsonl"
+{ printf '{"cwd":"/tmp/proj7","type":"user","message":{"role":"user","content":"stuck mid-task"}}\n'
+  printf '{"cwd":"/tmp/proj7","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}\n'
+  printf '{"type":"cost-state","sessionId":"%s","hasUnknownModelCost":false,"modelUsage":{},"startTime":"2026-09-10T10:00:00.000Z","totalAPIDuration":180.5,"totalCostUSD":1.25,"totalDuration":200.1}\n' "$SID7"
+} > "$T7"
+TRANS7_DEST="$DIR_B/projects/$PROJ_SEG/$SID7.jsonl"
+OUT="$(bash "$ORCH_BIN" --transcript "$T7" --config-dir "$DIR_A" --screen-text "$BANNER" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 0 "case7 rc=0 (switched + transplanted past a cost-state tail)"
+check_fixed "$OUT" "resume: cd \"/tmp/proj7\" && CLAUDE_CONFIG_DIR=\"$DIR_B\" claude --resume $SID7" "case7 resume command carries the REAL cwd from above the cost-state tail"
+if grep -qF -- 'cd "-"' <<<"$OUT"; then fail "case7 never emits a dash cwd" "found cd \"-\" in: $OUT"; else pass "case7 never emits a dash cwd"; fi
+check_file "$TRANS7_DEST" "case7 transcript transplanted into slot b"
+
+# =============================================================================
+log "== case 8: transcript carries NO cwd anywhere -> loud refusal, never cd \"-\" (cwd guard)"
+write_scenario 100 30
+reset_case
+mk_handoff c8; H="$MK_HANDOFF_OUT"
+export_env "$H"
+SID8="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+T8="$DIR_A/projects/$PROJ_SEG/$SID8.jsonl"
+{ printf '{"type":"user","message":{"role":"user","content":"no cwd line"}}\n'
+  printf '{"type":"cost-state","sessionId":"%s","totalCostUSD":0.5,"totalDuration":60,"modelUsage":{}}\n' "$SID8"
+} > "$T8"
+OUT="$(bash "$ORCH_BIN" --transcript "$T8" --config-dir "$DIR_A" --screen-text "$BANNER" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 5 "case8 rc=5 (refused)"
+check_grep "$OUT" 'REFUSED reason=transcript_no_cwd' "case8 names transcript_no_cwd (no guessed directory)"
+if grep -qF -- 'cd "-"' <<<"$OUT"; then fail "case8 never emits a dash cwd" "found cd \"-\" in: $OUT"; else pass "case8 never emits a dash cwd"; fi
+check_nofile "$H/account-switch.log" "case8 account-switch NEVER invoked"
+check_nofile "$MARKER_A" "case8 account untouched (guard fires before the switch)"
+check_grep "$(cat "$H/interactive-switch.log" 2>/dev/null)" 'REFUSED reason=transcript_no_cwd' "case8 journal names the cwd guard"
+
+# =============================================================================
+log "== case 9: both slots share one projects tree (same inode) -> transplant already satisfied, resume still emitted (same-inode transplant)"
+# The live 2026-09-10 machine shape: ~/.claude-work/projects is a symlink to
+# ~/.claude/projects, so the transplant target IS the transcript -- refusing
+# on bare existence made the happy path unreachable.  Slot b's projects is a
+# symlink into slot a's; DEST exists and is the same file (one inode).
+write_scenario 100 30
+reset_case
+mk_handoff c9; H="$MK_HANDOFF_OUT"
+export_env "$H"
+ln -s "$DIR_A/projects" "$DIR_B/projects"
+OUT="$(bash "$ORCH_BIN" --transcript "$TRANSCRIPT" --config-dir "$DIR_A" --screen-text "$BANNER" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 0 "case9 rc=0 (transplant satisfied by the shared tree)"
+check_grep "$OUT" 'OK transplant already in place' "case9 SAYS the transplant is already in place (never silently skipped)"
+check_grep "$OUT" 'OK switched from=a to=b' "case9 the switch itself is reported"
+check_fixed "$OUT" "resume: cd \"/tmp/proj\" && CLAUDE_CONFIG_DIR=\"$DIR_B\" claude --resume $SID" "case9 emits the exact resume command pinned to slot b"
+J9="$(cat "$H/interactive-switch.log" 2>/dev/null)"
+check_grep "$J9" 'switched from=a to=b transplant_same_inode dest=' "case9 journal carries its OWN word for the already-done transplant"
+check_grep "$J9" 'switched from=a to=b transplant_same_inode.*session=' "case9 journal still names the session + target dir"
+if grep -qE ' transplanted=' <<<"$J9"; then fail "case9 journal never claims a copy (transplanted= absent)" "found a false transplanted= claim in: $J9"; else pass "case9 journal never claims a copy (transplanted= absent)"; fi
+
+# =============================================================================
+log "== case 10: a DIFFERENT file already sits in the target slot -> loud refusal, never overwriting (transplant target guard)"
+# The guard the same-inode path must NOT weaken: slot b's OWN session with the
+# same id is another inode -- overwriting it would destroy it.
+write_scenario 100 30
+reset_case
+mk_handoff c10; H="$MK_HANDOFF_OUT"
+export_env "$H"
+mkdir -p "$DIR_B/projects/$PROJ_SEG"
+printf '{"cwd":"/tmp/proj","type":"user","message":{"role":"user","content":"slot b owns this session already"}}\n' > "$TRANSPLANT_DEST"
+OUT="$(bash "$ORCH_BIN" --transcript "$TRANSCRIPT" --config-dir "$DIR_A" --screen-text "$BANNER" --handoff "$H" 2>&1)"; RC=$?
+check_rc "$RC" 5 "case10 rc=5 (failed, loud)"
+check_grep "$OUT" 'FAILED reason=transplant_target_exists' "case10 keeps the loud transplant_target_exists refusal"
+check_grep "$(cat "$H/interactive-switch.log" 2>/dev/null)" 'FAILED reason=transplant_target_exists dest=' "case10 journal names the target-exists guard + dest"
+check_fixed "$(cat "$TRANSPLANT_DEST" 2>/dev/null)" "slot b owns this session already" "case10 the target slot's own session is untouched"
+
+# =============================================================================
+printf -- '[TEST] summary: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
+(( FAIL == 0 )) || exit 1
+exit 0

@@ -155,16 +155,20 @@ BRN="${LIB_DIR}/leadv2-brain-record.sh"
 assert_eq "known instance: leadv2_active_unregister (deregistration) flagged" \
   "FLAGGED" "$(_ssw_classify_real "${REG}" "leadv2_active_unregister")"
 
-assert_eq "known instance: phase-record _emit (journal fire-and-forget) flagged" \
-  "FLAGGED" "$(_ssw_classify_real "${PHR}" "_emit")"
+# WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01 row 7 removed the swallowed shape from
+# _emit (journal failures are now counted + loud), so it classifies CLEAN.
+assert_eq "known instance: phase-record _emit clean since WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01 (row 7)" \
+  "CLEAN" "$(_ssw_classify_real "${PHR}" "_emit")"
 
 # Two additional real instances from census.md rows 17/14, to demonstrate the
 # scanner generalizes past the two functions singled out above.
 assert_eq "census row 17: arm_cooldown_record flagged" \
   "FLAGGED" "$(_ssw_classify_real "${ARM}" "arm_cooldown_record")"
 
-assert_eq "census row 14: leadv2_brain_write_yaml flagged" \
-  "FLAGGED" "$(_ssw_classify_real "${BRN}" "leadv2_brain_write_yaml")"
+# Row 14 was fixed as WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01 row 5 (brain
+# writes now return 2 with a counted line instead of swallowing), so CLEAN.
+assert_eq "census row 14: leadv2_brain_write_yaml clean since WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01 (row 5)" \
+  "CLEAN" "$(_ssw_classify_real "${BRN}" "leadv2_brain_write_yaml")"
 
 # ===========================================================================
 # Part 2 -- negative control: a clean function (proper nonzero returns, no

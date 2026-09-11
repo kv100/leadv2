@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-arbiter-seam-plugin-kind.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s|query_kind = kind if kind in known_kinds else 'code'|query_kind = kind|
+baseline_rc=0
+mutated_rc=1
+red_line=PASS: (g1) no fail_open_to_ladder on the production path
+diff_hash=1dac93b6b8e4ff7dcb10a079b98cab343a6a5825d656957e76b8f57724bf70ea
+lane_diff_hash=145098f5e8a0d5b0b0c80a00cb1cd30da4f1beaa15ed8a5c4dd3b22354fea70d

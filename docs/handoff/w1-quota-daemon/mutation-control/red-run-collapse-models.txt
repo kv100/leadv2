@@ -1,0 +1,20 @@
+[TEST] PASS: glm-status-ok
+[TEST] FAIL: glm-models-both-keys-present -- ['glm-5.3']
+[TEST] FAIL: T1 glm-models-distinct-attributed-utilization -- glm-5.3=36.0 glm-5.3-flash=None (expected 36.0 / 4.0: shares 90/10 of pooled 40%)
+[TEST] FAIL: glm-models-distinct-weekly-too -- weekly attributed 18.0/None
+[TEST] PASS: glm-attribution-basis-named
+[TEST] PASS: T2 glm-aggregate-key-backcompat
+[TEST] PASS: T3 glm-model-keys-carry-real-window-periods
+[TEST] PASS: T7 glm-attribution-unavailable-fail-open
+[TEST] PASS: T6 codex-access-reuse-login-once
+[TEST] PASS: codex-rotation-writeback
+[TEST] PASS: T4 codex-tiers-weekly-only-no-invented-five-hour
+[TEST] PASS: codex-tier-identity-matches-routing-matrix
+[TEST] PASS: T5 codex-aggregate-backcompat
+[TEST] PASS: T8 normalize-payload-upgrades-nested-granularity
+[TEST] PASS: normalize-payload-upgrades-codex-tiers
+[TEST] python part: 3 failure(s)
+--- leadv2-quota-live.sh json (fake reader) ---
+[TEST] PASS: T9 quota-live-json-arbiter-contract -- aggregate keys glm/codex/anthropic intact, granularity rides through
+[TEST] PASS: report mode renders glm model attribution + codex tier lines
+SUITE FAIL: python part

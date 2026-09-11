@@ -12,3 +12,50 @@
 agents/architect.md
 agents/critic.md
 agents/security-auditor.md
+#
+# PLUGIN-SELF-SUFFICIENT-TENANTS-ONLY-DELTA-01 (2026-09-10): --check now also
+# covers every live repo's .claude/<subroot> (subroots: scripts, agents, ref,
+# config, contracts; repo list from cross-repo-paths.yaml), keyed
+# "project/<repo-basename>/<subroot>/<relpath>" — same file, same vocabulary
+# as plugin-sync's project/ keys. Census 2026-09-10 (relative-path match,
+# caches excluded) found these undeclared copies; each is declared until
+# ported to a delta or converted. No shadow stays undeclared.
+#
+# leadv2-main-model.yaml diverges from canonical in ALL THREE live repos
+# (persona-engine, respiro-ios, m3-market): port to a .claude/leadv2-overrides/
+# delta or resync by hand, then retire the line.
+project/persona-engine/ref/leadv2-main-model.yaml
+project/respiro-ios/ref/leadv2-main-model.yaml
+project/m3-market/ref/leadv2-main-model.yaml
+# Identical contract copies in each repo's .claude/contracts/ — plain
+# --apply candidates: retire the line, then a founder-run --apply converts
+# the file to a symlink (one inode forever).
+project/persona-engine/contracts/leadv2-scorecard.schema.json
+project/persona-engine/contracts/leadv2-shadow-proposal.schema.json
+project/respiro-ios/contracts/leadv2-scorecard.schema.json
+project/respiro-ios/contracts/leadv2-shadow-proposal.schema.json
+project/m3-market/contracts/leadv2-scorecard.schema.json
+project/m3-market/contracts/leadv2-shadow-proposal.schema.json
+
+# getmany-followup-bot — added 2026-09-10 with the repo itself (row 690db628fddc). The repo had
+# held the plugin for months while appearing in no registry, so nothing ever scanned it.
+#
+# leadv2-main-model.yaml here is the SAME tenant override the other three repos already declare
+# above: same shape, same 2026-09-03 mtime. Nothing to decide, it just was never declared.
+project/getmany-followup-bot/ref/leadv2-main-model.yaml
+#
+# The three agents are a DIFFERENT case and the direction was checked before anything was touched
+# (a difference has no direction until you date it). They are NOT stale copies to convert: each
+# carries real repo-specific content — architect.md names the repo's PRD and ARCHITECTURE paths
+# and its integration set (Pipedrive, Snov.io/Grinfi Postgres, Gmail OAuth, Telegram), critic.md
+# names the payload sources to distrust, security-auditor.md pins the codebase-memory graph
+# project id. Symlinking them would have destroyed that.
+#
+# But they are ALSO four months behind: local mtime 2026-05-06 against canonical 2026-08-25, so
+# they lack the repowise/graph MCP tool lists, the model pin and the effort setting the canonical
+# agents gained since. Declared here so the state is legal and the guard stops calling them
+# violations; rebasing each onto current canon while keeping the repo-specific half is row
+# 627824083b9b, and belongs to that repo's own session, not to a blind merge from here.
+project/getmany-followup-bot/agents/architect.md
+project/getmany-followup-bot/agents/critic.md
+project/getmany-followup-bot/agents/security-auditor.md

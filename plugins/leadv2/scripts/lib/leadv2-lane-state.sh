@@ -192,6 +192,17 @@ with open(lock, 'a+') as lf:
     row=next((r for r in rows if r.get('task_id') == task and not r.get('dead_at')), None)
     if row:
       row['dead_at']=now(); row['updated_at']=now(); event(row, 'deregistered', reason)
+      # WAVE0-LIB-SWALLOWS-ITS-OWN-FAILURE-01 (L-3): rc now says whether the
+      # registry row was actually mutated. stdout is consumed by the count/
+      # alive callers, so these lines go to stderr only.
+      print('[lane-state] deregister task=%s matched=1' % task, file=sys.stderr)
+    else:
+      # No live row matched: exit 2 BEFORE the unconditional yaml rewrite
+      # below, so deregistering an unknown or already-tombstoned task stops
+      # rewriting active.yaml for nothing and says so instead of rc 0.
+      # Op-scoped on purpose: reconcile/register keep their own contracts.
+      print('[lane-state] deregister task=%s matched=0 reason=no_live_row' % task, file=sys.stderr)
+      sys.exit(2)
   elif op == 'reconcile':
     root=args[0]
     # RECOVERY-ATTACHES-A-BYSTANDER-PID-TO-A-LANE-01 fix 3: an unowned
