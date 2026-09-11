@@ -8,13 +8,11 @@ index 014d5c2a..8ad8bb32 100644
 -# it intentionally does not change shell options and every public API fails open.
 +# it intentionally does not change shell options; reads fail open while
 +# mutating APIs reject invalid arm names.
- 
  # ── N1B hard bounds (NOT env-derived) ────────────────────────────────────────
  # The whole point of this library: an arm's availability must be decided by a
 @@ -41,6 +42,12 @@ _arm_cooldown_valid_arm() {
    esac
  }
- 
 +_arm_cooldown_require_valid_arm() {
 +  _arm_cooldown_valid_arm "${1:-}" && return 0
 +  printf '%s\n' 'leadv2-arm-cooldown: invalid or empty arm name' >&2
@@ -34,7 +32,6 @@ index 014d5c2a..8ad8bb32 100644
    advisory="${3:-na}"
    [ -n "$advisory" ] || advisory="na"
 @@ -197,7 +204,7 @@ arm_cooldown_state() {
- 
  arm_cooldown_clear() {
    local arm="${1:-}" file
 -  _arm_cooldown_valid_arm "$arm" || return 0
@@ -77,4 +74,3 @@ index ef825d89..4c1eb85a 100644
 +fi
  arm_cooldown_ladder_note codex quota 2001-09-09T02:01:40Z >/dev/null
  [ -s "$LEADV2_ARM_COOLDOWN_DIR/codex.journal" ] && pass 'ladder journal is durable' || fail 'ladder journal is durable'
- 
