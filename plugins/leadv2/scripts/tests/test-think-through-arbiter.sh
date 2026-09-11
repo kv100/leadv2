@@ -125,12 +125,26 @@ else
   fail "no think:judge row in arbiter decisions file"
 fi
 
-# ── (3) R6 compat: pin honored, kill switch still beats everything ──────────
-PINNED="$(env LEADV2_THINK_MODEL=opus bash "$ROUTER" think-model 2>/dev/null)"
-if [[ "$PINNED" == "opus" ]]; then
-  pass "LEADV2_THINK_MODEL pin honored (opus)"
+# ── (3) R6 compat: env is not a pin; kill switch still beats everything ────
+# ENV-PIN-SILENTLY-BEATS-THE-ARBITER-01: the arbiter verdict outranks
+# LEADV2_THINK_MODEL. A healthy-quota no-env call names the arbiter's arm; the
+# same call with the env var set to a DIFFERENT arm must still return that arm
+# (ROUTE_TEST_QUOTA must be explicit here — this call sits outside think()).
+UNPINNED_ARM="$(env -u LEADV2_THINK_MODEL ROUTE_TEST_QUOTA="$HEALTHY" \
+  bash "$ROUTER" think-model 2>/dev/null)"
+PINNED="$(env LEADV2_THINK_MODEL=opus ROUTE_TEST_QUOTA="$HEALTHY" \
+  bash "$ROUTER" think-model 2>/dev/null)"
+PIN_ROW="$(sink_lines | tail -1)"
+if [[ -n "$UNPINNED_ARM" && "$PINNED" == "$UNPINNED_ARM" ]]; then
+  pass "env is not a pin: LEADV2_THINK_MODEL=opus still returns the arbiter's arm ($PINNED)"
 else
-  fail "pin broken: got '$PINNED'"
+  fail "env pin outranked the arbiter: unpinned='$UNPINNED_ARM' pinned='$PINNED'"
+fi
+if printf '%s\n' "$PIN_ROW" | grep -q 'chosen_by=arbiter' \
+   && ! printf '%s\n' "$PIN_ROW" | grep -q 'env_pin'; then
+  pass "pinned call journalled chosen_by=arbiter, no env_pin token"
+else
+  fail "journal row for pinned call wrong: $PIN_ROW"
 fi
 # fable kill-switched: the heavy pool must drop it and the arbiter must
 # answer opus (kill switch filters the pool BEFORE the call).
@@ -200,7 +214,7 @@ if [[ "$FAILOPEN" == "fable" || "$FAILOPEN" == "opus" ]]; then
 else
   fail "fail-open broken: got '$FAILOPEN'"
 fi
-if sink_lines | grep -q "reason=fail_open_legacy_arbiter_fail_open"; then
+if sink_lines | grep -q "reason=fail_open_last_resort_arbiter_fail_open"; then
   pass "fail-open journalled with the arbiter reason token"
 else
   fail "fail-open reason token missing from sink: $(sink_lines | tail -1)"

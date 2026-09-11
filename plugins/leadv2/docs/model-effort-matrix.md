@@ -57,8 +57,9 @@ tokens — the most quota-expensive thing a spawn emits.
 
 Every role whose value is THINKING (not typing) runs on **Fable first; Opus is the fallback**
 when Fable is refused/unavailable — never the default. This resolves through
-`leadv2-router.sh think_model()` (env `LEADV2_THINK_MODEL` overrides; else fable unless
-`config/model-capability.yaml`'s fable row is `unavailable: true`, else opus). No think-role
+`leadv2-router.sh think_model()`: the route arbiter decides (ENV-PIN-SILENTLY-BEATS-THE-ARBITER-01);
+with no verdict, env `LEADV2_THINK_MODEL` supplies only the fail-open candidate, else the last
+resort is fable unless `config/model-capability.yaml`'s fable row is `unavailable: true`, else opus. No think-role
 spawn site may hardcode an `'opus'` literal — call the resolver. This invariant is enforced
 tree-wide (scripts, workflows, skills, hooks — tests excluded) by the census grep-gate in
 `scripts/tests/test-fable-think-tier.sh`; literal `opus` survives only on explicit fallback
@@ -79,8 +80,8 @@ mechanical edits, commit messages, status aggregation, anything a checklist coul
 **Chain on refusal/absence, never hard-pin.** Always `fable → opus → sonnet` (fable is
 first-class for design/synthesis/verdicts, opus is its fallback). In workflows:
 `model: opts.model || THINK_MODEL` (THINK_MODEL defaults to `fable`, env
-`LEADV2_THINK_MODEL` overrides) with an explicit opus retry, then sonnet fallback on
-refusal/absence.
+`LEADV2_THINK_MODEL` — the resolver's answer exported by dispatch, not a pin) with an
+explicit opus retry, then sonnet fallback on refusal/absence.
 
 **Never set `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`** in a Workflow-tool script's environment.
 Scope, confirmed by disassembly of the installed CC 2.1.257 binary (`strings` on
