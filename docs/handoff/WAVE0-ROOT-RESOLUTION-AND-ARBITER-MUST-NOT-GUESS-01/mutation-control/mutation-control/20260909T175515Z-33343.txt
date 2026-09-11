@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-route-arbiter-loud-refusal.sh
+file=plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+anchor=/tmp/mute-py-fatal.patch
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: subset refusal out='WRAP_RC=2' err=''
+diff_hash=90a3e17f2278143cca32c612fabefe3bcdf329fc89ee78e59e507a6a158394b9
+lane_diff_hash=75ae94a3dd963cb120fc38ee0990fd74b193df3e37bb45b2e6501f02a6cfc041
