@@ -19,8 +19,8 @@
 #   7. kill-switch LEADV2_RECEIPT_REQUEUE_GUARD=0 + queued -> HONOUR.
 #   8. receipt + read-only completions dir -> STALE but rotation failure (rc 2,
 #      original receipt retained, no stale artifact).
-#   9. all runners preserve rc 2 instead of treating the retained receipt as a
-#      successful completion.
+#   9. all runners exit 2 on a stale receipt whose rotation fails, instead of
+#      treating the retained receipt as successful completion.
 #
 # Also verifies each of the three runners sources the lib (so the shared
 # behaviour is wired, not just standalone). Run: bash scripts/tests/test-stale-receipt-requeue.sh
@@ -203,23 +203,50 @@ for r in leadv2-kimi-session-runner.sh leadv2-glm-session-runner.sh leadv2-sessi
   fi
 done
 
-# ── Wiring: rc 2 is propagated, never negated into an honoured receipt ─────
-for r in leadv2-kimi-session-runner.sh leadv2-glm-session-runner.sh; do
-  runner="${SCRIPT_DIR}/${r}"
-  if grep -q 'exit "\$receipt_freshness_rc"' "$runner" \
-     && ! grep -q 'if ! leadv2_receipt_is_stale' "$runner"; then
-    pass "propagation: ${r} exits with failed rotation rc"
-  else
-    fail "propagation: ${r} can hide failed rotation rc"
-  fi
-done
-runner="${SCRIPT_DIR}/leadv2-session-runner.sh"
-if grep -q 'return "\$receipt_freshness_rc"' "$runner" \
-   && [[ "$(grep -c 'elif \[\[ "\$?" -eq 2 \]\]' "$runner")" == "3" ]] \
-   && ! grep -q 'if ! leadv2_receipt_is_stale' "$runner"; then
-  pass "propagation: leadv2-session-runner exits with failed rotation rc"
+# ── Case 9: runner rc 2 is propagated, never turned into completion ─────────
+# The runners exit before probing providers, so this is a real control-flow
+# test with no provider credentials or network calls.
+if [[ "$(id -u)" == "0" ]]; then
+  pass "case9: runner propagation skipped for root (chmod cannot deny rename)"
 else
-  fail "propagation: leadv2-session-runner can hide failed rotation rc"
+  for r in leadv2-kimi-session-runner.sh leadv2-glm-session-runner.sh; do
+    RUN_ROOT="$(lv2_mktemp_dir runner-root)"
+    RUN_RECEIPTS="${RUN_ROOT}/completions"
+    RUN_RECEIPT="${RUN_RECEIPTS}/${TID}.json"
+    mkdir -p "$RUN_RECEIPTS"
+    printf '{"schema_version":1,"task_id":"%s"}\n' "$TID" > "$RUN_RECEIPT"
+    chmod 0555 "$RUN_RECEIPTS"
+    LEADV2_TASK_ID="$TID" LEADV2_PROJECT_ROOT="$RUN_ROOT" \
+      LEADV2_COMPLETION_RECEIPT="$RUN_RECEIPT" LEADV2_TASKS_YAML="$TY1" \
+      bash "${SCRIPT_DIR}/${r}" >"${RUN_ROOT}/${r}.out" 2>&1
+    rc=$?
+    chmod 0755 "$RUN_RECEIPTS" 2>/dev/null
+    if [[ "$rc" == "2" && -f "$RUN_RECEIPT" ]] \
+       && grep -q 'stale receipt rotation failed' "${RUN_ROOT}/${r}.out"; then
+      pass "case9: ${r} exits rc 2 after failed rotation"
+    else
+      fail "case9: ${r} hid failed rotation" "rc=${rc}"
+    fi
+  done
+
+  RUN_ROOT="$(lv2_mktemp_dir runner-root)"
+  RUN_RECEIPTS="${RUN_ROOT}/completions"
+  RUN_RECEIPT="${RUN_RECEIPTS}/${TID}.json"
+  mkdir -p "$RUN_RECEIPTS"
+  printf '{"schema_version":1,"task_id":"%s"}\n' "$TID" > "$RUN_RECEIPT"
+  chmod 0555 "$RUN_RECEIPTS"
+  LEADV2_TASK_ID="$TID" LEADV2_PROJECT_ROOT="$RUN_ROOT" \
+    LEADV2_COMPLETION_RECEIPT="$RUN_RECEIPT" LEADV2_TASKS_YAML="$TY1" \
+    LEADV2_SESSION_PROVIDER=glm bash "${SCRIPT_DIR}/leadv2-session-runner.sh" \
+    >"${RUN_ROOT}/leadv2-session-runner.sh.out" 2>&1
+  rc=$?
+  chmod 0755 "$RUN_RECEIPTS" 2>/dev/null
+  if [[ "$rc" == "2" && -f "$RUN_RECEIPT" ]] \
+     && grep -q 'stale receipt rotation failed' "${RUN_ROOT}/leadv2-session-runner.sh.out"; then
+    pass "case9: leadv2-session-runner exits rc 2 after failed rotation"
+  else
+    fail "case9: leadv2-session-runner hid failed rotation" "rc=${rc}"
+  fi
 fi
 
 log ""

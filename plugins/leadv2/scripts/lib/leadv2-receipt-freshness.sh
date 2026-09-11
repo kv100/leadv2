@@ -125,12 +125,9 @@ PYEOF
   # STALE: rename (never delete), then return 0 so the caller proceeds.
   # R-1: the rename IS the artifact this guard produces — a read-only
   # completions dir used to report "handled" (rc 0) while the stale receipt
-  # stayed in place. rc 2 + renamed=0 now. Known consequence (runners are
-  # off-limits in this lane): the three runner call sites test
-  # `if ! leadv2_receipt_is_stale`, so rc 2 reads as HONOUR — fail-closed
-  # (the task stays complete, no double-run) and loud, never silent. LEAD_
-  # ACTION recorded in the lane report: runners should treat rc 2 as
-  # "stale, proceed".
+  # stayed in place. rc 2 + renamed=0 now. Every runner propagates rc 2: it
+  # must neither honour the retained receipt as completion nor launch a
+  # potentially duplicate re-queued task.
   local stamp dest
   stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || printf 'unknown')"
   dest="${receipt_path}.stale-${stamp}"
