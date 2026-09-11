@@ -151,6 +151,31 @@ check_matrix "$ROUTING" "$MODELS_CACHE" \
   && pass "static: matrix tiers bound to launcher chain heads" \
   || fail "static: matrix/launcher/cache inconsistency" "see MATRIX-RED above"
 
+# The core offline runner deliberately gives every parallel suite an empty HOME,
+# so its dispatch subprocess cannot read the account cache.  Resolve probes need
+# the launcher's availability gate open in that hermetic shape; manufacture only
+# the launcher's declared chain heads, not a second hand-maintained tier table.
+# The static assertion above remains the sole account-cache audit and prints
+# AVAILABILITY_UNVERIFIED when the real source is intentionally unavailable.
+DISPATCH_MODELS_CACHE="$TMP/dispatch-models-cache.json"
+if ! python3 - "$LAUNCHER_BIN" "$DISPATCH_MODELS_CACHE" <<'PY'
+import json, re, sys
+launcher, dest = sys.argv[1:]
+heads = []
+for m in re.finditer(r'^[ \t]*(top|standard|volume)\)[ \t]+_chain=\(([^)]*)\)',
+                     open(launcher).read(), re.M):
+    head = m.group(2).split()[0]
+    if head not in heads:
+        heads.append(head)
+if set(heads) != set(('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')):
+    raise SystemExit('FIXTURE PRECONDITION GONE: launcher heads=%r' % heads)
+json.dump({'models': [{'slug': s} for s in heads]}, open(dest, 'w'))
+PY
+then
+  fail "dispatch cache fixture generation failed" "cannot extract launcher chain heads"
+  exit 1
+fi
+
 # ── resolve probes: real dispatch, hermetic seams ──────────────────────────
 quota_json() { # <glm_pct> <codex_pct> <claude_pct> -- codex healthy
   python3 - "$1" "$2" "$3" <<'PY'
@@ -207,6 +232,9 @@ run_dispatch() {
     LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" \
     LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-dispatch-$suffix" \
     ROUTE_TEST_QUOTA="$LOW_QUOTA" \
+    CODEX_MODELS_CACHE="$DISPATCH_MODELS_CACHE" \
+    LEADV2_TASK_JUDGE_BIN="$TMP/no-task-judge" \
+    LEADV2_COMPLEXITY_ESTIMATOR_BIN="$TMP/no-complexity-estimator" \
     CLAUDE_PROJECT_ROOT="$repo" LEADV2_PROJECT_ROOT="$repo" \
     LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-$suffix" \
     LEADV2_DISPATCH_ENFORCE=0 \
