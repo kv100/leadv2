@@ -95,8 +95,16 @@ case1() {
   pid="$(new_sleeper)"; by="$(birth_of "$pid")"
   # bystander: a tool shell whose argv merely mentions the lane path
   printf 'worktree %s\n' "$RLANE" > "$TMP/wt.txt"
-  printf ' 30132 %s /bin/zsh -c source ~/.claude/shell-snapshots/snapshot.sh cd %s\n' "$by" "$RLANE" > "$TMP/ps.txt"
+  # worker-marked bystander (ORPHAN 66d6209a vocabulary): argv mentions the
+  # lane, cwd stays at the repo root -- the old zsh tool-shell fixture was
+  # non-adoptable and left the case5 mutant green.
+  printf ' 30132 %s claude -p developer arm --mentions %s\n' "$by" "$RLANE" > "$TMP/ps.txt"
   printf '%s\t%s\n' "$pid" "$by" >> "$TMP/birth.txt"
+  # the bystander's fake lstart must be observable too: birth(pid) falls back
+  # to a real ps when the fixture lacks the pid, and no real 30132 exists --
+  # without this row the adoption compare never matches and case5-RED stays
+  # green (pre-existing breakage, SD-DISPATCH-WRITESET-TWO-ROW-FIX-01 triage).
+  printf '30132\t%s\n' "$by" >> "$TMP/birth.txt"
   printf '30132\t%s\n' "$RREPO" >> "$TMP/cwd.txt"   # bystander cwd is the repo root, NOT the lane
   write_yaml "$(owner_row LIVE-LANES-X "$RREPO" "$pid")"
   run_reconcile
@@ -185,6 +193,11 @@ if case4; then pass "case4: unowned recovered row past LEADV2_RECOVERED_UNOWNED_
 MUTDIR="$TMP/mutlib"
 mkdir -p "$MUTDIR/lib"
 cp "${SCRIPTS_DIR}/leadv2-state-path.sh" "$MUTDIR/"
+# state-path.sh sources this sibling from its own dir (:121) -- without the
+# copy the mutant's reconcile dies at path resolution and case5-RED reads a
+# stale yaml as "mutant still green" (pre-existing, SD-DISPATCH-WRITESET-
+# TWO-ROW-FIX-01 triage).
+cp "${SCRIPTS_DIR}/leadv2-portable-lock.sh" "$MUTDIR/"
 cp "$LIB" "$MUTDIR/lib/leadv2-lane-state.sh"
 python3 - "$MUTDIR/lib/leadv2-lane-state.sh" <<'PY'
 import sys
@@ -202,8 +215,9 @@ case1_mutant_run() {
   local by pid
   pid="$(new_sleeper)"; SLEEP_PIDS+=("$pid"); by="$(birth_of "$pid")"
   printf 'worktree %s\n' "$RLANE" > "$TMP/wt.txt"
-  printf ' 30132 %s /bin/zsh -c source snapshot.sh cd %s\n' "$by" "$RLANE" > "$TMP/ps.txt"
+  printf ' 30132 %s claude -p developer arm --mentions %s\n' "$by" "$RLANE" > "$TMP/ps.txt"
   printf '%s\t%s\n' "$pid" "$by" >> "$TMP/birth.txt"
+  printf '30132\t%s\n' "$by" >> "$TMP/birth.txt"
   printf '30132\t%s\n' "$RREPO" >> "$TMP/cwd.txt"
   write_yaml "$(owner_row LIVE-LANES-X "$RREPO" "$pid")"
   LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE_ROOT" \

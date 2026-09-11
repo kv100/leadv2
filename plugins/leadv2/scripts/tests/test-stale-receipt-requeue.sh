@@ -45,6 +45,19 @@ log()  { printf -- '[TEST] %s\n' "$*"; }
 pass() { PASS=$(( PASS + 1 )); log "PASS: $1"; }
 fail() { FAIL=$(( FAIL + 1 )); log "FAIL: $1"; }
 
+# SD-DISPATCH-WRITESET-TWO-ROW-FIX-01: the runners now REFUSE lane adoption
+# when no registry row exists for the task (production dispatch pre-registers
+# with writes_reason=prepass_pending before spawn). Seed the row the way the
+# dispatcher does so case 9 reaches the receipt-rotation behavior under test.
+seed_lane_row() { # <project-root> <task-id>
+  local reg_sh
+  reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-active-registry.sh"
+  mkdir -p "$1/docs/leadv2"
+  LEADV2_PROJECT_ROOT="$1" LEADV2_BURN_GOVERNOR=0 \
+    bash -c 'source "$3"; leadv2_active_register "$2" Standard "$1" "$1" false "" "" "" "prepass_pending" >/dev/null 2>&1' \
+    _ "$1" "$2" "$reg_sh" || true
+}
+
 if bash -n "${LIB}" 2>/dev/null; then pass "bash -n receipt-freshness lib"; else fail "bash -n receipt-freshness lib"; fi
 [[ -f "$LIB" ]] || { fail "lib missing — cannot source"; log "=== ${PASS} passed, ${FAIL} failed ==="; exit 1; }
 # Isolation: scrub ambient repo roots so ONLY the positional tasks.yaml arg is
@@ -216,6 +229,7 @@ else
     mkdir -p "$RUN_RECEIPTS"
     printf '{"schema_version":1,"task_id":"%s"}\n' "$TID" > "$RUN_RECEIPT"
     chmod 0555 "$RUN_RECEIPTS"
+    seed_lane_row "$RUN_ROOT" "$TID"
     LEADV2_TASK_ID="$TID" LEADV2_PROJECT_ROOT="$RUN_ROOT" \
       LEADV2_COMPLETION_RECEIPT="$RUN_RECEIPT" LEADV2_TASKS_YAML="$TY1" \
       bash "${SCRIPT_DIR}/${r}" >"${RUN_ROOT}/${r}.out" 2>&1
@@ -235,6 +249,7 @@ else
   mkdir -p "$RUN_RECEIPTS"
   printf '{"schema_version":1,"task_id":"%s"}\n' "$TID" > "$RUN_RECEIPT"
   chmod 0555 "$RUN_RECEIPTS"
+  seed_lane_row "$RUN_ROOT" "$TID"
   LEADV2_TASK_ID="$TID" LEADV2_PROJECT_ROOT="$RUN_ROOT" \
     LEADV2_COMPLETION_RECEIPT="$RUN_RECEIPT" LEADV2_TASKS_YAML="$TY1" \
     LEADV2_SESSION_PROVIDER=claude bash "${SCRIPT_DIR}/leadv2-session-runner.sh" \
@@ -254,6 +269,7 @@ else
   mkdir -p "$RUN_RECEIPTS"
   printf '{"schema_version":1,"task_id":"%s"}\n' "$TID" > "$RUN_RECEIPT"
   chmod 0555 "$RUN_RECEIPTS"
+  seed_lane_row "$RUN_ROOT" "$TID"
   LEADV2_TASK_ID="$TID" LEADV2_PROJECT_ROOT="$RUN_ROOT" \
     LEADV2_COMPLETION_RECEIPT="$RUN_RECEIPT" LEADV2_TASKS_YAML="$TY1" \
     bash "${SCRIPT_DIR}/leadv2-codex-session-runner.sh" \

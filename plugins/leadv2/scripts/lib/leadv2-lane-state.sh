@@ -175,9 +175,36 @@ with open(lock, 'a+') as lf:
       if lead_pid_birth: existing['lead_pid_birth'] = lead_pid_birth
       event(existing, 'registered_refresh')
     else:
+      # SD-DISPATCH-WRITESET-TWO-ROW-FIX-01 (F4s): this append is the second
+      # same-task row shape. The registry engine recreates a row for a known
+      # task by CARRYING writes/writes_reason/first_seen_at forward from the
+      # previous row (leadv2-active-registry.sh register); this engine minted
+      # a bare row instead, so an adopting runner whose original row was gone
+      # silently became a live unknown-scope blocker for the pending window.
+      # Same inheritance here, plus a refusal under lane_adopt_pid (the one
+      # caller whose row is expected to already exist): no reusable row AND
+      # no declaration to inherit means adoption cannot state the lane's
+      # write set -- refuse BEFORE the yaml rewrite, never mint row shape B.
+      prior=next((r for r in rows if r.get('task_id') == task), None)
+      prior_writes=(prior.get('writes') if prior is not None else None) or (prior.get('write_set') if prior is not None else None)
+      prior_reason=prior.get('writes_reason') if prior is not None else None
+      if os.environ.get('LEADV2_LANE_STATE_ADOPT_STRICT','') == '1' and prior_writes is None and prior_reason is None:
+        print('[lane-state] register task=%s refused: adoption found no reusable row and no write set or reason to inherit' % task, file=sys.stderr)
+        sys.exit(4)
       row={'task_id':task, 'session_id':lead, 'lead_session_id':lead, 'worktree':worktree, 'phase':phase,
            'pid':pid, 'pid_start_time':birth(pid), 'started_at':now(), 'updated_at':now(), 'dead_at':None,
            'recovered':False, 'lane_events':[]}
+      if prior_writes is not None:
+        row['writes']=prior_writes
+      elif prior_reason is not None:
+        row['writes_reason']=prior_reason
+      if prior is not None:
+        row['first_seen_at']=prior.get('first_seen_at') or prior.get('started_at') or row['started_at']
+        # Replace, never accumulate: a dead same-task tombstone left in place
+        # SHADOWS the fresh row for every first-match reader (update_phase
+        # refuses "row is closed" picking the tombstone) -- the registry
+        # engine already removes-on-recreate; mirror it here.
+        rows[:] = [r for r in rows if r.get('task_id') != task]
       if lead_pid: row['lead_pid'] = int(lead_pid)
       if lead_pid_birth: row['lead_pid_birth'] = lead_pid_birth
       event(row, 'registered'); rows.append(row)
@@ -413,6 +440,13 @@ lane_lead_alive() { _lv2_lane_state_mutate lead_alive "$1"; }
 lane_reconcile() { _lv2_lane_state_mutate reconcile "$(_lv2_lane_state_root)"; }
 lane_count_live() { _lv2_lane_state_mutate count "$1"; }
 lane_adopt_pid() { # <task-id> <lead-session-id> <worktree> <phase> <worker-pid>
-  lane_register "$1" "$2" "$3" "$4" "$5" || return $?
+  # SD-DISPATCH-WRITESET-TWO-ROW-FIX-01 (F4s): adoption is the one lane_register
+  # caller whose row is expected to already exist -- dispatch registered it
+  # (writes_reason=prepass_pending, then the resolved declaration). Flag the
+  # register call strict so that when the original row is gone the engine
+  # REFUSES to mint a write-less row (rc 4) instead of silently creating an
+  # unknown-scope live blocker. Plain lane_register callers keep the legacy
+  # append behavior byte-for-byte.
+  LEADV2_LANE_STATE_ADOPT_STRICT=1 lane_register "$1" "$2" "$3" "$4" "$5" || return $?
   lane_transition "$1" "$4" "worker_pid_adopted"
 }

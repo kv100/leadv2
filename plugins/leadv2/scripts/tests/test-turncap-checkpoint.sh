@@ -14,6 +14,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMMIT_SCRIPT="$SCRIPTS_ROOT/leadv2-turncap-checkpoint-commit.sh"
 RUNNER="$SCRIPTS_ROOT/leadv2-session-runner.sh"
+# SD-DISPATCH-WRITESET-TWO-ROW-FIX-01: the runner refuses adoption without a
+# registry row (dispatch pre-registers in production) -- seed it per fixture.
+seed_lane_row() { # <project-root> <task-id>
+  local reg_sh
+  reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-active-registry.sh"
+  mkdir -p "$1/docs/leadv2"
+  LEADV2_PROJECT_ROOT="$1" LEADV2_BURN_GOVERNOR=0 \
+    bash -c 'source "$3"; leadv2_active_register "$2" Standard "$1" "$1" false "" "" "" "prepass_pending" >/dev/null 2>&1' \
+    _ "$1" "$2" "$reg_sh" || true
+}
 HOOK="$SCRIPT_DIR/../../hooks/leadv2-turncap-checkpoint-hook.sh"
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-turncap-ckpt.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
@@ -133,6 +143,7 @@ state_dir4="$ROOT/state4"
 mkdir -p "$state_dir4"
 printf '%s\n' "$repo4/lane4/inflight.py" > "${state_dir4}/${task_id}.touched-files"
 
+seed_lane_row "$repo4" "$task_id"
 STUB_TRACE="$repo4/claude.args" LEADV2_PROJECT_ROOT="$repo4" LEADV2_TASK_ID="$task_id" \
 LEADV2_FANOUT_CLAUDE_BIN="$CLAUDE_STUB" LEADV2_CLAUDE_MAX_TURNS=30 \
 LEADV2_RUNNER_MAX_ATTEMPTS=2 LEADV2_RUNNER_RETRY_SLEEP_S=0 \
@@ -169,6 +180,7 @@ task_id5="TURNCAP-NORMAL-FINISH"
 mkdir -p "$repo5/docs/handoff/$task_id5"
 head_before5="$(git -C "$repo5" rev-parse HEAD)"
 
+seed_lane_row "$repo5" "$task_id5"
 SENTINEL_PATH="$repo5/docs/handoff/$task_id5/phase8-passed.flag" \
 STUB_TRACE="$repo5/claude.args" LEADV2_PROJECT_ROOT="$repo5" LEADV2_TASK_ID="$task_id5" \
 LEADV2_FANOUT_CLAUDE_BIN="$CLAUDE_STUB_OK" LEADV2_CLAUDE_MAX_TURNS=30 \

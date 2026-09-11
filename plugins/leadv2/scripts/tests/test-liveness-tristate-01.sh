@@ -145,7 +145,11 @@ test_1nc_mutation_caught() {
   # alive() -- the exact tri-corroboration this suite locks -- becomes
   # "always true if the pid answers kill(pid,0)", i.e. the bare-kill-0 bug
   # case 5 describes.
-  sed 's|    return bool(recorded and observed and recorded == observed)|    return True  # NC-MUTATION: start-time corroboration dropped|' \
+  # Anchor updated for proc_verdict's current shape (the old
+  # `bool(recorded and observed and ...)` line no longer exists in the lib --
+  # stale since before SD-DISPATCH-WRITESET-TWO-ROW-FIX-01; this suite is
+  # selected by leadv2-lane-state.sh, so the anchor must track the source).
+  sed "s|return 'live' if recorded == observed else 'dead'|return 'live'  # NC-MUTATION: start-time corroboration dropped|" \
     "$LANE_STATE_SH" > "$scratch"
   if cmp -s "$LANE_STATE_SH" "$scratch"; then
     fail "T1-NC: mutation pattern not found in $LANE_STATE_SH -- update this NC (the source line changed)"

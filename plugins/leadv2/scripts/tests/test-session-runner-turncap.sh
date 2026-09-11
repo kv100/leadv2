@@ -30,8 +30,20 @@ exit 1
 STUB
 chmod +x "$CLAUDE_STUB"
 
+# SD-DISPATCH-WRITESET-TWO-ROW-FIX-01: seed the registry row the dispatcher
+# would have created -- the runner refuses adoption without one.
+seed_lane_row() { # <project-root> <task-id>
+  local reg_sh
+  reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-active-registry.sh"
+  mkdir -p "$1/docs/leadv2"
+  LEADV2_PROJECT_ROOT="$1" LEADV2_BURN_GOVERNOR=0 \
+    bash -c 'source "$3"; leadv2_active_register "$2" Standard "$1" "$1" false "" "" "" "prepass_pending" >/dev/null 2>&1' \
+    _ "$1" "$2" "$reg_sh" || true
+}
+
 run_runner() {
   local project="$1" task_id="$2" trace="$3"
+  seed_lane_row "$project" "$task_id"
   STUB_TRACE="$trace" LEADV2_PROJECT_ROOT="$project" LEADV2_TASK_ID="$task_id" \
   LEADV2_FANOUT_CLAUDE_BIN="$CLAUDE_STUB" LEADV2_CLAUDE_MAX_TURNS=30 \
   LEADV2_RUNNER_MAX_ATTEMPTS=2 LEADV2_RUNNER_RETRY_SLEEP_S=0 \

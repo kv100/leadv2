@@ -20,6 +20,18 @@ PLUGIN_ROOT="$(cd "$SCRIPTS_DIR/.." && pwd)"
 CODEX_TASK_SH="${SCRIPTS_DIR}/codex-task.sh"
 PLANNER_SH="${SCRIPTS_DIR}/leadv2-codex-planner.sh"
 RUNNER_SH="${SCRIPTS_DIR}/leadv2-codex-session-runner.sh"
+# SD-DISPATCH-WRITESET-TWO-ROW-FIX-01: the runner now REFUSES adoption when
+# no registry row exists for the task (production dispatch pre-registers the
+# row before spawn). Seed it the way the dispatcher does so the fixtures
+# reach the quota behavior under test instead of dying at adoption.
+seed_lane_row() { # <project-root> <task-id>
+  local reg_sh
+  reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-active-registry.sh"
+  mkdir -p "$1/docs/leadv2"
+  LEADV2_PROJECT_ROOT="$1" LEADV2_BURN_GOVERNOR=0 \
+    bash -c 'source "$3"; leadv2_active_register "$2" Standard "$1" "$1" false "" "" "" "prepass_pending" >/dev/null 2>&1' \
+    _ "$1" "$2" "$reg_sh" || true
+}
 CIRCUIT_LIB="${SCRIPTS_DIR}/lib/leadv2-codex-circuit.sh"
 QUOTA_GATE_LIB="${SCRIPTS_DIR}/lib/leadv2-codex-quota-gate.sh"
 HOOK_SH="${PLUGIN_ROOT}/hooks/leadv2-codex-direct-exec-guard.sh"
@@ -491,6 +503,7 @@ chmod +x "$F1_BIN/codex"
 printf '{"until":"%s","opened_at":"%s","source":"test","reason":"usage_limit"}' \
   "$(iso_offset 12)" "$(iso_now)" > "$F1_CIRCUIT"
 F1_RC=0
+seed_lane_row "$F1_ROOT" "f1-task"
 PATH="$STUBBIN:$PATH" \
   LEADV2_TASK_ID="f1-task" \
   LEADV2_PROJECT_ROOT="$F1_ROOT" \
@@ -540,6 +553,7 @@ exit 1
 STUB
 chmod +x "$F2_BIN/codex"
 F2_RC=0
+seed_lane_row "$F2_ROOT" "f2-task"
 PATH="$STUBBIN:$PATH" \
   LEADV2_TASK_ID="f2-task" \
   LEADV2_PROJECT_ROOT="$F2_ROOT" \
@@ -576,8 +590,16 @@ F3_SCRATCH="$BASE/f3-scratch"
 mkdir -p "$F3_SCRATCH/lib"
 cp "$RUNNER_SH" "$F3_SCRATCH/"
 cp "$SCRIPTS_DIR/lib/"* "$F3_SCRATCH/lib/" 2>/dev/null || true
+# SD-DISPATCH-WRITESET-TWO-ROW-FIX-01: adoption no longer swallows failures,
+# and lib/leadv2-lane-state.sh resolves its yaml through the state-path
+# resolver that lives in scripts/ (not lib/) — without these two copies the
+# scratch runner's lane adoption dies rc=9 before the quota-gate check this
+# case exists to exercise.
+cp "$SCRIPTS_DIR/leadv2-state-path.sh" "$F3_SCRATCH/" 2>/dev/null || true
+cp "$SCRIPTS_DIR/leadv2-portable-lock.sh" "$F3_SCRATCH/" 2>/dev/null || true
 rm -f "$F3_SCRATCH/lib/leadv2-codex-quota-gate.sh"
 F3_RC=0
+seed_lane_row "$F3_ROOT" "f3-task"
 PATH="$STUBBIN:$PATH" \
   LEADV2_TASK_ID="f3-task" \
   LEADV2_PROJECT_ROOT="$F3_ROOT" \

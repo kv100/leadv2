@@ -35,6 +35,18 @@ printf '%s\n' '{"type":"turn.completed"}'
 STUB
 chmod +x "$ROOT/codex"
 
+# SD-DISPATCH-WRITESET-TWO-ROW-FIX-01: seed the registry row the dispatcher
+# would have created -- the runner refuses adoption without one.
+seed_lane_row() { # <project-root> <task-id>
+  local reg_sh
+  reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-active-registry.sh"
+  mkdir -p "$1/docs/leadv2"
+  LEADV2_PROJECT_ROOT="$1" LEADV2_BURN_GOVERNOR=0 \
+    bash -c 'source "$3"; leadv2_active_register "$2" Standard "$1" "$1" false "" "" "" "prepass_pending" >/dev/null 2>&1' \
+    _ "$1" "$2" "$reg_sh" || true
+}
+seed_lane_row "$PROJECT" "$TASK_ID"
+
 STUB_TRACE="$TRACE" STUB_PROJECT="$PROJECT" STUB_TASK_ID="$TASK_ID" \
 LEADV2_PROJECT_ROOT="$PROJECT" LEADV2_TASK_ID="$TASK_ID" \
 LEADV2_CODEX_BIN="$ROOT/codex" LEADV2_CODEX_SKIP_LOGIN_CHECK=1 \

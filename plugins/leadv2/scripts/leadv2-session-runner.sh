@@ -201,8 +201,19 @@ _LANE_LEAD_IDENTITY_SH="${SCRIPT_DIR}/lib/leadv2-lead-identity.sh"
 # lead processes stop sharing one "direct" accounting bucket.
 _LANE_LEAD_SESSION_ID="${LEADV2_LEAD_SESSION_ID:-${LEADV2_PARENT_SESSION_ID:-$(declare -F leadv2_lead_session_id >/dev/null 2>&1 && leadv2_lead_session_id || printf -- 'direct')}}"
 if declare -F lane_adopt_pid >/dev/null 2>&1; then
-  lane_adopt_pid "${TASK_ID}" "${_LANE_LEAD_SESSION_ID}" "${PROJECT_ROOT}" "spawning" "$$" >/dev/null 2>&1 || true
+  # SD-DISPATCH-WRITESET-TWO-ROW-FIX-01 (F4s): the `|| true` here swallowed
+  # the engine's adoption refusal, so a runner whose original row was gone
+  # minted a write-less live row and ran on as an unknown-scope blocker. A
+  # refusal (rc 4: no reusable row, no inheritable declaration) is now fatal
+  # and loud -- dying unregistered beats blocking every concurrent dispatch
+  # for the 900s pending window.
+  _adopt_rc=0
+  lane_adopt_pid "${TASK_ID}" "${_LANE_LEAD_SESSION_ID}" "${PROJECT_ROOT}" "spawning" "$$" >/dev/null 2>&1 || _adopt_rc=$?
   trap 'declare -F lane_deregister >/dev/null 2>&1 && lane_deregister "${TASK_ID}" "session_runner_exit" >/dev/null 2>&1 || true' EXIT
+  if [[ "${_adopt_rc}" -ne 0 ]]; then
+    log_error "lane adoption refused (rc=${_adopt_rc}): ${TASK_ID} has no reusable registry row and no inheritable write set -- refusing to run as an unregistered lane"
+    exit "${_adopt_rc}"
+  fi
 fi
 
 # ── Stable session id across resumes ────────────────────────────────────────
