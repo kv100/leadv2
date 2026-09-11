@@ -21,9 +21,12 @@
 # the anthropic ACCOUNT reading as the conservative ceiling only.
 #
 # Pins:
-#   1. think_model() resolver — default fable; `unavailable: true` in
-#      model-capability.yaml -> opus; LEADV2_THINK_MODEL env wins outright
-#      (negative control).
+#   1. think_model() resolver — ENV-PIN-SILENTLY-BEATS-THE-ARBITER-01: the
+#      arbiter verdict wins; on no verdict LEADV2_THINK_MODEL is only the
+#      fail-open candidate (chosen_by=env_fallback) and the no-env last resort
+#      is fable (chosen_by=last_resort); `unavailable: true` in
+#      model-capability.yaml -> opus via the R6 ladder; the env var NEVER
+#      outranks the arbiter or the kill switch.
 #   2. grep-gates — TREE-WIDE census (reviewer R2 HIGH fix): the census grep
 #      itself runs over plugins/leadv2/{scripts,workflows,skills,hooks} and
 #      every 'opus' hit must classify as comment/prose, explicit-fallback, or
@@ -60,25 +63,37 @@ bash -n "$0" 2>/dev/null || { echo "ERROR: self syntax check failed"; exit 1; }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
-# --- 1. resolver: default is fable -----------------------------------------
-out="$(bash "$ROUTER" think-model 2>/dev/null)"
-if [[ "$out" == "fable" ]]; then
-  pass "resolver default = fable"
+# ENV-PIN-SILENTLY-BEATS-THE-ARBITER-01 (2026-09-11): the resolver cases below
+# must not consult the LIVE arbiter or live quota — a nonexistent routing yaml
+# forces the deterministic fail-open verdict `stakes_or_data_missing`, so
+# every expectation is quota-independent. The sink redirect keeps suite rows
+# out of the real census (TESTS-POLLUTE-REAL-JOURNAL-01); think cases also
+# env -u LEADV2_THINK_MODEL where the case means "no env" (a lane shell
+# exports it from dispatch-code).
+export LEADV2_ROUTE_ARBITER_ROUTING_YAML="$TMP/no-such-routing.yaml"
+export LEADV2_THINK_DECISIONS_FILE="$TMP/think-decisions.log"
+sink_row(){ tail -1 "$LEADV2_THINK_DECISIONS_FILE" 2>/dev/null || true; }
+
+# --- 1. resolver: no verdict + no env -> last-resort fable ------------------
+out="$(env -u LEADV2_THINK_MODEL bash "$ROUTER" think-model 2>/dev/null)"
+if [[ "$out" == "fable" ]] && [[ "$(sink_row)" == *" chosen_by=last_resort"* ]]; then
+  pass "resolver fail-open default = fable, journalled chosen_by=last_resort"
 else
-  fail "resolver default expected 'fable', got '${out:-<empty>}'"
+  fail "resolver default expected 'fable'/chosen_by=last_resort, got '${out:-<empty>}' row='$(sink_row)'"
 fi
 
-# --- 1b. resolver: env override wins (negative control) ---------------------
+# --- 1b. resolver: env is the fail-open candidate, never an override --------
 out="$(LEADV2_THINK_MODEL=opus bash "$ROUTER" think-model 2>/dev/null)"
-if [[ "$out" == "opus" ]]; then
-  pass "resolver LEADV2_THINK_MODEL=opus override wins (negative control)"
+if [[ "$out" == "opus" ]] && [[ "$(sink_row)" == *" chosen_by=env_fallback"* ]] \
+   && ! grep -q 'env_pin' "$LEADV2_THINK_DECISIONS_FILE"; then
+  pass "resolver LEADV2_THINK_MODEL=opus = fail-open candidate (chosen_by=env_fallback, zero env_pin rows)"
 else
-  fail "resolver override expected 'opus', got '${out:-<empty>}'"
+  fail "resolver env candidate expected 'opus'/chosen_by=env_fallback, got '${out:-<empty>}' row='$(sink_row)'"
 fi
 
 # --- 1c. resolver: capability yaml 'unavailable: true' -> opus --------------
 printf 'fable:\n  model_id: claude-fable-5-1\n  unavailable: true\n' > "$TMP/cap-unavailable.yaml"
-out="$(LEADV2_MODEL_CAPABILITY_YAML="$TMP/cap-unavailable.yaml" bash "$ROUTER" think-model 2>/dev/null)"
+out="$(env -u LEADV2_THINK_MODEL LEADV2_MODEL_CAPABILITY_YAML="$TMP/cap-unavailable.yaml" bash "$ROUTER" think-model 2>/dev/null)"
 if [[ "$out" == "opus" ]]; then
   pass "resolver falls back to opus when fable marked unavailable"
 else
@@ -89,13 +104,13 @@ fi
 # The R5 defect: think_model() short-circuited on env, so the settings.json
 # install-time LEADV2_THINK_MODEL default written by leadv2-repo-install.sh
 # made the yaml `unavailable: true` kill switch dead for every bash call
-# site. Binding design (R6): the yaml kill switch wins; env is only a
-# default. Resolver must NOT return fable here.
+# site. Binding design (R6): the yaml kill switch wins; env is only the
+# fail-open candidate. Resolver must NOT return fable here.
 out="$(LEADV2_THINK_MODEL=fable LEADV2_MODEL_CAPABILITY_YAML="$TMP/cap-unavailable.yaml" bash "$ROUTER" think-model 2>/dev/null)"
 if [[ "$out" != "fable" ]]; then
   pass "kill switch beats env: LEADV2_THINK_MODEL=fable + fable unavailable -> '${out}' (never fable)"
 else
-  fail "kill switch DEAD under env pin: LEADV2_THINK_MODEL=fable + fable unavailable still returned fable"
+  fail "kill switch DEAD under env candidate: LEADV2_THINK_MODEL=fable + fable unavailable still returned fable"
 fi
 
 # --- 1e. R6/R7 dispatch export path runs: var reaches a spawned child ------

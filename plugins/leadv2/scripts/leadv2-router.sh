@@ -92,19 +92,25 @@ readonly MODEL_CAPABILITY_YAML="${LEADV2_MODEL_CAPABILITY_YAML:-${SCRIPT_DIR}/..
 #     sample measured 6/10 strict, see the block's comment) and tier/provider
 #     floors for high-stakes ones;
 #   * every resolution journals `think_model_resolved role=... arm=...
-#     model=... reason=...` so the thinking share is countable with the same
-#     counter that counts the dispatch model= census rows.
-# Resolution order (the R6 contract kept, one stage inserted):
+#     model=... reason=... chosen_by=...` so the thinking share is countable
+#     with the same counter that counts the dispatch model= census rows;
+#     chosen_by separates "the arbiter chose this" (arbiter) from "the
+#     arbiter had no answer and this is a fallback" (env_fallback /
+#     last_resort) — ENV-PIN-SILENTLY-BEATS-THE-ARBITER-01 (founder
+#     2026-09-11: nothing is hard-pinned anywhere).
+# Resolution order (R6 contract kept, arbiter promoted over the env):
 #   (1) model-capability.yaml `unavailable: true` still beats everything —
-#       it now filters arms out of the arbiter pool BEFORE the call, so the
-#       arbiter can never hand back a kill-switched arm;
-#   (2) LEADV2_THINK_MODEL env pin, unchanged semantics (a default candidate,
-#       never resurrecting a dead model);
-#   (3) NEW, no pin: route_arbiter() decides cheapest-capable within the
-#       stakes pool. A think-specific last-arm state file keeps the build
-#       path's anti-rotation bookkeeping untouched;
-#   (4) arbiter missing/refused/dead -> fail open to the legacy fable->opus
-#       ladder. Thinking must never stall on a broken probe.
+#       it filters arms out of the arbiter pool BEFORE the call and the R6
+#       ladder applies it at every rung, so no path can hand back a
+#       kill-switched arm;
+#   (2) route_arbiter() decides cheapest-capable within the stakes pool; a
+#       non-empty verdict is FINAL. A think-specific last-arm state file
+#       keeps the build path's anti-rotation bookkeeping untouched;
+#   (3) no verdict -> LEADV2_THINK_MODEL supplies only the fail-open
+#       candidate (kill-switch-checked), never an override;
+#   (4) no verdict and no env -> the legacy fable->opus ladder as the last
+#       resort, journalled as such. Thinking must never stall on a broken
+#       probe.
 _think_cap_unavailable() { # $1=candidate model -> prints true/false
   python3 - "${MODEL_CAPABILITY_YAML}" "$1" <<'PY' 2>/dev/null || echo true
 import re, sys
@@ -154,9 +160,9 @@ except Exception:
 PY
 }
 # The R6 candidate core (kill switch -> candidate -> fable -> opus), verbatim
-# from the pre-arbiter think_model() body. Still the env-pin path, and the
-# fail-open tail when the arbiter cannot answer. The ONE place an opus
-# fallback may live is unchanged.
+# from the pre-arbiter think_model() body. The fail-open candidate path when
+# the arbiter has no verdict (env_fallback), and the last-resort tail. The
+# ONE place an opus fallback may live is unchanged.
 _think_resolve_candidate() { # $1=candidate -> prints the resolved model
   local candidate="$1"
   local unavailable
@@ -465,26 +471,28 @@ PY
 }
 think_model() {
   local role="${THINK_ROLE:-default}" task_class="${THINK_CLASS:-}"
-  local resolved="" reason="" effort="" verdict verdict_tail
-  # A model pin keeps its historical authority over the selected model, but
-  # does not create a second effort policy: resolve the matrix effort through
-  # the arbiter and retain only that field.
+  local resolved="" reason="" effort="" verdict verdict_tail chosen_by
+  # ENV-PIN-SILENTLY-BEATS-THE-ARBITER-01 (founder 2026-09-11): the arbiter
+  # verdict is consulted FIRST and, when non-empty, is FINAL — no hard pin
+  # decides a think model. The env var can only supply the fail-open
+  # candidate, and never creates a second effort policy (the matrix effort is
+  # always the arbiter's field).
   verdict="$(_think_arbiter_decide "$role" "$task_class" "${THINK_TASK_ID:-}")"
   verdict_tail="${verdict#*|}"
   effort="${verdict_tail#*|}"
   [[ "$effort" == "$verdict_tail" ]] && effort="unknown"
-  if [[ -n "${LEADV2_THINK_MODEL:-}" ]]; then
+  resolved="${verdict%%|*}"
+  reason="${verdict_tail%%|*}"
+  if [[ -n "$resolved" ]]; then                       # ARBITER-WINS
+    chosen_by="arbiter"
+  elif [[ -n "${LEADV2_THINK_MODEL:-}" ]]; then
     resolved="$(_think_resolve_candidate "${LEADV2_THINK_MODEL}")"
-    reason="env_pin"
+    reason="fail_open_env_candidate_${reason}"; chosen_by="env_fallback"
   else
-    resolved="${verdict%%|*}"
-    reason="${verdict_tail%%|*}"
-    if [[ -z "$resolved" ]]; then
-      resolved="$(_think_resolve_candidate fable)"
-      reason="fail_open_legacy_${reason}"
-    fi
+    resolved="$(_think_resolve_candidate fable)"
+    reason="fail_open_last_resort_${reason}"; chosen_by="last_resort"
   fi
-  _think_journal "role=${role} class=${task_class:-default} arm=${resolved} model=${resolved} reason=${reason} effort=${effort}"
+  _think_journal "role=${role} class=${task_class:-default} arm=${resolved} model=${resolved} reason=${reason} effort=${effort} chosen_by=${chosen_by}"
   printf '%s\n' "${resolved}"
   return 0
 }
