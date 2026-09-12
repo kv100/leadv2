@@ -96,6 +96,7 @@ on stdin, which is what makes T10 (determinism) testable in isolation.
 """
 import base64
 import json
+import os
 import sys
 
 UNKNOWN_TRIABLE = 100
@@ -199,6 +200,41 @@ def main():
 
     scored = [(score_record(r), i, r) for i, r in enumerate(records)]
     tiers = [_tier(r) for r in records]
+
+    # SELF-SLOT-DEMOTION-YIELDS-01 (founder 2026-09-12). The demotion above
+    # corrects for ONE thing -- the dispatching session's own spend reaching
+    # the probe window late, so its account reads freer than it is. That lag
+    # is bounded by the lead's own recent burn, a few points of a window; it
+    # must not outrank a large, real capacity gap. Observed 2026-09-12:
+    # personal usable_now=0.609 was demoted and work usable_now=0.224 won,
+    # and the dispatched arm came back rate_limited at seven_day=0.80.
+    # Cooling (tier 2) never yields: a failed live probe is a fact about the
+    # account, not a measurement artifact.
+    try:
+        _margin = float(os.environ.get(
+            "LEADV2_CLAUDE_DEMOTE_YIELD_MARGIN", "0.15"))
+    except (TypeError, ValueError):
+        _margin = 0.15
+    _yielded = []
+
+    def _usable_of(idx):
+        u = scored[idx][0][4]
+        if isinstance(u, bool) or not isinstance(u, (int, float)):
+            return None
+        return float(u)
+
+    _normal = [i for i in range(len(records)) if tiers[i] == 0]
+    _demoted = [i for i in range(len(records)) if tiers[i] == 1]
+    if _normal and _demoted and _margin >= 0:
+        _best_normal = [u for u in (_usable_of(i) for i in _normal)
+                        if u is not None]
+        if _best_normal:
+            _bn = max(_best_normal)
+            for _i in _demoted:
+                _u = _usable_of(_i)
+                if _u is not None and _u - _bn > _margin:
+                    tiers[_i] = 0
+                    _yielded.append(records[_i][0])
     # min over (tier, order_key, registry order) -- fully deterministic.
     # order_key (score_record) IS the availability comparison: -usable_now
     # for live records with a readable rate (highest usable_now first, f1
@@ -242,6 +278,8 @@ def main():
     # byte-identical for every legacy caller and fixture.
     demoted_labels = [r[0] for r in records if len(r) > 6 and r[6] == "1"]
     demoted_field = " demoted=%s" % demoted_labels[0] if demoted_labels else ""
+    if _yielded:
+        demoted_field += " demote_yielded=%s margin=%s" % (_yielded[0], _margin)
     print("profile=%s config_dir=%s rank_by=%s consumed_pct=%s usable_now=%s source=%s reason=%s candidates=%d cred=%s identity=%s "
           "binding=%s windows=%s%s"
           % (record[0], record[1], rank_by, _fmt_pct(pct), usable_str, source, reason,

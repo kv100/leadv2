@@ -106,9 +106,23 @@ check_grep "$pick_out" '^profile=alpha .*rank_by=consumed_pct_min consumed_pct=2
 check_nogrep "$pick_out" '[[:space:]]score=[0-9]' 'S2b: the misleading bare score= token (a consumed pct presented as a score) is gone'
 
 # ============================================================================
-echo "=== S3: demote/cooling tier still ranks AHEAD of the number ==="
+echo "=== S3: the demote tier ranks ahead of the number UNTIL the gap is real ==="
+# SELF-SLOT-DEMOTION-YIELDS-01 (founder 2026-09-12) changed this contract on
+# purpose, and S3a used to assert the old half of it ("tier overrides the
+# number, never rewrites it"). The demotion corrects for ONE thing, named in
+# the picker's own header: the dispatching session's spend reaches the probe
+# window late, so its own account reads freer than it is. That lag is bounded
+# by what the lead just burned -- a few points of a window. On 2026-09-12 it
+# outranked a gap no lag could explain (personal usable_now=0.609 demoted,
+# work=0.224 selected at seven_day=80%) and the dispatched arm came back
+# rate_limited. Both halves are tested below; dropping S3b would leave
+# "the demotion still exists at all" unguarded.
 pick_run "slowburn\t/d/slow\tfile:/d/slow/c\t$B_SLOW\tpro/na\t0\t0\nfastreset\t/d/fast\tfile:/d/fast/c\t$B_FAST\tpro/na\t0\t1\n"
-check_grep "$pick_out" '^profile=slowburn .*demoted=fastreset$' 'S3a: the usable_now-best profile is demoted -> the other wins; tier overrides the number, never rewrites it'
+check_grep "$pick_out" '^profile=fastreset .*demote_yielded=fastreset margin=' 'S3a: a demoted profile far freer than the alternative (1.650 vs 0.389) yields the demotion and wins -- quota decides'
+B_NEAR="$(make_payload 56 2026-09-16T05:00:00Z 100)"   # usable_now 0.440
+pick_run "slowburn\t/d/slow\tfile:/d/slow/c\t$B_SLOW\tpro/na\t0\t0\nnear\t/d/near\tfile:/d/near/c\t$B_NEAR\tpro/na\t0\t1\n"
+check_grep "$pick_out" '^profile=slowburn .*demoted=near$' 'S3b: a demoted profile only 0.051 ahead (0.440 vs 0.389) does NOT yield -- that gap is inside the lag the demotion covers'
+check_nogrep "$pick_out" 'demote_yielded' 'S3c: and the line claims no yield when none happened'
 
 # ============================================================================
 echo "=== S4 (f1 #4 protected): unknown is never a zero or free quota ==="
