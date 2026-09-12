@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-ephemeral-state-basename-collision.sh
+file=plugins/leadv2/scripts/leadv2-state-path.sh
+anchor=s|STATE_ROOT="${STATE_BASE}/.ephemeral/${_eph_key}"|STATE_ROOT="${STATE_BASE}/.ephemeral/${REPO_SLUG}"|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: same-basename fixtures share a root -- a='/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//eph-coll.1VSCr4/state-base/.ephemeral/repo-collide/active.yaml' b='/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//eph-coll.1VSCr4/state-base/.ephemeral/repo-collide/active.yaml'
+diff_hash=9f03d94a18da54ccd67519f8cfc35bd6c923d5cca038c4d33e203fe367c346ff
+lane_diff_hash=c4dc63867e3f0ae6c982d834eb8fe990717d0c5e0ab1f24dbf6b8e76efc68da0
