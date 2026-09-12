@@ -5,6 +5,7 @@ allowed-tools:
   - Read
   - Bash
   - Glob
+disable-model-invocation: true
 ---
 
 # Lead v2 Pre-Mortem Simulator

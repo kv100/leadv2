@@ -5,6 +5,7 @@ allowed-tools:
   - Read
   - Write
   - Bash
+disable-model-invocation: true
 ---
 
 # leadv2-correction-detect

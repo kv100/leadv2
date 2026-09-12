@@ -4,6 +4,7 @@ description: "[internal] Finds stale paths, duplicate entries, and archive candi
 allowed-tools:
   - Read
   - Bash
+disable-model-invocation: true
 ---
 
 # Lead v2 Memory GC — Dream Pass

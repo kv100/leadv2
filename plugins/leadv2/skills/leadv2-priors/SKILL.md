@@ -4,6 +4,7 @@ description: "[internal] Loads only the phase-relevant slice of operator priors.
 allowed-tools:
   - Read
   - Bash
+disable-model-invocation: true
 ---
 
 # Lead v2 Priors — Unified Operator Intuition

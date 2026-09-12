@@ -4,6 +4,7 @@ description: "[internal] Keeps context bounded in every phase: bounded reads/out
 allowed-tools:
   - Read
   - Bash
+disable-model-invocation: true
 ---
 
 # leadv2-token-discipline — Keep Opus available, kill conversation bloat

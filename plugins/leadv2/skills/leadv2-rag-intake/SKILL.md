@@ -7,6 +7,7 @@ allowed-tools:
   - Write
   - Edit
   - Bash
+disable-model-invocation: true
 ---
 
 # leadv2-rag-intake

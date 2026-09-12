@@ -1,0 +1,13 @@
+# Plugin skills retired from the listing (deleted or archived; row d83bd49d5898 registry).
+# Deletions: d4635e1f (four), 0afba245 (two); leadv2-supervise archived 2026-09-12 per
+# founder retirement order 2026-08-17 (SUPERVISOR-DELETE-01). Backups:
+# docs/handoff/577cc2d2b7d4/retired-skills-three-20260912.tar.gz + e4cece06 tarball.
+# Guarded by scripts/tests/test-skill-listing-is-under-budget.sh - a name here must not
+# reappear as a live surface (Skill(<name>), skill="<name>", /<name>, skills/<name>/SKILL.md).
+audit-cluster
+auth-cookie-setup
+leadv2-bg-spawn-protocol
+leadv2-browser-check
+leadv2-loop-detection
+leadv2-persona-meeting
+leadv2-supervise

@@ -6,6 +6,7 @@ allowed-tools:
   - Write
   - Bash
   - Glob
+disable-model-invocation: true
 ---
 
 # Lead v2 LLM-Judge Deploy Gate

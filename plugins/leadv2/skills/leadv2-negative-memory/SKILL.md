@@ -6,6 +6,7 @@ allowed-tools:
   - Write
   - Edit
   - Bash
+disable-model-invocation: true
 ---
 
 # Lead v2 Negative Memory — Don't-Retry Priors

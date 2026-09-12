@@ -5,6 +5,7 @@ allowed-tools:
   - Read
   - Write
   - Bash
+disable-model-invocation: true
 ---
 
 # Lead v2 — Founder Input

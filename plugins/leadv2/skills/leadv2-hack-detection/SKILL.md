@@ -6,6 +6,7 @@ allowed-tools:
   - Write
   - Bash
   - Grep
+disable-model-invocation: true
 ---
 
 # Lead v2 Hack Detection

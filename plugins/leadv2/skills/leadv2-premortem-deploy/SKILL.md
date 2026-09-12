@@ -5,6 +5,7 @@ status: deferred-v0.2
 allowed-tools:
   - Read
   - Bash
+disable-model-invocation: true
 ---
 
 # Lead v2 Pre-Mortem Deploy — Token Ceiling Guard
