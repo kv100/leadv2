@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-fable-is-priced-from-its-own-window.sh
+file=plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
+anchor=s/if scoped_pct is not None:/if scoped_pct is None:/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: R-live readings: bad (96, 7, 7)
+diff_hash=ad8f10ec2d1b92e200d902f6bfaaba2d26c492f6aef624c86bf2a8ccac1c5353
+lane_diff_hash=327121156f3256d71daa7a4770d974ff9fbfdcdb9f1d5eb5b2e542403156dc92

@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-fable-is-priced-from-its-own-window.sh
+file=plugins/leadv2/scripts/leadv2-quota-read.py
+anchor=s/row.get("kind") != "weekly_scoped"/row.get("kind") != "weekly_scoped_x"/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: P1 publisher parse: bad:keys=[]
+diff_hash=a05fc625df8c7a6bb2be12265a3781a55fc9f68fc529246f5bc01d7f020d1bae
+lane_diff_hash=327121156f3256d71daa7a4770d974ff9fbfdcdb9f1d5eb5b2e542403156dc92

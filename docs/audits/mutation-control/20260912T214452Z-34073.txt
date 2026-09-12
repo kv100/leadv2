@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-fable-is-priced-from-its-own-window.sh
+file=plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+anchor=s/windows.pop('seven_day', None)/windows.pop('seven_day_x', None)/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: C1 arbiter output=arm=codex kind=review model=gpt-5.6-terra tier=standard effort=medium reason=cheapest_capable chain=codex util_glm=1 util_codex=1 util_claude=96 util_freepool=100 reset_glm=5.00h_default_full_period reset_codex=n/a reset_claude=168.00h_default_full_period reset_freepool=n/a util_claude_fable=96 scoped_window_fable=weekly_scoped(fable) headroom_w=1 headroom_unknown=no_usable_now claude_account_state=ok claude_probe_penalty=0 claude_priced_from=measured arm_excluded=fable:capped,sonnet:capped arb_rev=52aef7b34184 matrix_rev=ae93a66e9226 floor_mode=bulk_only floor_mode_source=default test_only=0 complexity=unknown duration_class=unknown complexity_policy=none remaining=99.0 reset_in=n/a reset_basis=unknown_window failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=off fit_pick=codex fit_differs=0 fit_bucket=codex:0 cap_default=codex forecast_basis=journal_unavailable forecast_class=standard/unknown cost_actuals=unavailable caller_min_cap=none caller_max_cost=none
+diff_hash=b24c43036116113934bef13d48138462bf668683b3ca5b7130408a07bccd5d66
+lane_diff_hash=327121156f3256d71daa7a4770d974ff9fbfdcdb9f1d5eb5b2e542403156dc92
