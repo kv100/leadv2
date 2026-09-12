@@ -162,7 +162,12 @@ if r.returncode != 0:
 EXCLUDE = ("docs/handoff/", "docs/leadv2/closed/", "docs/leadv2/tasks/",
            "docs/tasks.yaml", "docs/leadv2/reflect-history.yaml",
            "docs/systems-map/truth.generated.json",
-           "plugins/leadv2/skills/archive/") + tuple(extra)
+           "plugins/leadv2/skills/archive/",
+           # this suite's own body declares its negative control, which
+           # necessarily spells a retired fire-form; it is documentation,
+           # not a firing surface (untracked pre-commit, self-hit once
+           # tracked — found by the suite's own scan, 2026-09-12)
+           "plugins/leadv2/scripts/tests/test-skill-listing-is-under-budget.sh") + tuple(extra)
 hits = []
 for f in r.stdout.splitlines():
     if f.startswith(EXCLUDE):
