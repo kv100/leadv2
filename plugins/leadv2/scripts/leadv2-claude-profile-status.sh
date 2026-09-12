@@ -70,6 +70,15 @@ check_live() { # sets global: degraded, faulted (may raise either to 1)
     echo "live:    DEGRADED -- candidates=${cands:-0} (need >=2 for two-account routing): $live_out"
     degraded=1
   fi
+  # 429-METER-VERDICT-01 half two: a pick ranked from the last-known-good
+  # sidecar is a working selection on stale numbers, never a live reading --
+  # surface it as its own line so nobody reads source=stale output as
+  # confirmed-current quota.
+  local stale_age
+  stale_age="$(printf '%s' "$live_out" | sed -n 's/.*source=stale.*stale_age_s=\([0-9][0-9]*\).*/\1/p')"
+  if [[ -n "$stale_age" ]]; then
+    echo "stale:   last-known ranking in effect (age=${stale_age}s) -- the winning account's numbers are NOT live; its meter read failed"
+  fi
 }
 
 # ---- 2. RECENT -----------------------------------------------------------

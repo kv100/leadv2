@@ -474,6 +474,44 @@ fi
 # completed and reported unknown, because "no profile completed at all" is the
 # single_profile fail-open of T8, while "completed but unknown" is the
 # all_unknown pick of T6.
+#
+# 429-METER-VERDICT-01 half two: when the live quota read is UNMEASURABLE (a
+# throttled meter, a parse failure, a budget kill -- anything that is not a
+# verdict about the credential), the selector still knows what that identity
+# last reported when it WAS readable.  write_last_ok keeps the newest
+# status=ok payload per identity in a sidecar beside anthropic.json (same
+# directory convention as probe-cooldown-until.cred); stale_cols hands it to
+# the picker as two extra record columns (age_s, b64) so ranking falls back
+# to last-known numbers instead of to demotion order.  The picker labels
+# them source=stale -- they must never masquerade as a live reading.
+write_last_ok() { # <id_key> <probe-json>  (only called on an ok outcome)
+  local dir="${CACHE_BASE}/identity-${1}" tmpf
+  mkdir -p "$dir" 2>/dev/null || return 0
+  tmpf="$(mktemp "${dir}/.anthropic-last-ok.XXXXXX" 2>/dev/null)" || return 0
+  printf '%s' "$2" > "$tmpf" 2>/dev/null && mv -f "$tmpf" "${dir}/anthropic-last-ok.json" 2>/dev/null \
+    || rm -f "$tmpf" 2>/dev/null || true
+}
+# stale_cols <id_key> -> "<age_s>\t<b64>" on stdout, or "-\t-" when no
+# readable last-ok sidecar exists.  age_s is seconds since the sidecar's
+# fetched_at; unparsable/missing age degrades to "-" (the payload still
+# ranks, unlabeled by age).
+stale_cols() { # <id_key>
+  local f="${CACHE_BASE}/identity-${1}/anthropic-last-ok.json" age b64
+  if [[ ! -r "$f" ]]; then printf -- '-\t-'; return; fi
+  b64="$(base64 < "$f" 2>/dev/null | tr -d '\n')"
+  if [[ -z "$b64" ]]; then printf -- '-\t-'; return; fi
+  age="$(python3 -c '
+import json, sys, datetime
+try:
+    d = json.load(open(sys.argv[1]))
+    ts = datetime.datetime.fromisoformat(str(d.get("fetched_at", "")).replace("Z", "+00:00"))
+    delta = datetime.datetime.now(datetime.timezone.utc) - ts
+    print(max(0, int(delta.total_seconds())))
+except Exception:
+    sys.exit(1)
+' "$f" 2>/dev/null)" || age="-"
+  printf '%s\t%s' "${age:--}" "$b64"
+}
 recs="$(mktemp "${TMPDIR:-/tmp}/claude-profile-recs.XXXXXX")" || single_profile
 deadline=$(( $(date +%s) + timeout_s ))
 completed=0
@@ -534,19 +572,19 @@ while (( i < n )); do
       rm -f "$cooldown_file" "$cooldown_cred_file" 2>/dev/null || true
     else
       warn "WARN: profile label=${label} cooling down after a recent live probe failure; skipping this round (reason=confirmed_live_failure until=${cooldown_until} remaining_s=$(( cooldown_until - $(date +%s) )))"
-      printf '%s\t%s\t%s\t-\t%s\t1\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
+      printf '%s\t%s\t%s\t-\t%s\t1\t%s\t-\t-\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
       continue
     fi
   fi
   remaining=$(( deadline - $(date +%s) ))
   if (( remaining < 1 )); then
     warn "WARN: profile probe budget exhausted; unprobed entries score unknown"
-    printf '%s\t%s\t%s\t-\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
+    printf '%s\t%s\t%s\t-\t%s\t0\t%s\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" "$(stale_cols "$id_key")" >> "$recs"
     continue
   fi
   out="$(mktemp "${TMPDIR:-/tmp}/claude-profile-probe.XXXXXX")"
   if [[ -z "$out" ]]; then
-    printf '%s\t%s\t%s\t-\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
+    printf '%s\t%s\t%s\t-\t%s\t0\t%s\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" "$(stale_cols "$id_key")" >> "$recs"
     continue
   fi
   err="${out}.err"
@@ -575,31 +613,63 @@ while (( i < n )); do
   fi
   json="$(cat "$out" 2>/dev/null)"; rm -f "$out" "$err"
   if [[ "$rc" -ne 0 || -z "$json" ]]; then
-    printf '%s\t%s\t%s\t-\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" >> "$recs"
+    printf '%s\t%s\t%s\t-\t%s\t0\t%s\t%s\n' "$label" "$dir" "$cred" "$identity" "$demote" "$(stale_cols "$id_key")" >> "$recs"
     continue
   fi
   completed=$((completed + 1))
-  # TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: a probe that genuinely REACHED the
-  # API and got a real error back (the active/only account has status!=ok
-  # AND a non-empty error field -- e.g. "http 401" on an expired credential)
-  # is a CONFIRMED live failure, distinct from "we never got a chance to try"
-  # (budget exhausted, mktemp/exec failure, timeout above). Only a confirmed
-  # failure starts a cooldown; scoring never over-punishes a profile just
-  # because this was its first attempt.
-  if printf '%s' "$json" | python3 -c "
+  # TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01 + 429-METER-VERDICT-01: classify the
+  # completed probe.  "ok" = the active account answered with a readable
+  # window (its payload is kept as the identity's last-known-good sidecar).
+  # "verdict" = a CONFIRMED credential-verdict failure, distinct from "we
+  # never got a chance to try" (budget exhausted, mktemp/exec failure,
+  # timeout above) AND from "we could not MEASURE the account" -- the
+  # positive list below admits only failures that say something about the
+  # CREDENTIAL itself: http 401/403, or an error text naming expiry,
+  # revocation, or malformed/invalid credentials.  A 429 from the usage
+  # meter throttling us (measured 2026-09-12: both identities 429, selector
+  # cooled BOTH for 900s and printed single_profile; with the cooldowns
+  # cleared it fell to rank_by=none and picked by self-slot demotion the
+  # account the founder's panel showed at 80%) says the METER is
+  # unavailable, not that the account is dead -- it must leave the profile a
+  # live candidate.  So must any failure shape not on the positive list: a
+  # new error appearing later defaults to "unmeasurable", never to a
+  # cooldown.  account_state=unmetered (measured 2026-09-04/07: team/max
+  # credentials whose token resolves but whose usage endpoint answers 401
+  # anyway) is equally a verdict about the meter, not the credential.
+  # Possible outcomes: "ok", "verdict", "-" (unmeasurable or unparseable).
+  probe_outcome="$(printf '%s' "$json" | python3 -c '
 import json, sys
 try:
     d = json.loads(sys.stdin.read())
 except Exception:
-    sys.exit(1)
+    sys.exit(0)
 if not isinstance(d, dict):
-    sys.exit(1)
-accounts = d.get('accounts') or []
-account = next((a for a in accounts if isinstance(a, dict) and a.get('active')), None)
+    sys.exit(0)
+accounts = d.get("accounts") or []
+account = next((a for a in accounts if isinstance(a, dict) and a.get("active")), None)
 if account is None and len(accounts) == 1 and isinstance(accounts[0], dict):
     account = accounts[0]
-sys.exit(0 if (isinstance(account, dict) and account.get('status') != 'ok' and account.get('error')) else 1)
-" 2>/dev/null; then
+if not isinstance(account, dict):
+    sys.exit(0)
+if account.get("status") == "ok":
+    print("ok")
+    sys.exit(0)
+if account.get("account_state") == "unmetered":
+    sys.exit(0)
+http = account.get("http")
+code = str(http) if http is not None else ""
+err = str(account.get("error") or "").lower()
+if code in ("401", "403") or "http 401" in err or "http 403" in err or any(
+        m in err for m in ("expired", "revoked", "malformed", "invalid",
+                           "unauthorized", "forbidden")):
+    print("verdict")
+    sys.exit(0)
+sys.exit(0)
+' 2>/dev/null)" || probe_outcome="-"
+  [[ -z "$probe_outcome" ]] && probe_outcome="-"
+  if [[ "$probe_outcome" == "ok" ]]; then
+    write_last_ok "$id_key" "$json"
+  elif [[ "$probe_outcome" == "verdict" ]]; then
     mkdir -p "$(dirname "$cooldown_file")" 2>/dev/null || true
     cooldown_deadline=$(( $(date +%s) + COOLDOWN_S ))
     printf '%s' "$cooldown_deadline" > "$cooldown_file" 2>/dev/null || true
@@ -617,7 +687,19 @@ sys.exit(0 if (isinstance(account, dict) and account.get('status') != 'ok' and a
     warn "WARN: profile label=${label} live probe failed; cooling down ${COOLDOWN_S}s (reason=confirmed_live_failure cred=${digest} until=${cooldown_deadline})"
   fi
   b64="$(printf '%s' "$json" | base64 | tr -d '\n')"
-  printf '%s\t%s\t%s\t%s\t%s\t0\t%s\n' "$label" "$dir" "$cred" "$b64" "$identity" "$demote" >> "$recs"
+  # 429-METER-VERDICT-01 half two: an unmeasurable live read attaches the
+  # identity's last-known-good payload (age + b64) so the picker can rank
+  # from it; a verdict/ok outcome never does -- a broken credential's stale
+  # numbers describe a credential that may no longer exist.
+  if [[ "$probe_outcome" == "-" ]]; then
+    st_cols="$(stale_cols "$id_key")"
+    if [[ "$st_cols" != $'-\t-' ]]; then
+      warn "WARN: profile label=${label} live quota read unmeasurable; ranking from last-known payload (degradation=stale_last_known age_s=$(printf '%s' "$st_cols" | cut -f1))"
+    fi
+  else
+    st_cols=$'-\t-'
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t0\t%s\t%s\n' "$label" "$dir" "$cred" "$b64" "$identity" "$demote" "$st_cols" >> "$recs"
 done
 
 # SELECTOR-SKIPS-EXHAUSTED-01: a live account whose binding window has no

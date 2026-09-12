@@ -38,7 +38,7 @@ unset LEADV2_CLAUDE_MULTIPROFILE LEADV2_CLAUDE_PROFILES_FILE \
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/claude-profile-select.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 FIX="${tmp}/fixtures"; CACHE="${tmp}/cache"; REG="${tmp}/registry.tsv"
-mkdir -p "$FIX" "$CACHE" "$tmp/dir-alpha" "$tmp/dir-beta"
+mkdir -p "$FIX" "$CACHE" "$tmp/dir-alpha" "$tmp/dir-beta" "$tmp/dir-dead" "$tmp/dir-dead2"
 
 # T12/LEAD-FINAL-FIXES-01: the selector health-checks the inherited default
 # slot too; pin it to a healthy fixture so the suite never touches the real
@@ -128,15 +128,20 @@ check_grep "$OUT" '^profile=alpha config_dir=.*/dir-alpha rank_by=consumed_pct_m
 
 # ============================================================================
 echo "=== T5: one unknown, one ok -> picks ok, source=live ==="
-printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
+# 429-METER-VERDICT-01: dead keeps its OWN config dir -- a label parked on a
+# dir whose earlier occupant probed ok would inherit that bucket's
+# anthropic-last-ok.json sidecar and rank from it (the sidecar is keyed by
+# bucket=slot, not label), which is the correct live behaviour but not what
+# T5/T6 exist to pin: their dead candidates must be NEVER-known.
+printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-dead" "$tmp/dir-dead" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
 check_grep "$OUT" '^profile=beta .*rank_by=consumed_pct_min consumed_pct=80 usable_now=- source=live reason=worst_window candidates=2 cred=file:[^ ]+ identity=unknown/na binding=worst_of_both:consumed_pct=80 windows=dead:-=-\|beta:worst_of_both=80$' 'T5: picks the ok profile, binding/windows logged'
 
 # ============================================================================
 echo "=== T6: both unknown -> first registry entry, all_unknown ==="
-printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
-printf 'dead2\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-dead" "$tmp/dir-dead" > "$REG"
+printf 'dead2\t%s\tfile:%s/cred.json\n' "$tmp/dir-dead2" "$tmp/dir-dead2" >> "$REG"
 cp "$FIX/dead.json" "$FIX/dead2.json"
 run_select $(base_env)
 # TEAM-ACCOUNT-QUOTA-WINDOW-UNPARSED-01: UNKNOWN_TRIABLE still orders the
@@ -743,6 +748,124 @@ acct_json 5 5 > "$FIX/reloginm.json"
 OUT="$(env STUB_FIXDIR="$FIX" $(base_env) bash "$MUT" 2>"$tmp/select.err")"; RC=$?
 ERR="$(cat "$tmp/select.err")"
 check_grep "$ERR" 'WARN: profile label=reloginm cooling down after a recent live probe failure; skipping this round' 'T28 (RED under mutation): reloginm wrongly still skipped despite the credential change -- mutation confirmed to break the exact behaviour T26 proves'
+
+# ============================================================================
+# T29..T36 (429-METER-VERDICT-01): a 429 from the usage meter is a verdict
+# about the METER, never about the account. Half one: only a positive list
+# of credential-verdict causes (http 401/403, expired/revoked/malformed/
+# invalid/unauthorized/forbidden) may start a cooldown -- an unmeasurable
+# read leaves the profile a live candidate. Half two: an unmeasurable read
+# ranks from the identity's last-known-good sidecar (source=stale, labeled
+# with its age) instead of falling through to demotion order.
+# Fixture payload: the exact shape leadv2-quota-read.py emits on a throttled
+# meter (measured live 2026-09-12 on both identities).
+err429_json() { # <account_state>
+  printf '{"provider":"anthropic","status":"ok","accounts":[{"entry_suffix":"file","service":"file:stub","subscription_type":"team","http":429,"account_label":"max_5x","active":true,"status":"unknown","account_state":"%s","error":"429 rate_limited (reported as unknown, NEVER 0)","five_hour":{"pct":null,"reset_iso":null,"remaining_pct":null,"hours_to_reset":null,"usable_now":null},"seven_day":{"pct":null,"reset_iso":null,"remaining_pct":null,"hours_to_reset":null,"usable_now":null},"binding_window":null}],"active_account":"max_5x","binding_window":null,"fetched_at":"2026-09-12T12:07:42Z"}' "$1"
+}
+# Windowed healthy payload (binding seven_day) for seeding last-known sidecars.
+win_json() { # <7d_pct> <7d_usable> -> seven_day-bound healthy account
+  printf '{"provider":"anthropic","status":"ok","accounts":[{"entry_suffix":"file","service":"file:stub","subscription_type":"max","http":200,"account_label":"max_20x","active":true,"status":"ok","account_state":"ok","five_hour_pct":6,"seven_day_pct":%s,"five_hour":{"pct":6,"reset_iso":"2026-09-12T15:30:00Z","remaining_pct":94,"hours_to_reset":3.3,"usable_now":28.2},"seven_day":{"pct":%s,"reset_iso":"2026-09-18T22:00:00Z","remaining_pct":%s,"hours_to_reset":153.8,"usable_now":%s},"binding_window":"seven_day"}],"active_account":"max_20x","binding_window":"seven_day","fetched_at":"%s"}' \
+    "$1" "$1" "$(( 100 - $1 ))" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+mkdir -p "$tmp/dir-t29" "$tmp/dir-t30" "$tmp/dir-t31" "$tmp/dir-t32p" "$tmp/dir-t32w" \
+         "$tmp/dir-t33p" "$tmp/dir-t33w" "$tmp/dir-t34p" "$tmp/dir-t34w" "$tmp/dir-t35p" "$tmp/dir-t35w"
+
+echo "=== T29: a 429 meter read starts NO cooldown and never skips a round ==="
+err429_json unknown > "$FIX/err429.json"
+acct_json 90 80 > "$FIX/steady29.json"
+printf 'err429\t%s\tfile:%s/cred.json\n' "$tmp/dir-t29" "$tmp/dir-t29" > "$REG"
+printf 'steady29\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env) LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900
+check_grep "$OUT" '^profile=steady29 ' 'T29a: the 429 profile did not win, the live one did'
+check_nogrep "$ERR" 'WARN: profile label=err429 live probe failed; cooling down' 'T29b: NO cooldown WARN for a 429 meter read'
+check_nogrep "$ERR" 'WARN: profile label=err429 cooling down after a recent live probe failure' 'T29c: 429 never reads as a confirmed live failure'
+run_select $(base_env) LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900
+check_nogrep "$ERR" 'WARN: profile label=err429 cooling down after a recent live probe failure; skipping this round' 'T29d: round 2 -- 429 profile is still probed (a throttled meter is not a dead credential)'
+[[ -z "$(find "$CACHE" -name probe-cooldown-until -path '*t29*')" ]] && pass "T29e: no cooldown marker file written for the 429 bucket" || fail "T29e" "cooldown marker exists for the 429 bucket"
+[[ "$RC" -eq 0 ]] && pass "T29: exit 0" || fail "T29 exit" "rc=$RC"
+
+echo "=== T30: 401 with account_state=unmetered is a meter verdict, not a credential one ==="
+printf '{"provider":"anthropic","status":"ok","accounts":[{"entry_suffix":"file","service":"file:stub","subscription_type":"team","http":401,"account_label":"max_5x","active":true,"status":"unknown","account_state":"unmetered","error":"http 401","binding_window":null}],"active_account":"max_5x","binding_window":null,"fetched_at":"2026-09-12T12:07:42Z"}' > "$FIX/unmet401.json"
+acct_json 90 80 > "$FIX/steady30.json"
+printf 'unmet401\t%s\tfile:%s/cred.json\n' "$tmp/dir-t30" "$tmp/dir-t30" > "$REG"
+printf 'steady30\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env) LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900
+check_grep "$OUT" '^profile=steady30 ' 'T30a: unmetered profile loses to the live one, fair unknown rank'
+check_nogrep "$ERR" 'WARN: profile label=unmet401 live probe failed; cooling down' 'T30b: measured-unmetered 401 starts NO cooldown (the token resolves; only the usage endpoint refuses)'
+[[ -z "$(find "$CACHE" -name probe-cooldown-until -path '*t30*')" ]] && pass "T30c: no cooldown marker for the unmetered bucket" || fail "T30c" "cooldown marker exists for the unmetered bucket"
+[[ "$RC" -eq 0 ]] && pass "T30: exit 0" || fail "T30 exit" "rc=$RC"
+
+echo "=== T31: an unknown failure shape (transport) defaults to unmeasurable, never to cooldown ==="
+printf '{"provider":"anthropic","status":"ok","accounts":[{"entry_suffix":"file","service":"file:stub","active":true,"status":"unknown","error":"timed out","binding_window":null}],"active_account":"stub","binding_window":null,"fetched_at":"2026-09-12T12:07:42Z"}' > "$FIX/tmo.json"
+acct_json 90 80 > "$FIX/steady31.json"
+printf 'tmo\t%s\tfile:%s/cred.json\n' "$tmp/dir-t31" "$tmp/dir-t31" > "$REG"
+printf 'steady31\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env) LEADV2_CLAUDE_PROFILE_COOLDOWN_S=900
+check_nogrep "$ERR" 'WARN: profile label=tmo live probe failed; cooling down' 'T31a: transport error starts NO cooldown (positive list, not a blocklist of one)'
+[[ -z "$(find "$CACHE" -name probe-cooldown-until -path '*t31*')" ]] && pass "T31b: no cooldown marker for the transport bucket" || fail "T31b" "cooldown marker exists for the transport bucket"
+[[ "$RC" -eq 0 ]] && pass "T31: exit 0" || fail "T31 exit" "rc=$RC"
+
+echo "=== T32: a healthy read is kept as the identity's last-known-good sidecar ==="
+win_json 3 0.63 > "$FIX/healthyp.json"
+win_json 80 0.13 > "$FIX/healthyw.json"
+printf 'healthyp\t%s\tfile:%s/cred.json\n' "$tmp/dir-t32p" "$tmp/dir-t32p" > "$REG"
+printf 'healthyw\t%s\tfile:%s/cred.json\n' "$tmp/dir-t32w" "$tmp/dir-t32w" >> "$REG"
+run_select $(base_env)
+sc_p="$(find "$CACHE" -name anthropic-last-ok.json -path '*t32p*' | head -1)"
+sc_w="$(find "$CACHE" -name anthropic-last-ok.json -path '*t32w*' | head -1)"
+[[ -n "$sc_p" && -n "$sc_w" ]] && pass "T32a: sidecar written for both healthy buckets" || fail "T32a" "missing sidecar(s): p=${sc_p:-none} w=${sc_w:-none}"
+grep -q '"status": *"ok"' "$sc_p" 2>/dev/null && pass "T32b: sidecar holds the ok payload" || fail "T32b" "sidecar content not an ok payload: $(cat "$sc_p" 2>/dev/null)"
+check_grep "$OUT" '^profile=healthyp .*source=live' 'T32c: healthy round still picks live'
+[[ "$RC" -eq 0 ]] && pass "T32: exit 0" || fail "T32 exit" "rc=$RC"
+
+echo "=== T33: the incident -- both meters 429, sidecars known, personal demoted: rank from last known ==="
+err429_json unknown > "$FIX/healthyp.json"
+err429_json unknown > "$FIX/healthyw.json"
+run_select $(base_env) LEADV2_CLAUDE_PROFILE_DEMOTE_DIR="$tmp/dir-t32p"
+check_grep "$OUT" '^profile=healthyp .*rank_by=usable_now_max consumed_pct=3 usable_now=0\.630 source=stale reason=last_known candidates=2 .*binding=seven_day:consumed_pct=3,usable_now=0\.630 windows=healthyp:seven_day=3,usable_now=0\.630,stale\|healthyw:seven_day=80,usable_now=0\.130,stale demoted=healthyp demote_yielded=healthyp margin=0\.15 stale_age_s=[0-9]+' 'T33a: picks the last-known-3%% profile (source=stale, age labeled), NOT demotion order'
+check_grep "$ERR" 'WARN: profile label=healthyp live quota read unmeasurable; ranking from last-known payload \(degradation=stale_last_known age_s=[0-9]+\)' 'T33b: journal line carries the age and the degradation word'
+[[ -z "$(find "$CACHE" -name probe-cooldown-until -path '*t32*')" ]] && pass "T33c: 429 round wrote no cooldown markers" || fail "T33c" "cooldown marker written on a 429 round"
+[[ "$RC" -eq 0 ]] && pass "T33: exit 0" || fail "T33 exit" "rc=$RC"
+
+echo "=== T34: a stale gap BELOW the yield margin does not yield -- 154b2cbe margin still rules ==="
+win_json 3 0.63 > "$FIX/margp.json"
+win_json 42 0.55 > "$FIX/margw.json"
+printf 'margp\t%s\tfile:%s/cred.json\n' "$tmp/dir-t34p" "$tmp/dir-t34p" > "$REG"
+printf 'margw\t%s\tfile:%s/cred.json\n' "$tmp/dir-t34w" "$tmp/dir-t34w" >> "$REG"
+run_select $(base_env)   # seed sidecars (healthy)
+err429_json unknown > "$FIX/margp.json"
+err429_json unknown > "$FIX/margw.json"
+run_select $(base_env) LEADV2_CLAUDE_PROFILE_DEMOTE_DIR="$tmp/dir-t34p"
+check_grep "$OUT" '^profile=margw .*source=stale reason=last_known ' 'T34a: gap 0\.63-0.55=0.08 < 0.15 -> demotion holds, the non-demoted stale wins'
+check_nogrep "$OUT" 'demote_yielded' 'T34b: no yield below the margin'
+[[ "$RC" -eq 0 ]] && pass "T34: exit 0" || fail "T34 exit" "rc=$RC"
+
+echo "=== T35: stale-but-known (demoted) vs a fresh nothing -> yield, not demotion order ==="
+printf 'stalep\t%s\tfile:%s/cred.json\n' "$tmp/dir-t35p" "$tmp/dir-t35p" > "$REG"
+printf 'freshw\t%s\tfile:%s/cred.json\n' "$tmp/dir-t35w" "$tmp/dir-t35w" >> "$REG"
+win_json 3 0.63 > "$FIX/stalep.json"
+err429_json unknown > "$FIX/freshw.json"
+run_select $(base_env)   # stalep seeds its sidecar; freshw never succeeds
+err429_json unknown > "$FIX/stalep.json"
+run_select $(base_env) LEADV2_CLAUDE_PROFILE_DEMOTE_DIR="$tmp/dir-t35p"
+check_grep "$OUT" '^profile=stalep .*source=stale reason=last_known .*demote_yielded=stalep margin=- yield_reason=no_known_normal' 'T35a: the stale-known demoted slot beats the fresh nothing, yield named'
+[[ "$RC" -eq 0 ]] && pass "T35: exit 0" || fail "T35 exit" "rc=$RC"
+
+echo "=== T36: a live reading anywhere keeps the decision on live numbers only ==="
+win_json 3 0.63 > "$FIX/livep.json"
+win_json 80 0.13 > "$FIX/livew.json"
+printf 'livep\t%s\tfile:%s/cred.json\n' "$tmp/dir-t33p" "$tmp/dir-t33p" > "$REG"
+printf 'livew\t%s\tfile:%s/cred.json\n' "$tmp/dir-t33w" "$tmp/dir-t33w" >> "$REG"
+run_select $(base_env)   # seed sidecars on both buckets
+err429_json unknown > "$FIX/livep.json"   # livep's meter now 429 (sidecar stays)
+# Demote the 429 slot, NOT the live one: §1.3 says an unknown-triable beats a
+# DEMOTED live record (founder line, unchanged by this task); what T36 pins is
+# that stale data does not engage while any live record exists.
+run_select $(base_env) LEADV2_CLAUDE_PROFILE_DEMOTE_DIR="$tmp/dir-t33p"
+check_grep "$OUT" '^profile=livew .*consumed_pct=80 usable_now=0\.130 source=live reason=binding_window' 'T36a: live 80%% beats stale 3%% -- stale never competes with a live reading'
+check_nogrep "$OUT" 'source=stale' 'T36b: no stale source in the line while a live record exists'
+check_grep "$OUT" 'windows=livep:-=-\|' 'T36c: the unmeasurable livep shows no window, stale not displayed as live'
+[[ "$RC" -eq 0 ]] && pass "T36: exit 0" || fail "T36 exit" "rc=$RC"
 
 printf '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

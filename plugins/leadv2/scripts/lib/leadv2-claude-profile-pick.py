@@ -22,6 +22,21 @@ from the credential itself, never from the label -- it is what actually gets
 reported, since a registry label can drift from the account the credential
 now serves (a relabeled/re-logged-in slot).
 
+`stale_age_s`/`stale_b64` (429-METER-VERDICT-01 half two, columns 8/9) are
+attached by the selector ONLY when the live read was unmeasurable (a
+throttled meter, parse failure, budget kill -- never a credential verdict
+and never an ok read) and a last-known-good sidecar exists for the identity.
+They carry the newest payload whose status was ok.  When NO record is
+live-readable, those records re-rank from the stale payload's own numbers
+with source=stale (a label, never a live reading) instead of falling through
+to demotion order -- measured 2026-09-12: both identities 429, the selector
+fell to rank_by=none and self-slot demotion picked the account the founder's
+panel showed at 80% over the one at 0%.  A stale-known number still loses to
+any live-readable record (stale ranking engages only in the no-live branch),
+a cooling record is never rescued by its own stale numbers, and the §1.3
+demote-yield margin applies to stale usable_now exactly as to live -- a
+stale-but-known gap can trigger the same yield.
+
 `demote` (W1-BALANCER-COVERS-EVERY-ARM-01 §1.3, founder 2026-09-09) is "1"
 only on the record whose config_dir IS the config dir of the session doing
 the dispatching (the lead's own account -- the one whose window the probe
@@ -104,24 +119,21 @@ UNKNOWN_COOLING = 101
 UNKNOWN = UNKNOWN_COOLING  # back-compat alias -- keep the old name resolvable
 
 
-def score_record(record):
-    """Return (order_key, source, window, pct, usable_now).
+def score_payload(payload):
+    """Rank ONE probe payload -> (order_key, source, window, pct, usable_now).
+
+    source is "live" only when the payload itself is a readable window;
+    otherwise "unknown" and the caller picks the sentinel.  Shared by the
+    live read (score_record) and the last-known-good fallback (half two), so
+    a stale payload ranks by exactly the same arithmetic as a live one.
 
     order_key IS the availability comparison (lower ranks first):
       live + readable usable_now -> -usable_now (MORE remaining pct-points
         per hour ranks FIRST -- f1 #2);
       live, no readable rate     -> the window's consumed pct (pre-D2
         proxy, lower first -- legacy payloads keep their old order);
-      unknown (NEVER 0 -- f1 #4) -> UNKNOWN_TRIABLE, or UNKNOWN_COOLING.
+      unknown (NEVER 0 -- f1 #4) -> decided by the caller's sentinel.
     """
-    label, config_dir, cred, payload_b64 = record[:4]
-    cooling = len(record) > 5 and record[5] == "1"
-    unknown_key = UNKNOWN_COOLING if cooling else UNKNOWN_TRIABLE
-    payload = None
-    try:
-        payload = json.loads(base64.b64decode(payload_b64).decode())
-    except Exception:
-        payload = None
     account = None
     if isinstance(payload, dict):
         accounts = payload.get("accounts") or []
@@ -133,7 +145,7 @@ def score_record(record):
             account = accounts[0]
     if not (isinstance(payload, dict) and payload.get("status") == "ok"
             and isinstance(account, dict) and account.get("status") == "ok"):
-        return unknown_key, "unknown", None, None, None
+        return UNKNOWN_TRIABLE, "unknown", None, None, None
     binding = account.get("binding_window")
     if binding in ("five_hour", "seven_day"):
         window = account.get(binding)
@@ -157,9 +169,31 @@ def score_record(record):
         except (TypeError, ValueError):
             pass
     if not values:
-        return unknown_key, "unknown", None, None, None
+        return UNKNOWN_TRIABLE, "unknown", None, None, None
     worst = max(values)
     return worst, "live", "worst_of_both", worst, None
+
+
+def score_record(record):
+    """Return (order_key, source, window, pct, usable_now) for one record.
+
+    Same contract as score_payload, plus the record-level sentinel: an
+    unreadable live read is UNKNOWN_TRIABLE, or UNKNOWN_COOLING when the
+    selector's cooldown marker says the last live probe returned a confirmed
+    credential verdict.
+    """
+    label, config_dir, cred, payload_b64 = record[:4]
+    cooling = len(record) > 5 and record[5] == "1"
+    unknown_key = UNKNOWN_COOLING if cooling else UNKNOWN_TRIABLE
+    payload = None
+    try:
+        payload = json.loads(base64.b64decode(payload_b64).decode())
+    except Exception:
+        payload = None
+    key, source, window, pct, usable = score_payload(payload)
+    if source != "live":
+        return unknown_key, "unknown", None, None, None
+    return key, source, window, pct, usable
 
 
 def _fmt_pct(pct):
@@ -180,7 +214,10 @@ def main():
             parts = parts + ["0"]  # pre-cooldown caller (no cooling column)
         if len(parts) == 6:
             parts = parts + ["0"]  # pre-demote caller (no demote column, §1.3)
-        if len(parts) != 7:
+        if len(parts) == 7:
+            # pre-half-two caller (no stale_age_s/stale_b64 columns)
+            parts = parts + ["-", "-"]
+        if len(parts) != 9:
             continue
         records.append(parts)
     if not records:
@@ -200,6 +237,27 @@ def main():
 
     scored = [(score_record(r), i, r) for i, r in enumerate(records)]
     tiers = [_tier(r) for r in records]
+
+    # 429-METER-VERDICT-01 half two: when NO record is live-readable, rank
+    # from what was last known instead of falling through to demotion order.
+    # Records whose live read was unmeasurable may carry a last-known-good
+    # payload (columns 8/9); re-score those from the sidecar with
+    # source="stale".  A live record anywhere keeps the decision on live
+    # numbers only (stale never competes with a live reading), and a cooling
+    # record is never rescued -- a confirmed credential verdict makes its
+    # stale numbers describe a credential that may no longer exist.
+    _live_any = any(s[0][1] == "live" for s in scored)
+    if not _live_any:
+        for _i, _r in enumerate(records):
+            if tiers[_i] == 2 or len(_r) < 9 or _r[8] in ("-", ""):
+                continue
+            try:
+                _spayload = json.loads(base64.b64decode(_r[8]).decode())
+            except Exception:
+                continue
+            _k, _src, _w, _p, _u = score_payload(_spayload)
+            if _src == "live":
+                scored[_i] = ((_k, "stale", _w, _p, _u), scored[_i][1], scored[_i][2])
 
     # SELF-SLOT-DEMOTION-YIELDS-01 (founder 2026-09-12). The demotion above
     # corrects for ONE thing -- the dispatching session's own spend reaching
@@ -225,6 +283,7 @@ def main():
 
     _normal = [i for i in range(len(records)) if tiers[i] == 0]
     _demoted = [i for i in range(len(records)) if tiers[i] == 1]
+    _yield_reason = "gap"
     if _normal and _demoted and _margin >= 0:
         _best_normal = [u for u in (_usable_of(i) for i in _normal)
                         if u is not None]
@@ -233,6 +292,21 @@ def main():
             for _i in _demoted:
                 _u = _usable_of(_i)
                 if _u is not None and _u - _bn > _margin:
+                    tiers[_i] = 0
+                    _yielded.append(records[_i][0])
+        elif not _live_any and any(_usable_of(i) is not None
+                                   for i in _demoted):
+            # Half two composition with SELF-SLOT-DEMOTION-YIELDS-01: no
+            # normal carries ANY known number (live or stale) -- the choice
+            # is a stale-but-known demoted slot vs a fresh nothing.  The
+            # demotion corrects a few points of window lag; it must not
+            # outvote last-known availability wholesale.  Yield.  Gated on
+            # no-live-records so a live readable normal keeps W1 §1.3
+            # semantics exactly (an unknown still beats a demoted live
+            # slot there -- a founder-drawn line, not mine to move).
+            _yield_reason = "no_known_normal"
+            for _i in _demoted:
+                if _usable_of(_i) is not None:
                     tiers[_i] = 0
                     _yielded.append(records[_i][0])
     # min over (tier, order_key, registry order) -- fully deterministic.
@@ -248,6 +322,8 @@ def main():
     # The minimum can only reach UNKNOWN_TRIABLE when EVERY record is unknown.
     if source == "unknown":
         reason = "all_unknown"
+    elif source == "stale":
+        reason = "last_known"  # ranked from the last-known-good sidecar, not live
     elif window in ("five_hour", "seven_day"):
         reason = "binding_window"
     else:
@@ -269,8 +345,9 @@ def main():
         if usable is not None:
             binding_field += ",usable_now=" + usable_str
     windows_field = "|".join(
-        "%s:%s=%s%s" % (r[0], w or "-", _fmt_pct(p),
-                        "" if u is None else ",usable_now=" + _fmt_u(u))
+        "%s:%s=%s%s%s" % (r[0], w or "-", _fmt_pct(p),
+                          "" if u is None else ",usable_now=" + _fmt_u(u),
+                          ",stale" if src == "stale" else "")
         for (_k, src, w, p, u), _o, r in scored
     )
     # §1.3: printed ONLY when a demote column is present and matched a
@@ -279,12 +356,22 @@ def main():
     demoted_labels = [r[0] for r in records if len(r) > 6 and r[6] == "1"]
     demoted_field = " demoted=%s" % demoted_labels[0] if demoted_labels else ""
     if _yielded:
-        demoted_field += " demote_yielded=%s margin=%s" % (_yielded[0], _margin)
+        # gap yield keeps the exact legacy shape; the half-two no-known-normal
+        # yield prints margin=- plus its reason -- no numeric gap was compared.
+        demoted_field += " demote_yielded=%s margin=%s" % (
+            _yielded[0], _margin if _yield_reason == "gap" else "-")
+        if _yield_reason != "gap":
+            demoted_field += " yield_reason=%s" % _yield_reason
+    # Half two: the winner's numbers came from the last-known-good sidecar --
+    # say HOW old it is so a stale reading is never mistaken for a live one.
+    stale_field = ""
+    if source == "stale" and len(record) > 7 and record[7] not in ("-", ""):
+        stale_field = " stale_age_s=%s" % record[7]
     print("profile=%s config_dir=%s rank_by=%s consumed_pct=%s usable_now=%s source=%s reason=%s candidates=%d cred=%s identity=%s "
-          "binding=%s windows=%s%s"
+          "binding=%s windows=%s%s%s"
           % (record[0], record[1], rank_by, _fmt_pct(pct), usable_str, source, reason,
              len(records), record[2], record[4],
-             binding_field, windows_field, demoted_field))
+             binding_field, windows_field, demoted_field, stale_field))
 
 
 if __name__ == "__main__":
