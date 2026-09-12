@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-e2e-fixtures-cannot-write-into-the-repo.sh
+file=plugins/leadv2/scripts/leadv2-state-path.sh
+anchor=s|_LV2_SANDBOX_SIGNAL="LEADV2_STATE_BASE"|_LV2_SANDBOX_SIGNAL=""|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: T1: expected loud abort with an unchanged repo; rc=0 err= changed=YES
+diff_hash=6481c7ba25f0616a6650a2a3ec284c1c196ea1af0e4ee3cd46adcd2942c1f198
+lane_diff_hash=883235f4321ffa52961be503088bd6f1d32ce5c8a02ec4891830034e3a49f9a6
