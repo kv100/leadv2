@@ -10,9 +10,15 @@
 #       byte-identical to the copy in the plugin tree this suite ships in.
 #   C2  every script persona-engine's settings.json registers still resolves
 #       to a readable file — the move broke nothing.
-#   C3  getmany-followup-bot's settings.json registers all 11 under
-#       ${CLAUDE_PLUGIN_ROOT}/hooks/ at the right events, and each named file
-#       exists in the plugin tree.
+#   C3  getmany-followup-bot's settings.json registers all guards at the
+#       right events under ${CLAUDE_PROJECT_DIR}/.claude/hooks/<name>, each
+#       backed by a per-file symlink to the canonical plugin tree (persona
+#       C1 pattern). Rewritten 2026-09-13 by PORTABLE-GUARD-MIGRATION-STEP-2-01:
+#       the runtime REFUSES ${CLAUDE_PLUGIN_ROOT} in settings.json hook
+#       commands (claude 2.1.270: "only available in hooks defined in a
+#       plugin's hooks/hooks.json file, not in settings.json"), so the old
+#       plugin-root form was 8 zombie registrations that could never fire —
+#       fresh-process proof in persona-engine lane c8fdfa7adcb3 report.
 #
 # Negative controls: --selftest builds scratch fixtures and re-runs this same
 # suite against each mutation, requiring RED: symlink pointed at a scratch
@@ -148,7 +154,11 @@ PY
   rm -f "$t"
 }
 
-# --- C3: getmany registers the 11 under ${CLAUDE_PLUGIN_ROOT}/hooks/ -------
+# --- C3: getmany registers the guards through live per-repo symlinks --------
+# Rewritten 2026-09-13 (PORTABLE-GUARD-MIGRATION-STEP-2-01): the runtime
+# refuses ${CLAUDE_PLUGIN_ROOT} in settings.json hook commands, so the live
+# form is ${CLAUDE_PROJECT_DIR}/.claude/hooks/<name> backed by a per-file
+# symlink to the canonical plugin tree — persona-engine's C1 pattern.
 check_c3() {
   local settings="$GETMANY/.claude/settings.json"
   if [ ! -r "$settings" ]; then bad "C3: cannot read $settings"; return; fi
@@ -165,33 +175,50 @@ for line in open(rows):
     want[name] = ev
 d = json.load(open(path))
 have = {}
+dead = set()
 for ev, arr in d.get("hooks", {}).items():
     for m in arr:
         for hk in m.get("hooks", []):
             cmd = hk.get("command", "")
             for name in want:
-                tok = "${CLAUDE_PLUGIN_ROOT}/hooks/" + name
-                if tok in cmd:
+                if "${CLAUDE_PLUGIN_ROOT}/hooks/" + name in cmd:
+                    dead.add(name)
+                if "${CLAUDE_PROJECT_DIR}/.claude/hooks/" + name in cmd:
                     have[name] = ev
-for name, ev in sorted(want.items()):
-    if name not in have:
-        print("C3 %s: no registration under ${CLAUDE_PLUGIN_ROOT}/hooks/" % name)
-    elif have[name] != ev:
-        print("C3 %s: registered under %s, expected %s" % (name, have[name], ev))
+for name in sorted(want):
+    if name in dead:
+        print("C3 %s: DEAD FORM ${CLAUDE_PLUGIN_ROOT} in settings.json (runtime refuses it; use ${CLAUDE_PROJECT_DIR}/.claude/hooks/)" % name)
+    elif name not in have:
+        print("C3 %s: no live registration under ${CLAUDE_PROJECT_DIR}/.claude/hooks/" % name)
+    elif have[name] != want[name]:
+        print("C3 %s: registered under %s, expected %s" % (name, have[name], want[name]))
 PY
 )"
   if [ -n "$missing" ]; then
     while IFS= read -r line; do bad "$line"; done <<<"$missing"
   else
-    local n
-    for n in $GUARD_NAMES; do ok "C3 $n: registered under $(event_for "$n")"; done
+    local n link
+    for n in $GUARD_NAMES; do
+      link="$GETMANY/.claude/hooks/$n"
+      if [ ! -L "$link" ]; then bad "C3 $n: $link is not a symlink"; continue; fi
+      if [ "$(readlink "$link")" != "$CANON_HOOKS/$n" ]; then
+        bad "C3 $n: link target '$(readlink "$link")' != canonical $CANON_HOOKS/$n"
+        continue
+      fi
+      if [ ! -x "$link" ]; then bad "C3 $n: symlink dangling (canonical copy missing)"; continue; fi
+      ok "C3 $n: live registration + canonical symlink ($(event_for "$n"))"
+    done
   fi
   rm -f "$t"
 }
 
-# --- C3b: every ${CLAUDE_PLUGIN_ROOT}/hooks/ file getmany names exists -----
+# --- C3b: getmany settings must carry NO dead ${CLAUDE_PLUGIN_ROOT} tokens --
+# The form is refused at runtime for settings.json hooks (claude 2.1.270:
+# "only available in hooks defined in a plugin's hooks/hooks.json file, not
+# in settings.json") — every such token is a registration that can never
+# fire. Plugin-level registration belongs in the plugin's hooks/hooks.json.
 check_c3b() {
-  local settings="$GETMANY/.claude/settings.json" t ghost
+  local settings="$GETMANY/.claude/settings.json" t ghost ghosts
   t="$(mktemp)"
   python3 - "$settings" >"$t" <<'PY'
 import json, re, sys
@@ -203,13 +230,15 @@ for ev, arr in d.get("hooks", {}).items():
             for mm in re.finditer(r'\$\{CLAUDE_PLUGIN_ROOT\}/hooks/([^"\s]+\.sh)', cmd):
                 print(mm.group(1))
 PY
-  while IFS= read -r ghost; do
-    [ -n "$ghost" ] || continue
-    if [ -f "$PLUGIN_HOOKS/$ghost" ]; then ok "C3b file exists: $ghost"
-    elif case " $KNOWN_BROKEN " in *" $ghost "*) true ;; *) false ;; esac; then
-      KNOWN=$((KNOWN+1)); echo "KNOWN-BROKEN (retired hook, getmany registration not in this task's scope): $ghost"
-    else bad "C3b getmany registers $ghost but plugin ships no such file"; fi
-  done < <(sort -u "$t")
+  ghosts="$(sort -u "$t")"
+  if [ -z "$ghosts" ]; then
+    ok "C3b: no dead \${CLAUDE_PLUGIN_ROOT}/hooks/ tokens in getmany settings"
+  else
+    while IFS= read -r ghost; do
+      [ -n "$ghost" ] || continue
+      bad "C3b getmany still names $ghost in the DEAD \${CLAUDE_PLUGIN_ROOT}/hooks/ form (runtime refuses it)"
+    done <<<"$ghosts"
+  fi
   rm -f "$t"
 }
 
@@ -221,7 +250,7 @@ run_suite_env() { # plugin_hooks persona getmany canon strict
 # bash-guard: allow
 build_fixture() { # $1=scratch root: plug/hooks, canon/hooks, persona, getmany
   local s="$1" n
-  mkdir -p "$s/plug/hooks" "$s/canon/hooks" "$s/persona/.claude/hooks" "$s/getmany/.claude"
+  mkdir -p "$s/plug/hooks" "$s/canon/hooks" "$s/persona/.claude/hooks" "$s/getmany/.claude/hooks"
   for n in $GUARD_NAMES; do
     cp "$DEF_PLUGIN_HOOKS/$n" "$s/plug/hooks/$n";  chmod 755 "$s/plug/hooks/$n"
     cp "$DEF_PLUGIN_HOOKS/$n" "$s/canon/hooks/$n";  chmod 755 "$s/canon/hooks/$n"
@@ -241,9 +270,10 @@ ev = {"leadv2-bash-hook-dispatcher.sh":"PreToolUse","scheduled-decisions-inject.
 hooks = {}
 for n in names:
     hooks.setdefault(ev[n], []).append({"hooks":[{"type":"command",
-        "command":"\"${CLAUDE_PLUGIN_ROOT}/hooks/%s\"" % n}]})
+        "command":"\"${CLAUDE_PROJECT_DIR}/.claude/hooks/%s\"" % n}]})
 json.dump({"hooks":hooks}, open(out,"w"), indent=2)
 PY
+  for n in $GUARD_NAMES; do ln -s "$s/canon/hooks/$n" "$s/getmany/.claude/hooks/$n"; done
 }
 # bash-guard: allow
 selftest() {
