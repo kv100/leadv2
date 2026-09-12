@@ -138,7 +138,7 @@ case_a() {
   assert_eq "a: no worktree leaked" 1 "$(git -C "$REPO" worktree list | wc -l | tr -d ' ')"
 }
 
-# ── (b) a lane 1 behind is refused, salvage named, main unmoved ──────────────
+# ── (b) a lane 1 behind lands through the bounded auto-merge path ───────────
 case_b() {
   _mk_case b
   git -C "$REPO" checkout -q -b lane-b
@@ -149,17 +149,15 @@ case_b() {
   local main_before; main_before="$(git -C "$REPO" rev-parse main)"
   # setup self-check
   assert "b: lane-b is 1 behind" test "$(git -C "$REPO" rev-list --count lane-b..main)" = 1
-  local err; err="$(_land_stderr lane-b)"
+  _run_land lane-b
   local rc=$?
-  assert_eq "b: rc=1" 1 "$rc"
-  assert_contains "b: refusal names lane-salvage" "$err" "leadv2-lane-salvage.sh"
-  assert_contains "b: refusal names reason" "$err" "behind_main"
+  assert_eq "b: rc=0" 0 "$rc"
   local row; row="$(_last_row)"
-  assert_contains "b: row refused" "$(_field "$row" outcome)" "refused"
-  assert_contains "b: row reason behind_main" "$(_field "$row" reason)" "behind_main"
+  assert_contains "b: row landed" "$(_field "$row" outcome)" "landed"
+  assert_eq "b: row mode auto_no_ff" auto_no_ff "$(_field "$row" mode)"
   assert_eq "b: row behind=1" 1 "$(_field "$row" behind)"
-  assert_eq "b: main unmoved" "$main_before" "$(git -C "$REPO" rev-parse main)"
-  assert_eq "b: remote unmoved" "$main_before" "$(_remote_tip)"
+  assert "b: main moved" test "$main_before" != "$(git -C "$REPO" rev-parse main)"
+  assert_eq "b: remote matches main" "$(git -C "$REPO" rev-parse main)" "$(_remote_tip)"
 }
 
 # ── (c) unrelated dirty state files are preserved, land proceeds ─────────────
@@ -257,6 +255,12 @@ case_f() {
   # main adds a file AFTER the fork that the lane never touches: the exact
   # shape leadv2-merge-safety-gate.sh exists to refuse (rc=1)
   _commit "$REPO" shared/main-file.txt "shared" "main adds file lane-f never saw"
+  # Reproduce the documented -s ours regression shape: the merge gives
+  # lane-f main's ancestry but keeps its pre-main tree, so shared/main-file
+  # would be silently deleted by a later land unless the safety gate refuses.
+  git -C "$REPO" checkout -q lane-f
+  git -C "$REPO" -c user.name=t -c user.email=t@t merge -q -s ours main -m "bad merge keeps ours"
+  git -C "$REPO" checkout -q main
   local main_before; main_before="$(git -C "$REPO" rev-parse main)"
   # setup self-check
   assert "f: shared file on main tip" git -C "$REPO" cat-file -e main:shared/main-file.txt

@@ -131,8 +131,15 @@ case "${PUSH}" in
   *) printf 'leadv2-land: LEADV2_LAND_PUSH must be 0 or 1 (got %s)\n' "${PUSH}" >&2; exit 2 ;;
 esac
 
-MAX_BEHIND="${LEADV2_LAND_MAX_BEHIND:-50}"
-[[ "${MAX_BEHIND}" =~ ^[0-9]+$ ]] || { printf 'leadv2-land: LEADV2_LAND_MAX_BEHIND must be a non-negative integer (got %s)\n' "${MAX_BEHIND}" >&2; exit 2; }
+land_max_behind() { # -> configured bounded drift; mutation target is in this policy seam
+  local max="${LEADV2_LAND_MAX_BEHIND:-50}"
+  [[ "${max}" =~ ^[0-9]+$ ]] || {
+    printf 'leadv2-land: LEADV2_LAND_MAX_BEHIND must be a non-negative integer (got %s)\n' "${max}" >&2
+    return 1
+  }
+  printf '%s' "${max}"
+}
+MAX_BEHIND="$(land_max_behind)" || exit 2
 
 # ── ledger row state ─────────────────────────────────────────────────────────
 L_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
