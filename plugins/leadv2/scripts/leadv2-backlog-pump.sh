@@ -92,7 +92,8 @@ set -uo pipefail   # no -e: refusals must journal and continue, never abort
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # BEAT-LOOP-ORPHANS-01: refuse to run at all for a headless worker session
 # (glm-coder/freepool-coder/kimi-coder/claude-subsession) -- see identical
-# gate + rationale in leadv2-lane-pulse-watch.sh. Fail-open to running for
+# gate + rationale in hooks/lib/leadv2-hook-session-kind.sh. Fail-open to
+# running for
 # `lead`/`unknown`.
 _LV2_HOOK_KIND_LIB="${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh"
 if [[ -f "$_LV2_HOOK_KIND_LIB" ]]; then

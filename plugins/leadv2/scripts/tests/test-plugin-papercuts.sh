@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
-# run-all-triggers: codex-task.sh leadv2-dispatch-code.sh leadv2-pulse-beat.sh leadv2-routing.yaml leadv2-single-lead-beat-loop.sh
+# run-all-triggers: codex-task.sh leadv2-dispatch-code.sh leadv2-routing.yaml
 # tests/test-plugin-papercuts.sh — PLUGIN-PAPERCUTS-01 (2026-08-31, four
 # plugin-level defects, each hitting every adopted repo).
 #
@@ -39,19 +39,19 @@
 # Declared negative control (RUN RED in the lane report): P6 — reverting the
 # path-form --resume-lane acceptance makes this suite fail.
 #
-# Hermetic: fixture git repos under mktemp, stub heartbeat/beat/journal/GLM/
-# codex/lane-worktree/liveness/curl binaries, LEADV2_PULSE_MODE=0 +
-# LEADV2_SINGLE_LEAD_BEAT=0 on every dispatch run so no REAL watcher is ever
-# armed from a fixture. Never kills a process outside the fixture tree; kill
-# targets come only from pids this suite recorded or from fixture pidfiles it
-# created via LEADV2_SINGLE_LEAD_BEAT_LOOP_PID. No network, no real lanes, no
-# real backlog. Run: bash plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
+# Hermetic: fixture git repos under mktemp, stub journal/GLM/codex/lane-
+# worktree/liveness/curl binaries, LEADV2_PULSE_MODE=0 on every dispatch run
+# so no REAL watcher is ever armed from a fixture. Never kills a process
+# outside the fixture tree; kill targets come only from pids this suite
+# recorded or from fixture pidfiles it created. No network, no real lanes,
+# no real backlog. Run: bash plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
+# ONE-STATUS-MECHANISM-01 (2026-09-13): the P1/P2 beat-loop sections and the
+# P8 pulse-beat spawn-argv section were deleted with the retired beat chain.
 
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="$(cd "$TESTS_DIR/.." && pwd)"
-LOOP="$SCRIPT_DIR/leadv2-single-lead-beat-loop.sh"
 DISPATCH="$SCRIPT_DIR/leadv2-dispatch-code.sh"
 RESOLVER="$SCRIPT_DIR/lib/leadv2-glm-policy-resolve.py"
 # The backlog writer lives in the CONSUMING repo (repo-local defect — see the
@@ -80,15 +80,6 @@ wait_gone() {  # <pid> <timeout-s> -> 0 when the pid is gone
   done
   kill -0 "$pid" 2>/dev/null && return 1 || return 0
 }
-wait_beats() {  # <min-lines> <timeout-s> -> 0 when the beats log has >= min lines
-  local _min="$1" _deadline=$(( $(date +%s) + ${2:-10} )) _n
-  while (( $(date +%s) < _deadline )); do
-    _n="$(wc -l < "$P1_BEATS" 2>/dev/null | tr -d ' ')"
-    [[ "${_n:-0}" -ge "$_min" ]] && return 0
-    sleep 0.3
-  done
-  return 1
-}
 cleanup() {
   kill_recorded
   local f p
@@ -101,207 +92,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── shared beat-loop fixture knobs ────────────────────────────────────────────
-HB_UNKNOWN="$TMP/hb-unknown.sh"   # reader error every pass -> UNKNOWN
-printf '#!/usr/bin/env bash\nexit 0\n' > "$HB_UNKNOWN"; chmod +x "$HB_UNKNOWN"
-HB_LIVE="$TMP/hb-live.sh"         # one live lane -> the loop keeps beating
-printf '#!/usr/bin/env bash\nprintf %s\n' "'[{\"status\":\"running\"}]'" > "$HB_LIVE"
-chmod +x "$HB_LIVE"
-BEAT_STUB="$TMP/beat-stub.sh"     # beat writer seam, records invocations
-printf '#!/usr/bin/env bash\ndate +%%s >> "%s/beats.log"\n' "$TMP" > "$BEAT_STUB"
-chmod +x "$BEAT_STUB"
-
-loop_env() {  # <pidfile> [extra env assignments as args]
-  # NOTE: no LEADV2_PULSE_MODE/LEADV2_SINGLE_LEAD_BEAT kill-switch here — the
-  # loop itself no-ops under either. We invoke the loop DIRECTLY in this part,
-  # so those switches (meant to stop DISPATCH arming real watchers) must stay
-  # unset; dispatch runs below carry them in e2e_setup instead.
-  local pidfile="$1"; shift
-  env LEADV2_PROJECT_ROOT="$TMP/fixture-root" \
-      LEADV2_SINGLE_LEAD_BEAT_LOOP_PID="$pidfile" \
-      LEADV2_SINGLE_LEAD_BEAT_LOOP_S=1 \
-      LEADV2_SINGLE_LEAD_BEAT_LOOP_ZERO_MAX=99 \
-      "$@"
-}
-
-# ═══ P1: the loop beats through reader errors; only REAL zeros stop it ═══════
-printf '\ntest: P1 loop beats through reader errors, stops only on real zeros\n'
-mkdir -p "$TMP/fixture-root"
-HB_ZERO="$TMP/hb-zero.sh"         # readable registry, zero live lanes -> REAL zero
-printf '#!/usr/bin/env bash\nprintf "[]\\n"\n' > "$HB_ZERO"; chmod +x "$HB_ZERO"
-P1_BEATS="$TMP/beats.log"
-
-# ── P1a: UNKNOWN (reader-error) passes never stop or silence the loop ────────
-P1A_PIDFILE="$TMP/p1a.loop.pid"; : > "$P1_BEATS"
-RUNNER="$TMP/p1a-runner.sh"       # the production shape: nohup detached, run exits
-cat > "$RUNNER" <<EOF
-#!/usr/bin/env bash
-env LEADV2_PROJECT_ROOT="$TMP/fixture-root" \
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_PID="$P1A_PIDFILE" \
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_S=1 \
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_ZERO_MAX=99 \
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX=2 \
-    LEADV2_SESSION_KIND=lead \
-    LEADV2_LANE_HEARTBEAT_BIN="$HB_UNKNOWN" \
-    LEADV2_PULSE_BEAT_BIN="$BEAT_STUB" \
-  nohup bash "$LOOP" >/dev/null 2>&1 </dev/null &
-echo \$! > "$TMP/p1a.pid"
-EOF
-chmod +x "$RUNNER"
-bash "$RUNNER"
-P1A_PID="$(cat "$TMP/p1a.pid" 2>/dev/null | tr -d ' ')"
-PIDS="$PIDS $P1A_PID"
-# Vacuous-run guard: the loop must be ALIVE ~1s after launch (kill-switch or a
-# crash exits instantly).
-sleep 1
-if [[ "$P1A_PID" =~ ^[0-9]+$ ]] && ! kill -0 "$P1A_PID" 2>/dev/null; then
-  bad "P1a setup: loop pid $P1A_PID died immediately — the loop never ran (vacuous)"
-else
-  # bounded wait for >=3 beats: a fixed sleep flaked under load (the loop's
-  # first pass can exceed any fixed window). The assertions below are unchanged.
-  wait_beats 3 15 || true
-  P1A_BEATS="$(wc -l < "$P1_BEATS" | tr -d ' ')"
-  P1A_CLAIM="$(cat "$P1A_PIDFILE" 2>/dev/null | tr -d ' ')"
-  if [[ "${P1A_BEATS:-0}" -ge 3 ]] \
-     && kill -0 "$P1A_PID" 2>/dev/null \
-     && [[ "$P1A_CLAIM" == "$P1A_PID" ]]; then
-    ok "P1a: $P1A_BEATS beats through reader errors — loop alive, claim held (UNKNOWN_MAX inert)"
-  else
-    bad "P1a: loop silenced/stopped on reader errors (beats=${P1A_BEATS:-0}, alive=$(kill -0 "$P1A_PID" 2>/dev/null && echo y || echo n), claim=$P1A_CLAIM)"
-  fi
-fi
-kill "$P1A_PID" 2>/dev/null || true
-wait_gone "$P1A_PID" 5 || true
-: > "$P1_BEATS"
-
-# ── P1b: ZERO_MAX consecutive REAL zeros stop the loop; pidfile removed ──────
-P1B_PIDFILE="$TMP/p1b.loop.pid"
-RUNNER="$TMP/p1b-runner.sh"
-cat > "$RUNNER" <<EOF
-#!/usr/bin/env bash
-env LEADV2_PROJECT_ROOT="$TMP/fixture-root" \
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_PID="$P1B_PIDFILE" \
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_S=1 \
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_ZERO_MAX=2 \
-    LEADV2_SESSION_KIND=lead \
-    LEADV2_LANE_HEARTBEAT_BIN="$HB_ZERO" \
-    LEADV2_PULSE_BEAT_BIN="$BEAT_STUB" \
-  nohup bash "$LOOP" >/dev/null 2>&1 </dev/null &
-echo \$! > "$TMP/p1b.pid"
-EOF
-chmod +x "$RUNNER"
-bash "$RUNNER"
-P1B_PID="$(cat "$TMP/p1b.pid" 2>/dev/null | tr -d ' ')"
-PIDS="$PIDS $P1B_PID"
-sleep 1
-if [[ "$P1B_PID" =~ ^[0-9]+$ ]] && ! kill -0 "$P1B_PID" 2>/dev/null; then
-  bad "P1b setup: loop pid $P1B_PID died immediately — the loop never ran (vacuous)"
-else
-  if wait_beats 1 15; then   # the loop must beat at least once before it may stop
-    if wait_gone "$P1B_PID" 20; then
-      if [[ ! -f "$P1B_PIDFILE" ]]; then
-        ok "P1b: loop beat, then stopped itself after ZERO_MAX=2 real zeros; pidfile removed"
-      else
-        bad "P1b: loop exited but left its pidfile behind ($P1B_PIDFILE)"
-      fi
-    else
-      bad "P1b: beat loop kept beating on a genuinely empty board (pid $P1B_PID still alive)"
-    fi
-  else
-    bad "P1b: fixture loop never beat — assertions would be vacuous"
-  fi
-fi
-
-# ═══ P2: a suite leaves no loop behind + pidfile cleanup is ownership-checked ═
-printf '\ntest: P2 pidfile cleanup must not delete a NEWER loop claim / suite leaves nothing\n'
-# The loop's REAL pid must be read from the pidfile, never from `$!`:
-# `loop_env ... &` backgrounds a FUNCTION, so bash forks a subshell whose pid
-# $! reports, and the loop's own $$ (what the pidfile records) is a CHILD pid
-# whenever the subshell does not exec the final command — a race (measured:
-# 2 flakes in 5 standalone iterations). Poll the pidfile and adopt whatever
-# live pid it names.
-_arm_loop() {  # <pidfile> -> echoes the loop pid; empty on timeout
-  local _pf="$1" _owner="" _dl=$(( $(date +%s) + 8 ))
-  while (( $(date +%s) < _dl )); do
-    _owner="$(cat "$_pf" 2>/dev/null | tr -d ' ')"
-    if [[ "$_owner" =~ ^[0-9]+$ ]] && kill -0 "$_owner" 2>/dev/null; then
-      printf '%s' "$_owner"; return 0
-    fi
-    sleep 0.3
-  done
-  return 1
-}
-P2A_PIDFILE="$TMP/p2a.loop.pid"
-loop_env "$P2A_PIDFILE" \
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX=0 \
-    LEADV2_LANE_HEARTBEAT_BIN="$HB_LIVE" \
-    LEADV2_SESSION_KIND=lead \
-    LEADV2_PULSE_BEAT_BIN="$BEAT_STUB" \
-    bash "$LOOP" >/dev/null 2>&1 &
-P2A_PID="$(_arm_loop "$P2A_PIDFILE")"
-[[ -n "$P2A_PID" ]] && PIDS="$PIDS $P2A_PID"
-if [[ -n "$P2A_PID" ]]; then
-  # Simulate the multiplicity race: A's pidfile claim disappears while A still
-  # runs; a NEW dispatch arms loop B, which takes over the pidfile.
-  rm -f "$P2A_PIDFILE"
-  P2B_PIDFILE="$TMP/p2b.loop.pid"
-  loop_env "$P2B_PIDFILE" \
-      LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX=0 \
-      LEADV2_LANE_HEARTBEAT_BIN="$HB_LIVE" \
-      LEADV2_SESSION_KIND=lead \
-      LEADV2_PULSE_BEAT_BIN="$BEAT_STUB" \
-      bash "$LOOP" >/dev/null 2>&1 &
-  P2B_PID="$(_arm_loop "$P2B_PIDFILE")"
-  [[ -n "$P2B_PID" ]] && PIDS="$PIDS $P2B_PID"
-  if [[ -n "$P2B_PID" ]]; then
-    kill "$P2A_PID" 2>/dev/null || true   # the OLD loop exits late
-    if wait_gone "$P2A_PID" 5; then
-      if [[ "$(cat "$P2B_PIDFILE" 2>/dev/null | tr -d ' ')" == "$P2B_PID" ]] \
-         && kill -0 "$P2B_PID" 2>/dev/null; then
-        ok "P2a: old loop exited WITHOUT deleting the newer loop's pidfile claim"
-      else
-        bad "P2a: old loop's exit deleted the NEWER loop's pidfile claim (respawn multiplicity)"
-      fi
-    else
-      bad "P2a: old loop pid $P2A_PID did not exit after TERM"
-    fi
-  else
-    bad "P2a setup: loop B never took ownership of the pidfile"
-  fi
-else
-  bad "P2a setup: loop A never armed (no live pid in $P2A_PIDFILE)"
-fi
-kill_recorded   # do not leak loops into later assertions
-# P2b: a suite-scope run that arms a loop must leave NOTHING behind on exit.
-SIM_SUITE="$TMP/sim-suite.sh"
-cat > "$SIM_SUITE" <<EOF
-#!/usr/bin/env bash
-set -u
-SIM_PIDFILE="$TMP/sim.loop.pid"
-env LEADV2_PROJECT_ROOT="$TMP/fixture-root" \\
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_PID="\$SIM_PIDFILE" \\
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_S=1 \\
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_ZERO_MAX=99 \\
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX=1 \\
-    LEADV2_LANE_HEARTBEAT_BIN="$HB_UNKNOWN" \\
-    LEADV2_PULSE_BEAT_BIN="$BEAT_STUB" \\
-  nohup bash "$LOOP" >/dev/null 2>&1 </dev/null &
-SIM_PID=\$!
-cleanup_sim() { kill "\$SIM_PID" 2>/dev/null || true; }
-trap cleanup_sim EXIT
-sleep 1
-exit 0
-EOF
-chmod +x "$SIM_SUITE"
-bash "$SIM_SUITE"; SIM_RC=$?
-SIM_PID="$(cat "$TMP/sim.loop.pid" 2>/dev/null | tr -d ' ')"
-[[ -n "$SIM_PID" ]] && PIDS="$PIDS $SIM_PID"
-if [[ "$SIM_RC" -eq 0 ]] && { [[ -z "$SIM_PID" ]] || wait_gone "$SIM_PID" 8; }; then
-  ok "P2b: suite-scope run exited leaving no beat loop behind"
-else
-  bad "P2b: suite-scope run rc=$SIM_RC left beat loop pid ${SIM_PID:-?} alive"
-fi
-
+# ONE-STATUS-MECHANISM-01 (2026-09-13): this section tested the retired
+# beat chain and was deleted with it.
 # ═══ dispatch fixture (P3–P6) — harness template: test-phase-precondition.sh ══
 E2E_SANDBOX="$TMP/e2e"
 E2E_REPO="$E2E_SANDBOX/repo"
@@ -435,7 +227,6 @@ e2e_setup() {
   export LEADV2_DISPATCH_COST_ESTIMATE=0
   # fixture-leak regression guard: a test dispatch must NEVER arm real watchers
   export LEADV2_PULSE_MODE=0
-  export LEADV2_SINGLE_LEAD_BEAT=0
   # ── budget + hermeticity: the two codex post-spawn deadlines ────────────────
   # Measured 2026-09-05 by sampling this suite's own process group every 2s:
   # across 59 samples the ONLY things running were leadv2-dispatch-code.sh (60)
@@ -597,54 +388,6 @@ SH
   else
     bad "P7b: healthy write should exit 0 with the row; rc=$P7B_RC out=$(tail -1 "$TMP/p7b.out" 2>/dev/null)"
   fi
-fi
-
-# ═══ P8: the spawned --now watcher carries --owner=<repo>:<lane> in argv ══════
-# PLUGIN-PAPERCUTS-01 defect 1, follow-on constraint: a reparented watcher's
-# argv is the only thing identifying its owner — a bare
-# "pulse-beat.sh --now" made a safe orphan sweep impossible (2026-08-31
-# census). PATH-shimmed nohup/setsid capture the spawn argv WITHOUT running
-# the real watcher, so nothing leaks out of the fixture.
-printf '\ntest: P8 watcher argv carries --owner=<repo>:<lane>\n'
-P8_DIR="$TMP/p8-repo"
-mkdir -p "$P8_DIR"
-git -C "$P8_DIR" init -q -b worktree-P8-LANE 2>/dev/null \
-  || { git -C "$P8_DIR" init -q && git -C "$P8_DIR" checkout -q -b worktree-P8-LANE; }
-P8_SHIMS="$TMP/p8-shims"; mkdir -p "$P8_SHIMS"
-for _s in nohup setsid; do
-  printf '#!/bin/sh\nprintf ":%%s " "$0" >> "%s/spawn.log"\nfor _a in "$@"; do printf "[%%s]" "$_a" >> "%s/spawn.log"; done\nprintf "\n" >> "%s/spawn.log"\nexit 0\n' \
-    "$P8_SHIMS" "$P8_SHIMS" "$P8_SHIMS" > "$P8_SHIMS/$_s"
-  chmod +x "$P8_SHIMS/$_s"
-done
-rm -f "$P8_SHIMS/spawn.log"
-# LEADV2_STATE_ROOT pins the control-plane state under the fixture: fresh
-# throttle clock (due) and no live loop sentinel — otherwise the gates would
-# consult the REAL shared state and rightly refuse to spawn.
-PATH="$P8_SHIMS:$PATH" LEADV2_PROJECT_ROOT="$P8_DIR" LEADV2_STATE_ROOT="$TMP/p8-state" \
-  LEADV2_SINGLE_LEAD_BEAT=1 \
-  bash "$SCRIPT_DIR/leadv2-pulse-beat.sh" --check >"$TMP/p8.out" 2>"$TMP/p8.err"
-# the spawn is backgrounded and the parent exits at once — wait (bounded) for
-# the shim to be scheduled before asserting
-_p8_w=0
-while (( _p8_w < 10 )) && [[ ! -s "$P8_SHIMS/spawn.log" ]]; do sleep 0.3; _p8_w=$((_p8_w+1)); done
-if grep -q -- "--owner=p8-repo:worktree-P8-LANE" "$P8_SHIMS/spawn.log" 2>/dev/null; then
-  ok "P8: spawned watcher argv carries the owner stamp ($(grep -o -- '--owner=[^ >]*' "$P8_SHIMS/spawn.log" | head -1))"
-else
-  bad "P8: watcher spawn must carry --owner=<repo>:<lane>; spawn.log=$(cat "$P8_SHIMS/spawn.log" 2>/dev/null | head -1)"
-fi
-# explicit caller pin wins over derivation (P8 stamped the throttle clock —
-# reset it so P8b is due again)
-find "$TMP/p8-state" -name .pulse-beat-last -delete 2>/dev/null
-rm -f "$P8_SHIMS/spawn.log"
-PATH="$P8_SHIMS:$PATH" LEADV2_PROJECT_ROOT="$P8_DIR" LEADV2_STATE_ROOT="$TMP/p8-state" \
-  LEADV2_SINGLE_LEAD_BEAT=1 LEADV2_BEAT_OWNER_TAG="other-repo:worktree-OTHER" \
-  bash "$SCRIPT_DIR/leadv2-pulse-beat.sh" --check >/dev/null 2>&1
-_p8_w=0
-while (( _p8_w < 10 )) && [[ ! -s "$P8_SHIMS/spawn.log" ]]; do sleep 0.3; _p8_w=$((_p8_w+1)); done
-if grep -q -- "--owner=other-repo:worktree-OTHER" "$P8_SHIMS/spawn.log" 2>/dev/null; then
-  ok "P8b: explicit LEADV2_BEAT_OWNER_TAG overrides derivation"
-else
-  bad "P8b: caller-pinned owner tag must win; spawn.log=$(cat "$P8_SHIMS/spawn.log" 2>/dev/null | head -1)"
 fi
 
 printf '\ntest-plugin-papercuts: %d passed, %d failed\n' "$PASS" "$FAIL"

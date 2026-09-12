@@ -17,9 +17,10 @@ DC="${SCRIPTS_DIR}/leadv2-dispatch-code.sh"
 TMP_BASE="${LEADV2_TEST_TMPDIR:-/tmp}"
 TMP="$(mktemp -d "${TMP_BASE%/}/test-effort-routing.XXXXXX")"; trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
 export LEADV2_ROUTE_ARBITER_EVENTS_JOURNAL="$TMP/events.jsonl"
-# `|| true`: the dispatch arms leadv2-lane-pulse-watch.sh (:5243 in
-# leadv2-dispatch-code.sh), a deliberately async terminal-state watcher that
-# can still be writing pulse/inbox artifacts under "$TMP" when this suite
+# `|| true`: historical -- the dispatcher used to arm
+# leadv2-lane-pulse-watch.sh (retired ONE-STATUS-MECHANISM-01, 2026-09-13),
+# an async watcher that could still be writing artifacts under "$TMP" when
+# this suite
 # exits. Under `set -e` a racing rm fails the EXIT trap and turns a 9/9-green
 # run into rc=1 (measured 2026-08-31). A stale TMP dir is acceptable litter;
 # a false red is not.

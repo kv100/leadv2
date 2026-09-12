@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# plugins/leadv2/hooks/anti-silence-pulse-detector.sh — UserPromptSubmit hook
-# ANTI-SILENCE-HEARTBEAT-01 / D4.
+# plugins/leadv2/hooks/anti-silence-pulse-arm-inject.sh — SessionStart hook
+# ANTI-SILENCE-HEARTBEAT-01 / D1,D2,D3.
 # ONE-STATUS-MECHANISM-01 (founder order 2026-09-12): canonical home is the
-# PLUGIN tree — the per-repo settings.json registration is gone; this
-# single plugin registration covers every repo the plugin serves.
+# PLUGIN tree — a repo that keeps a local copy keeps it as a symlink to
+# this file. The per-repo settings.json registration is gone; this single
+# plugin registration covers every repo the plugin serves.
 #
-# SessionStart's arm-inject nag fires exactly once, before the lead has
-# had any chance to act on it (D4). This hook re-checks the same PID
-# marker on EVERY user turn and re-emits the identical nag whenever the
-# pulse is missing or dead — so a pulse that silently died mid-session
-# (e.g. process killed, worktree torn down) gets re-armed on the very
-# next turn instead of staying dark indefinitely.
+# A SessionStart hook cannot arm a Monitor itself (D1: one-shot process,
+# additionalContext-only contract, always exit 0). What it CAN do is tell
+# the lead, at the top of its very first turn, that its first tool call
+# must be to arm the pulse — a Bash(run_in_background=true) run of
+# anti-silence-pulse.sh, watched by the lead's own Monitor call on its
+# stdout (D2).
 #
-# Same idempotency check as anti-silence-pulse-arm-inject.sh (D3): a live
-# pid means silence ({}), never a duplicate nag.
-#
-# Fail-safe: any error -> {}. Exit 0 always.
+# Idempotent (D3): checks the PID marker anti-silence-pulse.pid via
+# kill -0 (pid_alive() pattern from leadv2-lane-liveness.sh). If a live
+# pid is already there, this hook is silent ({}) — never a second pulse.
+# Fail-safe: any error -> {} (byte-identical to no-hook). Exit 0 always.
 set -euo pipefail
 trap 'printf "{}"; exit 0' ERR
 
@@ -31,11 +32,11 @@ PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CLAUDE_PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git -C "${PWD}" rev-parse --show-toplevel 2>/dev/null || true)}"
 CLAUDE_PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${PLUGIN_ROOT}}"
 PROJECT_ROOT="$CLAUDE_PROJECT_DIR"
+
 # ── stdin: session_id + transcript_path (round 6 H2/H3) ──────────────────
-# Same read-once-guarded pattern as .claude/hooks/leadv2-pulse-json.sh:58-64,
-# and the same bash-regex-on-JSON-string extraction used there and in
-# open-threads-anchor-inject.sh — this repo's hooks never jq/python a stdin
-# field. A payload without these fields degrades to empty, never to an error.
+# Same read-once-guarded pattern as .claude/hooks/leadv2-pulse-json.sh:58-64
+# — this repo's hooks never jq/python a stdin field. A payload without these
+# fields degrades to empty, never to an error.
 _stdin=""
 if [[ ! -t 0 ]]; then read -r -d '' -t 2 _stdin 2>/dev/null || true; fi
 _sid=""; _tpath=""
@@ -129,15 +130,41 @@ HEARTBEAT_SLACK_S="${LEADV2_ANTI_SILENCE_HEARTBEAT_SLACK_S:-300}"
 # the shape the harness silently discards: round-4 review found the
 # literal string ANTI-SILENCE in zero of 86 hook_additional_context
 # transcript attachments even after this hook had fired repeatedly.
+#
+# HOOK-OUTPUT-BUDGET-UNMANAGED-01 round 3 (M1): this hook measured 1,064B
+# armed (not the 2B its stub "{}" idle path suggested) and carried no cap at
+# all -- same cap-at-source + overflow-to-file contract as
+# feature-liveness-session-inject.sh / learnings-recent-inject.sh.
+# LEADV2_HOOK_OVERFLOW_TRIGGER_BYTES is a TRIGGER threshold (default 2048B),
+# not a hard ceiling -- the headline+note emitted when it's crossed is not
+# itself bounded by this value. The cap applies to the NESTED round-4
+# payload: every emit below goes out in the hookSpecificOutput shape.
+HOOK_OUTPUT_CAP_BYTES="${LEADV2_HOOK_OVERFLOW_TRIGGER_BYTES:-2048}"
+OVERFLOW_DIR="${PROJECT_ROOT}/docs/leadv2/hook-overflow"
+OVERFLOW_FILE="${OVERFLOW_DIR}/anti-silence-pulse-arm-inject.log"
+
 _emit() {
-  python3 - "$1" "$2" <<'PYEOF'
-import json, sys
+  python3 - "$1" "$2" "$HOOK_OUTPUT_CAP_BYTES" "$OVERFLOW_FILE" <<'PYEOF'
+import json, os, sys
 block = sys.argv[1]
 event_name = sys.argv[2]
+cap = int(sys.argv[3])
+overflow_path = sys.argv[4]
 if not block:
     print("{}")
+    raise SystemExit(0)
+payload = json.dumps({"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": block}})
+if len(payload.encode("utf-8")) > cap:
+    os.makedirs(os.path.dirname(overflow_path), exist_ok=True)
+    with open(overflow_path, "w", encoding="utf-8") as f:
+        f.write(block + "\n")
+    headline = block.splitlines()[0] if block.splitlines() else ""
+    if len(headline) > 300:
+        headline = headline[:300] + "\u2026"
+    note = f"output capped ({len(payload)}B > {cap}B); full detail at {overflow_path}"
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": f"{headline} | {note}"}}))
 else:
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": block}}))
+    print(payload)
 PYEOF
 }
 
@@ -181,12 +208,12 @@ if [[ -f "$PID_FILE" ]]; then
       exit 0
     fi
     block="ANTI-SILENCE PULSE ALIVE BUT WEDGED/DEAD (ANTI-SILENCE-HEARTBEAT-01): the pulse process (pid ${pid}) is running but its heartbeat stamp is stale, meaning the loop itself is wedged or dead -- this is NOT a detached-Monitor detector (that case is undetectable from inside this repo; a healthy loop keeps stamping fresh no matter who is watching). Re-arm now: Bash(command=\"${_ARM_CMD}\", run_in_background=true) then Monitor its stdout (persistent=true). A live process is not proof the founder is being notified."
-    _emit "$block" "UserPromptSubmit" || { printf '{}'; exit 0; }
+    _emit "$block" "SessionStart" || { printf '{}'; exit 0; }
     exit 0
   fi
 fi
 
-block="ANTI-SILENCE PULSE NOT ARMED (ANTI-SILENCE-HEARTBEAT-01): re-arm now — Bash(command=\"${_ARM_CMD}\", run_in_background=true) then Monitor its stdout (persistent=true). It was missing or had died; re-arm before continuing other work."
+block="ANTI-SILENCE PULSE NOT ARMED (ANTI-SILENCE-HEARTBEAT-01): your FIRST tool call this turn must be Bash(command=\"${_ARM_CMD}\", run_in_background=true), immediately followed by Monitor on its stdout with description \"anti-silence pulse\" and persistent=true. This is the only way a 30-minute never-silent heartbeat gets armed — a SessionStart hook cannot arm a Monitor itself. Do this before any other work."
 
-_emit "$block" "UserPromptSubmit" || { printf '{}'; exit 0; }
+_emit "$block" "SessionStart" || { printf '{}'; exit 0; }
 exit 0

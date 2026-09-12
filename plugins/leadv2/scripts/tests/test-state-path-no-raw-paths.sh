@@ -19,7 +19,7 @@
 # Any raw reference to a managed name in a file/line NOT on the allow-list
 # is exactly the drift this guard exists to catch (§4i: "the same drift that
 # produced this task will produce the next one").
-# run-all-triggers: leadv2-broad-status leadv2-lane-liveness leadv2-resume leadv2-budget-check
+# run-all-triggers: leadv2-lane-liveness leadv2-resume leadv2-budget-check leadv2-state-path
 #
 # SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
 # marker and matched no name convention, so `run-all.sh --scope changed`
@@ -45,17 +45,14 @@ allowed_files_for() {
       # active.yaml/tombstones.yaml/questions raw refs pre-date
       # LEAD-CONTROL-PLANE-01 and are named OUT OF SCOPE for LANE-STATE-LEAK-01
       # (design §6 non-goals) -- the guard test §4(i) itself was asked to
-      # surface, not fix, them.
-      printf 'plugins/leadv2/scripts/leadv2-lane-liveness.sh\nplugins/leadv2/scripts/leadv2-resume.sh\nplugins/leadv2/scripts/leadv2-status-snapshot.sh\nplugins/leadv2/scripts/leadv2-phase-advance.sh\nplugins/leadv2/scripts/leadv2-budget-check.sh\nplugins/leadv2/scripts/leadv2-writes-overlap.sh\nplugins/leadv2/scripts/leadv2-task-init-pattern.sh\nplugins/leadv2/hooks/leadv2-stale-pid-sweep.sh\n'
+      # surface, not fix, them. anti-silence-pulse.sh joined the list
+      # ONE-STATUS-MECHANISM-01 (2026-09-13) when the pulse moved into the
+      # plugin: its ACTIVE_YAML refs are env-overridable resolver-fallback
+      # lines, the same shape as lane-liveness.sh's.
+      printf 'plugins/leadv2/scripts/leadv2-lane-liveness.sh\nplugins/leadv2/scripts/leadv2-resume.sh\nplugins/leadv2/scripts/leadv2-status-snapshot.sh\nplugins/leadv2/scripts/leadv2-phase-advance.sh\nplugins/leadv2/scripts/leadv2-budget-check.sh\nplugins/leadv2/scripts/leadv2-writes-overlap.sh\nplugins/leadv2/scripts/leadv2-task-init-pattern.sh\nplugins/leadv2/scripts/anti-silence-pulse.sh\nplugins/leadv2/hooks/leadv2-stale-pid-sweep.sh\n'
       ;;
     "glm-deferred.jsonl"|".arm-exceptions-"*|".codex-credits-empty.stamp"|"glm-deferred.d")
-      printf 'plugins/leadv2/scripts/leadv2-dispatch-code.sh\nplugins/leadv2/scripts/leadv2-broad-status.sh\n'
-      ;;
-    "founder-status.md"|"founder-status-full.md")
-      printf 'plugins/leadv2/scripts/leadv2-broad-status.sh\nplugins/leadv2/hooks/leadv2-single-lead-beat.sh\n'
-      ;;
-    ".board-empty-since"|".founder-status-epoch")
-      printf 'plugins/leadv2/scripts/leadv2-broad-status.sh\n'
+      printf 'plugins/leadv2/scripts/leadv2-dispatch-code.sh\n'
       ;;
     *)
       printf ''
@@ -68,10 +65,6 @@ MANAGED_NAMES=(
   "glm-deferred.jsonl"
   "glm-deferred.d"
   ".codex-credits-empty.stamp"
-  "founder-status.md"
-  "founder-status-full.md"
-  ".board-empty-since"
-  ".founder-status-epoch"
 )
 
 # Parameterised so a falsification mutant corpus (a COPY of the tree, never

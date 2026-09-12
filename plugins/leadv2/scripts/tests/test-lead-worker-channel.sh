@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
 # changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
-# run-all-triggers: ask-lead leadv2-ask leadv2-broad-status leadv2-dispatch-code leadv2-inbox leadv2-notify-lead
+# run-all-triggers: ask-lead leadv2-ask leadv2-dispatch-code leadv2-inbox leadv2-notify-lead
 # tests/test-lead-worker-channel.sh — LEAD-WORKER-CHANNEL-01.
 #
 # Proves the worker->lead channel's guaranteed path (leadv2-notify-lead.sh
 # appends a durable row via leadv2-inbox.sh, unconditionally, before it
 # ever prints the SendMessage-relay line a worker MODEL might act on) and
-# the lead's drain-without-being-told path (leadv2-inbox.sh drain, wired
-# into leadv2-broad-status.sh's beat).
+# the lead's drain-without-being-told path (leadv2-inbox.sh drain; the
+# broad-status beat consumer was retired ONE-STATUS-MECHANISM-01, 2026-09-13).
 #
 # Hermetic: every case sets LEADV2_LEAD_INBOX_DIR to a throwaway dir --
 # never a real lane, never the real lane registry, never a real inbox.
-# The broad-status case additionally sets LEADV2_PROJECT_ROOT/STATE_ROOT to
-# throwaway dirs (lv2_assert_scratch_repo proves it before any write).
 #
 # Cases (LEAD-WORKER-CHANNEL-01 Acceptance):
 #   1. no lead reachable -> row still written, exit 0
@@ -21,8 +19,6 @@
 #   3. drain returns each row exactly once across two consecutive calls
 #   4. two concurrent drain calls -> every row delivered exactly once,
 #      none lost
-#   5. an undrained row -> appears in the beat's rendered status
-#      (leadv2-broad-status.sh)
 #   6. `finished` and `died` are distinct events for the same lane --
 #      an INFRASTRUCTURE capability proof (notify-lead/inbox can carry two
 #      distinct event rows for one lane), NOT a wired call site: the real
@@ -42,7 +38,6 @@ source "${SCRIPT_DIR}/leadv2-temp.sh"
 
 NOTIFY_SH="${SCRIPT_DIR}/leadv2-notify-lead.sh"
 INBOX_SH="${SCRIPT_DIR}/leadv2-inbox.sh"
-BROAD_STATUS_SH="${SCRIPT_DIR}/leadv2-broad-status.sh"
 
 PASS=0; FAIL=0; ERRORS=()
 log()  { printf -- '[TEST] %s\n' "$*"; }
@@ -116,78 +111,8 @@ else
   fail "C4: total=$TOTAL_ROWS unique=$UNIQUE_ROWS (expected 20/20). A=$(cat "$OUT_A") B=$(cat "$OUT_B")"
 fi
 
-# ── Case 5: an undrained row appears in the beat's rendered status ────────
-REPO5="$TMP/proj5"; STATE5="$TMP/state5"; STUBS5="$TMP/stubs5"; INBOX5="$TMP/inbox5"
-mkdir -p "$REPO5" "$STATE5" "$STUBS5" "$INBOX5"
-git -C "$REPO5" init -q
-lv2_assert_scratch_repo "$REPO5"
-cat >"$STUBS5/collector.sh" <<'EOF'
-#!/usr/bin/env bash
-out=""
-while [[ $# -gt 0 ]]; do case "$1" in --out) out="$2"; shift 2 ;; *) shift ;; esac; done
-[[ -z "$out" ]] && exit 1
-printf '{"sections": {}}' >"$out"
-EOF
-cat >"$STUBS5/claude.sh" <<'EOF'
-#!/usr/bin/env bash
-printf '{"result":"fixture tail"}'
-EOF
-chmod +x "$STUBS5/collector.sh" "$STUBS5/claude.sh"
-
-# The board is written and read OUTSIDE the control plane. docs/leadv2/
-# founder-status.md is a RENDER-class control-plane name: a symlink into the
-# state root that leadv2-state-path.sh repairs on every call, while the
-# renderer writes temp+rename -- which forks the link, and the repair then
-# restores the symlink to the state copy. Measured 2026-09-05 (see
-# test-status-repo-scoped.sh and test-broad-status-foreign-lanes.sh, same
-# root): the state-side copy stops changing after the FIRST beat.
-#
-# That is precisely what C5b asserts against. C5 drains the row and renders
-# it; the SECOND beat must not repeat it -- but with a frozen board the second
-# beat's output was simply the first beat's file, so the row was still there
-# and C5b could only fail. The channel was never at fault: the drain-once
-# contract that C3 and C4 prove directly has held all along. Pinning both path
-# overrides (never one -- see the defect recorded in leadv2-broad-status.sh's
-# header) takes this suite 11/2 -> 13/0 with no assertion weakened.
-BOARD5="$TMP/board5"; mkdir -p "$BOARD5"
-FOUNDER_STATUS5="$BOARD5/founder-status.md"
-
-LEADV2_LEAD_INBOX_DIR="$INBOX5" LEADV2_LEAD_SESSION_ID=lead-beat PROJECT_ROOT="$REPO5" \
-  bash "$NOTIFY_SH" task-beat blocked "gate refused: review round cap" >/dev/null 2>&1
-
-env LEADV2_PROJECT_ROOT="$REPO5" LEADV2_STATE_ROOT="$STATE5" \
-  LEADV2_STATUS_COLLECTOR_BIN="$STUBS5/collector.sh" \
-  LEADV2_BROAD_STATUS_CLAUDE_BIN="$STUBS5/claude.sh" \
-  LEADV2_BROAD_STATUS_BEAT_AT="2026-08-31T10:00:00Z" \
-  LEADV2_BROAD_STATUS_DISPATCHED="0" \
-  LEADV2_LEAD_SESSION_ID=lead-beat \
-  LEADV2_LEAD_INBOX_DIR="$INBOX5" \
-  LEADV2_FOUNDER_STATUS_PATH="$FOUNDER_STATUS5" \
-  LEADV2_FOUNDER_STATUS_FULL_PATH="$BOARD5/founder-status-full.md" \
-  bash "$BROAD_STATUS_SH" >/dev/null 2>"$TMP/c5.err"
-# (declared above the first beat, because both beats now write here)
-if [[ -f "$FOUNDER_STATUS5" ]] && grep -q 'gate refused: review round cap' "$FOUNDER_STATUS5"; then
-  pass "C5: an undrained row appears in the beat's rendered founder-status.md"
-else
-  fail "C5: undrained row missing from beat output. file: $(cat "$FOUNDER_STATUS5" 2>&1) stderr: $(cat "$TMP/c5.err" 2>&1)"
-fi
-# Second beat: the row was consumed by the first drain, so it must NOT repeat.
-env LEADV2_PROJECT_ROOT="$REPO5" LEADV2_STATE_ROOT="$STATE5" \
-  LEADV2_STATUS_COLLECTOR_BIN="$STUBS5/collector.sh" \
-  LEADV2_BROAD_STATUS_CLAUDE_BIN="$STUBS5/claude.sh" \
-  LEADV2_BROAD_STATUS_BEAT_AT="2026-08-31T10:30:00Z" \
-  LEADV2_BROAD_STATUS_DISPATCHED="0" \
-  LEADV2_LEAD_SESSION_ID=lead-beat \
-  LEADV2_LEAD_INBOX_DIR="$INBOX5" \
-  LEADV2_FOUNDER_STATUS_PATH="$FOUNDER_STATUS5" \
-  LEADV2_FOUNDER_STATUS_FULL_PATH="$BOARD5/founder-status-full.md" \
-  bash "$BROAD_STATUS_SH" >/dev/null 2>&1
-if grep -q 'gate refused: review round cap' "$FOUNDER_STATUS5"; then
-  fail "C5b: consumed row repeated on the NEXT beat"
-else
-  pass "C5b: consumed row does not repeat on the next beat"
-fi
-
+# ONE-STATUS-MECHANISM-01 (2026-09-13): this section tested the retired
+# beat chain and was deleted with it.
 # ── Case 6: `finished` and `died` are distinct events for the same lane
 #    (infrastructure capability -- see header note: no in-scope call site
 #    wires the real terminal determination today) ──────────────────────────

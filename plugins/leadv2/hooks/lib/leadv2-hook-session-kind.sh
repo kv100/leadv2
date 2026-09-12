@@ -4,8 +4,8 @@
 # One shared predicate deciding whether the CURRENT session is the founder's
 # lead session or a headless worker (glm-coder / freepool-coder / kimi-coder /
 # claude-subsession). Every hook or dispatcher path that ARMS a persistent
-# loop (single-lead beat hook, dispatch-code's lane-pulse-watch and
-# single-lead-beat-loop arms) must call this first and exit/return 0 silently
+# loop (the anti-silence pulse arm, dispatch-code's background watchers)
+# must call this first and exit/return 0 silently
 # for `worker` — a worker session's plugin hooks fire exactly like a lead's
 # (SessionStart/UserPromptSubmit/Stop), so without this gate every headless
 # run arms its own beat/watch loop that has no lead left to disarm it when the

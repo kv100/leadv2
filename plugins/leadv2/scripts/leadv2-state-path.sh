@@ -30,13 +30,11 @@
 #     (OPEN-THREADS-IS-NOT-CONTROL-PLANE-STATE-01, 2026-09-07) -- it is
 #     authored content with irrecoverable history, not regenerable runtime
 #     state; see the comment on the STANDARD dict itself below.
-#   RENDER — regenerable, no history worth keeping: founder-status.md,
-#     founder-status-full.md, .board-empty-since, .founder-status-epoch. On
-#     collision the local copy is DELETED, no backup (S6) — the next beat
-#     rewrites it, and a backup file here would just be new untracked noise.
-#     The docs/leadv2/<name> symlink is a CONTRACT for this class, not a
-#     convenience: leadv2-single-lead-beat.sh and two test suites open these
-#     paths directly rather than through this resolver.
+#   RENDER — regenerable, no history worth keeping: on collision the local
+#     copy is DELETED, no backup (S6). The founder-status render set that
+#     defined this class was retired with the beat chain
+#     (ONE-STATUS-MECHANISM-01, 2026-09-13); the docs/leadv2/<name> symlink
+#     remains the CONTRACT for the next regenerable render.
 #   MERGE (file) — glm-deferred.jsonl: on collision the local file's lines
 #     are unioned into the target textually (never JSON-parsed, so one
 #     malformed line can't abort migration), deduped by exact line equality,
@@ -370,7 +368,7 @@ fi
 # that is already a symlink (or moves an untracked regular file out and links
 # it) at THIS call's own state_root. The e2e arms that env at
 # test-plugin-papercuts.sh e2e_setup (`export LEADV2_STATE_BASE="$E2E_STATE"`,
-# suite-wide from P3 on) while P8's production scripts (leadv2-pulse-beat.sh,
+# suite-wide from P3 on) while P8's production scripts (e.g.
 # leadv2-lane-heartbeat.sh) run with cwd = the launch checkout — a REAL repo
 # whenever the suite is invoked from one. Any state-path invocation in that
 # tree that misses PROJECT_ROOT threading (the exact class B1 documents:
@@ -544,12 +542,10 @@ STANDARD = {
 # Regenerable renders: on collision the local copy is deleted outright (no
 # backup) -- a stale 30-minute-old render is not worth a permanently-untracked
 # .pre-controlplane-backup file, and the next beat rewrites it anyway.
-RENDER = {
-    "founder-status.md": False,
-    "founder-status-full.md": False,
-    ".board-empty-since": False,
-    ".founder-status-epoch": False,
-}
+# ONE-STATUS-MECHANISM-01 (2026-09-13): the founder-status render entries
+# were retired with the beat chain. Kept as an empty dict — the collision
+# class is still live for any future regenerable render.
+RENDER = {}
 
 # Text-line-union merge on collision (never JSON-parsed -- one malformed line
 # must not abort the whole migration loop).

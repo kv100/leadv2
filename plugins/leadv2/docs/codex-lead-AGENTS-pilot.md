@@ -126,7 +126,6 @@ Installed by `plugins/leadv2/codex-lead/install.sh` to `~/.codex/prompts/`:
 
 - `docs/leadv2/active.yaml` — lead-owned active state
 - `docs/handoff/<task-id>/` — task evidence and review artifacts
-- `docs/leadv2/founder-status.md` — founder status
 - `docs/leadv2/open-threads.md` — deferred incoming asks
 - `docs/leadv2/scheduled-decisions.md` — pending decisions
 - `docs/leadv2/burn-deferred.*` — correct burn-cap parks

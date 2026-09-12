@@ -14,9 +14,8 @@
 #
 # Sandbox pattern lifted from test-landed-at-spawn.sh (stub GLM bg/status
 # launcher, LEADV2_ROUTER_V2=0 + GLM_POLICY_RESOLVER="" forces arm=glm).
-# LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN is stubbed with a script that just
-# sleeps — same detached-nohup shape as the real leadv2-lane-pulse-watch.sh,
-# staying alive well past this dispatcher's own exit.
+# (The lane-pulse-watch stub note is historical: that watcher was retired
+# ONE-STATUS-MECHANISM-01, 2026-09-13; the dispatcher arms nothing now.)
 
 set -uo pipefail
 
@@ -85,10 +84,10 @@ exit 0
 SH
 chmod +x "${JOURNAL_STUB}"
 
-# ── Stub lane-pulse watcher: same detached-background shape as the real
-# leadv2-lane-pulse-watch.sh -- it just sleeps, recording its own pid so the
-# test (and cleanup) can find it, and outlives the dispatcher process that
-# backgrounds it.
+# ── Stub detached watcher: sleeps, records its own pid so the test (and
+# cleanup) can find it, and outlives the dispatcher process that backgrounds
+# it (the real lane-pulse-watch it mirrored was retired
+# ONE-STATUS-MECHANISM-01, 2026-09-13).
 WATCH_STUB="${SANDBOX}/watch-stub.sh"
 cat > "${WATCH_STUB}" <<SH
 #!/usr/bin/env bash
@@ -132,7 +131,6 @@ setup_env() {
   export LEADV2_DISPATCH_PENDING_TTL_S=5
   export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
   export LEADV2_ARM_EARLY_VERDICT_S=0
-  export LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN="${WATCH_STUB}"
   export LEADV2_PULSE_MODE=1
   # BEAT-LOOP-ORPHANS-01 added a session-kind gate to _arm_lane_pulse_watch:
   # only a `lead` classification arms a persistent loop, and `unknown` FAILS
@@ -144,7 +142,6 @@ setup_env() {
   # dispatcher's lead path. (The non-lead branch is covered separately, below
   # -- an assumption worth pinning is worth pinning on both sides.)
   export LEADV2_SESSION_KIND=lead
-  export LEADV2_SINGLE_LEAD_BEAT=0
   # Force arm=glm -- the T17 route_arbiter (cheapest-capable pick) would
   # otherwise reroute to freepool/codex regardless of LEADV2_ROUTER_V2; point
   # its lib at a real inert file so the dispatcher's canonical-source fallback
@@ -180,6 +177,14 @@ row_alive() {
 # process this fixture owns and kills.
 # ════════════════════════════════════════════════════════════════════════════
 setup_env
+# ONE-STATUS-MECHANISM-01 (2026-09-13): the dispatcher no longer arms any
+# watcher (the LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN seam was deleted with
+# the retired beat chain), so this fixture spawns its own detached stub —
+# the same shape the seam used to give it: sleeps, records its pid in the
+# pidfile, and outlives the dispatcher process. The registry adoption below
+# was always this suite's own act (leadv2_active_set_worker_pid), so the
+# assertion chain is unchanged.
+nohup bash "${WATCH_STUB}" >/dev/null 2>&1 &
 dispatch_rc=0
 ( cd "${TARGET}" && bash "${DC}" --kind tooling --task-id "${TID}" "${MISSION}" ) >"${SANDBOX}/dc-out.log" 2>&1 || dispatch_rc=$?
 [[ -n "${LEADV2_TEST_DEBUG:-}" ]] && cat "${SANDBOX}/dc-out.log" >&2
@@ -200,7 +205,7 @@ if [[ -s "${WATCH_PIDFILE}" ]]; then
   ok "lane-pulse watcher stub started and recorded its own pid"
   WATCH_PID="$(cat "${WATCH_PIDFILE}" 2>/dev/null || true)"
 else
-  bad "lane-pulse watcher stub never started -- cannot prove the fix (check LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN wiring)"
+  bad "detached watcher stub never started -- cannot prove the fix (direct nohup spawn of WATCH_STUB failed)"
   WATCH_PID=""
 fi
 

@@ -66,10 +66,10 @@
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-pulse-watch-arm.sh\"",
-            "timeout": 5,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/anti-silence-pulse-arm-inject.sh\"",
+            "timeout": 8,
             "continueOnBlock": true,
-            "statusMessage": "Arming founder pulse watcher..."
+            "statusMessage": "Anti-silence pulse arm nag (ONE-STATUS-MECHANISM-01)..."
           },
           {
             "type": "command",
@@ -111,10 +111,10 @@
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-pulse-enforcer.sh\"",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/anti-silence-pulse-detector.sh\"",
             "timeout": 8,
             "continueOnBlock": true,
-            "statusMessage": "Pulse-mode enforcer..."
+            "statusMessage": "Anti-silence pulse detector (ONE-STATUS-MECHANISM-01)..."
           },
           {
             "type": "command",
@@ -135,13 +135,6 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-idle-notification-filter.sh\"",
             "timeout": 5,
             "statusMessage": "Idle-notification filter (suppress content-free teammate wakes)..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-single-lead-beat.sh\"",
-            "timeout": 5,
-            "continueOnBlock": true,
-            "statusMessage": "Single-lead pulse beat (deliver + trigger)..."
           }
         ]
       }
@@ -459,13 +452,6 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-loop-detect-hook.sh\"",
             "timeout": 5,
             "statusMessage": "Tool-cap loop guard (record executed call)..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-single-lead-beat.sh\"",
-            "timeout": 5,
-            "continueOnBlock": true,
-            "statusMessage": "Single-lead pulse beat (deliver + trigger)..."
           }
         ]
       },

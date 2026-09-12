@@ -45,8 +45,9 @@ PHASE_RECORD="${SCRIPTS_DIR}/leadv2-phase-record.sh"
 ROUTING="${SCRIPTS_DIR}/../config/leadv2-routing.yaml"
 
 TMP="$(mktemp -d /tmp/leadv2-phase-gate-XXXXXX)"
-# `|| true`: the dispatcher arms leadv2-lane-pulse-watch.sh, a deliberately
-# async watcher that can still be writing artifacts under "$TMP" when this
+# `|| true`: historical -- the dispatcher used to arm
+# leadv2-lane-pulse-watch.sh (retired ONE-STATUS-MECHANISM-01, 2026-09-13);
+# the defensive trap stays for any async writer under "$TMP" when this
 # suite exits; a racing rm must not turn a green run red (test-effort-routing
 # measured this 2026-08-31). On failure the dir is KEPT and its path printed —
 # a red run with no artifacts cannot be diagnosed.

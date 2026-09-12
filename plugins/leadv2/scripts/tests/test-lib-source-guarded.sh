@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
-# run-all-triggers: leadv2-broad-status.sh
+# run-all-triggers: leadv2-dispatch-code.sh leadv2-dispatch-ledger.sh
 # DISPATCH-CLOSE-GATE-01: prevent a new single-file consumer startup crash.
 #
 # The census has pre-existing out-of-lane entries recorded in the handoff.  They are an
@@ -68,7 +68,7 @@ documented="$(sed -n 's/^- \(`\)\{0,1\}\([^` ]*:[0-9][0-9]*\)\(`\)\{0,1\}.*/\2/p
 # The historical baseline is intentionally not a current-scan equality contract: a
 # stranger's finding must not decide this lane's controls.  Keep a direct containment
 # check that the baseline parser retains its recorded out-of-lane entry.
-BASELINE_PROBE="plugins/leadv2/scripts/leadv2-broad-status.sh:93"
+BASELINE_PROBE="plugins/leadv2/scripts/leadv2-dispatch-code.sh:687"
 if grep -qFx "${BASELINE_PROBE}" <<< "${documented}"; then
   pass "census: recorded baseline contains ${BASELINE_PROBE}"
 else
@@ -112,13 +112,13 @@ assert_guarded_site() { # <label> <expected-rel:line>
 }
 
 assert_guarded_site "LANE_CHILD_SUFFIXES" \
-  "plugins/leadv2/scripts/leadv2-dispatch-code.sh:452"
+  "plugins/leadv2/scripts/leadv2-dispatch-code.sh:537"
 
 assert_guarded_site "PORTABLE_LOCK" \
-  "plugins/leadv2/scripts/leadv2-dispatch-code.sh:460"
+  "plugins/leadv2/scripts/leadv2-dispatch-code.sh:545"
 
-assert_guarded_site "BROAD_STATUS_ALARM_LIB" \
-  "plugins/leadv2/scripts/leadv2-broad-status.sh:112"
+assert_guarded_site "LEDGER_LANE_GUARD" \
+  "plugins/leadv2/scripts/leadv2-dispatch-ledger.sh:104"
 
 printf 'SUMMARY: pass=%s fail=%s\n' "${PASS}" "${FAIL}"
 (( FAIL == 0 ))

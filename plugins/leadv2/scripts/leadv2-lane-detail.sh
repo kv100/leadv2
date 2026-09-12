@@ -3,8 +3,9 @@
 # founder status table (SUPERVISOR-STATUS-TABLE-IN-PLUGIN-01).
 #
 # Deterministic, no LLM. Consumed as the "lane_detail" collector section by
-# leadv2-status-collector.sh; the broad-status.sh table renderer joins this
-# against the "lanes" section (leadv2-supervise.sh --json) per task_id.
+# leadv2-status-collector.sh (the broad-status.sh table renderer that used
+# to join this against the "lanes" section per task_id was retired
+# ONE-STATUS-MECHANISM-01, 2026-09-13).
 #
 # HARD RULE 1: ownership ("owns") is read ONLY from architect-prepass.md /
 # fanout-lane mission.txt — never from a lane's *.stream.jsonl. Grepped by

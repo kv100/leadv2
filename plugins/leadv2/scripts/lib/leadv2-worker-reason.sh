@@ -224,9 +224,9 @@ PY
 }
 
 # Direct-execution guard: this file is a library; a caller who runs it
-# directly WITH args (leadv2-broad-status.sh's renderer does — `bash lib
-# <handoff> <arm> <sig8>`) gets the extraction on stdout; bare execution gets
-# usage, not a silent no-op.
+# directly WITH args (`bash lib <handoff> <arm> <sig8>`, the pattern the
+# retired broad-status renderer used) gets the extraction on stdout; bare
+# execution gets usage, not a silent no-op.
 if [[ "${BASH_SOURCE[0]:-}" == "$0" ]]; then
   if [[ $# -ge 1 ]]; then
     lv2_worker_reason "$1" "${2:-}" "${3:-}" "${4:-0}"

@@ -62,10 +62,6 @@ MANAGED_NAMES=(
   "merge-queue.jsonl"
   "open-threads.md"
   ".codex-credits-empty.stamp"
-  "founder-status.md"
-  "founder-status-full.md"
-  ".board-empty-since"
-  ".founder-status-epoch"
   "glm-deferred.jsonl"
   "glm-deferred.d"
 )
@@ -84,19 +80,9 @@ for name in "${MANAGED_NAMES[@]}"; do
   fi
 done
 
-# The RENDER-class symlink is a contract, not a convenience (founder-status
-# files are opened directly by a human and by leadv2-single-lead-beat.sh) --
-# assert both worktrees actually carry the symlink, not just an equal
-# resolver return value.
-for name in "founder-status.md" "founder-status-full.md"; do
-  main_link="${MAIN_REPO}/docs/leadv2/${name}"
-  wt_link="${WT_DIR}/docs/leadv2/${name}"
-  if [[ -L "${main_link}" && -L "${wt_link}" ]]; then
-    pass "${name}: symlinked in both the main checkout and the worktree"
-  else
-    fail "${name}: symlink contract" "main is_link=$( [[ -L "${main_link}" ]] && echo yes || echo no ) wt is_link=$( [[ -L "${wt_link}" ]] && echo yes || echo no )"
-  fi
-done
+# ONE-STATUS-MECHANISM-01 (2026-09-13): the founder-status RENDER-class
+# symlink assertions were deleted with the retired beat chain (RENDER is
+# empty now; no live writer creates those files).
 
 # ── falsification: prove this suite's own identity check can actually FAIL ──
 # Mutant: force the git-common-dir lookup empty so the resolver takes its

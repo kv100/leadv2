@@ -99,23 +99,9 @@ else
   fail "S5: symlink" "wt-a is_link=$( [[ -L "${WT_A}/docs/leadv2/glm-deferred.d" ]] && echo yes || echo no ) wt-b is_link=$( [[ -L "${WT_B}/docs/leadv2/glm-deferred.d" ]] && echo yes || echo no )"
 fi
 
-# ── S6: RENDER collision deletes the local copy, no backup file ───────────
-WT_C="${TMP_ROOT}/wt-c"
-mkdir -p "${WT_C}/docs/leadv2"
-printf '# stale render from another worktree\n' > "${WT_C}/docs/leadv2/founder-status.md"
-# First worktree migrates (creates the control-plane copy + symlink).
-printf '# canonical render\n' > "${WT_A}/docs/leadv2/founder-status.md"
-rm -f "${WT_A}/docs/leadv2/founder-status.md"  # undo S3 test's unrelated symlink noise, if any
-printf '# canonical render\n' > "${WT_A}/docs/leadv2/founder-status.md"
-PROJECT_ROOT="${WT_A}" bash "${STATE_PATH_SH}" founder-status.md >/dev/null 2>&1
-# Second worktree collides.
-PROJECT_ROOT="${WT_C}" bash "${STATE_PATH_SH}" founder-status.md >/dev/null 2>&1
-if [[ -L "${WT_C}/docs/leadv2/founder-status.md" ]] \
-   && [[ ! -f "${WT_C}/docs/leadv2/founder-status.md.pre-controlplane-backup" ]]; then
-  pass "S6: RENDER collision symlinked the local copy away with NO backup file"
-else
-  fail "S6" "is_link=$( [[ -L "${WT_C}/docs/leadv2/founder-status.md" ]] && echo yes || echo no ) backup_exists=$( [[ -f "${WT_C}/docs/leadv2/founder-status.md.pre-controlplane-backup" ]] && echo yes || echo no )"
-fi
+# ── S6: DELETED (ONE-STATUS-MECHANISM-01, 2026-09-13): the RENDER class
+# lost its only members (the founder-status render set) with the retired
+# beat chain; collision semantics are untestable until a new render exists.
 
 # ── S7 (ROOT FIX; OPEN-THREADS-IS-NOT-CONTROL-PLANE-STATE-01, 2026-09-07):
 # open-threads.md is not merely git-tracked-and-skipped any more -- it is

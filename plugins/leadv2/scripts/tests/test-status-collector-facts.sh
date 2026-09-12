@@ -3,8 +3,8 @@
 #
 # .claude/leadv2-overrides/status-collector-facts.sh is the repo_facts hook
 # that puts the code-intel attach rate (leadv2-code-intel-rate.sh) in front
-# of the founder-status surface (leadv2-status-collector.sh -> repo_facts ->
-# leadv2-status-surface.sh render_repo_facts -> founder-status.md), so the
+# of the status surfaces (leadv2-status-collector.sh -> repo_facts ->
+# leadv2-status-surface.sh render_repo_facts), so the
 # rate can never again silently regress to 0/5 attached without anyone
 # seeing it. This suite proves collect_repo_facts():
 #   - always emits exactly one valid JSON object (the collector's own

@@ -3,7 +3,7 @@
 #
 # THE COST this pays down (measured 2026-09-01, load avg 244): the status
 # surfaces each spawn their own short-lived scans at their own cadence —
-# leadv2-broad-status.sh x10, leadv2-status-collector.sh x8,
+# a retired aggregate renderer x10, leadv2-status-collector.sh x8,
 # leadv2-lanes-snapshot.sh x4, leadv2-lane-liveness.sh x6 in ONE `ps`
 # instant -- and those scans (66-92% of a core each), not the sleeping
 # loops, are the CPU spikes.

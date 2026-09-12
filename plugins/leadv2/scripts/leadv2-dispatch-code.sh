@@ -6273,7 +6273,7 @@ PY
 # ── ONE-STATUS-MECHANISM-01 (founder order 2026-09-12) ──────────────────────
 # The dispatcher-owned lane-pulse-watch and single-lead-beat loops are
 # DELETED (retired chain: leadv2-lane-pulse-watch.sh,
-# leadv2-single-lead-beat-loop.sh, leadv2-pulse-beat.sh, leadv2-broad-status.sh;
+# retired aggregate status loops;
 # backup docs/handoff/e1fb1204/retired-status-chain-20260912.tar.gz). The ONE
 # status mechanism is the anti-silence pulse (scripts/anti-silence-pulse.sh),
 # armed per session by the plugin hooks. Session-kind gating survives in

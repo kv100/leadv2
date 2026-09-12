@@ -3,8 +3,10 @@
 # lifecycle: race-safe singleton claim, owner-bound self-reap, reap-on-close,
 # and the one-line-per-event instrumentation log.
 #
-# Sourced (never executed) by leadv2-single-lead-beat-loop.sh,
-# leadv2-lane-pulse-watch.sh and leadv2-dispatch-ledger.sh (reap-on-close).
+# Historically sourced by the retired beat-loop / lane-pulse-watch scripts
+# and dispatch-ledger's reap-on-close (all retired ONE-STATUS-MECHANISM-01,
+# 2026-09-13); kept as the shared per-pid watcher-liveness helper for its
+# suite and any future armer.
 #
 # Root cause this lib kills (ticket 2026-09-01, ~/Desktop/leadv2-laptop-load-
 # ticket-for-dima-2026-09-01.md follow-up #1): 17 DUPLICATE beat loops were

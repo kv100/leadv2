@@ -553,7 +553,6 @@ SUITE_DEFS=(
   "review round exhaustive/verify-only (REVIEW-ROUND1-EXHAUSTIVE-01)|||bash $TEST_DIR/test-review-round-exhaustive.sh"
   "review round cap (REVIEW-ROUNDCAP-01)|||bash $TEST_DIR/test-review-roundcap.sh"
   "claim-evidence gate (CLAIM-EVIDENCE-GATE-01 preamble + round-1 lens)|||bash $TEST_DIR/test-claim-evidence-gate.sh"
-  "broad-status relay scoping|||bash $TEST_DIR/test-broad-status-relay-scope.sh"
   "deferred-GLM ladder (V3-GLM-LADDER-01)|||bash $TEST_DIR/test-glm-deferred-ladder.sh"
   "pump junk stays out of lane worktrees (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-pump-junk-in-lane.sh"
   "codex instant-complete dead-arm spill (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-codex-instant-complete.sh"
@@ -601,7 +600,6 @@ SUITE_DEFS=(
   # SANDBOX root for all state, no shared lock/port.
   "prepass resume invalidation (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-prepass-resume-invalidate.sh"
   "poll-based lane watcher (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-lane-watch-poll.sh"
-  "broad-status foreign-repo lanes (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-broad-status-foreign-lanes.sh"
   "freepool model selector + gate stale-window TTL (FREEPOOL-MODEL-SELECTOR-01)|||bash $TEST_DIR/test-freepool-model-selector.sh"
   "lane verdict three states (D2-UNBLIND-AND-THIRD-STATE-M0M1-01: deliverable=finished_unlanded, registry unreadable=unknown)|||bash $TEST_DIR/test-lane-verdict-three-states.sh"
 )

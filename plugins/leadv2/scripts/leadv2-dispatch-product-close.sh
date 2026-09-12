@@ -332,8 +332,8 @@ _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
 # so the only reliable "already written" signal is the row itself. The row
 # shape is exactly what the ledger writes (dispatch_terminal task=<sig8>
 # terminal=... cause=... plus free-form trailing keys), so every existing
-# parser -- leadv2-lane-watch.sh, leadv2-lane-pulse-watch.sh,
-# leadv2-skill-rollup.sh -- reads it unchanged. Once per process
+# parser -- leadv2-lane-watch.sh, leadv2-skill-rollup.sh -- reads it
+# unchanged. Once per process
 # (_PC_TERMINAL_JOURNALED): the trap's retry must never append a second row,
 # whatever the ledger did.
 _pc_journal_terminal_once() {  # <terminal> <cause> [<evidence>]

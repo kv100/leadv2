@@ -13,8 +13,8 @@
 # Do not re-implement PID-walk/birth-read logic here -- source, don't copy.
 #
 # Isolation: leadv2-active-registry.sh does `set -euo pipefail` at its top
-# level, which would otherwise leak into callers (leadv2-inbox.sh,
-# leadv2-broad-status.sh) that deliberately run without -e so a resolution
+# level, which would otherwise leak into callers (leadv2-inbox.sh) that
+# deliberately run without -e so a resolution
 # failure degrades gracefully instead of aborting the whole beat. The source
 # + resolve happens inside a subshell so those options never escape this
 # function.

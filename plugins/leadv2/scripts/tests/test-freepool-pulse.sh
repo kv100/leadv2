@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-all-triggers: leadv2-freepool-pulse.sh leadv2-pulse-beat.sh
+# run-all-triggers: leadv2-freepool-pulse.sh
 # Hermetic tests for the founder-facing freepool arm_down consumer.
 
 set -uo pipefail
@@ -48,29 +48,7 @@ else
   fail "probe timeout leaked output: <$out>"
 fi
 
-PULSE_REPO="$TMP/pulse-repo"
-PULSE_STATE="$TMP/pulse-state"
-PULSE_CAPTURE="$TMP/pulse-capture"
-mkdir -p "$PULSE_REPO" "$PULSE_STATE"
-git init -q "$PULSE_REPO"
-BROAD_STUB="$TMP/broad-status.sh"
-write_gate "$BROAD_STUB" "printf '%s\\n' \"\${LEADV2_BROAD_STATUS_REVIEW_DELTA:-}\" > '$PULSE_CAPTURE'"
-if LEADV2_PROJECT_ROOT="$PULSE_REPO" \
-    LEADV2_STATE_ROOT="$PULSE_STATE" \
-    LEADV2_BACKLOG_PUMP=0 \
-    LEADV2_BROAD_STATUS_BIN="$BROAD_STUB" \
-    LEADV2_FREEPOOL_PULSE_BIN="$HELPER" \
-    LEADV2_FREEPOOL_PULSE_GATE_BIN="$DOWN_GATE" \
-    LEADV2_FREEPOOL_PULSE_TIMEOUT_S=2 \
-    bash "$SCRIPT_DIR/leadv2-pulse-beat.sh" --now >/dev/null 2>&1; then
-  if grep -Fqx 'freepool: [freepool-liveness] arm_down health=000 reason=unreachable url=http://fixture/health' "$PULSE_CAPTURE"; then
-    pass 'pulse beat forwards arm_down into the founder-status delta'
-  else
-    fail "pulse beat did not forward arm_down: <$(cat "$PULSE_CAPTURE" 2>/dev/null || true)>"
-  fi
-else
-  fail 'pulse beat fixture invocation failed'
-fi
-
+# ONE-STATUS-MECHANISM-01 (2026-09-13): this section tested the retired
+# beat chain and was deleted with it.
 printf '[freepool-pulse] PASS=%s FAIL=%s\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

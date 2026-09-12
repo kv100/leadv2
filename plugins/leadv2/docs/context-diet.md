@@ -195,8 +195,9 @@ overdue row. Read is capped at `LEADV2_SD_SCAN_MAX_BYTES` (default 8 MiB);
 over the cap the signature degrades to the constant `"oversize"` and the
 gate falls back to body+date behavior, still safe but blind to the ledger.
 
-**Deliberately out of scope:** `leadv2-single-lead-beat.sh`'s BROAD_STATUS
-injection has its own, older, independent dedup gate and is untouched here.
+**Deliberately out of scope:** the retired single-lead-beat hook's
+BROAD_STATUS injection (deleted ONE-STATUS-MECHANISM-01, 2026-09-13) had
+its own older dedup gate and was never touched here.
 The existing task-mode dedup marker (`/tmp/.leadv2-task-anchor-full-<sid>-<task>`,
 used when a leadv2 task *is* active) is also separate and unaffected — this
 gate only covers the no-active-task thread anchor.

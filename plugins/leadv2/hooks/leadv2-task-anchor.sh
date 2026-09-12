@@ -215,14 +215,13 @@ def build_idle_anchor(root):
         "2. Only an explicit stop/scope-change order pauses work. \"Also do X\" = file X\n"
         "   in the backlog, do NOT switch to it.\n"
         "3. PULSE MODE: no narration. Chat output is allowed ONLY at: Gate-1, an async question,\n"
-        "   Phase-8 close, a [BROAD_STATUS] relay when the plugin emits BROAD_STATUS_READY\n"
-        "   (RELAY=full: paste founder-status.md verbatim, never compose one; RELAY=none:\n"
-        "   relay only that single line, verbatim, and nothing else). Narration is\n"
-        "   model-generated prose about its own work; the pulse is a verbatim relay of a\n"
-        "   plugin-generated artifact — never a CronCreate job; the beat is plugin-owned.\n"
-        "   Before relaying, compare the ready-line's at= stamp with the timestamp\n"
-        "   leading line 1 of founder-status.md — if they differ, the file is from an\n"
-        "   earlier beat: publish that fact, not the file.\n"
+        "   Phase-8 close, and the anti-silence pulse tick: the [ПУЛЬС HH:MMZ] line the\n"
+        "   lead's Monitor relays VERBATIM from the background anti-silence-pulse.sh run\n"
+        "   armed at session start (ONE-STATUS-MECHANISM-01: the founder-status beat\n"
+        "   chain is deleted — never compose a status, never answer a tick with prose).\n"
+        "   Narration is model-generated prose about its own work; the pulse is a\n"
+        "   verbatim relay of a plugin-generated artifact — never a CronCreate job; the\n"
+        "   beat is plugin-owned. A silent tick still emits its тишина line.\n"
         "   Everything else is silent tool work.\n"
         "4. Anything promised for later goes to docs/leadv2/scheduled-decisions.md the same turn."
     )
@@ -475,7 +474,7 @@ def _inject_dedup_gate(kind, session_id, body, root=None, leadv2_dir=None):
         tmp_hash = f"{hash_path}.tmp.{os.getpid()}"
         with open(tmp_hash, "w", encoding="utf-8") as fh:
             fh.write(digest)
-        os.replace(tmp_hash, hash_path)  # atomic — matches single-lead-beat.sh
+        os.replace(tmp_hash, hash_path)  # atomic replace keeps the dedup write race-free
         return "full"  # G2 / G4 / G5 / G5b
     except Exception as exc:
         _inject_warn(exc)
@@ -987,14 +986,13 @@ def main():
         "2. Only an explicit stop/scope-change order pauses the task. \"Also do X\" = file X in\n"
         "   the BACKLOG (scripts/task-add.sh), do NOT switch to it.\n"
         "3. PULSE MODE: no narration. Chat output is allowed ONLY at: Gate-1, an async question,\n"
-        "   Phase-8 close, a [BROAD_STATUS] relay when the plugin emits BROAD_STATUS_READY\n"
-        "   (RELAY=full: paste founder-status.md verbatim, never compose one; RELAY=none:\n"
-        "   relay only that single line, verbatim, and nothing else). Narration is\n"
-        "   model-generated prose about its own work; the pulse is a verbatim relay of a\n"
-        "   plugin-generated artifact — never a CronCreate job; the beat is plugin-owned.\n"
-        "   Before relaying, compare the ready-line's at= stamp with the timestamp\n"
-        "   leading line 1 of founder-status.md — if they differ, the file is from an\n"
-        "   earlier beat: publish that fact, not the file.\n"
+        "   Phase-8 close, and the anti-silence pulse tick: the [ПУЛЬС HH:MMZ] line the\n"
+        "   lead's Monitor relays VERBATIM from the background anti-silence-pulse.sh run\n"
+        "   armed at session start (ONE-STATUS-MECHANISM-01: the founder-status beat\n"
+        "   chain is deleted — never compose a status, never answer a tick with prose).\n"
+        "   Narration is model-generated prose about its own work; the pulse is a\n"
+        "   verbatim relay of a plugin-generated artifact — never a CronCreate job; the\n"
+        "   beat is plugin-owned. A silent tick still emits its тишина line.\n"
         "   Everything else is silent tool work.\n"
         "4. Anything promised for later goes to docs/leadv2/scheduled-decisions.md the same turn."
     )

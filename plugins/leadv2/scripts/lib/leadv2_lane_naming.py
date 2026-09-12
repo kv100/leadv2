@@ -7,7 +7,7 @@ architect-prepass.md (that stays in the detail-block "owns" field) and
 never from *.stream.jsonl. These are pure deterministic string transforms
 of text the founder himself wrote in the mission — no LLM ever names a
 lane, so a name cannot drift between beats on its own (freezing across
-beats is the caller's job, in leadv2-broad-status.sh's .broad-status-prev.
+beats is the caller's job; this module only supplies stable lane names.
 json, not this module's).
 
 Import contract: readers inside heredocs do

@@ -3,7 +3,8 @@
 #
 # Reaps ORPHANED control-plane loops whose owning Claude session is PROVABLY
 # dead. Every dead session used to leave its detached children beating
-# forever (measured 2026-09-06: 16 orphaned single-lead-beat-loops aged
+# forever (measured 2026-09-06: 16 orphaned beat-loops — that subject was
+# retired with the beat chain, ONE-STATUS-MECHANISM-01 2026-09-13 — aged
 # 10-13h from ~16 dead sessions in one day; 11 anti-silence pulses older
 # than an hour; 8 stale-sweepers with ppid=1). They saturate the machine,
 # the load drops time-sensitive suites red, the e2e gate claims the lane,
@@ -47,8 +48,8 @@
 #      rationale. Kills go leaves-first (grandchildren → children →
 #      parent): TERMing a parent first guarantees a reparented survivor
 #      (CONTROL-PLANE-SATURATES-01/reaper-constraint-20260906T1550Z.md).
-#   4. leadv2-single-lead-beat-loop loops — owner sid read from the process
-#      env (ps eww) when available; falls back to age+ppid.
+#   4. DELETED (ONE-STATUS-MECHANISM-01, 2026-09-13): beat-loops — the
+#      spawner is gone with the retired beat chain; population permanently 0.
 #
 # Never touches: pid 1, itself, any process it cannot identify, and any
 # pulse/watcher whose session transcript is fresh. --dry-run prints the
@@ -64,7 +65,8 @@
 #                                    transcript counts as death (default 7200)
 #       LEADV2_REAPER_SWEEPER_STUCK_SEC   default 3600
 #       LEADV2_REAPER_CLEANUP_STUCK_SEC   default 1800
-#       LEADV2_REAPER_BEAT_MAX_SEC        default 21600 (matches loop cap)
+#       LEADV2_REAPER_BEAT_MAX_SEC        default 21600 (unused since the
+#                                          beat-loop subject was retired)
 #       LEADV2_REAPER_SUBJECT_SCOPE       path prefix; when set, sweeper/
 #                                    cleanup subjects whose command line does
 #                                    not contain it are invisible to this
@@ -124,7 +126,6 @@ _seen_sweeper=0; _seen_sweeper_ppid1=0; _seen_sweeper_stuck=0; _killed_sweeper=0
 _seen_sweeper_owner_dead=0; _seen_sweeper_owner_live=0
 _seen_cleanup=0; _seen_cleanup_ppid1=0; _seen_cleanup_stuck=0; _killed_cleanup=0
 _seen_cleanup_owner_dead=0; _seen_cleanup_owner_live=0
-_seen_beat=0; _seen_beat_ppid1=0; _seen_beat_owned_dead=0; _killed_beat=0
 
 # ── three-answer liveness ──────────────────────────────────────────────────
 _pid_alive() {  # rc=0 alive; rc=1 dead. EPERM is ALIVE (pid 1 et al).
@@ -510,53 +511,16 @@ reap_stuck_by_age() {  # <pattern> <needle> <max_sec> <label> <kind>
   done
 }
 
-# ── subject 4: beat-loops (owner sid from env when readable) ───────────────
-reap_beat_loops() {
-  local pid cmd age sid env death ppid
-  for pid in $(pgrep -f "leadv2-single-lead-beat-loop.sh" 2>/dev/null || true); do
-    [[ "$pid" != "$$" ]] || continue
-    cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
-    [[ "$cmd" == *"leadv2-single-lead-beat-loop.sh"* ]] || continue
-    _seen_beat=$((_seen_beat+1))
-    age="$(_pid_etime_sec "$pid")"
-    ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
-    [[ "$ppid" == "1" ]] && _seen_beat_ppid1=$((_seen_beat_ppid1+1))
-    # LEADV2_LOOP_OWNER_SID is exported into the loop's env at spawn
-    # (leadv2-dispatch-code.sh); ps eww exposes same-user env.
-    env="$(ps eww -o command= -p "$pid" 2>/dev/null || true)"
-    sid=""
-    if [[ "$env" == *"LEADV2_LOOP_OWNER_SID="* ]]; then
-      sid="${env##*LEADV2_LOOP_OWNER_SID=}"
-      sid="${sid%%[[:space:]]*}"
-    fi
-    if [[ -n "$sid" ]]; then
-      death="$(_session_death_age_min "$sid")"
-      if [[ "$death" == "alive" ]]; then continue; fi
-      if [[ "$death" == absent* ]]; then
-        (( age >= REAPER_ABSENT_GRACE_S )) || continue
-      fi
-      _seen_beat_owned_dead=$((_seen_beat_owned_dead+1))
-      _term "$pid" "beat-loop of dead session $sid ($death)"
-      _killed_beat=$((_killed_beat+1))
-      continue
-    fi
-    # No readable owner: only an old, reparented loop is provably abandoned.
-    # New loops carry their own owner-pid + transcript belts and self-exit.
-    if [[ "$ppid" == "1" ]] && (( age >= BEAT_MAX_SEC )); then
-      _term "$pid" "beat-loop ppid=1, ${age}s old (>=$BEAT_MAX_SEC), no readable owner"
-      _killed_beat=$((_killed_beat+1))
-    fi
-  done
-}
-
 # Hermetic-scope gate: LEADV2_REAPER_SUBJECT_SCOPE (see header) filters the
-# sweeper/cleanup subjects below; pulses and beat-loops have no per-fixture
-# scoping, so under a scope they are skipped ENTIRELY — a suite must never
-# TERM a real pulse/beat of another session while proving sweeper behaviour
+# sweeper/cleanup subjects below; pulses have no per-fixture scoping, so
+# under a scope they are skipped ENTIRELY — a suite must never TERM a real
+# pulse of another session while proving sweeper behaviour
 # (SUITES-MUTATE-LIVE-CONTROL-PLANE-01). Production runs leave the scope
-# unset and reap every subject.
+# unset and reap every subject. The beat-loop subject 4 was deleted with the
+# retired single-lead-beat chain (ONE-STATUS-MECHANISM-01, 2026-09-13): the
+# spawner is gone, so its population is permanently zero.
 if [[ -n "${LEADV2_REAPER_SUBJECT_SCOPE:-}" ]]; then
-  _reap_log "subject-scope active: pulse and beat-loop subjects skipped (hermetic pass)"
+  _reap_log "subject-scope active: pulse subjects skipped (hermetic pass)"
 else
   reap_pulses
 fi
@@ -564,9 +528,6 @@ reap_stuck_by_age "leadv2-stale-sweeper.sh" "leadv2-stale-sweeper.sh" \
   "$SWEEPER_STUCK_SEC" "stale-sweeper full sweep" "sweeper"
 reap_stuck_by_age "leadv2-worktree-cleanup.sh --sweep-dead" "leadv2-worktree-cleanup.sh --sweep-dead" \
   "$CLEANUP_STUCK_SEC" "worktree-cleanup --sweep-dead" "cleanup"
-if [[ -z "${LEADV2_REAPER_SUBJECT_SCOPE:-}" ]]; then
-  reap_beat_loops
-fi
 
 # REAPER-AGE-CRITERION-NEVER-REACHES-THE-POPULATION-01: one line per subject,
 # each candidate count carrying the signal it was counted against -- never a
@@ -580,12 +541,11 @@ fi
 _reap_log "pulses: candidates=${_seen_pulses} (argv-verified alive: ${_seen_pulses}) ${_verb}=${_killed_pulses}"
 _reap_log "sweeper: candidates=${_seen_sweeper} (ppid=1: ${_seen_sweeper_ppid1}, older_than=${SWEEPER_STUCK_SEC}s: ${_seen_sweeper_stuck}, owner_dead: ${_seen_sweeper_owner_dead}, owner_live: ${_seen_sweeper_owner_live}) ${_verb}=${_killed_sweeper}"
 _reap_log "cleanup: candidates=${_seen_cleanup} (ppid=1: ${_seen_cleanup_ppid1}, older_than=${CLEANUP_STUCK_SEC}s: ${_seen_cleanup_stuck}, owner_dead: ${_seen_cleanup_owner_dead}, owner_live: ${_seen_cleanup_owner_live}) ${_verb}=${_killed_cleanup}"
-_reap_log "beat-loops: candidates=${_seen_beat} (ppid=1: ${_seen_beat_ppid1}, owned_by_dead_session: ${_seen_beat_owned_dead}) ${_verb}=${_killed_beat}"
 
 # Summary counts SUBJECTS (a subject = one death-verified chain root), while
 # _killed counts every TERM dispatched, descendants included — the two differ
 # exactly when leaf-first chain kills ran, and the line says which is which.
-_subjects_total=$(( _killed_pulses + _killed_sweeper + _killed_cleanup + _killed_beat ))
+_subjects_total=$(( _killed_pulses + _killed_sweeper + _killed_cleanup ))
 printf '[orphan-reaper] %s: %d subject(s) (%d process TERM(s) incl. descendants) %s\n' \
   "$( (( DRY_RUN )) && printf dry-run || printf reaped )" \
   "$_subjects_total" "$_killed" "$( (( DRY_RUN )) && printf 'would-reap' || printf 'termed' )" >&2

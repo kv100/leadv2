@@ -966,7 +966,7 @@ _sync_project_root() {
   # source chain actually requires: active-registry.sh sourced directly by
   # lanes-snapshot.sh L136-138). SUPERVISOR-DELETE-01 (2026-08-17): the
   # supervisor loop/pick companions are gone — the snapshot script was renamed
-  # to leadv2-lanes-snapshot.sh (live founder-status lanes-table dependency,
+  # to leadv2-lanes-snapshot.sh (live lanes-table dependency for the status
   # not supervisor-only) and the loop's two companion scripts were deleted
   # outright with the rest of the supervisor machinery. Extend this list only
   # when a repo's control-plane scripts/ genuinely adopts a new companion —

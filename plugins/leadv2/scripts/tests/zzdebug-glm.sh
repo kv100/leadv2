@@ -14,19 +14,14 @@
 #   (c) two credit-empty computations inside 24h emit exactly ONE
 #       codex_credits_empty journal line; a third after the stamp is
 #       back-dated past 24h emits a second
-#   (d) the REAL leadv2-broad-status.sh renderer (not a source grep — the
-#       CLAIM-EVIDENCE-GATE-01 lesson) writes founder-status.md containing
-#       "sonnet-фолбэков сегодня: 1 (glm quota)" after one glm->sonnet
-#       fallback
 #
 # Harness mirrors test-router-v2-retired-arm.sh (poison fence + stubbed GLM/
-# router-v2 binaries) for (a)/(b)/(c), and test-broad-status-renderer-truth.sh
-# (stubbed collector + claude, real renderer) for (d).
+# router-v2 binaries) for (a)/(b)/(c), and (retired)
+# (stubbed collector + claude, real renderer) — case (d) rode the deleted broad-status chain (ONE-STATUS-MECHANISM-01).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DISPATCH_BIN="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
-BROAD_STATUS_SH="${SCRIPT_DIR}/../leadv2-broad-status.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "${TMP_ROOT}"' EXIT
 FAIL=0
@@ -36,7 +31,7 @@ fail() { printf 'FAIL: %s -- %s\n' "$1" "$2"; FAIL=1; }
 
 bash -n "${SCRIPT_DIR}/zzdebug-glm.sh" 2>/dev/null || { echo "ERROR: self syntax check failed"; exit 1; }
 
-for _sh in "${DISPATCH_BIN}" "${BROAD_STATUS_SH}"; do
+for _sh in "${DISPATCH_BIN}"; do
   bash -n "${_sh}" || { echo "ERROR: bash -n failed for ${_sh}"; exit 1; }
 done
 
@@ -247,79 +242,6 @@ if [[ "${n_after_3}" -eq 2 ]]; then
 else
   fail "(c) expected 2 codex_credits_empty lines after the back-dated 3rd run, got ${n_after_3}" \
     "journal=$(cat "${JOURNAL_C}")"
-fi
-
-# ============================================================================
-# (d) rendered artifact: the REAL leadv2-broad-status.sh renders
-# "sonnet-фолбэков сегодня: 1 (glm quota)" after the (a) fallback landed —
-# NOT a source grep (CLAIM-EVIDENCE-GATE-01).
-# ============================================================================
-STUBS_D="${TMP_ROOT}/stubs-d"
-mkdir -p "${STUBS_D}"
-cat > "${STUBS_D}/collector.sh" <<'EOF'
-#!/usr/bin/env bash
-out=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --out) out="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[[ -z "$out" ]] && exit 1
-cat > "$out" <<'JSON'
-{"sections": {
-  "lanes": {"ok": true, "data": {"table": [], "questions": [], "degraded": []}},
-  "lane_detail": {"ok": true, "data": {"lanes": []}}
-}}
-JSON
-EOF
-cat > "${STUBS_D}/claude.sh" <<'EOF'
-#!/usr/bin/env bash
-printf '{"result":"нет данных за сегодня\nвопросов нет"}'
-EOF
-chmod +x "${STUBS_D}/collector.sh" "${STUBS_D}/claude.sh"
-
-FOUNDER_STATUS_D="${ROOT}/docs/leadv2/founder-status.md"
-printf "DEBUG ROOT=%s\n" "${ROOT}" >&2
-ls -la "${ROOT}/docs/leadv2" >&2
-DAY_DBG="$(date -u +%Y%m%d)"
-cat "${ROOT}/docs/leadv2/.arm-exceptions-${DAY_DBG}" >&2 || echo "NO ARM-EXC FILE" >&2
-
-LEADV2_PROJECT_ROOT="${ROOT}" LEADV2_STATE_ROOT="${TMP_ROOT}/state-d" \
-  LEADV2_STATUS_COLLECTOR_BIN="${STUBS_D}/collector.sh" \
-  LEADV2_BROAD_STATUS_CLAUDE_BIN="${STUBS_D}/claude.sh" \
-  LEADV2_BROAD_STATUS_BEAT_AT="2026-08-20T00:00:00Z" \
-  LEADV2_BROAD_STATUS_DISPATCHED="1" \
-  bash "${BROAD_STATUS_SH}" >/dev/null 2>&1 || true
-
-echo "POST-RENDER state-d:" >&2
-ls -la "${TMP_ROOT}/state-d" >&2
-cat "${TMP_ROOT}/state-d/.arm-exceptions-${DAY_DBG}" 2>&1 >&2 || echo NOPE >&2
-if [[ ! -f "${FOUNDER_STATUS_D}" ]]; then
-  fail "(d) founder-status.md not written" "renderer produced no artifact"
-elif grep -q 'sonnet-фолбэков сегодня: 1 (glm_refused_quota_gate)' "${FOUNDER_STATUS_D}"; then
-  pass "(d) rendered founder-status.md contains sonnet-фолбэков сегодня: 1 (glm_refused_quota_gate) -- real reason variant, not hardcoded 'glm quota'"
-else
-  fail "(d) expected sonnet-fallback line missing from rendered artifact" \
-    "content=$(cat "${FOUNDER_STATUS_D}")"
-fi
-
-# ── negative: a day with no fallback renders no such line ──────────────────
-ROOT_NEG="${TMP_ROOT}/root-neg"
-make_tenant_root "${ROOT_NEG}"
-FOUNDER_STATUS_NEG="${ROOT_NEG}/docs/leadv2/founder-status.md"
-LEADV2_PROJECT_ROOT="${ROOT_NEG}" LEADV2_STATE_ROOT="${TMP_ROOT}/state-neg" \
-  LEADV2_STATUS_COLLECTOR_BIN="${STUBS_D}/collector.sh" \
-  LEADV2_BROAD_STATUS_CLAUDE_BIN="${STUBS_D}/claude.sh" \
-  LEADV2_BROAD_STATUS_BEAT_AT="2026-08-20T00:00:00Z" \
-  LEADV2_BROAD_STATUS_DISPATCHED="1" \
-  bash "${BROAD_STATUS_SH}" >/dev/null 2>&1 || true
-
-if [[ -f "${FOUNDER_STATUS_NEG}" ]] && ! grep -q 'сонн\|sonnet-фолбэков' "${FOUNDER_STATUS_NEG}"; then
-  pass "(d) a day with no fallback renders no sonnet-fallback line"
-else
-  fail "(d) unexpected sonnet-fallback line with zero fallbacks" \
-    "content=$(cat "${FOUNDER_STATUS_NEG}" 2>/dev/null || echo '<missing>')"
 fi
 
 # ============================================================================
