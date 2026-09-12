@@ -3,7 +3,7 @@ VERDICT: delete
 # Reflect / self-learning decision
 
 Date of measurement: 2026-09-12. Window: `2026-08-13T00:00:00Z` inclusive through
-`2026-09-13T00:00:00Z` exclusive. The requested acceptance artifact is in the
+`2026-09-12T00:00:00Z` exclusive (exactly 30 days). The requested acceptance artifact is in the
 `leadv2` checkout. The pinned persona-engine checkout was used only as a
 cross-repo control because it contains the only recent structured reflect
 artifact found on disk.
@@ -22,7 +22,7 @@ from pathlib import Path
 import re
 from datetime import datetime
 root=Path('/Users/kostiantyn.vlasenko/Projects/leadv2/docs/leadv2/tasks')
-cut='2026-08-13T00:00:00Z'; end='2026-09-13T00:00:00Z'
+cut='2026-08-13T00:00:00Z'; end='2026-09-12T00:00:00Z'
 patterns={
  'dispatch_task_bound': re.compile(r'- (\d{4}-\d\d-\d\dT[^ ]+) .*dispatch_task_bound task=([^ ]+)'),
  'reflect': re.compile(r'- (\d{4}-\d\d-\d\dT[^ ]+) .*\b(?:reflect|lead-reflect|phase8_reflect)\b.*task=([^ ]+)'),
@@ -35,7 +35,7 @@ for p in root.glob('*/journal.md'):
       m=pat.search(line)
       if m and cut<=m.group(1)<end:
         events[k]+=1; sets[k].add(m.group(2))
-print('window=2026-08-13T00:00:00Z..2026-09-13T00:00:00Z')
+print('window=2026-08-13T00:00:00Z..2026-09-12T00:00:00Z exclusive days=30')
 for k in patterns: print(f'{k}_events={events[k]} unique_tasks={len(sets[k])}')
 PY
 ```
@@ -43,7 +43,7 @@ PY
 Raw output:
 
 ```text
-window=2026-08-13T00:00:00Z..2026-09-13T00:00:00Z
+window=2026-08-13T00:00:00Z..2026-09-12T00:00:00Z exclusive days=30
 dispatch_task_bound_events=758 unique_tasks=194
 reflect_events=0 unique_tasks=0
 phase8_events=0 unique_tasks=0
@@ -73,7 +73,7 @@ Cross-repo control, not substituted into the primary denominator:
 
 ```text
 file=docs/leadv2/reflect-history.yaml lines=3787 total_entries=108
-window_start=2026-08-13T00:00:00+00:00 window_end=2026-09-12T23:59:59+00:00
+window=2026-08-13T00:00:00+00:00..2026-09-12T00:00:00+00:00 exclusive days=30
 recent_entries=1
 2026-08-31T12:32:43+00:00 task=V5-M0-SKELETON-01
 ```
@@ -203,7 +203,7 @@ does make model calls when manually run, but no reflect-specific
 `costs.yaml`, token ledger, or completed learn proposal exists for the
 measured `leadv2` population. Consequently:
 
-- observed reflect runs/week: `0 / 30 * 7 = 0`;
+- observed reflect runs/week: `0 / 30 days * 7 = 0`;
 - directly attributable persistence cost/week: `0 tokens`;
 - lead-side conversational tokens for the `lead-reflect` skill: **not
   measured**, so an honest `tokens per reflect run × runs per week` total is
@@ -220,13 +220,61 @@ Existing pieces and disposition:
 
 | Existing piece | Decision |
 |---|---|
-| `plugins/leadv2/skills/lead-reflect/SKILL.md` | Delete as an automatic learning input; retain only a minimal close/audit record if the founder explicitly wants history. |
+| `plugins/leadv2/skills/lead-reflect/SKILL.md` | Keep the close/audit writer while `phase8-assert.sh` A4 and the close ritual require it; remove only the self-learning-specific coupling if that contract is later retired. |
 | `plugins/leadv2/scripts/leadv2-phase8-close.sh` lines 620–679 | Delete the periodic `.learn-close-counter` / `.learn-trigger` block. It currently schedules work that was not observed to run. |
 | `plugins/leadv2/hooks/learn-trigger-inject.sh` | Delete; it only nudges a lead after a trigger exists. |
 | `plugins/leadv2/hooks/leadv2-learn-consume.sh` | Delete; it consumes the nudge, not the learning data. |
 | `plugins/leadv2/workflows/leadv2-learn.js` | Delete the dormant aggregation workflow unless a future owner first supplies a joined run ledger, an outcome metric, and a bounded cost budget. |
-| `docs/leadv2/reflect-history.yaml` and `docs/leadv2/learnings.md` in repos that carry them | Archive/delete as write-only derived logs after checking for any human audit dependency. |
+| `plugins/leadv2/skills/leadv2-close/SKILL.md` | Remove its dormant `Workflow({name:"leadv2-learn"...})` call; keep the close and `lead-reflect` audit steps until their separate gate contract is deliberately changed. |
+| `plugins/leadv2/scripts/leadv2-phase8-assert.sh` A4 | Keep. It hard-fails when `reflect-history.yaml` is absent, so deleting the history without first redesigning A4 would break close/deploy acceptance. |
+| `plugins/leadv2/hooks/leadv2-force-reflect.sh` | Keep as the current A4 recovery/completeness guard; delete or rewrite only in the same coordinated change that retires A4. |
+| `plugins/leadv2/hooks/leadv2-close-ritual-guard.sh` | Keep its close-ritual guard, but remove the stale “learning pipeline” rationale if this deletion is implemented; its enforced artifacts are `closed/*.yaml` and `phase8-passed.flag`. |
+| `docs/leadv2/reflect-history.yaml` and `docs/leadv2/learnings.md` in repos that carry them | Keep the structured close/audit history while A4 or human audit depends on it; archive/delete only after that dependency is removed and the records are checked for retention value. |
+| `plugins/leadv2/workflows/leadv2-causal-critique.js` and `plugins/leadv2/skills/lead-reflect/CAUSAL-CRITIQUE.md` | Delete the dormant optional self-learning extension with `leadv2-learn`; it feeds the reflect entry but is not independently consumed. |
+| `plugins/leadv2/hooks/hooks.json` | Remove the `leadv2-learn-consume.sh` hook registration together with that hook; do not remove unrelated close hooks. |
 | `plugins/leadv2/hooks/leadv2-immune-intake-inject.sh` and the immune/negative-memory stores | Keep: these are separate, task-time readers with an actual injection path; they are not proof that reflect is consumed. |
+
+Dependency census command and raw output:
+
+```text
+rg -n -i 'reflect-history' plugins/leadv2
+```
+
+Raw output (grouped by dependency class; the command found the following
+same-shape references):
+
+```text
+gate: plugins/leadv2/scripts/leadv2-phase8-assert.sh
+recovery: plugins/leadv2/hooks/leadv2-force-reflect.sh
+ritual: plugins/leadv2/hooks/leadv2-close-ritual-guard.sh
+writer: plugins/leadv2/skills/lead-reflect/SKILL.md
+consumer: plugins/leadv2/workflows/leadv2-learn.js
+optional_input: plugins/leadv2/workflows/leadv2-causal-critique.js, plugins/leadv2/skills/lead-reflect/CAUSAL-CRITIQUE.md
+tests: test-leadv2-force-reflect.sh, test-phase8-a2-id-resolution.sh,
+  test-leadv2-phase8-assert-a2-schema.sh, test-e2e-gate-bypass-hardening.sh,
+  test-leadv2-lane-shape.sh, test-phase8-closes-the-backlog-row.sh,
+  test-deploy-merge-blocker-gate.sh
+```
+
+The A4 source probe is decisive for the disposition above:
+
+```text
+nl -ba plugins/leadv2/scripts/leadv2-phase8-assert.sh | sed -n '353,403p'
+```
+
+```text
+353 # ── A4: reflect-history.yaml has structured entry for task_id (real signal) ───
+360 if [[ -f "$REFLECT_HISTORY" ]]; then
+382   log_fail "A4 reflect-history.yaml not found: ${REFLECT_HISTORY}"
+400 # Hard assertion: structured reflect entry is REQUIRED
+401 if [[ $A4_REFLECT_OK -eq 0 ]]; then
+402   failures+=("A4: docs/leadv2/reflect-history.yaml has no entry for ${TASK_ID} ...")
+403 fi
+```
+
+All seven test suites above write or assert the same A4 fixture. They must be
+updated or removed in any future implementation of the deletion; they are not
+evidence that the self-learning consumer currently runs.
 
 Nothing new should be written for self-learning now. If the founder later
 reopens it, the minimum new prerequisite is not another prompt: it is a
@@ -239,9 +287,12 @@ distinguished from a write-only journal.
 Author read: **delete**, based on 0/194 observed reflect reach in the target
 checkout, zero observed live reader executions, and absent cost attribution.
 
-The required second opinion is delegated to the plugin review round after this
-file is committed. Any substantive disagreement found there must be recorded
-below before final close; it must not be averaged away.
+The required second opinion was the plugin review round. Reviewer **glm**
+returned `PASS_WITH_NITS` with two High census findings, which were fixed in
+this document: the A4 hard gate and the omitted dependent workflow/hook/test
+references are now explicitly dispositioned. The reviewer agreed with the
+0/194 measurement and the delete rationale; there is no substantive verdict
+disagreement to record.
 
 ## Falsification set
 
@@ -278,5 +329,5 @@ The first run is the required real changed-scope execution. It hit the explicit
 600-second foreground alarm (`142`, SIGALRM) while the pre-existing dirty main
 checkout exposed 232 untracked suite files; this is ambient runner evidence,
 not a failure in this report-only diff. The second run is the green changed-
-scope selection proof after the report correction; it selected five suites and
-did not execute them.
+scope selection check; it selected five suites and did not execute them. The
+`EXIT=0` therefore proves selection only, not a green suite run.
