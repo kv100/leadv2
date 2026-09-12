@@ -744,11 +744,14 @@ def near_reset_wait(provider):
 # dangerous one.
 #
 # The estimate is MEASURED, never a free-hand constant:
-#   expected_hours = p90 of wall-clock spawn->terminal durations of that
+#   expected_hours = p75 of wall-clock spawn->terminal durations of that
 #     provider's arms, read from the SAME events journal failure memory
 #     already reads (ROUTE_ARBITER_EVENTS_JOURNAL: worker_spawned/
-#     worker_terminal rows; live 2026-09-09: claude n=189 p90=5.52h,
-#     glm n=196 p90=3.61h, codex n=51 p90=6.46h). Below FORECAST_MIN_ROWS
+#     worker_terminal rows). Wall clock includes an open lane's idle time,
+#     not just quota-burning work; p75 prevents the long-open tail from
+#     setting the price of the ordinary task. The cost-flush actuals store
+#     cannot replace this yet: it records token telemetry for Claude streams,
+#     not comparable provider-quota actuals for GLM and Codex. Below FORECAST_MIN_ROWS
 #     joined rows there is no basis and the check is skipped LOUDLY
 #     (forecast_basis=no_history): refusing dispatch on zero evidence is not
 #     a forecast. An explicit descriptor `expected_hours` (a caller that
@@ -773,6 +776,7 @@ def near_reset_wait(provider):
 # LEADV2_ARBITER_SPEND_FORECAST=0.
 FORECAST_ON=os.environ.get('LEADV2_ARBITER_SPEND_FORECAST','1')!='0'
 FORECAST_MIN_ROWS=3
+FORECAST_QUANTILE=0.75
 def _arm_to_provider(a):
     # Same prefix families leadv2-cost-flush.sh's _cost_provider_for_model
     # already maps -- derived, not reinvented.
@@ -820,10 +824,10 @@ def _journal_durations():
         p=_arm_to_provider(prev[1])
         if p: out.setdefault(p,[]).append(h)
     return out,'ok'
-def _p90(xs):
+def _forecast_quantile(xs):
     xs=sorted(xs)
     if not xs: return None
-    return xs[max(0,int(math.ceil(0.9*len(xs)))-1)]
+    return xs[max(0,int(math.ceil(FORECAST_QUANTILE*len(xs)))-1)]
 _fc_durs={}; _fc_jstat='off'
 if FORECAST_ON: _fc_durs,_fc_jstat=_journal_durations()
 _fc_cache={}
@@ -839,10 +843,10 @@ def _expected_hours_for(provider):
     else:
         xs=(_fc_durs.get(provider) or [])
         if len(xs)>=FORECAST_MIN_ROWS:
-            r=(_p90(xs),'journal:provider=%d'%len(xs))
+            r=(_forecast_quantile(xs),'journal:provider=%d'%len(xs))
         else:
             al=[_h for _v in _fc_durs.values() for _h in _v]
-            r=(_p90(al),'journal:all=%d'%len(al)) if len(al)>=FORECAST_MIN_ROWS else (None,'no_history')
+            r=(_forecast_quantile(al),'journal:all=%d'%len(al)) if len(al)>=FORECAST_MIN_ROWS else (None,'no_history')
     _fc_cache[provider]=r
     return r
 _forecast_view={}; _forecast_block={}; _forecast_wait=[]; _forecast_skipped={}
@@ -862,6 +866,13 @@ def _forecast_check(provider):
             continue
         fc=hours/period*100.0
         rem=100.0-pct
+        # A forecast larger than an entire window cannot answer whether the
+        # task fits its remaining fraction: the estimator is outside this
+        # window's domain. Name the skip instead of turning that limitation
+        # into a permanent provider refusal; other readable windows still run.
+        if fc > 100.0:  # forecast-window-domain mutation anchor
+            _forecast_skipped.setdefault(provider,[]).append('exceeds_window_period:%s'%name)
+            continue
         if fc > rem:  # fit-vs-remainder (W1-FORECAST-THE-SPEND-01 mutation anchor)
             fails.append({'window':name,'remaining':rem,'forecast':fc,'hours':hours,
                           'period':period,
@@ -878,7 +889,8 @@ def _forecast_refuse():
     # open to a ladder that would dispatch it anyway.
     _p,_w=sorted(_forecast_block.items(), key=lambda kv: -(kv[1]['forecast']-kv[1]['remaining']))[0]
     _record('refuse','none','none','forecast_exceeds_window')
-    print('arm=refuse model=none tier=none reason=forecast_exceeds_window kind=%s window=%s remaining=%.1fpct forecast=%.1fpct forecast_hours=%.2fh forecast_basis=%s chain= %s%s%s%s%s' % (kind,_w['window'],_w['remaining'],_w['forecast'],_w['hours'],_forecast_view[_p]['basis'],ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
+    _skip=','.join(_forecast_skipped.get(_p,[]))
+    print('arm=refuse model=none tier=none reason=forecast_exceeds_window kind=%s window=%s remaining=%.1fpct forecast=%.1fpct forecast_hours=%.2fh forecast_basis=%s forecast_stat=p75%s chain= %s%s%s%s%s' % (kind,_w['window'],_w['remaining'],_w['forecast'],_w['hours'],_forecast_view[_p]['basis'],((' forecast_skipped=%s'%_skip) if _skip else ''),ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
     raise SystemExit(3)
 if FORECAST_ON:
     for _p in ('glm','codex','claude'):
@@ -1868,10 +1880,12 @@ if FORECAST_ON:
         if _v['hours'] is None:
             _forecast_tok=' forecast_basis=%s'%_v['basis']
         else:
-            _forecast_tok=' forecast_hours=%.2fh forecast_basis=%s'%(_v['hours'],_v['basis'])
+            _forecast_tok=' forecast_hours=%.2fh forecast_basis=%s forecast_stat=p75'%(_v['hours'],_v['basis'])
             if _v['worst'] is not None:
                 _forecast_tok+=' forecast_window=%s forecast_remaining=%.1fpct forecast_pct=%.1fpct'%(_v['worst']['window'],_v['worst']['remaining'],_v['worst']['forecast'])
                 if _wp in _forecast_wait: _forecast_tok+=' forecast_wait=1'
+            _skip=','.join(_forecast_skipped.get(_wp,[]))
+            if _skip: _forecast_tok+=' forecast_skipped=%s'%_skip
     else:
         _forecast_tok=' forecast_basis=no_windows'
     _ws=num(d.get('write_set_files'))
