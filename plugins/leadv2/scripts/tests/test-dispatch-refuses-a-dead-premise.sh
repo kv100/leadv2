@@ -48,6 +48,10 @@
 #   T10 DECLCMD    --acceptance-cmd 'true' with NO row -> rc=0, worker
 #                started (declarative callers -- lane-shape, papercuts --
 #                keep today's contract; the premise is a property of the ROW)
+#   T11 MULTILINE  row acceptance_cmd is a YAML block scalar -> rc=8,
+#                reason=acceptance_cmd_multiline, no worker
+#   T12 ONELINE    row acceptance_cmd remains a one-line red probe -> rc=0,
+#                worker started (quoting/execution unchanged)
 #   T0 bash -n on the dispatch script and on this suite
 #
 # Negative controls (mutation, run via leadv2-mutation-control.sh) that MUST
@@ -142,6 +146,20 @@ tasks:
   acceptance_probe_id: null
   needs_acceptance_probe: false
   acceptance_cmd: 'true'
+- id: 3333multiline11
+  intent: 'TASK-PREMISE-MULTILINE-01: multiline acceptance command'
+  status: queued
+  acceptance_probe_id: null
+  needs_acceptance_probe: false
+  acceptance_cmd: |
+    echo first line
+    false
+- id: 4444oneline0012
+  intent: 'TASK-PREMISE-ONELINE-01: one-line acceptance command'
+  status: queued
+  acceptance_probe_id: null
+  needs_acceptance_probe: false
+  acceptance_cmd: '! grep -q WAVE0-DEFECT-MARKER ${ROOT}/journal-lib-broken.sh'
 YAML
 # bash-guard: allow
 
@@ -327,6 +345,26 @@ DISPATCH_EXTRA=()
 if [[ "${RC}" == "0" ]]; then pass "T10 declarative --acceptance-cmd: dispatch proceeds rc=0"; else fail "T10 declarative cmd: expected rc=0 got ${RC}: $(printf '%s' "${OUT}" | tail -1)"; fi
 grep -q '^SPAWN ' "${SPAWN_MARK:-/dev/nonexistent}" && pass "T10 worker started (declarative callers intact)" || fail "T10 worker not started"
 [[ ! -s "${CLOSE_CAP:-/dev/nonexistent}" ]] && pass "T10 nothing closed" || fail "T10 row closed with no row"
+
+# ── T11: multiline acceptance_cmd is refused before eval can split it ────
+_dispatch multiline TASK-PREMISE-MULTILINE-01
+if [[ "${LEADV2_PREMISE_TEST_VERBOSE:-0}" == "1" ]]; then
+  printf '[TEST] T11 raw dispatch output BEGIN\n%s\n[TEST] T11 raw dispatch output END\n' "${OUT}"
+fi
+if [[ "${RC}" == "8" ]]; then pass "T11 multiline: exit 8"; else fail "T11 multiline: expected rc=8 got ${RC}"; fi
+grep -q "reason=acceptance_cmd_multiline" <<<"${OUT}" \
+  && pass "T11 reason=acceptance_cmd_multiline" \
+  || fail "T11 reason line missing: $(printf '%s' "${OUT}" | tail -1)"
+[[ ! -s "${SPAWN_MARK:-/dev/nonexistent}" ]] && pass "T11 worker not started" || fail "T11 worker started"
+
+# ── T12: one-line acceptance_cmd retains the existing red path ────────────
+_dispatch oneline TASK-PREMISE-ONELINE-01
+if [[ "${LEADV2_PREMISE_TEST_VERBOSE:-0}" == "1" ]]; then
+  printf '[TEST] T12 raw dispatch output BEGIN\n%s\n[TEST] T12 raw dispatch output END\n' "${OUT}"
+fi
+if [[ "${RC}" == "0" ]]; then pass "T12 one-line: dispatch proceeds rc=0"; else fail "T12 one-line: expected rc=0 got ${RC}: $(printf '%s' "${OUT}" | tail -1)"; fi
+grep -q '^SPAWN ' "${SPAWN_MARK:-/dev/nonexistent}" && pass "T12 worker started" || fail "T12 worker not started"
+[[ ! -s "${CLOSE_CAP:-/dev/nonexistent}" ]] && pass "T12 row NOT closed" || fail "T12 row closed on a live premise: $(head -1 "${CLOSE_CAP}")"
 
 printf -- '\n%d passed, %d failed\n' "${PASS}" "${FAIL}"
 if [[ "${FAIL}" -gt 0 ]]; then
