@@ -71,6 +71,11 @@ resolve() {  # <repo> -> canonical active.yaml path under $BASE (sandbox shape)
 }
 
 run_disp() {  # <dispatch-bin> <repo> <tag> -> full output of one --no-spawn dispatch
+  # The description deliberately stays IDENTICAL between fixtures: dispatch
+  # derives its stable registry task id from it.  Distinct tags isolate only
+  # incidental cache and declared-write paths.  Without this, a mutation back
+  # to basename keying still sees different task ids and cannot reproduce the
+  # historical writeset_persist_failed refusal.
   ( cd "$2" && \
   CLAUDE_PROJECT_ROOT="$2" LEADV2_PROJECT_ROOT="$2" \
   LEADV2_STATE_BASE="${BASE}" \
@@ -78,7 +83,7 @@ run_disp() {  # <dispatch-bin> <repo> <tag> -> full output of one --no-spawn dis
   LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
   LEADV2_REQUIRE_PHASES=0 LEADV2_DISPATCH_SUBSESSION_BIN="${WORKER}" \
-  bash "$1" "collision probe $3" --kind code --no-spawn --no-probe-yet \
+  bash "$1" "same-basename collision probe" --kind code --no-spawn --no-probe-yet \
        --writes "src/shared-$3.py" 2>&1 || true )
 }
 
@@ -181,15 +186,21 @@ else
   ok "fixture B (same basename, dirty machine) dispatches with no writeset refusal"
 fi
 b_sig="$(printf '%s\n' "${b_out}" | grep -oE 'task=[0-9a-f]{8}' | head -1 | cut -d= -f2)"
+if [[ -n "${a_sig}" && "${a_sig}" == "${b_sig}" ]]; then
+  ok "fixture A and B exercise the same stable dispatch signature (${a_sig})"
+else
+  green_held=0
+  bad "fixture A and B did not exercise the same stable dispatch signature" "a='${a_sig}' b='${b_sig}'"
+fi
 if [[ -n "${b_sig}" ]] && grep -q "dispatch-${b_sig}" "${b_yaml}" 2>/dev/null; then
   ok "fixture B registered under its OWN hashed root (dispatch-${b_sig})"
 else
   green_held=0
   bad "fixture B row not in its own registry" "sig='${b_sig}' yaml='${b_yaml}'"
 fi
-if [[ -f "${b_yaml}" ]] && grep -q "dispatch-${a_sig}" "${b_yaml}" 2>/dev/null; then
+if [[ -f "${b_yaml}" ]] && grep -q 'src/shared-a.py' "${b_yaml}" 2>/dev/null; then
   green_held=0
-  bad "fixture A's row is visible in fixture B's registry" "leak: dispatch-${a_sig} in ${b_yaml}"
+  bad "fixture A's row is visible in fixture B's registry" "leak: src/shared-a.py in ${b_yaml}"
 else
   ok "fixture A's row is invisible to fixture B"
 fi
@@ -231,7 +242,6 @@ fi
 MUT_ROOT="${WORK}/mutated"; mkdir -p "${MUT_ROOT}"
 cp -R "${SCRIPTS_DIR}" "${MUT_ROOT}/scripts"
 MUT_RESOLVER="${MUT_ROOT}/scripts/leadv2-state-path.sh"
-MUT_DISPATCH="${MUT_ROOT}/scripts/leadv2-dispatch-code.sh"
 mut_rc=0
 python3 - "${MUT_RESOLVER}" <<'PY' || mut_rc=$?
 import sys
@@ -254,25 +264,19 @@ else
     git -C "$R" init -q -b main; git -C "$R" config user.email t@t; git -C "$R" config user.name t
     touch "$R/seed"; git -C "$R" add seed; git -C "$R" commit -qm seed
   done
-  mut_a="$(run_disp "${MUT_DISPATCH}" "$A2" muta)"
-  mut_a_sig="$(printf '%s\n' "${mut_a}" | grep -oE 'task=[0-9a-f]{8}' | head -1 | cut -d= -f2)"
-  # strip writes from the shared registry row(s) A2 just left (pre-field residue)
-  python3 - "${BASE}/.ephemeral/repo-collide/active.yaml" <<'PY'
-import sys, yaml
-p = sys.argv[1]
-doc = yaml.safe_load(open(p)) or {}
-for r in (doc.get("sessions") or []):
-    if isinstance(r, dict):
-        r.pop("writes", None); r.pop("write_set", None)
-yaml.safe_dump(doc, open(p, "w"))
-PY
-  mut_b="$(run_disp "${MUT_DISPATCH}" "$B2" mutb)"
+  mut_a_yaml="$( ( cd "$A2" && LEADV2_STATE_ROOT= PROJECT_ROOT="$A2" bash "${MUT_RESOLVER}" --no-link active.yaml 2>/dev/null) )"
+  # A stale registry row is the durable collision shape.  Leave it through
+  # fixture A, then ask fixture B for its own active.yaml.  The mutant is red
+  # only if B resolves the SAME file and can read A's row -- no dependence on
+  # later dispatcher refresh semantics that may legitimately repair `writes`.
+  printf 'sessions:\n- task_id: dispatch-f5117370\n  worktree: %s\n' "$A2" > "${mut_a_yaml}"
+  mut_b_yaml="$( ( cd "$B2" && LEADV2_STATE_ROOT= PROJECT_ROOT="$B2" bash "${MUT_RESOLVER}" --no-link active.yaml 2>/dev/null) )"
   if [[ "${green_held}" != "1" ]]; then
     bad "(red) control NOT EVALUATED -- the green half did not hold, fix the suite first" "green_held=0"
-  elif printf '%s\n' "${mut_b}" | grep -qE 'writeset_(pending|overlap|persist_failed|conflict|unknown)'; then
-    ok "(red) bare-basename keying regressed: the refusal returned ($(printf '%s\n' "${mut_b}" | grep -m1 -oE 'writeset_[a-z_]'))"
+  elif [[ "${mut_a_yaml}" == "${mut_b_yaml}" ]] && grep -q "worktree: ${A2}" "${mut_b_yaml}" 2>/dev/null; then
+    ok "(red) bare-basename keying reproduces the stale-row collision (${mut_b_yaml})"
   else
-    bad "(red) mutated resolver still isolated -- control is not falsifiable" "$(printf '%s\n' "${mut_b}" | tail -1)"
+    bad "(red) mutated resolver did not expose fixture A's row to B" "a='${mut_a_yaml}' b='${mut_b_yaml}'"
   fi
 fi
 
