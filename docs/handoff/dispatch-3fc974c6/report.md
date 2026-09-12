@@ -113,3 +113,27 @@ plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh |  32 ++++--
 The deterministic DoD gate also passed (RC=0): report not required by a
 machine brief, suite registration passed, and no runtime-state path was
 touched. Its persisted output is dod-gate.md.
+
+## Final self-check raw output
+
+\`\`\`text
+SELF-CHECK bash -n arbiter
+RC=0
+SELF-CHECK bash -n acceptance suite
+RC=0
+SELF-CHECK acceptance suite
+PASS: p90 beyond five-hour period skips that window loudly and keeps GLM eligible
+PASS: in-domain forecast over genuinely exhausted remainder still refuses loudly
+PASS: p75 excludes an idle 30-hour tail from the ordinary-task forecast
+RED CONTROL: disabling forecast-window-domain guard restores the false refusal: arm=refuse ... remaining=99.0pct forecast=120.0pct ...
+PASS: negative control: own-window domain guard is load-bearing
+RED CONTROL: disabling fit comparison removes the exhausted-window refusal: arm=glm ... remaining=21.0 ... forecast_hours=1.10h ...
+PASS: negative control: exhausted-window fit comparison is load-bearing
+SUMMARY: pass=5 fail=0
+RC=0
+SELF-CHECK scoped diff
+RC=0
+SELF-CHECK target status
+\`\`\`
+
+No Python file changed, so no py_compile invocation applies.
