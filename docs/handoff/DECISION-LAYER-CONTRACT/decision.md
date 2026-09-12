@@ -83,7 +83,7 @@ mapping decision, not new instrumentation.
 Each clause: layer · fact · failure mode it closes. `CONTRACT:` lines are the
 checkable surface for the four implementing rows.
 
-- CONTRACT: QUOTA-WINDOWS — the quota layer (leadv2-quota-read.py) MUST publish
+CONTRACT: QUOTA-WINDOWS — the quota layer (leadv2-quota-read.py) MUST publish
   EVERY window the provider meters, including model-scoped ones, as
   `{kind, scope, pct, resets_at, measured_at}`; the arbiter MUST price an arm by
   the worst of ALL windows applicable to the arm's model(s) — an arm mapped to a
@@ -92,32 +92,32 @@ checkable surface for the four implementing rows.
   not enforce (row 0485). The kind→window-name mapping (session↔five_hour,
   weekly_all↔seven_day, weekly_scoped↔own) MUST be declared in one place, not
   inferred per reader.
-- CONTRACT: FACT-SHAPE — every published fact carries
+CONTRACT: FACT-SHAPE — every published fact carries
   `{value?, status, measured_at, writer}` with
   `status ∈ {live, stale(age>TTL), failed(reason), never_measured}` and
   `reason ∈ {throttle, auth, network, parse}`. A missing value is a STATUS,
   never a number. Closes: silence decoding as zero (census #13).
-- CONTRACT: SILENCE-DECODING — consumers MUST decode by status and reason:
+CONTRACT: SILENCE-DECODING — consumers MUST decode by status and reason:
   `failed(throttle)` = meter says throttled → consume headroom pessimistically,
   keep candidate; `failed(auth)` = credential-level verdict → quarantine via the
   single failure store, do NOT price; `never_measured` = price at the declared
   conservative default AND emit a probe request; `stale` = usable for ranking,
   not for fit. No layer may invent its own decoding for the same status.
   Closes: one event → two opposite verdicts (row bd7f).
-- CONTRACT: SINGLE-FAILURE-STORE — failure memory (cooldowns, quarantines,
+CONTRACT: SINGLE-FAILURE-STORE — failure memory (cooldowns, quarantines,
   bans) has exactly ONE writer per failure class and one TTL per class, chosen
   by class semantics (auth-failure TTL ≠ throttle TTL), and every consumer
   (arbiter, balancer, dispatcher) reads THAT store. A layer writing a private
   cooldown variant is a defect even if its local logic is correct. Closes:
   FAIL_TTL=20 vs COOLDOWN_S=900 on one 401 (row bd7f); the cooldown-invalidation
   sidecar discipline (profile-select :553-574) moves with it.
-- CONTRACT: PER-ACCOUNT-BY-DEFAULT — account-level quota facts are recorded for
+CONTRACT: PER-ACCOUNT-BY-DEFAULT — account-level quota facts are recorded for
   EVERY configured account on every probe, regardless of
   `LEADV2_CLAUDE_MULTIPROFILE`; the opt-out flag may gate account SWITCHING,
   never account MEASUREMENT. Blending accounts into one reading is a derivation
   the arbiter may request, not a storage decision. Closes: breaker blending
   accounts by default (row 3e55).
-- CONTRACT: ESTIMATE-LIFECYCLE — a cost estimate is provisional and MUST be
+CONTRACT: ESTIMATE-LIFECYCLE — a cost estimate is provisional and MUST be
   paired with an actual at terminal state in the same journal (shape landed in
   8e4152ae); the estimator MUST expose estimate-vs-actual calibration, and any
   forecast used for the fit decision MUST carry a `basis` that names what it
@@ -126,33 +126,33 @@ checkable surface for the four implementing rows.
   soon as such a meter exists; a proxy wearing a measurement's name is a defect
   (census #5). Closes: matrix price as the entire answer forever (row 4c06,
   write half landed).
-- CONTRACT: PHASE-PREFIX — phase state is a monotone prefix; EVERY consumer of a
+CONTRACT: PHASE-PREFIX — phase state is a monotone prefix; EVERY consumer of a
   phase ≥ build (dispatch, review admission, close) MUST verify the full
   mandatory prefix for the class, not just presence of the latest phase. The
   bootstrap grace is one-shot AND time-bounded (a lane in bootstrap past N
   minutes is a named anomaly, not a standing bypass). Closes: build recorded
   with neither plan nor gate1 (row f37f).
-- CONTRACT: LANE-LOAD-VISIBILITY — the dispatcher/active-registry MUST publish
+CONTRACT: LANE-LOAD-VISIBILITY — the dispatcher/active-registry MUST publish
   per-arm in-flight lane counts where the arbiter reads quota, and the arbiter
   MUST treat an arm at in-flight saturation as a named stage (`lane_load`),
   ranked but not necessarily excluded. Closes: load balancing as an unmeasured
   side effect of price (census #10).
-- CONTRACT: DESCRIPTOR-PROVENANCE — every descriptor key the arbiter consumes
+CONTRACT: DESCRIPTOR-PROVENANCE — every descriptor key the arbiter consumes
   (complexity, complexity_source, duration_class, expected_hours, protected)
   names its producer; a degraded estimate MUST arrive as `source=degraded`, and
   the arbiter MUST print which inputs were degraded on the decision line.
   Closes: `arbiter_uses_size_only` being invisible downstream (dispatch :3457).
-- CONTRACT: ESTIMATE-INPUT-TRUTH — the pre-arm USD estimate MUST be recorded
+CONTRACT: ESTIMATE-INPUT-TRUTH — the pre-arm USD estimate MUST be recorded
   with the model actually resolved by the arbiter (or the resolution marked
   `pre_selection`), never a hardcoded `--main-model sonnet` (dispatch :3491).
   Closes: estimate/actual pairs that compare different models' prices.
-- CONTRACT: DECISION-QUALITY-FLOOR — cheapness of the decision is not a
+CONTRACT: DECISION-QUALITY-FLOOR — cheapness of the decision is not a
   constraint (founder, 2026-09-12): the arbiter MAY spend an LLM call and MAY
   decide slower. What it may NOT do is decide on an unmeasured number: every
   ranking input is either a published fact (per FACT-SHAPE) or a named
   conservative default. A cheaper decision built on a fabricated or absent
   number violates this contract even when it picks the "right" arm.
-- CONTRACT: ONE-JOURNAL — cross-layer facts live in the events journal under one
+CONTRACT: ONE-JOURNAL — cross-layer facts live in the events journal under one
   attribution rule (last spawn wins, arbiter :788-826, cost-actuals.sh:28-31).
   No layer adds a second store for a fact the journal already carries; two
   writers for one number drift (cost-actuals.sh header, paid for already).
