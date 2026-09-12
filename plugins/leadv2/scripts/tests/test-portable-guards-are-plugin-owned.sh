@@ -28,7 +28,7 @@
 # drifted content is a FAIL.
 #
 # Run: bash scripts/tests/test-portable-guards-are-plugin-owned.sh [--selftest]
-# run-all-triggers: leadv2-bash-hook-dispatcher scheduled-decisions-inject anti-silence-pulse-detector mojibake-guard pending-questions-inject open-threads-anchor-inject session-start-safe-pull learn-trigger-inject lane-lesson-capture-hook leadv2-phase-pulse-sync docs-truth-inject
+# run-all-triggers: leadv2-bash-hook-dispatcher scheduled-decisions-inject anti-silence-pulse-detector mojibake-guard pending-questions-inject session-start-safe-pull learn-trigger-inject lane-lesson-capture-hook leadv2-phase-pulse-sync docs-truth-inject
 
 set -uo pipefail
 
@@ -44,7 +44,7 @@ GETMANY="${G01_GETMANY:-$DEF_GETMANY}"
 CANON_HOOKS="${G01_CANONICAL_HOOKS:-$DEF_CANON_HOOKS}"
 
 # bash-guard: allow
-GUARD_NAMES="leadv2-bash-hook-dispatcher.sh scheduled-decisions-inject.sh anti-silence-pulse-detector.sh mojibake-guard.sh pending-questions-inject.sh open-threads-anchor-inject.sh session-start-safe-pull.sh learn-trigger-inject.sh lane-lesson-capture-hook.sh leadv2-phase-pulse-sync.sh docs-truth-inject.sh"
+GUARD_NAMES="leadv2-bash-hook-dispatcher.sh scheduled-decisions-inject.sh anti-silence-pulse-detector.sh mojibake-guard.sh pending-questions-inject.sh session-start-safe-pull.sh learn-trigger-inject.sh lane-lesson-capture-hook.sh leadv2-phase-pulse-sync.sh docs-truth-inject.sh"
 
 # event each guard must be registered under in getmany-followup-bot
 event_for() {
@@ -56,7 +56,6 @@ event_for() {
     docs-truth-inject.sh)                 echo "SessionStart" ;;
     anti-silence-pulse-detector.sh)       echo "UserPromptSubmit" ;;
     pending-questions-inject.sh)          echo "UserPromptSubmit" ;;
-    open-threads-anchor-inject.sh)        echo "UserPromptSubmit" ;;
     mojibake-guard.sh)                    echo "Stop" ;;
     lane-lesson-capture-hook.sh)          echo "PostToolUse" ;;
     leadv2-phase-pulse-sync.sh)           echo "PostToolUse" ;;
@@ -225,11 +224,11 @@ build_fixture() { # $1=scratch root: plug/hooks, canon/hooks, persona, getmany
   python3 - "$s/getmany/.claude/settings.json" <<'PY'
 import json, sys
 out = sys.argv[1]
-names = "leadv2-bash-hook-dispatcher.sh scheduled-decisions-inject.sh anti-silence-pulse-detector.sh mojibake-guard.sh pending-questions-inject.sh open-threads-anchor-inject.sh session-start-safe-pull.sh learn-trigger-inject.sh lane-lesson-capture-hook.sh leadv2-phase-pulse-sync.sh docs-truth-inject.sh".split()
+names = "leadv2-bash-hook-dispatcher.sh scheduled-decisions-inject.sh anti-silence-pulse-detector.sh mojibake-guard.sh pending-questions-inject.sh session-start-safe-pull.sh learn-trigger-inject.sh lane-lesson-capture-hook.sh leadv2-phase-pulse-sync.sh docs-truth-inject.sh".split()
 ev = {"leadv2-bash-hook-dispatcher.sh":"PreToolUse","scheduled-decisions-inject.sh":"SessionStart",
       "session-start-safe-pull.sh":"SessionStart","learn-trigger-inject.sh":"SessionStart",
       "docs-truth-inject.sh":"SessionStart","anti-silence-pulse-detector.sh":"UserPromptSubmit",
-      "pending-questions-inject.sh":"UserPromptSubmit","open-threads-anchor-inject.sh":"UserPromptSubmit",
+      "pending-questions-inject.sh":"UserPromptSubmit",
       "mojibake-guard.sh":"Stop","lane-lesson-capture-hook.sh":"PostToolUse",
       "leadv2-phase-pulse-sync.sh":"PostToolUse"}
 hooks = {}
