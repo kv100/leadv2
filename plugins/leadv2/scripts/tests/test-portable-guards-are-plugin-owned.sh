@@ -28,7 +28,7 @@
 # drifted content is a FAIL.
 #
 # Run: bash scripts/tests/test-portable-guards-are-plugin-owned.sh [--selftest]
-# run-all-triggers: leadv2-bash-hook-dispatcher scheduled-decisions-inject anti-silence-pulse-detector mojibake-guard pending-questions-inject session-start-safe-pull learn-trigger-inject lane-lesson-capture-hook leadv2-phase-pulse-sync docs-truth-inject
+# run-all-triggers: leadv2-bash-hook-dispatcher scheduled-decisions-inject anti-silence-pulse-detector mojibake-guard pending-questions-inject session-start-safe-pull learn-trigger-inject lane-lesson-capture-hook leadv2-phase-pulse-sync
 
 set -uo pipefail
 
@@ -44,7 +44,7 @@ GETMANY="${G01_GETMANY:-$DEF_GETMANY}"
 CANON_HOOKS="${G01_CANONICAL_HOOKS:-$DEF_CANON_HOOKS}"
 
 # bash-guard: allow
-GUARD_NAMES="leadv2-bash-hook-dispatcher.sh scheduled-decisions-inject.sh anti-silence-pulse-detector.sh mojibake-guard.sh pending-questions-inject.sh session-start-safe-pull.sh learn-trigger-inject.sh lane-lesson-capture-hook.sh leadv2-phase-pulse-sync.sh docs-truth-inject.sh"
+GUARD_NAMES="leadv2-bash-hook-dispatcher.sh scheduled-decisions-inject.sh anti-silence-pulse-detector.sh mojibake-guard.sh pending-questions-inject.sh session-start-safe-pull.sh learn-trigger-inject.sh lane-lesson-capture-hook.sh leadv2-phase-pulse-sync.sh"
 
 # event each guard must be registered under in getmany-followup-bot
 event_for() {
@@ -53,7 +53,6 @@ event_for() {
     scheduled-decisions-inject.sh)        echo "SessionStart" ;;
     session-start-safe-pull.sh)           echo "SessionStart" ;;
     learn-trigger-inject.sh)              echo "SessionStart" ;;
-    docs-truth-inject.sh)                 echo "SessionStart" ;;
     anti-silence-pulse-detector.sh)       echo "UserPromptSubmit" ;;
     pending-questions-inject.sh)          echo "UserPromptSubmit" ;;
     mojibake-guard.sh)                    echo "Stop" ;;
@@ -65,9 +64,16 @@ event_for() {
 
 PASS=0; FAIL=0; PENDING=0; KNOWN=0
 # Registrations already broken BEFORE this move (dangling persona-engine
-# symlink to a file deleted from the plugin in 517bc13c). Counted, printed,
-# never laundered into a pass -- but not attributed to this task either.
-KNOWN_BROKEN="${G01_KNOWN_BROKEN:-leadv2-supervisor-mode-reinject.sh}"
+# symlink to a file deleted from the plugin in 517bc13c), PLUS
+# docs-truth-inject.sh (DOCS-TRUTH-GATE-HAS-NO-SUBJECT-01, 2026-09-12): its
+# only subject (docs/leadv2/open-threads-rules.md) was retired whole, the hook
+# and its plugin file are deleted, but persona-engine's .claude/settings.json
+# (off-limits to this task) and getmany-followup-bot's .claude/settings.json
+# (a third, out-of-scope repo) still name it under
+# ${CLAUDE_PROJECT_DIR}/.claude/hooks/ and ${CLAUDE_PLUGIN_ROOT}/hooks/
+# respectively. Counted, printed, never laundered into a pass -- a follow-up
+# must still edit both settings.json files to drop the dead registration.
+KNOWN_BROKEN="${G01_KNOWN_BROKEN:-leadv2-supervisor-mode-reinject.sh docs-truth-inject.sh}"
 ok()   { PASS=$((PASS+1)); echo "PASS   $*"; }
 bad()  { FAIL=$((FAIL+1)); echo "FAIL   $*" >&2; }
 pend() { PENDING=$((PENDING+1)); echo "PENDING $*"; }
@@ -201,6 +207,8 @@ PY
   while IFS= read -r ghost; do
     [ -n "$ghost" ] || continue
     if [ -f "$PLUGIN_HOOKS/$ghost" ]; then ok "C3b file exists: $ghost"
+    elif case " $KNOWN_BROKEN " in *" $ghost "*) true ;; *) false ;; esac; then
+      KNOWN=$((KNOWN+1)); echo "KNOWN-BROKEN (retired hook, getmany registration not in this task's scope): $ghost"
     else bad "C3b getmany registers $ghost but plugin ships no such file"; fi
   done < <(sort -u "$t")
   rm -f "$t"
@@ -224,10 +232,10 @@ build_fixture() { # $1=scratch root: plug/hooks, canon/hooks, persona, getmany
   python3 - "$s/getmany/.claude/settings.json" <<'PY'
 import json, sys
 out = sys.argv[1]
-names = "leadv2-bash-hook-dispatcher.sh scheduled-decisions-inject.sh anti-silence-pulse-detector.sh mojibake-guard.sh pending-questions-inject.sh session-start-safe-pull.sh learn-trigger-inject.sh lane-lesson-capture-hook.sh leadv2-phase-pulse-sync.sh docs-truth-inject.sh".split()
+names = "leadv2-bash-hook-dispatcher.sh scheduled-decisions-inject.sh anti-silence-pulse-detector.sh mojibake-guard.sh pending-questions-inject.sh session-start-safe-pull.sh learn-trigger-inject.sh lane-lesson-capture-hook.sh leadv2-phase-pulse-sync.sh".split()
 ev = {"leadv2-bash-hook-dispatcher.sh":"PreToolUse","scheduled-decisions-inject.sh":"SessionStart",
       "session-start-safe-pull.sh":"SessionStart","learn-trigger-inject.sh":"SessionStart",
-      "docs-truth-inject.sh":"SessionStart","anti-silence-pulse-detector.sh":"UserPromptSubmit",
+      "anti-silence-pulse-detector.sh":"UserPromptSubmit",
       "pending-questions-inject.sh":"UserPromptSubmit",
       "mojibake-guard.sh":"Stop","lane-lesson-capture-hook.sh":"PostToolUse",
       "leadv2-phase-pulse-sync.sh":"PostToolUse"}
@@ -247,10 +255,10 @@ selftest() {
     build_fixture "$SCR/$sn"
     strict=0
     case "$sn" in
-      scratch-copy) rm "$SCR/$sn/persona/.claude/hooks/docs-truth-inject.sh"
+      scratch-copy) rm "$SCR/$sn/persona/.claude/hooks/learn-trigger-inject.sh"
         printf '# mutated copy\n' >"$SCR/$sn/mutated.sh"
-        ln -s "$SCR/$sn/mutated.sh" "$SCR/$sn/persona/.claude/hooks/docs-truth-inject.sh" ;;
-      drift) printf '# drifted bytes\n' >>"$SCR/$sn/canon/hooks/docs-truth-inject.sh" ;;
+        ln -s "$SCR/$sn/mutated.sh" "$SCR/$sn/persona/.claude/hooks/learn-trigger-inject.sh" ;;
+      drift) printf '# drifted bytes\n' >>"$SCR/$sn/canon/hooks/pending-questions-inject.sh" ;;
       dangling) rm "$SCR/$sn/canon/hooks/mojibake-guard.sh"; strict=1 ;;
       ghost-reg) python3 -c "
 import json
