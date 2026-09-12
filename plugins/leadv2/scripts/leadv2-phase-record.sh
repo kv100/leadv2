@@ -107,6 +107,9 @@
 #       --artifact <path>           required unless --status running|n/a|waived
 #       --status running|done|n/a|waived   default: done
 #       --handle <worker handle>    required when --status running
+#       --class <canonical class>   stamps the lane's class into the record;
+#                                   also the seed the pre-build prefix check
+#                                   reads back (PHASE-PREFIX-AT-RECORD-01)
 #       --reason <text>             required when --status n/a|waived;
 #                                    for phase=gate1 status=done, a non-empty
 #                                    --reason is ALSO accepted as an explicit
@@ -117,6 +120,12 @@
 # exit 5 (record) = the phase was asked to be recorded `done` but its proof does
 #                   not verify. Nothing is written. See
 #                   PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01.
+# exit 6 (record) = the phase is at or after build and its class's mandatory
+#                   pre-build prefix (plan/gate1, per _resolve_mandatory) is
+#                   not satisfied in the store. Nothing is written. See
+#                   PHASE-PREFIX-AT-RECORD-01 (row f37fadb8f474): the guard
+#                   admitting a lane at dispatch was never the thing that made
+#                   plan/gate1 happen — the ONE writer of phases.d is.
 #
 #   leadv2-phase-record.sh assert <sig8> --class <canonical phase-record class>
 #       [--waiver <phase>=<reason>]...
@@ -822,8 +831,81 @@ PYEOF
 _prepass_file() { printf '%s/dispatch-%s/architect-prepass.md' "$PHASES_DIR_BASE" "$1"; }
 
 # ── record subcommand ─────────────────────────────────────────────────────────
+# ── lane class lookup (PHASE-PREFIX-AT-RECORD-01) ─────────────────────────────
+# The pre-build prefix is class-dependent (Light owes neither plan nor gate1,
+# Standard owes both), and `record` has no --class of its own on most calls.
+# The class is therefore PERSISTED in the store: dispatch-code stamps it on
+# the classify record it already writes on every dispatch (--class there).
+# Lookup order: classify.yaml first (the canonical home), then any record.
+# Prints "" when the store carries no class (a lane whose classify predates
+# the stamp, or a classless caller) — the prefix check then fails OPEN for
+# that lane, mirroring today's behaviour exactly. Legacy lanes are not
+# retroactively bricked; their NEXT dispatch re-stamps classify WITH a class
+# and enforcement begins from that record on.
+_phase_store_class() {  # <sig8> -> prints class or empty
+  local sig8="$1" f c
+  local d
+  d="$(_phases_d "$sig8")"
+  [[ -d "$d" ]] || { printf ''; return 0; }
+  for f in "$d/classify.yaml" "$d"/*.yaml; do
+    [[ -f "$f" ]] || continue
+    c="$(grep '^class:' "$f" 2>/dev/null | head -1 | awk '{print $2}')"
+    if [[ -n "$c" ]]; then printf '%s' "$c"; return 0; fi
+  done
+  printf ''
+}
+
+# ── pre-build prefix check at the ONE writer (PHASE-PREFIX-AT-RECORD-01) ──────
+# Founder order 2026-09-12 (row f37fadb8f474): no work may start without
+# estimate -> balancer verdict -> arbiter decision -> dispatch -> N phases by
+# complexity. The dispatch-time guard admits a fresh lane by bootstrap grace,
+# but nothing AFTER admission forced plan/gate1 to happen before build was
+# recorded — two Standard lanes (bd7f811eb05c / 4c06462a1a71, 2026-09-12) ran
+# in build for over an hour with phases.d holding exactly `classify: done` and
+# `build: running`. The guard's position was the whole bug: admission and
+# recording are different acts. The check therefore lives HERE, at the only
+# writer of phases.d, so every caller (dispatch stamp, worker record, close)
+# inherits it without knowing about it.
+#
+# RULE: a phase at or after build (build test review deploy live_verify e2e
+# close) may be recorded with status running|done only when every MANDATORY
+# pre-build phase of the lane's class (_resolve_mandatory <cls> '' pre-build —
+# the same table assert reads, never a second list) is satisfied in the store
+# (_phase_satisfied — the same checker assert uses). Governance records
+# (waived/n/a) are exempt: a waiver asserts non-performance and is itself the
+# sanctioned override. Class unknown (legacy/classless lane): fail OPEN — see
+# _phase_store_class. LEADV2_REQUIRE_PHASES=0|warn: skip, byte-parity with the
+# dispatch guard's kill switch and warn contract (D3) — the emergency rollback
+# must not start refusing at a second, unkillable site.
+#
+# Exit 6 = prefix unmet (caller refuses; nothing was written). 0 = proceed.
+_record_prefix_check() {  # <sig8> <phase> <cls> <task-id-for-journal> -> 0/6
+  local sig8="$1" phase="$2" cls="$3" tid="$4"
+  case "${LEADV2_REQUIRE_PHASES:-}" in 0|warn) return 0 ;; esac
+  case "$phase" in
+    build|test|review|deploy|live_verify|e2e|close) ;;
+    *) return 0 ;;
+  esac
+  [[ -n "$cls" ]] || return 0
+  local missing=() kind pname rest csv
+  while IFS=' ' read -r kind pname rest; do
+    [[ "$kind" == "MANDATORY" ]] || continue
+    _phase_satisfied "$sig8" "$pname" "" || missing+=("$pname")
+  done < <(_resolve_mandatory "$cls" "" pre-build)
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    return 0
+  fi
+  csv="$(IFS=,; printf '%s' "${missing[*]}")"
+  _log_err "record: refusing to record phase '$phase' for $sig8 — the lane's mandatory pre-build phases are not satisfied (class $cls): missing ${csv}"
+  _log_err "  work may not start or complete on a lane that skipped its ladder (founder order 2026-09-12); the dispatch-time bootstrap grace admits a lane, it never replaces the ladder"
+  _log_err "  remedy: ${PHASE_RECORD_BIN:-$0} record ${sig8} plan --status done --artifact docs/handoff/dispatch-${sig8}/brief.md   (a lead-authored brief is valid plan evidence)"
+  _log_err "  remedy: ${PHASE_RECORD_BIN:-$0} record ${sig8} gate1 --status done --reason \"<explicit gate1 decision>\""
+  _emit "${tid}" "phase_record_refused" "task=${tid} phase=${phase} reason=pre_build_prefix class=${cls} missing=${csv}" || _EMIT_MISS=$((_EMIT_MISS+1))
+  return 6
+}
+
 cmd_record() {
-  local sig8="" phase="" artifact="" status="done" handle="" reason="" task_id="" owner="" commit=""
+  local sig8="" phase="" artifact="" status="done" handle="" reason="" task_id="" owner="" commit="" class_arg=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --artifact) artifact="$2"; shift 2 ;;
@@ -833,6 +915,7 @@ cmd_record() {
       --task-id)  task_id="$2"; shift 2 ;;
       --owner)    owner="$2"; shift 2 ;;
       --commit)   commit="$2"; shift 2 ;;
+      --class)    class_arg="$2"; shift 2 ;;
       --*)  _log_err "record: unknown flag: $1"; exit 4 ;;
       *)
         if [[ -z "$sig8" ]]; then sig8="$1"
@@ -871,6 +954,27 @@ cmd_record() {
   if [[ ("$status" == "n/a" || "$status" == "waived") && -z "$reason" ]]; then
     _log_err "record: --reason required for status=$status"
     exit 4
+  fi
+
+  # --class (optional): validated when given; the seed the prefix check reads
+  # back on every later record for this lane (PHASE-PREFIX-AT-RECORD-01).
+  if [[ -n "$class_arg" ]]; then
+    _phase_record_class_is_valid "$class_arg" \
+      || { _log_err "record: invalid --class '$class_arg'"; exit 4; }
+  fi
+  # Effective class for this record: the caller's --class, else whatever the
+  # lane's store already carries (dispatch-code stamps classify with --class).
+  local _eff_class="$class_arg"
+  if [[ -z "$_eff_class" ]]; then
+    _eff_class="$(_phase_store_class "$sig8")"
+  fi
+  # PHASE-PREFIX-AT-RECORD-01 (row f37fadb8f474): the check that used to live
+  # only at dispatch admission, moved to the ONE writer. A lane the bootstrap
+  # grace admitted may NOT record a phase at or after build until its class's
+  # mandatory pre-build prefix exists in this store. Governance records
+  # (waived/n/a) pass through — see _record_prefix_check.
+  if [[ "$status" == "running" || "$status" == "done" ]]; then
+    _record_prefix_check "$sig8" "$phase" "$_eff_class" "${task_id:-$sig8}" || exit $?
   fi
 
   [[ -n "$owner" ]] || owner="$(basename "$0")"
@@ -1000,6 +1104,10 @@ cmd_record() {
   {
     printf 'phase: %s\n' "$phase"
     printf 'status: %s\n' "$status"
+    # PHASE-PREFIX-AT-RECORD-01: the lane's class travels in the store so the
+    # pre-build prefix check on every later record (and any consumer) reads
+    # ONE home — never a second class registry.
+    [[ -n "$_eff_class" ]] && printf 'class: %s\n' "$_eff_class"
     printf 'owner: %s\n' "$owner"
     printf 'handle: %s\n' "$handle"
     printf 'artifact: %s\n' "$artifact"

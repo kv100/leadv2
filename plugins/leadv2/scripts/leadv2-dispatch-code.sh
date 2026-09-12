@@ -931,9 +931,9 @@ _dispatch_arm_registered_file() {  # <sig8> -> path on stdout
 #
 # BROAD-STATUS-RELAY-SCOPE-01 round 2 (D1): additive LEAD_SESSION=<sanitized
 # CLAUDE_CODE_SESSION_ID> field -- the dispatching session's own id, sanitized
-# the same way the single-lead-beat hook sanitizes SAFE_SID (tr -c
-# 'A-Za-z0-9._-' '_', first 64 chars) so the two can be string-compared
-# directly. This is the ONLY in-write-set way to attribute a live lane back
+# with the shared SAFE_SID idiom every hook uses (tr -c
+# 'A-Za-z0-9._-' '_', first 64 chars -- e.g. leadv2-bg-ledger.sh) so ids
+# from different writers can be string-compared directly. This is the ONLY in-write-set way to attribute a live lane back
 # to the Claude session that dispatched it: lanes detach via
 # setsid+disown, so process ancestry cannot do it. Readers that don't know
 # this field (every reader predating this lane) are unaffected -- it is
@@ -2151,7 +2151,8 @@ _arm_exception_bump() {
       # same file would silently poison any consumer that reads `count=` as a
       # per-arm count. Appended fields only -- the sig8 dedupe (grep -qF) and the
       # carry-forward (grep '^sig8=') are unchanged, and the one existing reader
-      # (leadv2-broad-status.sh) parses only count= and last_reason=.
+      # (the retired broad-status renderer, deleted 2026-09-13) parsed only
+      # count= and last_reason=.
       printf 'sig8=%s reason=%s ts=%s\n' "${sig8}" "${reason}" "$(date -u +%s)"
     } >"${path}.tmp" && mv "${path}.tmp" "${path}"
   ) 9>"${path}.lock"
@@ -5158,6 +5159,56 @@ _resolve_class_with_brain_floor() {
   printf '%s' "${cls}"
 }
 
+# _pp_lane_dead_verdict <sig8> -> prints the lane-liveness verdict for
+# dispatch-<sig8> ("" when undeterminable — never a guess). One authoritative
+# source: leadv2-lane-liveness.sh's single-lane non-JSON contract prints the
+# BARE verdict token (alive | dead:<reason> | silent:<age> |
+# unknown:<reason> | child). Tests stub this via
+# LEADV2_DISPATCH_LANE_LIVENESS_BIN, the same knob the codex liveness path
+# reads (:3612) — no second liveness source is ever grown here.
+_pp_lane_dead_verdict() {
+  local sig8="$1"
+  local liveness_bin="${LEADV2_DISPATCH_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lane-liveness.sh}"
+  [[ -f "${liveness_bin}" ]] || { printf ''; return 0; }
+  local v
+  v="$(bash "${liveness_bin}" --project-root "${PROJECT_ROOT}" --lane "dispatch-${sig8}" 2>/dev/null || true)"
+  printf '%s' "${v}"
+}
+
+# _print_phase_remedies <sig8> <missing-csv> — the lead-actionable fix for
+# each missing phase, printed identically from the refusal path and from the
+# stale-running readmit path (one printer, never two that drift). Lifted
+# verbatim from the refusal branch (DISPATCH-PHASE-DEADLOCK-01 /
+# PHASE-BOOTSTRAP-ADMIT-02 rationale retained per-case below).
+_print_phase_remedies() {
+  local sig8="$1" missing_csv="$2"
+  local mp
+  for mp in $(printf '%s' "${missing_csv}" | tr ',' ' '); do
+    case "$mp" in
+      plan)
+        # PHASE-BOOTSTRAP-ADMIT-02: point the remedy at evidence that
+        # can actually exist before any worker has run. A lead-authored
+        # brief is real plan evidence (_verify_artifact accepts it,
+        # proof=attested) -- same for fix-round-N.md, a context.yaml
+        # with decisions:, or a non-empty architect-prepass.md.
+        log_err "  remedy: write docs/handoff/dispatch-${sig8}/brief.md with the plan (a lead-authored brief is valid plan evidence)"
+        log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} plan --status done --artifact docs/handoff/dispatch-${sig8}/brief.md   (or docs/handoff/<task-id>/fix-round-N.md, or a context.yaml with decisions:, or a non-empty architect-prepass.md)"
+        ;;
+      gate1)
+        # PHASE-BOOTSTRAP-ADMIT-02: an explicit recorded gate decision
+        # (--reason, no --artifact) is real gate1 evidence -- the
+        # .gate1-passed sentinel a worker/gate1-prompt would normally
+        # create cannot exist yet either.
+        log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} gate1 --status done --reason \"<explicit gate1 decision>\"   (or --artifact <path-to-.gate1-passed> if run through leadv2-gate1-prompt.sh)"
+
+        ;;
+      *)
+        log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
+        ;;
+    esac
+  done
+}
+
 # _phase_precondition_guard <sig8> <class> <writes> [waiver-args...] -> 0 proceed, 1 refuse
 # PHASES-ARE-THE-ONLY-PATH-01: sits at the same structural slot as _lane_writes_guard/
 # _acceptance_guard, after arg validation, before any spawn side effect and before
@@ -5309,23 +5360,90 @@ _phase_precondition_guard() {
         # phase history and this guard falls straight through to the refusal
         # below, unchanged. This is a one-shot grace on the very first
         # dispatch attempt, never a standing bypass.
+        #
+        # PHASE-PREFIX-AT-RECORD-01 (row f37fadb8f474, founder order
+        # 2026-09-12): the grace may ADMIT a lane, but admission no longer
+        # lets work start — the build record itself now refuses until the
+        # class's mandatory pre-build prefix exists (leadv2-phase-record.sh
+        # _record_prefix_check, the ONE writer). Two additions below keep that
+        # world free of deadlocks: the grace is TIME-BOUNDED (a classify-only
+        # lane past LEADV2_BOOTSTRAP_GRACE_MAX_S is a named anomaly and is
+        # refused, per the DECISION-LAYER-CONTRACT PHASE-PREFIX clause), and a
+        # lane whose non-classify records are ALL `running` on a POSITIVELY
+        # dead lane is re-admitted through the ladder instead of refused
+        # forever (the measured 2026-09-12 shape: classify:done +
+        # build:running, no plan/gate1, 109 such lanes hand-moved aside).
         if [[ "${scope}" == "pre-build" ]]; then
           local _pp_phases_d="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/phases.d"
-          local _pp_bootstrap="1" _pp_f
+          local _pp_bootstrap="1" _pp_stale_only="1" _pp_stale_csv="" _pp_f _pp_phase_name _pp_phase_status
           if [[ -d "${_pp_phases_d}" ]]; then
             for _pp_f in "${_pp_phases_d}"/*.yaml; do
               [[ -f "${_pp_f}" ]] || continue
-              local _pp_phase_name
               _pp_phase_name="$(grep '^phase:' "${_pp_f}" 2>/dev/null | awk '{print $2}')"
               if [[ "${_pp_phase_name}" != "classify" ]]; then
                 _pp_bootstrap=""
-                break
+                _pp_phase_status="$(grep '^status:' "${_pp_f}" 2>/dev/null | awk '{print $2}')"
+                if [[ "${_pp_phase_status}" == "running" ]]; then
+                  _pp_stale_csv="${_pp_stale_csv:+${_pp_stale_csv},}${_pp_phase_name}"
+                else
+                  _pp_stale_only=""
+                fi
               fi
             done
           fi
           if [[ -n "${_pp_bootstrap}" ]]; then
-            emit decision "phase_precondition_bootstrap_admit task=${sig8} class=${cls} missing=${missing_csv} mode=1"
-            return 0
+            # Time-bound (PHASE-PREFIX contract: the bootstrap grace is
+            # one-shot AND time-bounded). One knob, one-step rollback:
+            # LEADV2_BOOTSTRAP_GRACE_MAX_S (default 86400 = 24h; 0 disables
+            # the bound and restores the standing grace).
+            local _pp_grace_blocked=""
+            local _pp_grace_max="${LEADV2_BOOTSTRAP_GRACE_MAX_S:-86400}"
+            if [[ "${_pp_grace_max}" != "0" && -f "${_pp_phases_d}/classify.yaml" ]]; then
+              local _pp_cls_started _pp_age_s
+              _pp_cls_started="$(grep '^started_at:' "${_pp_phases_d}/classify.yaml" 2>/dev/null | awk '{print $2}')"
+              _pp_age_s="$(python3 -c '
+import sys, datetime
+try:
+    s = datetime.datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    print(int((datetime.datetime.now(datetime.timezone.utc) - s).total_seconds()))
+except Exception:
+    pass
+' "${_pp_cls_started}" 2>/dev/null || true)"
+              if [[ "${_pp_age_s}" =~ ^[0-9]+$ ]] && (( _pp_age_s > _pp_grace_max )); then
+                _pp_grace_blocked="1"
+                emit decision "bootstrap_grace_expired task=${sig8} age_s=${_pp_age_s} max_s=${_pp_grace_max} missing=${missing_csv} mode=1"
+                log_err "dispatch refused: bootstrap grace expired for ${sig8}: classify was recorded ${_pp_age_s}s ago (max ${_pp_grace_max}s) and the lane still holds nothing else -- a classify-only lane that old is a named anomaly, not a standing bypass (missing: ${missing_csv})"
+              fi
+            fi
+            if [[ -z "${_pp_grace_blocked}" ]]; then
+              emit decision "phase_precondition_bootstrap_admit task=${sig8} class=${cls} missing=${missing_csv} mode=1"
+              return 0
+            fi
+            # grace expired: fall through to the refusal + remedies below
+          elif [[ -n "${_pp_stale_only}" && -n "${_pp_stale_csv}" ]]; then
+            # STALENESS RULE (row f37fadb8f474 — the rule, stated once, in
+            # code; no LLM call needed): a `status: running` phase record is
+            # STALE iff, and only iff, the lane liveness probe returns a
+            # POSITIVE death verdict (dead:*) for dispatch-<sig8>. A lane
+            # that is alive, silent, unknown, or child-folded is NEVER stale:
+            # never reclaim on a guess (LANE-REGISTRY-SELF-DEADLOCK-01 — an
+            # unobservable birth degrades to ALIVE). Time alone never makes a
+            # record stale: a build that legitimately runs for hours is
+            # alive, and lane-liveness already bounds silence with its own
+            # ABANDON_MAX (dead:silent_*s_abandoned). This is the resume path
+            # DISPATCH-PHASE-DEADLOCK-01 never had: the lane re-enters the
+            # ladder (its pre-build prefix is still owed below), no phase
+            # file is moved by hand.
+            local _pp_verdict
+            _pp_verdict="$(_pp_lane_dead_verdict "${sig8}")"
+            if [[ "${_pp_verdict}" == dead:* ]]; then
+              emit decision "phase_precondition_stale_running_readmit task=${sig8} class=${cls} stale=${_pp_stale_csv} missing=${missing_csv} verdict=${_pp_verdict} mode=1"
+              log_err "lane ${sig8}: phase(s) ${_pp_stale_csv} sit at status=running on a positively dead lane (liveness: ${_pp_verdict}) -- re-admitted through the ladder instead of refused forever; the pre-build prefix is still owed:"
+              _print_phase_remedies "${sig8}" "${missing_csv}"
+              log_err "  once the prefix above is recorded, re-dispatch resumes this lane; no phase file needs moving by hand"
+              return 0
+            fi
+            # alive/silent/unknown: NOT stale -- the refusal below stands
           fi
         fi
         emit decision "phase_precondition_refused task=${sig8} class=${cls} missing=${missing_csv} required=${required_csv} unmet=${unmet_csv} mode=1"
@@ -5342,36 +5460,14 @@ _phase_precondition_guard() {
           [[ -n "${unmet_csv}" ]] && log_err "  still unmet across that whole set: ${unmet_csv}"
           log_err "  (this refusal is scoped to ${scope}; the rest becomes mandatory later in the same lane)"
         fi
-        local mp
         # DISPATCH-PHASE-DEADLOCK-01: a printed remedy that cannot itself
         # satisfy the gate it is offered for is not a remedy (measured cost:
         # 8 hand-written-file workarounds on 2026-08-31). plan/gate1 now
         # accept lead-authored evidence (see leadv2-phase-record.sh
         # _verify_artifact) — print the command that actually clears each.
-        for mp in $(printf '%s' "${missing_csv}" | tr ',' ' '); do
-          case "$mp" in
-            plan)
-              # PHASE-BOOTSTRAP-ADMIT-02: point the remedy at evidence that
-              # can actually exist before any worker has run. A lead-authored
-              # brief is real plan evidence (_verify_artifact accepts it,
-              # proof=attested) -- same for fix-round-N.md, a context.yaml
-              # with decisions:, or a non-empty architect-prepass.md.
-              log_err "  remedy: write docs/handoff/dispatch-${sig8}/brief.md with the plan (a lead-authored brief is valid plan evidence)"
-              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} plan --artifact docs/handoff/dispatch-${sig8}/brief.md   (or docs/handoff/<task-id>/fix-round-N.md, or a context.yaml with decisions:, or a non-empty architect-prepass.md)"
-              ;;
-            gate1)
-              # PHASE-BOOTSTRAP-ADMIT-02: an explicit recorded gate decision
-              # (--reason, no --artifact) is real gate1 evidence -- the
-              # .gate1-passed sentinel a worker/gate1-prompt would normally
-              # create cannot exist yet either.
-              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} gate1 --status done --reason \"<explicit gate1 decision>\"   (or --artifact <path-to-.gate1-passed> if run through leadv2-gate1-prompt.sh)"
-
-              ;;
-            *)
-              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
-              ;;
-          esac
-        done
+        # One printer shared with the stale-running readmit path above
+        # (_print_phase_remedies) — never two remedy texts that drift.
+        _print_phase_remedies "${sig8}" "${missing_csv}"
         return 1
       else
         # mode 0 or warn: missing phases do not block
@@ -6174,116 +6270,14 @@ PY
   emit decision "architect_prepass task=${sig8} status=ran arm=${ARCHITECT_FALLBACK_ARM_USED:-claude} artifact=docs/handoff/dispatch-${sig8}/architect-prepass.md source=${design:-stdout}"
 }
 
-# ── MON-PULSE-01: dispatcher-owned lane watch + single-lead beat default-on ───────
-# Founder order 2026-08-28 (3rd PULSE-IN-SINGLE-LEAD-01): lane tracking and the
-# founder pulse must work IN THE PLUGIN, never as session-improvised lead
-# Monitors (two `tail -n 0` Monitors missed a dispatch_terminal written 25s
-# post-spawn). At worker_spawned the dispatcher itself arms, detached (nohup):
-#   1. leadv2-lane-pulse-watch.sh — replay-safe per-lane journal watch that
-#      pulses every terminal state (dispatch_terminal|dispatch_refused|
-#      worker_died) for ITS sig via the existing leadv2-pulse.sh, pulses
-#      review_gate as a mid-flight beat but keeps watching, and never re-
-#      pulses lines a previous watcher already pulsed (per-sig seen ledger);
-#   2. leadv2-single-lead-beat-loop.sh — the BROAD_STATUS beat, default-on in
-#      single-lead mode while >=1 lane is live (armed once; pidfile guard).
-# Both are fail-open by construction: a missing binary, a full /tmp, or a dead
-# spawn can never affect this dispatcher's own control flow. LEADV2_PULSE_MODE=0
-# (and for the beat LEADV2_SINGLE_LEAD_BEAT=0) is the kill-switch. The bins are
-# env-overridable so tests stub them without touching the real watchers. Runs
-# inside a command-substitution subshell (spawn_worker's stdout is captured),
-# so every fd is explicitly redirected -- a background child holding the
-# capture pipe open would hang the caller. 9>&- matches the file-wide flock-fd
-# idiom used at every launcher call site.
-LANE_PULSE_WATCH_BIN="${LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN:-${SCRIPT_DIR}/leadv2-lane-pulse-watch.sh}"
-SINGLE_LEAD_BEAT_LOOP_BIN="${LEADV2_DISPATCH_BEAT_LOOP_BIN:-${SCRIPT_DIR}/leadv2-single-lead-beat-loop.sh}"
-# PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01 round 4: exposes the backgrounded
-# watcher's own pid to the caller (same subshell, no escape needed -- see the
-# adoption call site below) so a non-sonnet arm's active.yaml row can be
-# re-pinned to a process that outlives THIS dispatcher instead of staying
-# pinned to the dispatcher's own pid forever.
-_LV2_LANE_PULSE_WATCH_PID=""
-# BEAT-LOOP-ORPHANS-01: session-kind gate + owner-liveness tokens for the
-# detached loops this dispatcher arms. A headless worker session (glm-coder/
-# freepool-coder/kimi-coder/claude-subsession) that runs its own nested
-# dispatch must never arm a loop — when the worker exits, the loop has no
-# owner left to disarm it (measured 2026-09-01: 53 orphaned loops, load 244).
-# Fix-round 2: `unknown` FAILS CLOSED — no arm; one loop_armed_by_unknown_
-# session journal line (with reason=<why>) so a misjudged lead's starvation
-# is visible the minute it happens. A dispatcher that knows it IS the lead
-# arms explicitly via LEADV2_SESSION_KIND=lead.
-LV2_SESSION_KIND_LIB="${LV2_SESSION_KIND_LIB:-${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh}"
-_lv2_session_kind() {  # -> sets _LV2_KIND, _LV2_OWNER_PID/_SID/_TRANSCRIPT
-  _LV2_KIND="unknown"; _LV2_OWNER_PID=""; _LV2_OWNER_SID=""; _LV2_OWNER_TRANSCRIPT=""
-  [[ -f "$LV2_SESSION_KIND_LIB" ]] || return 0
-  # shellcheck source=/dev/null
-  source "$LV2_SESSION_KIND_LIB"
-  _LV2_OWNER_SID="$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-64)"
-  # The dispatcher runs under the Bash-tool shell chain, so it has no
-  # transcript_path of its own — resolve the session's transcript from the
-  # platform layout (~/.claude/projects/<munged-cwd>/<sid>.jsonl) so the
-  # predicate gets its third evidence source.
-  if [[ -n "${_LV2_OWNER_SID}" ]]; then
-    _LV2_OWNER_TRANSCRIPT="$(ls -t "${HOME}/.claude/projects/"*"/${_LV2_OWNER_SID}.jsonl" 2>/dev/null | head -1 || true)"
-  fi
-  # Direct call (no $() subshell): keeps LEADV2_SESSION_KIND_OUT/_REASON in
-  # THIS shell so the fail-closed journal carries reason=<why>.
-  leadv2_hook_session_kind "${_LV2_OWNER_TRANSCRIPT}" >/dev/null 2>&1 || true
-  _LV2_KIND="${LEADV2_SESSION_KIND_OUT:-unknown}"
-  if command -v leadv2_loop_owner_pid >/dev/null 2>&1; then
-    _LV2_OWNER_PID="$(leadv2_loop_owner_pid)"
-  fi
-  return 0
-}
-_arm_lane_pulse_watch() {  # <sig8> — fail-open, never blocks dispatch
-  _LV2_LANE_PULSE_WATCH_PID=""
-  [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
-  [[ -f "${LANE_PULSE_WATCH_BIN}" ]] || return 0
-  _lv2_session_kind
-  # Fix-round 2: worker refuses; unknown FAILS CLOSED too — journal and do
-  # not arm. Only a `lead` classification (or the LEADV2_SESSION_KIND=lead
-  # pin) arms a persistent loop.
-  # SESSION-KIND-UNKNOWN-REFUSES-CLOSED-01 stage 1 hold (see the lib header).
-  # STAGE 2: released loop -- see leadv2-lane-pulse-watch.sh for the switch.
-  if [[ "${_LV2_KIND}" != "lead" ]] \
-     || { [[ "${LEADV2_LOOPS_ARM_ON_LEAD:-0}" != "1" ]] \
-          && [[ "${LEADV2_ARM_LANE_PULSE_WATCH:-1}" != "1" ]]; }; then
-    leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
-      lane-pulse-watch "${_LV2_KIND}" \
-      "$([[ "${_LV2_KIND}" == "lead" ]] && echo refused_stage1_hold || echo refused)" 2>/dev/null || true
-    return 0
-  fi
-  LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
-    LEADV2_LOOP_OWNER_SID="${_LV2_OWNER_SID}" \
-    LEADV2_LOOP_OWNER_TRANSCRIPT="${_LV2_OWNER_TRANSCRIPT}" \
-    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
-    nohup bash "${LANE_PULSE_WATCH_BIN}" --sig "${1}" >/dev/null 2>&1 </dev/null 9>&- &
-  _LV2_LANE_PULSE_WATCH_PID=$!
-  # _spawn_worker_body is captured by command substitution.  In bash that
-  # subshell otherwise waits for its background job before returning, turning
-  # a persistent watcher into a dispatch hang.  Disown is available in the
-  # required bash 3.2 and preserves the watcher while releasing the launcher.
-  disown "${_LV2_LANE_PULSE_WATCH_PID}" 2>/dev/null || true
-}
-_arm_single_lead_beat() {  # fail-open, armed once (loop's own pidfile guards re-arm)
-  [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
-  [[ "${LEADV2_SINGLE_LEAD_BEAT:-1}" == "0" ]] && return 0
-  [[ -f "${SINGLE_LEAD_BEAT_LOOP_BIN}" ]] || return 0
-  _lv2_session_kind
-  # Fix-round 2: same fail-closed rule as _arm_lane_pulse_watch — worker and
-  # unknown never arm; only `lead` (incl. the LEADV2_SESSION_KIND=lead pin).
-  # SESSION-KIND-UNKNOWN-REFUSES-CLOSED-01 stage 1 hold (see the lib header).
-  if [[ "${_LV2_KIND}" != "lead" || "${LEADV2_LOOPS_ARM_ON_LEAD:-0}" != "1" ]]; then
-    leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
-      single-lead-beat-loop "${_LV2_KIND}" \
-      "$([[ "${_LV2_KIND}" == "lead" ]] && echo refused_stage1_hold || echo refused)" 2>/dev/null || true
-    return 0
-  fi
-  LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
-    LEADV2_LOOP_OWNER_SID="${_LV2_OWNER_SID}" \
-    LEADV2_LOOP_OWNER_TRANSCRIPT="${_LV2_OWNER_TRANSCRIPT}" \
-    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
-    nohup bash "${SINGLE_LEAD_BEAT_LOOP_BIN}" >/dev/null 2>&1 </dev/null 9>&- &
-}
+# ── ONE-STATUS-MECHANISM-01 (founder order 2026-09-12) ──────────────────────
+# The dispatcher-owned lane-pulse-watch and single-lead-beat loops are
+# DELETED (retired chain: leadv2-lane-pulse-watch.sh,
+# leadv2-single-lead-beat-loop.sh, leadv2-pulse-beat.sh, leadv2-broad-status.sh;
+# backup docs/handoff/e1fb1204/retired-status-chain-20260912.tar.gz). The ONE
+# status mechanism is the anti-silence pulse (scripts/anti-silence-pulse.sh),
+# armed per session by the plugin hooks. Session-kind gating survives in
+# hooks/lib/leadv2-hook-session-kind.sh for the arms that source it directly.
 
 # ── PLUGIN-PAPERCUTS-01 (defect 2): codex tier validation ─────────────────────
 # codex-task.sh accepts ONLY --tier top|standard|volume (probed live 2026-08-31:
@@ -7141,47 +7135,6 @@ CONTRACT_EOF
   # This one site covers BOTH the router path and cmd_advance_arm (both call spawn_worker ->
   # _spawn_worker_body).  A file write escapes this command-substitution subshell.
   _dispatch_register_arm "${sig8}" "${arm}" "${handle}"
-  # MON-PULSE-01: this one choke point (router + arm_advance) arms the
-  # dispatcher-owned lane watch for THIS sig and the single-lead beat loop.
-  # Fail-open; the watchers own their own pidfile/replay-safety semantics.
-  _arm_lane_pulse_watch "${sig8}"
-  # PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01 round 4 root cause #2: the sonnet
-  # arm's block above (~:4852-4860) is the ONLY case that ever adopts a real
-  # worker pid onto this lane's active.yaml row. Every other arm (glm/glm-
-  # flash/kimi/codex/freepool) is an async job handle, not a local fork of
-  # THIS process, so its row was left carrying the pre-spawn registration pid
-  # (this dispatcher's own durable/transient pid, stamped at ~:6186/6157)
-  # forever. That pid dies the instant this dispatcher process exits -- which
-  # is normal and immediate for an async arm, since spawn confirmation just
-  # means "the launcher accepted the job", not "the dispatcher stays up". The
-  # exit-trap disarm (rc=0 branch below, DISPATCH_SLOT_REG_ID="") already
-  # keeps the row from being explicitly deregistered, but a liveness check
-  # that reads the row's own pid (lib/leadv2-lane-state.sh's alive(), which
-  # os.kill()s it) sees a dead pid within seconds of dispatch returning even
-  # though the async worker is still running for up to an hour -- the exact
-  # "board empty while lanes live" / "corroborated dead: pid dead" symptom.
-  # Fix: re-pin the row to the lane-pulse watcher's pid instead. That watcher
-  # is backgrounded independent of this process (nohup, above) and exits
-  # itself ONLY at the lane's real terminal state or its derived timeout
-  # (leadv2-lane-pulse-watch.sh), so the registry's liveness now tracks the
-  # LANE's lifetime, not this dispatcher's. The sonnet arm keeps its own,
-  # more precise worker pid -- never overwritten here.
-  if [[ ! "${arm}" =~ ^(sonnet|haiku|opus|fable)$ && -n "${DISPATCH_REG_ID:-}" && -n "${_LV2_LANE_PULSE_WATCH_PID:-}" ]] \
-     && kill -0 "${_LV2_LANE_PULSE_WATCH_PID}" 2>/dev/null; then
-    set +e
-    if declare -F leadv2_active_set_worker_pid >/dev/null 2>&1; then
-      local _wpid_birth
-      _wpid_birth="$(_lv2_pid_birth "${_LV2_LANE_PULSE_WATCH_PID}" 2>/dev/null || printf '')"
-      # FORK-STORM-KILLS-HOOKS-01: the pid is a WATCHER, not a worker — stamp
-      # the kind so liveness (leadv2-lane-liveness.sh) never reads it as
-      # worker-liveness evidence, however long the watcher outlives us.
-      LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_set_worker_pid \
-        "${DISPATCH_REG_ID}" "${_LV2_LANE_PULSE_WATCH_PID}" "${_wpid_birth}" "watcher" >/dev/null 2>&1 || true
-    fi
-    declare -F lane_adopt_pid >/dev/null 2>&1 && \
-      lane_adopt_pid "${DISPATCH_REG_ID}" "${DISPATCH_LEAD_SESSION_ID:-direct}" "${WORK_ROOT:-${PROJECT_ROOT}}" "build" "${_LV2_LANE_PULSE_WATCH_PID}" >/dev/null 2>&1 || true
-  fi
-  _arm_single_lead_beat
   # S7-RETARGET-PERSIST-01: names which mission version this dispatch launched, so
   # "it relaunched the old premise" is a grep of this log, not archaeology. Fail-open
   # by construction: sig/head are already-in-hand local values (no failure mode), rev
@@ -9208,8 +9161,29 @@ PY
   # PHASES-ARE-THE-ONLY-PATH-01: record classify only after admission. The
   # guard above owns the bootstrap decision; subsequent dispatches see this
   # record and remain subject to the existing phase requirements.
-  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
-    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
+  # PHASE-PREFIX-AT-RECORD-01 (row f37fadb8f474): stamp the CANONICAL class
+  # into the store here — it is the seed every later phase record reads back
+  # to enforce the mandatory pre-build prefix at the writer. Product lanes are
+  # exempt: their ladder is the architect prepass (which records plan) and
+  # they carry no gate1, so a class stamp would brick their build stamp; a
+  # non-canonical value is left unstamped rather than guessed (the check then
+  # fails open for that lane, exactly as before this row).
+  local _classify_class=""
+  if [[ "${product_class}" != "product" ]]; then
+    local _cc
+    _cc="$(_lv2_class_canonical "${task_class}")"
+    case "${_cc}" in
+      Trivial|Light|Standard|Heavy|Strategic|Bulk) _classify_class="${_cc}" ;;
+    esac
+  fi
+  if [[ -n "${_classify_class}" ]]; then
+    bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
+      --class "${_classify_class}" \
+      --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
+  else
+    bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
+      --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
+  fi
 
   if [[ "${product_class}" == "product" ]]; then
     # PREPASS-DEGRADES-01 (2026-07-29): a prepass failure must NEVER stop the work. On
@@ -10014,9 +9988,31 @@ exit is treated as an incident."
   # stamp is the one that ends up truthful, not this one.
   _stamp_active_phase "${founder_task_id}" "build" "${arm}"
   # PHASES-ARE-THE-ONLY-PATH-01: record build phase as running with the resolved arm handle.
-  bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
+  # PHASE-PREFIX-AT-RECORD-01 (row f37fadb8f474): this is the point where work
+  # STARTS — and therefore the point where the founder order (2026-09-12: no
+  # work without estimate -> balancer -> arbiter -> dispatch -> the class's
+  # phase ladder) is enforced. phase-record refuses rc 6 when the lane's
+  # mandatory pre-build prefix (plan/gate1 for Standard+) is unmet; that
+  # refusal ABORTS the spawn here (a silent `|| true` would let the worker
+  # run unrecorded — the exact violation, minus the evidence). Only rc 6
+  # aborts: any other failure (missing binary, rc 4 config) keeps the
+  # historical `|| true` byte-for-byte — infra trouble must not become a new
+  # refusal mode. Remedies for the missing prefix are printed by the record
+  # refusal itself; record them, re-dispatch, and the spawn proceeds.
+  local _build_stamp_out="" _build_stamp_rc=0
+  _build_stamp_out="$(bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
     --handle "dispatch-${sig8}-build" \
-    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
+    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>&1)" || _build_stamp_rc=$?
+  if [[ "${_build_stamp_rc}" == "6" ]]; then
+    emit decision "dispatch_refused reason=build_prefix_unmet task=${sig8} phase=build rc=6"
+    log_err "dispatch refused: build cannot start on lane ${sig8} — its mandatory pre-build phases are unmet (the bootstrap grace admits a lane; it never replaces the ladder):"
+    local _bs_line
+    while IFS= read -r _bs_line; do
+      [[ -n "${_bs_line}" ]] && log_err "${_bs_line}"
+    done <<< "${_build_stamp_out}"
+    log_err "  record the phases above, then re-dispatch this same task — no file needs moving by hand"
+    exit 3
+  fi
   # N1-EMPTY-LANE-IS-NOT-A-PASS (B.2): the candidate loop is wrapped in a restartable
   # while so a lock-busy refusal can re-resolve the arm mid-loop and re-enter over a
   # rebuilt chain. bash expands "${candidate_arms[@]}" once at for-entry, so merely
@@ -10107,6 +10103,10 @@ ${mission}"
       # once the primary arm_resolved pick was refused and the loop fell to a fallback.
       _stamp_active_phase "${founder_task_id}" "build" "${candidate}"
       # PHASES-ARE-THE-ONLY-PATH-01: re-record build with the confirmed candidate.
+      # Deliberately still `|| true` (PHASE-PREFIX-AT-RECORD-01): this re-stamp runs
+      # AFTER the primary build stamp above already passed the prefix check (or the
+      # dispatch aborted at exit 3), and after the worker is spawned — an rc-6 here
+      # cannot be the founder-order refusal point without discarding a live worker.
       bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
         --handle "dispatch-${sig8}-${candidate}" \
         --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
@@ -10658,6 +10658,13 @@ cmd_advance_arm() {
   fi
   _stamp_active_phase "${task_id}" "build" "${arm}"
   # PHASES-ARE-THE-ONLY-PATH-01: record build phase as running with the resolved arm handle.
+  # Deliberately still `|| true` (PHASE-PREFIX-AT-RECORD-01): advance-arm is a MID-LANE
+  # recovery re-spawn — by the time it fires, the lane was already admitted and its
+  # prefix verdict was rendered at the original cmd_resolve stamp. Aborting here on
+  # rc=6 would re-introduce DISPATCH-PHASE-DEADLOCK-01 at the recovery path: a lane
+  # could be advanced into but never out of. The record-site check in phase-record
+  # still refuses a genuinely prefix-less build — the refusal just cannot kill this
+  # recovery flow that had no part in creating the state.
   bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
     --handle "dispatch-${sig8}-build" \
     --task-id "${task_id}" --owner "$(basename "$0"):cmd_advance_arm" 2>/dev/null || true
