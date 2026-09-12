@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 # PreToolUse:Agent — routing guard.
 # Two policies:
-#   1. LEAD path: WARN-ONLY when architect/critic/security-auditor spawned on sonnet.
-#      Recommends Codex-first (or Opus-only on m3-market) per codex-policy.yaml.
-#      NEVER blocks (exits 0). Safe for all repos including m3-market.
+#   1. LEAD path (no agent_type): write-capable roles — the SAME set the nested
+#      path denies (developer, frontend-developer, postgres-pro, devops-engineer,
+#      architect, product-owner) — are REFUSED (exit 2): a direct Agent spawn
+#      skips complexity estimation, the balancer, the arbiter and the phase
+#      ladder. Remedy: dispatch via leadv2-dispatch-code.sh. Read-only roles
+#      (Explore, general-purpose, recon) stay allowed. Loud escape hatch:
+#      LEADV2_LEAD_WRITE_SPAWN_ALLOW=1 (+ LEADV2_LEAD_WRITE_SPAWN_WHY) allows
+#      the spawn, announces itself on stderr, and journals the use to
+#      docs/leadv2/lead-write-spawn-overrides.log.
+#      Everything else on this path stays WARN-ONLY (critic/security-auditor on
+#      sonnet; recommends Codex-first or Opus-only on m3-market per
+#      codex-policy.yaml) — NEVER blocks (exits 0). Safe for all repos.
 #   2. SUBAGENT NESTED-SPAWN path (v2.1.172+): caller has agent_type in hook input.
 #      Policy loaded from config/nested-spawn-policy.yaml (per-repo override wins).
 #      Base allowlist: Explore|general-purpose with explicit model=haiku|sonnet.
@@ -60,6 +69,18 @@ CALLER_AGENT_TYPE="$(printf -- '%s' "$PARSED" | sed -n '1p')"
 SUBAGENT_TYPE="$(printf -- '%s' "$PARSED" | sed -n '2p')"
 MODEL="$(printf -- '%s' "$PARSED" | sed -n '3p')"
 CWD_FROM_INPUT="$(printf -- '%s' "$PARSED" | sed -n '4p')"
+
+# ── WRITE-ROLE list: ONE list, both paths (nested + lead) ─────────────────────
+# LEAD-CAN-SPAWN-A-WRITE-ROLE-WITHOUT-THE-ARBITER-01 (2026-09-12): the nested
+# path denied these roles while the lead path waved them through with rc=0 —
+# and a direct lead spawn skips estimation, balancer, arbiter and phases. Do
+# not fork this list: both paths must consult _is_write_role.
+_is_write_role() {
+  case "$1" in
+    developer|frontend-developer|postgres-pro|devops-engineer|architect|product-owner) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # ── NESTED-SPAWN POLICY (caller is a subagent) ────────────────────────────────
 # agent_type is injected by Claude Code only for subagent callers; lead has no agent_type.
@@ -149,13 +170,11 @@ print(tool_class)
 
     # Gap #2 — TOOL-CLASS WHITELIST: write-capable roles can never be spawned as
     # a nested sub-run, regardless of base_allowlist or escalation budget.
-    case "$SUBAGENT_TYPE" in
-      developer|frontend-developer|postgres-pro|devops-engineer|architect|product-owner)
+    if _is_write_role "$SUBAGENT_TYPE"; then
         _audit_log "deny" "route.subrun.write_role_denied"
         printf -- '[leadv2-routing-guard] DENIED nested spawn: subagent_type="%s" is a write-capable role — nested sub-runs are READ/PLAN/PROBE only (Explore, general-purpose). Return blocker to lead.\n' "$SUBAGENT_TYPE" >&2
         exit 2
-        ;;
-    esac
+    fi
 
     # Gap #1 — DEPTH CAP: if the caller is itself already an Explore/general-
     # purpose sub-run (i.e. it was spawned via this same nested-spawn path),
@@ -410,17 +429,6 @@ BUDGET_PY
 fi
 
 # ── LEAD PATH (no agent_type → caller is lead) ────────────────────────────────
-# Only care about these review/plan-brain roles
-case "$SUBAGENT_TYPE" in
-  architect|critic|security-auditor) ;;
-  *) exit 0 ;;
-esac
-
-# Only warn when spawned on sonnet (not opus)
-case "$MODEL" in
-  *sonnet*) ;;
-  *) exit 0 ;;
-esac
 
 # Resolve repo root from cwd in hook input, fall back to PWD
 CWD="$(printf -- '%s' "$INPUT" | python3 -c "
@@ -444,6 +452,39 @@ while [[ "$_dir" != "/" ]]; do
   _dir="$(dirname "$_dir")"
 done
 [[ -z "$REPO_ROOT" ]] && REPO_ROOT="$CWD"
+
+# ── LEAD-WRITE-ROLE-GATE (LEAD-CAN-SPAWN-A-WRITE-ROLE-WITHOUT-THE-ARBITER-01)
+# The lead is the only actor that can start a lane and the one with the most
+# leverage; a direct Agent spawn here skips complexity estimation, the
+# balancer, the arbiter and the phase ladder in one call. Write-capable roles
+# are refused with a remedy, not just a wall. Read-only roles (Explore,
+# general-purpose, recon) stay allowed — a guard that refuses everything is
+# an outage, not a fix.
+if _is_write_role "$SUBAGENT_TYPE"; then   # LEAD-WRITE-ROLE-GATE
+  # Escape hatch: loud and journaled. Every use appends to
+  # docs/leadv2/lead-write-spawn-overrides.log and announces itself on stderr,
+  # so an override is a recorded decision, not a silent bypass.
+  if [[ "${LEADV2_LEAD_WRITE_SPAWN_ALLOW:-0}" == "1" ]]; then
+    _LW_WHY="${LEADV2_LEAD_WRITE_SPAWN_WHY:-unset}"
+    mkdir -p "${REPO_ROOT}/docs/leadv2" 2>/dev/null || true
+    printf -- '%s caller=lead target=%s model=%s why=%s verdict=override_allow\n' \
+      "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$SUBAGENT_TYPE" "$MODEL" "$_LW_WHY" \
+      >> "${REPO_ROOT}/docs/leadv2/lead-write-spawn-overrides.log" 2>/dev/null || true
+    printf -- '[leadv2-routing-guard] OVERRIDE ACTIVE: LEADV2_LEAD_WRITE_SPAWN_ALLOW=1 — direct lead spawn of "%s" allowed WITHOUT estimate/balancer/arbiter/phases (why=%s; journalled in docs/leadv2/lead-write-spawn-overrides.log).\n' "$SUBAGENT_TYPE" "$_LW_WHY" >&2
+    exit 0
+  fi
+  printf -- '[leadv2-routing-guard] DENIED lead direct spawn: subagent_type="%s" is a write-capable role. A direct Agent spawn skips complexity estimation, the balancer, the arbiter and the phase ladder — dispatch instead so the work is estimated, routed and phased:\n' "$SUBAGENT_TYPE" >&2
+  printf -- '  bash <plugin>/scripts/leadv2-dispatch-code.sh --task-id <task-id> ...\n' >&2
+  printf -- 'Read-only roles (Explore, general-purpose, recon) stay allowed from the lead.\n' >&2
+  printf -- 'Escape hatch (journalled + announced): LEADV2_LEAD_WRITE_SPAWN_ALLOW=1 [LEADV2_LEAD_WRITE_SPAWN_WHY="<reason>"]\n' >&2
+  exit 2
+fi
+
+# Only care about these review/plan-brain roles
+case "$SUBAGENT_TYPE" in
+  architect|critic|security-auditor) ;;
+  *) exit 0 ;;
+esac
 
 # Read codex-policy.yaml — default: codex_enabled: true (persona-engine convention)
 POLICY_FILE="$REPO_ROOT/.claude/leadv2-overrides/codex-policy.yaml"
