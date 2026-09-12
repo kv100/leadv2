@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-check-decides-per-account.sh
+file=plugins/leadv2/scripts/leadv2-quota-status.sh
+anchor=s/^            pct = None$/            pct = 100/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 6 --check rc=1 (want 0); stderr: QUOTA-EXHAUSTED: identity=personal seven_day=100% usable_now=- (worst account wins; blended aggregate 5h 0%/wk 0% is NOT the safety signal; basis=profile-select windows)
+diff_hash=1c403050ba9f229dcca39ca4face6ea55662e329295a27235ba5d93e081f6b6a
+lane_diff_hash=f7eb5aaf77e495d1ff82cabe72fa16264049c84df841056976e8809bcbaea090

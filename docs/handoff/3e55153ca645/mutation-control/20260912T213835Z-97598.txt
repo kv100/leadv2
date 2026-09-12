@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-check-decides-per-account.sh
+file=plugins/leadv2/scripts/leadv2-quota-status.sh
+anchor=s/"${LEADV2_QUOTA_STATUS_PER_ACCOUNT:-1}" != "0"/"${LEADV2_CLAUDE_MULTIPROFILE:-}" == "1"/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 2a default line1 not per-account: Quota: 5h 0% (1000 / 8000000 in, claude% only, cap est.) | weekly(claude, total-token, calibrated 2026-08-17) 0% (window=rolling_7d) | cache-hit 0.99 | safe
+diff_hash=95b1afe92d8a190fbb697e21a05fcf2dd5bf9e848ee44f1e3e0bc0825e4203ef
+lane_diff_hash=f7eb5aaf77e495d1ff82cabe72fa16264049c84df841056976e8809bcbaea090

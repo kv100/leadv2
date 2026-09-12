@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-check-decides-per-account.sh
+file=plugins/leadv2/scripts/leadv2-quota-status.sh
+anchor=s/"$WORST_STATUS" == "exhausted"/"$WORST_STATUS" == "mutant_never"/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 5 --check rc=0 (want 1); stderr: 
+diff_hash=20cf0fe2e97c788ec7c42a7e340f58256a30b26a3bc90523555d4042557b0a28
+lane_diff_hash=f7eb5aaf77e495d1ff82cabe72fa16264049c84df841056976e8809bcbaea090
