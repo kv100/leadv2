@@ -235,23 +235,78 @@ else
 
   # ── EPHEMERAL-REDIRECT (STATE-DIR-JUNK-01) ───────────────────────────────
   # Production never sets LEADV2_STATE_ROOT or LEADV2_STATE_BASE (see the B1
-  # SAFETY NET below, which relies on the same fact). When NEITHER is set AND
-  # MAIN_REPO_ROOT is a scratch repo -- no git remote, no REAL-REPO /
-  # .git/leadv2-real-repo-marker (the exact predicate the B1 net already uses
-  # to tell a real checkout from a fixture) -- redirect under
-  # <base>/.ephemeral/<slug> instead of the top level. This is the unguarded
-  # direction the B1 net doesn't cover: no sandbox signal + scratch repo used
-  # to mean "write straight into production" -- ~100 `leadv2-lwt.*` dirs from
-  # test-lane-writes-scoping.sh alone, one per run, never cleaned up. The
-  # renderer (leadv2-status-projects.sh) globs "$BASE"/*/ with no dotglob, so
-  # a dot-prefixed subtree is already invisible to it -- no renderer change
+  # SAFETY NET below, which relies on the same fact). When MAIN_REPO_ROOT is a
+  # scratch repo -- no git remote, no REAL-REPO / .git/leadv2-real-repo-marker
+  # (the exact predicate the B1 net already uses to tell a real checkout from
+  # a fixture) -- redirect under <base>/.ephemeral/<key> instead of the top
+  # level. This is the unguarded direction the B1 net doesn't cover: no
+  # sandbox signal + scratch repo used to mean "write straight into
+  # production" -- ~100 `leadv2-lwt.*` dirs from test-lane-writes-scoping.sh
+  # alone, one per run, never cleaned up. The renderer
+  # (leadv2-status-projects.sh) globs "$BASE"/*/ with no dotglob, so a
+  # dot-prefixed subtree is already invisible to it -- no renderer change
   # needed.
+  #
+  # ── EPHEMERAL-BASENAME-COLLISION-01 (2026-09-12) ─────────────────────────
+  # The key used to be the bare basename, so EVERY scratch fixture that names
+  # its repo the same (many mktemp fixtures are "repo-g") wrote ONE shared
+  # registry regardless of path. Measured on this machine:
+  # ~/.claude/leadv2-state/.ephemeral/ held 15 dead rows, 16 of them under
+  # task_id=dispatch-f5117370 (dispatch sigs derive from the task
+  # description, so they are stable across runs), all written before rows
+  # carried a `writes` field; the dispatch writeset admission/proof read one
+  # and refused BEFORE routing -- test-route-arbiter.sh case (g) had been
+  # failing for two days on residue, not on the arbiter (29/3 -> 31/1 by
+  # moving the directory aside, no code change). Tell-tale: the refusal's
+  # registry= line carries worktree= naming a DIFFERENT tmp dir than the run
+  # being watched. Scratch roots are therefore keyed basename + 8-hex digest
+  # of the FULL repo path, under WHATEVER base is in effect -- including a
+  # sandboxed LEADV2_STATE_BASE, so a suite can prove same-basename isolation
+  # without ever writing the live tree (the identical collision existed
+  # top-level under a sandbox base, and the two shapes must not diverge).
+  # Real checkouts are untouched: they keep ${STATE_BASE}/${REPO_SLUG}.
   STATE_BASE="${LEADV2_STATE_BASE:-${HOME}/.claude/leadv2-state}"
-  if [[ -z "${LEADV2_STATE_ROOT:-}" && -z "${LEADV2_STATE_BASE:-}" ]] \
-     && ! { git -C "$MAIN_REPO_ROOT" remote 2>/dev/null | grep -q .; } \
+  if ! { git -C "$MAIN_REPO_ROOT" remote 2>/dev/null | grep -q .; } \
      && [[ ! -f "$MAIN_REPO_ROOT/REAL-REPO" && ! -f "$MAIN_REPO_ROOT/.git/leadv2-real-repo-marker" ]]; then
-    STATE_ROOT="${STATE_BASE}/.ephemeral/${REPO_SLUG}"
-    mkdir -p "$STATE_ROOT"
+    _lv2_ephemeral_path_key() {  # <slug> <abs-path> -> "<slug>-<8hex>", stable macOS+Linux
+      local slug="$1" path="$2" digest=""
+      digest="$(printf '%s' "$path" 2>/dev/null \
+        | { sha1sum 2>/dev/null || shasum 2>/dev/null || openssl dgst -sha1 2>/dev/null || cksum; } \
+        | tr -dc '0-9a-fA-F' | tail -c 8)" || digest=""
+      printf '%s-%s' "$slug" "${digest:-nohash}"
+    }
+    _eph_key="$(_lv2_ephemeral_path_key "${REPO_SLUG}" "${MAIN_REPO_ROOT}")" || _eph_key="${REPO_SLUG}"
+    unset -f _lv2_ephemeral_path_key
+    STATE_ROOT="${STATE_BASE}/.ephemeral/${_eph_key}"
+    mkdir -p "${STATE_ROOT}"
+    # Rows written by the pre-hash layout sit under the bare-basename root.
+    # A legacy root follows THIS checkout only when its own provenance
+    # (.ephemeral source= / .repo-root) names this exact MAIN_REPO_ROOT -- a
+    # same-basename foreign root is never adopted; that is the collision this
+    # key exists to kill, and unadopted residue stays dead (leadv2-state-purge
+    # classifies it). Adopt = move-if-absent per entry into the freshly
+    # created root, so concurrent invocations cannot nest directories.
+    _eph_legacy="${STATE_BASE}/.ephemeral/${REPO_SLUG}"
+    if [[ "${_eph_key}" != "${REPO_SLUG}" && -d "${_eph_legacy}" ]]; then
+      _eph_prov=""
+      if [[ -f "${_eph_legacy}/.ephemeral" ]]; then
+        _eph_prov="$(sed -n 's/^source=//p' "${_eph_legacy}/.ephemeral" 2>/dev/null | head -1)"
+      fi
+      if [[ -z "${_eph_prov}" && -f "${_eph_legacy}/.repo-root" ]]; then
+        _eph_prov="$(cat "${_eph_legacy}/.repo-root" 2>/dev/null || true)"
+      fi
+      if [[ "${_eph_prov}" == "${MAIN_REPO_ROOT}" ]]; then
+        for _eph_item in "${_eph_legacy}"/* "${_eph_legacy}/.[!.]*" "${_eph_legacy}/..?*"; do
+          [[ -e "${_eph_item}" ]] || continue
+          _eph_base="$(basename "${_eph_item}")"
+          [[ -e "${STATE_ROOT}/${_eph_base}" ]] && continue
+          mv -f "${_eph_item}" "${STATE_ROOT}/${_eph_base}" 2>/dev/null || true
+        done
+        rmdir "${_eph_legacy}" 2>/dev/null || true
+      fi
+      unset _eph_prov _eph_item _eph_base
+    fi
+    unset _eph_legacy _eph_key
     _eph_marker="${STATE_ROOT}/.ephemeral"
     if [[ ! -f "$_eph_marker" ]]; then
       printf -- 'source=%s\ncreated=%s\n' "$MAIN_REPO_ROOT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${_eph_marker}.tmp.$$" 2>/dev/null \
