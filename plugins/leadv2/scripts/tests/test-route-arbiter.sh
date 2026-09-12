@@ -399,8 +399,21 @@ if n != 1:
     sys.exit('mutation anchor found %d times (expected 1) -- the fail-open marker '
              'moved or was renamed; re-anchor this control, do not silence it' % n)
 s = s.replace(anchor, '_ROUTE_FAIL_OPEN=""')
-s = s.replace('reason=fail_open_to_ladder ${_arb_fault_fail_open_to_ladder}"',
-              'reason=fail_open_to_ladder"')
+# The journal half of the mutation needs the SAME count check as the marker
+# half. It did not have one, and it rotted: the emit gained a
+# `fail_open_count=${_arb_fo_n}` field between the two tokens this line used to
+# match, so `str.replace` quietly matched nothing while reporting success, and
+# the mutated dispatcher went on printing `arb_reason=` exactly as the real one
+# does. The case then failed as "the control is not falsifiable" -- which was
+# true of the control, not of the code. Anchored and counted now, so the next
+# rename is loud.
+detail_anchor = 'fail_open_count=${_arb_fo_n} ${_arb_fault_fail_open_to_ladder}"'
+n2 = s.count(detail_anchor)
+if n2 != 1:
+    sys.exit('mutation detail anchor found %d times (expected 1) -- the '
+             'arbiter_broken emit moved or was renamed; re-anchor this control, '
+             'do not silence it' % n2)
+s = s.replace(detail_anchor, 'fail_open_count=${_arb_fo_n}"')
 open(p, 'w').write(s)
 PY
 if [[ ${g_mut_rc} -ne 0 ]]; then
