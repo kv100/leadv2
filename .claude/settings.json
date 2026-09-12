@@ -1,0 +1,21 @@
+{
+  "bashEditDiffEnabled": false,
+  "env": {
+    "ENABLE_TOOL_SEARCH": "auto:50",
+    "LEADV2_PULSE_MODE": "1",
+    "LEADV2_MAIN_MODEL": "opus",
+    "LEADV2_FORCE_OPUS_LEAD": "0",
+    "LEADV2_WORKFLOW_ENABLED": "1",
+    "LEADV2_WIKI_INJECT": "0",
+    "LEADV2_LOOP_DETECT": "1",
+    "LEADV2_CORRECTION_DETECT": "1",
+    "LEADV2_LOOP_WARN_AT": "3",
+    "LEADV2_LOOP_HARD_AT": "5",
+    "LEADV2_SCORECARD_ON_CLOSE": "1",
+    "LEADV2_PARALLEL_DISPATCH": "1",
+    "LEADV2_DISPATCH_ARCHITECT_GATE": "1",
+    "MAX_MCP_OUTPUT_TOKENS": "15000",
+    "CLAUDE_PLUGIN_ROOT": "/Users/kostiantyn.vlasenko/.claude/plugins/local/leadv2/plugins/leadv2",
+    "LEADV2_PROJECT_ROOT": "/Users/kostiantyn.vlasenko/Projects/leadv2"
+  }
+}
