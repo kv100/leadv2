@@ -3,8 +3,8 @@
 # <q-id> <option>`. LANE-QUESTION-DELIVERY-01.
 #
 # THE GAP this closes: the question channel has always had TWO stores (see
-# leadv2-ask.sh / leadv2-answer.sh header comments, and the leadv2-supervise
-# SKILL.md "Async question channel" section):
+# leadv2-ask.sh / leadv2-answer.sh header comments, and the archived
+# leadv2-supervise SKILL.md (skills/archive/) "Async question channel" section):
 #   - control-plane  <state-root>/questions/<qid>.yaml   — canonical for
 #     fanned-out/adopted lanes (leadv2-ask.sh writes, leadv2-answer.sh answers)
 #   - legacy-handoff docs/handoff/<task_id>/questions-async/<qid>-pending.yaml

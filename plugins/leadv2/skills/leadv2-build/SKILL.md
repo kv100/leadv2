@@ -93,7 +93,7 @@ Append this block to EVERY developer mission prompt in step 2. If no CRITICAL/HI
 
 Append the `skill_hints` value to the developer mission's `Skills:` line, e.g.:
 ```
-Skills: codebase-memory, supabase-ops, database-patterns
+Skills: codebase-memory, token-discipline
 ```
 
 **Override rule:** lead may override `agent_hint` by writing `agent_hint_override: <type>` in the per-step mission file. Include a one-line justification comment. Always either use the hint or document the override explicitly — it must never be silently ignored.

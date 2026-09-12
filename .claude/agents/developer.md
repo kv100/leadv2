@@ -6,8 +6,6 @@ model: claude-sonnet-5
 maxTurns: 50
 skills:
   - leadv2-subagent-protocol
-  - bash-scripting
-  - error-handling
   - systematic-debugging
   - verification-before-completion
 capabilities: [bash, python, cli-tooling, testing]

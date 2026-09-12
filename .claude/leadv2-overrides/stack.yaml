@@ -1,5 +1,5 @@
 # leadv2-overrides/stack.yaml — leadv2 plugin repo itself (LEADV2-HOOK-CACHE-DEPLOY-01)
-# Consumed by leadv2-deploy / leadv2-verify / leadv2-outcome-watch as project identity.
+# Consumed by leadv2-deploy / leadv2-verify as project identity.
 # This repo is the plugin source; its runtime is the plugin cache copy, so
 # deploy = refresh the cache (see leadv2-plugin-cache-sync.sh).
 

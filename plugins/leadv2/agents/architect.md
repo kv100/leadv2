@@ -7,7 +7,6 @@ effort: high
 skills:
   - leadv2-subagent-protocol
   - plan-review
-  - async-python
   - devils-advocate
   - systematic-debugging
   - prompt-lab
