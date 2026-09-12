@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-lead-write-role-spawn-gate.sh
+file=plugins/leadv2/hooks/leadv2-routing-guard.sh
+anchor=/tmp/lead-gate-mut.patch
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: T2: lead path allowed write role 'developer' (rc=0, expected 2)
+diff_hash=7fb7f00aea13db079d5bab94789f1eaeee034d74f378f100743d25d2c1d69b85
+lane_diff_hash=04b4d8e97612940918a0ff2055c6e34112e803716825bbb1e402cc3ac27ec054
