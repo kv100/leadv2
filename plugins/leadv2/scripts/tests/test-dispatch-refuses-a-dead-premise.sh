@@ -152,7 +152,7 @@ tasks:
   acceptance_probe_id: null
   needs_acceptance_probe: false
   acceptance_cmd: |
-    printf 'first line\n'
+    echo first line
     false
 - id: 4444oneline0012
   intent: 'TASK-PREMISE-ONELINE-01: one-line acceptance command'

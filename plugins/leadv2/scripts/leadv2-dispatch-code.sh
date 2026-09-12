@@ -8042,7 +8042,7 @@ print("\t".join((status, sid or "-", probe_id or "-", needs, root)))
 if cmd:
     # A newline makes the newline-delimited shell wire format ambiguous. Mark
     # it and refuse before the caller's eval can see a torn quoted command.
-    if "\\n" in cmd:
+    if "\n" in cmd or "\r" in cmd:
         print("cmd_multiline=1")
     else:
         print("cmd=%s" % shlex.quote(cmd))
