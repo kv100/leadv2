@@ -253,7 +253,7 @@ optional_input: plugins/leadv2/workflows/leadv2-causal-critique.js, plugins/lead
 tests: test-leadv2-force-reflect.sh, test-phase8-a2-id-resolution.sh,
   test-leadv2-phase8-assert-a2-schema.sh, test-e2e-gate-bypass-hardening.sh,
   test-leadv2-lane-shape.sh, test-phase8-closes-the-backlog-row.sh,
-  test-deploy-merge-blocker-gate.sh
+  test-deploy-merge-blocker-gate.sh, test-leadv2-causal-critique.sh
 ```
 
 The A4 source probe is decisive for the disposition above:
@@ -272,7 +272,8 @@ nl -ba plugins/leadv2/scripts/leadv2-phase8-assert.sh | sed -n '353,403p'
 403 fi
 ```
 
-All seven test suites above write or assert the same A4 fixture. They must be
+All eight test suites above write or assert the same A4 fixture or its
+reflect-history integration. They must be
 updated or removed in any future implementation of the deletion; they are not
 evidence that the self-learning consumer currently runs.
 
