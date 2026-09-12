@@ -57,7 +57,9 @@ INSERT INTO turn_events(session_id,ts,input,cc,cr,output,model) VALUES
   ('claude1', datetime('now','-1 hour'), 1000, 100000, 890000, 9000, 'claude-opus-5'),
   ('glm1',    datetime('now','-1 hour'), 5000000, 0, 5000000, 0, 'glm-5.2');
 "
-export LEADV2_BURN_DB="$DB" LEADV2_MAIN_MODEL_CFG="$CFG" LEADV2_QUOTA_LIVE=/nonexistent
+# LEADV2_QUOTA_STATUS_PER_ACCOUNT=0: this suite pins weekly totals, not
+# per-account identity; opts out of the (since 3e55153ca645 default-on) probe.
+export LEADV2_BURN_DB="$DB" LEADV2_MAIN_MODEL_CFG="$CFG" LEADV2_QUOTA_LIVE=/nonexistent LEADV2_QUOTA_STATUS_PER_ACCOUNT=0
 
 # claude weekly total = 1000+100000+890000+9000 = 1,000,000 → pct = 100.
 # If GLM leaked in, total would be 11,000,000 → pct = 1100.

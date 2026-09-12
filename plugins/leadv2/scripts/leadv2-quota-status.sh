@@ -53,12 +53,16 @@
 # emitted (window_weekly.window_basis) and printed on the report line so a mismatched comparison
 # is visible, never silent. Near reset, rolling can over-read by up to ~2x — prefer reset basis.
 # The GLM live weekly read (PLUGIN-TRIO-01 Fix C, via leadv2-quota-live.sh) is unchanged and
-# stays separate: any failure -> "unmeasured", never 0. --check is UNCHANGED: still exits 1 only
-# on 5h exhausted; the >=85 weekly arm stays at 85 but is now live (it was dead code while PCT_WK
+# stays separate: any failure -> "unmeasured", never 0. --check exits 1 on 5h exhausted
+# (aggregate claude% + RL kv override, unchanged) AND, since row 3e55153ca645
+# (2026-09-13), when the WORST per-account identity is exhausted -- worst
+# account wins on both surfaces; an unmeasurable meter never refuses. The
+# >=85 weekly arm stays at 85 but is now live (it was dead code while PCT_WK
 # was always 0). Override for tests: LEADV2_QUOTA_LIVE=<path to leadv2-quota-live.sh>.
 #
 # Usage:
-#   --check     Exit 0 if Anthropic quota OK, exit 1 if exhausted (claude% only; WARN at 60%)
+#   --check     Exit 0 if Anthropic quota OK, exit 1 if exhausted (aggregate claude%
+#               + RL kv, OR the worst per-account identity exhausted; WARN at 60%)
 #   --report    Human-readable summary
 #   --json      JSON for programmatic consumers
 #
@@ -244,20 +248,35 @@ fi
 # exists and is already authoritative: leadv2-claude-profile-select.sh's live
 # probe (`windows=` field, emitted by leadv2-claude-profile-pick.py) is the
 # SAME probe that routes dispatches across the two accounts -- reused here,
-# never a second measurement. Gated on the selector's OWN opt-in
-# (LEADV2_CLAUDE_MULTIPROFILE=1) so this script never forces a live network
-# probe a caller did not already ask for (keeps every hermetic test and any
-# single-account deployment byte-identical to before). Degrades honestly:
-# opt-out, no registry, or a probe failure all leave IDENTITY_SOURCE=unavailable,
-# never a fabricated identity or percentage.
+# never a second measurement.
+#
+# PER-ACCOUNT-BY-DEFAULT (row 3e55153ca645, 2026-09-13; contract clause
+# PER-ACCOUNT-BY-DEFAULT in docs/handoff/DECISION-LAYER-CONTRACT/decision.md):
+# this used to be gated on the selector's opt-in (LEADV2_CLAUDE_MULTIPROFILE=1),
+# and that variable is set nowhere persistent -- so the DEFAULT first line a
+# human read was the blended aggregate wearing a safety word ("safe"/"exhausted")
+# that belonged to neither account (2026-09-12: 43% "safe" while personal=0%,
+# work=80%). For a founder running two accounts the blend is not a conservative
+# default; it is a wrong answer that reads as a confident one. Default flipped
+# opt-in -> opt-out: per-account measurement now runs UNLESS
+# LEADV2_QUOTA_STATUS_PER_ACCOUNT=0. The opt-out gates MEASUREMENT here only;
+# account SWITCHING keeps its own opt-in (profile-select.sh:221 /
+# claude-subsession.sh:504) -- that split is the contract's exact wording.
+# The selector's own gate is forced open on this one MEASUREMENT invocation
+# (same precedent as leadv2-claude-profile-status.sh:59) so the new default
+# needs no new persistent env var anywhere. Single-account deployments stay
+# byte-identical: no registry -> the selector prints `profile=- reason=...`
+# with no windows= field -> unavailable -> the legacy aggregate line, zero
+# network. Degrades honestly: opt-out, no registry, or a probe failure all
+# leave IDENTITY_SOURCE=unavailable, never a fabricated identity or percentage.
 IDENTITY_SELECT="${LEADV2_QUOTA_STATUS_PROFILE_SELECT:-$(dirname "$0")/leadv2-claude-profile-select.sh}"
 IDENTITY_LINE=""
 if [[ -n "${LEADV2_QUOTA_STATUS_IDENTITY_LINE:-}" ]]; then
   IDENTITY_LINE="$LEADV2_QUOTA_STATUS_IDENTITY_LINE"   # hermetic test seam -- injects a
                                                         # profile-select-shaped line with no
                                                         # subprocess/network call at all.
-elif [[ "${LEADV2_CLAUDE_MULTIPROFILE:-}" == "1" && -r "$IDENTITY_SELECT" ]]; then
-  IDENTITY_LINE="$(bash "$IDENTITY_SELECT" 2>/dev/null || true)"
+elif [[ "${LEADV2_QUOTA_STATUS_PER_ACCOUNT:-1}" != "0" && -r "$IDENTITY_SELECT" ]]; then
+  IDENTITY_LINE="$(LEADV2_CLAUDE_MULTIPROFILE=1 bash "$IDENTITY_SELECT" 2>/dev/null || true)"
 fi
 IDENTITY_WINDOWS="$(printf '%s' "$IDENTITY_LINE" | sed -n 's/.*[[:space:]]windows=\([^[:space:]]*\).*/\1/p')"
 
@@ -385,10 +404,10 @@ elif [[ "$PCT_WK" -ge 85 ]]; then
 fi
 
 # ── REPORT_STATUS / REPORT_REC — the reporting-surface safety word ────────
-# --check above is UNTOUCHED: it keeps gating on $STATUS/$REC exactly as
-# before (claude%-only aggregate + rate_limit_info override), so every
-# existing breaker test is unaffected regardless of whether multi-profile
-# identity data is available. REPORT_STATUS/REPORT_REC are the words shown
+# --check keeps gating on the aggregate $STATUS/$REC exactly as before
+# (claude%-only aggregate + rate_limit_info override) PLUS, since row
+# 3e55153ca645, the same worst-identity condition derived here -- one rule,
+# both surfaces. REPORT_STATUS/REPORT_REC are the words shown
 # on --report/--json: the worst LIVE identity's status when per-account data
 # is available (the safety word belongs to the account that will actually
 # refuse the next dispatch), falling back to the same aggregate STATUS/REC
@@ -411,11 +430,27 @@ hm() { awk -v n="$1" 'BEGIN{ if(n>=1000000000) printf "%.2fB", n/1000000000; els
 
 case "$MODE" in
   check)
+    # Aggregate arm (unchanged): RL kv override + claude% heuristic cap.
     if [[ "$STATUS" == "exhausted" ]]; then
       echo "QUOTA-EXHAUSTED: Anthropic 5h ${PCT_5H}% (claude% input ${C5_IN}/${MAX_5H_IN} est; basis=${RL_CAP_BASIS})" >&2
       exit 1
     fi
+    # Per-account arm (row 3e55153ca645): ONE rule with --report/--json --
+    # the worst measurable account wins. A blended average can hide one
+    # exhausted account behind a healthy one; the account the dispatcher is
+    # about to use is what actually refuses. An unmeasurable account (meter
+    # pct "-" -> status unknown) is never selected as worst and never trips
+    # this arm: an unreadable meter is not a verdict about the account
+    # (bd7f811eb05c doctrine). warn refuses nothing -- parity with the
+    # aggregate arm, which only exhausts.
+    if [[ "$IDENTITY_SOURCE" == "live" && "$WORST_LABEL" != "-" && "$WORST_STATUS" == "exhausted" ]]; then
+      echo "QUOTA-EXHAUSTED: identity=${WORST_LABEL} ${WORST_WINDOW}=${WORST_PCT}% usable_now=${WORST_USABLE} (worst account wins; blended aggregate 5h ${PCT_5H}%/wk ${PCT_WK}% is NOT the safety signal; basis=profile-select windows)" >&2
+      exit 1
+    fi
     [[ "$PCT_5H" -ge 60 ]] && echo "QUOTA-WARN: Anthropic 5h ${PCT_5H}% (claude% only, est)" >&2
+    if [[ "$IDENTITY_SOURCE" == "live" && "$WORST_LABEL" != "-" && "$WORST_STATUS" == "warn" ]]; then
+      echo "QUOTA-WARN: identity=${WORST_LABEL} ${WORST_WINDOW}=${WORST_PCT}% (worst account; exit stays 0)" >&2
+    fi
     exit 0
     ;;
   json)

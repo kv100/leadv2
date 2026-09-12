@@ -23,12 +23,14 @@
 #      warn), status_source names it, identities.list has both accounts,
 #      identities.worst is work, aggregate.{status,recommendation} carries the
 #      old aggregate-only value separately
-#   6. --check is UNCHANGED by identity data (still claude%-only aggregate + RL
-#      override) — the breaker's own tests are not this suite's job, but a
-#      regression here would mean identity data started leaking into --check
-#   7. no identity opt-in (LEADV2_QUOTA_STATUS_IDENTITY_LINE unset, no
-#      LEADV2_CLAUDE_MULTIPROFILE) -> byte-identical first line to the
-#      pre-fix script (no regression for single-account/opt-out callers)
+#   6. --check does NOT refuse on a warn identity (only exhausted refuses).
+#      Since row 3e55153ca645 identity data DOES reach --check (worst account
+#      wins, both surfaces); the breaker itself is pinned by
+#      test-check-decides-per-account.sh — this case only guards warn-parity.
+#   7. per-account opt-out (LEADV2_QUOTA_STATUS_PER_ACCOUNT=0, the escape
+#      hatch of the 3e55153ca645 default flip) -> byte-identical first line
+#      to the pre-flip script (no regression for opt-out/single-account
+#      callers)
 #
 # Run: bash scripts/tests/test-quota-identity-report.sh
 # run-all-triggers: leadv2-quota-status
@@ -128,23 +130,23 @@ else
   fail "5 --json fields wrong: $py_check"
 fi
 
-# 6. --check unaffected by identity data (still the pre-existing aggregate breaker).
+# 6. --check: a warn identity (work=80%) must NOT refuse — only exhausted does.
 set +e
 LEADV2_QUOTA_STATUS_IDENTITY_LINE="$IDENTITY_LINE_2ACCT" bash "$QUOTA_SH" --check >/dev/null 2>&1; rc=$?
 set -e
 if [[ $rc -eq 0 ]]; then
-  pass "6 --check exit 0 (unaffected by identity data — empty claude burn db, aggregate breaker only)"
+  pass "6 --check exit 0 (warn identity does not refuse — empty claude burn db, aggregate healthy)"
 else
-  fail "6 --check exit $rc — identity data must not change the breaker's own gating"
+  fail "6 --check exit $rc — a warn identity must never refuse (only exhausted refuses)"
 fi
 
-# 7. no opt-in -> byte-identical first line to the pre-fix behavior.
-rep_off="$(bash "$QUOTA_SH" --report)"
+# 7. opt-out -> byte-identical first line to the pre-flip behavior.
+rep_off="$(LEADV2_QUOTA_STATUS_PER_ACCOUNT=0 bash "$QUOTA_SH" --report)"
 line1_off="$(printf '%s\n' "$rep_off" | head -1)"
 if printf '%s' "$line1_off" | grep -qE '^Quota: 5h [0-9]+% \([0-9]+ / [0-9]+ in, claude% only, cap est\.\) \| weekly\(claude, total-token, calibrated 2026-08-17\) [0-9]+% \(window=rolling_7d\) \| cache-hit [0-9.]+ \| safe$'; then
-  pass "7 no opt-in -> first line unchanged (single-account path is a byte-identical no-op)"
+  pass "7 opt-out -> first line unchanged (single-account path is a byte-identical no-op)"
 else
-  fail "7 no-opt-in first line changed: $line1_off"
+  fail "7 opt-out first line changed: $line1_off"
 fi
 
 echo

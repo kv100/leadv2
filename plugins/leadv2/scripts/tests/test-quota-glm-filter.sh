@@ -57,7 +57,9 @@ INSERT INTO turn_events(session_id,ts,input,cr,output,model) VALUES
   ('glm1',    datetime('now','-30 minutes'), 7000000, 2000000000, 100000, 'glm-5.2'),
   ('claude1', datetime('now','-1 hour'),     1000,    1000000000, 500,    'claude-opus-5');
 "
-export LEADV2_BURN_DB="$DB" LEADV2_MAIN_MODEL_CFG="$CFG"
+# This suite pins the provider-split figures, not per-account identity; opt out
+# of the (since 3e55153ca645 default-on) per-account probe so it stays hermetic.
+export LEADV2_BURN_DB="$DB" LEADV2_MAIN_MODEL_CFG="$CFG" LEADV2_QUOTA_STATUS_PER_ACCOUNT=0
 
 # 1. syntax
 if bash -n "$QUOTA_SH"; then pass "1 bash -n syntax"; else fail "1 bash -n syntax"; fi
