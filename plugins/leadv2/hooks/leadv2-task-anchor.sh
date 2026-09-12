@@ -14,10 +14,8 @@
 #      forward-compat) modified in the last 12h with no sibling
 #      docs/handoff/<id>/phase8-passed.flag (the real close sentinel path,
 #      per leadv2-phase8-assert.sh).
-#   No active task -> THREAD anchor fallback (round 2, LEAD-ANCHOR-01 r2):
-#   if docs/leadv2/open-threads.md and/or scheduled-decisions.md exist, print
-#   a reworded <task-anchor> block instead of staying silent. Only truly
-#   empty state (neither file present) emits nothing.
+#   No active task -> idle anchor fallback: retain the stable continuity rules
+#   and scheduled-decisions pointer without materialising a parallel ledger.
 #
 # Output: a <task-anchor> block, hard-capped at 40 lines, ending with the
 # fixed DIRECTIVE text verbatim (task mode) or the reworded THREAD DIRECTIVE
@@ -208,22 +206,13 @@ def nearest_due_line(root):
     return line or None
 
 
-def build_thread_anchor(root, leadv2_dir, session_id=""):
-    ot_path = os.path.join(root, leadv2_dir, "open-threads.md")
-    sd_path = os.path.join(root, leadv2_dir, "scheduled-decisions.md")
-    has_ot = os.path.exists(ot_path)
-    has_sd = os.path.exists(sd_path)
-    if not has_ot and not has_sd:
-        return None  # truly empty state — no thread anchor
-
+def build_idle_anchor(root):
     THREAD_DIRECTIVE = (
-        "DIRECTIVE — you are mid-thread, not mid-task.\n"
-        "1. This message does not erase the threads above. If it is a question, answer it in\n"
-        "   <=3 lines and return to the open thread. New WORK goes to the BACKLOG:\n"
+        "DIRECTIVE — no active task is registered.\n"
+        "1. If this message is a question, answer it in <=3 lines. New WORK goes to the BACKLOG:\n"
         "   scripts/task-add.sh \"<id>: <what and why, with the evidence>\" --group <g>\n"
-        "   --priority-hint <N>. open-threads.md is ONLY for things that are not tasks:\n"
-        "   an unanswered question to the founder, a live background job, a promise.\n"
-        "2. Only an explicit stop/scope-change order pauses a thread. \"Also do X\" = file X\n"
+        "   --priority-hint <N>.\n"
+        "2. Only an explicit stop/scope-change order pauses work. \"Also do X\" = file X\n"
         "   in the backlog, do NOT switch to it.\n"
         "3. PULSE MODE: no narration. Chat output is allowed ONLY at: Gate-1, an async question,\n"
         "   Phase-8 close, a [BROAD_STATUS] relay when the plugin emits BROAD_STATUS_READY\n"
@@ -241,28 +230,13 @@ def build_thread_anchor(root, leadv2_dir, session_id=""):
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "${CLAUDE_PLUGIN_ROOT}")
     header = [
         "<task-anchor>",
-        "NO ACTIVE TASK — thread anchor (docs/leadv2/open-threads.md)",
+        "NO ACTIVE TASK — stable idle anchor",
         f"single-lead role definition (stable, never a status dump): {plugin_root}/docs/single-lead-pulse.md",
     ]
     content = []
-    if has_ot:
-        # OT-SESSION-SCOPE-01 round 3: filter-by-session over the FULL file
-        # BEFORE windowing (mirrors pre-compact-task-freeze.sh order). Reading
-        # first then filtering would window-then-filter, starving this session's
-        # own entries when foreign-session volume inside the raw tail is high.
-        # hidden = foreign-tagged lines in the WHOLE file, not an arbitrary slice.
-        tail = read_last_nonblank_lines(ot_path, THREAD_SCAN_MAX)
-        tail, hidden = _filter_by_session(tail, session_id)
-        tail = tail[-8:]
-        if tail:
-            content.append("open threads (last 8 lines):")
-            content.extend(tail)
-        if hidden:
-            content.append(f"({hidden} thread(s) from other sessions hidden)")
-    if has_sd:
-        nd_line = nearest_due_line(root)
-        if nd_line:
-            content.append(nd_line)
+    nd_line = nearest_due_line(root)
+    if nd_line:
+        content.append(nd_line)
     footer = [""] + THREAD_DIRECTIVE.splitlines() + ["</task-anchor>"]
 
     budget = 40 - len(header) - len(footer)
@@ -833,18 +807,17 @@ def main():
             _, task_id, _ = found[0]
 
     if not task_id:
-        safe_capture(root, leadv2_dir, payload)
-        thread_out = build_thread_anchor(root, leadv2_dir, payload.get("session_id"))
-        if thread_out:
-            gate = _inject_dedup_gate("thread-anchor", payload.get("session_id"), thread_out, root, leadv2_dir)
+        idle_out = build_idle_anchor(root)
+        if idle_out:
+            gate = _inject_dedup_gate("idle-anchor", payload.get("session_id"), idle_out, root, leadv2_dir)
             if gate == "marker":
                 print(
-                    "<task-anchor>thread anchor unchanged — docs/leadv2/open-threads.md; "
+                    "<task-anchor>idle anchor unchanged; "
                     "the block above still governs.</task-anchor>"
                 )
             else:
-                print(thread_out)
-        return  # no active leadv2 task — THREAD anchor (if any) already printed
+                print(idle_out)
+        return
 
     # TOKEN-EFFICIENCY / T15 (LEAD-FINAL-FIXES-01 §T15): the full anchor
     # (goal, plan, journal, other sessions, directive) used to be re-injected
@@ -886,7 +859,6 @@ def main():
     cheap_sig = _cheap_task_signature(_cheap_paths)
     if session_id and os.environ.get("LEADV2_TASK_ANCHOR_COMPACT_REPEAT", "1") != "0":
         if _cheap_dedup_check(cheap_sig, session_id, root) == "marker":
-            safe_capture(root, leadv2_dir, payload)
             print("\n".join([
                 "<task-anchor>",
                 f"ACTIVE TASK: {task_id} | phase: {phase} | class: {cls}",
@@ -1013,8 +985,7 @@ def main():
         "1. Route it: Skill(leadv2-founder-question-router). Answer inline in <=3 lines if it is a\n"
         "   question/nuance; then CONTINUE the task from the phase above.\n"
         "2. Only an explicit stop/scope-change order pauses the task. \"Also do X\" = file X in\n"
-        "   the BACKLOG (scripts/task-add.sh), do NOT switch to it. open-threads.md is ONLY\n"
-        "   for non-tasks: an unanswered founder question, a live background job, a promise.\n"
+        "   the BACKLOG (scripts/task-add.sh), do NOT switch to it.\n"
         "3. PULSE MODE: no narration. Chat output is allowed ONLY at: Gate-1, an async question,\n"
         "   Phase-8 close, a [BROAD_STATUS] relay when the plugin emits BROAD_STATUS_READY\n"
         "   (RELAY=full: paste founder-status.md verbatim, never compose one; RELAY=none:\n"

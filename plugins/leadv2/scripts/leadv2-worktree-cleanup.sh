@@ -41,11 +41,11 @@ _lv2_wt_journal_swept() { # <repo-root> <lane-id> <reason>  (never fails)
 }
 
 # T11-D3: terminal lanes were piling up because per-turn injectors dirty three
-# well-known noise paths inside every lane worktree (open-threads.md,
-# LEAD_V2_STATE.md, tasks.yaml), and `git worktree remove` (no --force banned by
+# well-known noise paths inside every lane worktree (LEAD_V2_STATE.md,
+# tasks.yaml), and `git worktree remove` (no --force banned by
 # the shared-tree hook) refuses on ANY dirt. Restore just those three paths when
 # they are the ONLY dirt present, then re-check; leave anything else alone.
-_LV2_WT_NOISE_PATHS=(docs/leadv2/open-threads.md docs/LEAD_V2_STATE.md docs/tasks.yaml)
+_LV2_WT_NOISE_PATHS=(docs/LEAD_V2_STATE.md docs/tasks.yaml)
 _lv2_wt_restore_noise() { # <wt_path> -> prints remaining `git status --porcelain` on stdout
   local wt_path="$1" dirty
   dirty="$(git -C "$wt_path" status --porcelain -- "${_LV2_WT_NOISE_PATHS[@]}" 2>/dev/null || true)"

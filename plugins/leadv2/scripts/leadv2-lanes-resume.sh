@@ -16,8 +16,6 @@
 # Sources (read-only):
 #   <control-plane>/active.yaml       — live session registry (already
 #     reconciled by the time the mandatory first supervise call reads it)
-#   docs/leadv2/open-threads.md       — head = semantic role/founder session
-#     section (sacrosanct, never truncated), tail = freshest running log
 #   docs/tasks.yaml                   — ranked via the SAME canonical
 #     leadv2-tasks-lib.sh picker logic the (now-retired) supervise-pick.sh used
 #     (no 2nd ranker)
@@ -28,8 +26,10 @@
 #   --json   emit the structured resume object (default: render the
 #            human-readable <supervisor-handoff> text block to stdout)
 #
-# Cap: ~60-80 lines / <=6KB. Role+lanes+focus/next-action are sacrosanct;
-# the tail (recent log entries, then tasks_top10) truncates first. Any
+# Cap: ~60-80 lines / <=6KB. Lanes are sacrosanct; role/focus/next-action are
+# permanently unavailable (ROLE-LEDGER-RETIRE-01 -- the founder-session ledger
+# this composer used to read is retired) and reported via `degraded`; the
+# tail (recent log entries, then tasks_top10) truncates first. Any
 # missing/malformed source degrades that section visibly — never fakes
 # continuity. Exit code is always 0 (a caller must never wedge on this
 # best-effort composer); degraded state is reported IN the payload/block.
@@ -77,7 +77,6 @@ fi
 
 ACTIVE_YAML="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-state-path.sh" active.yaml 2>/dev/null || printf -- '%s/docs/leadv2/active.yaml' "$PROJECT_ROOT")"
 CP_QUESTIONS_DIR="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-state-path.sh" questions 2>/dev/null || true)"
-OPEN_THREADS="${PROJECT_ROOT}/docs/leadv2/open-threads.md"
 TASKS_YAML="${PROJECT_ROOT}/docs/tasks.yaml"
 
 # Canonical task ranking order — reuse leadv2-tasks-lib.sh's picker (same
@@ -91,10 +90,10 @@ if [[ -f "$TASKS_LIB" ]]; then
   TOP10_IDS="$(PROJECT_ROOT="$PROJECT_ROOT" bash -c "source '$TASKS_LIB' 2>/dev/null; leadv2_tasks_top_n 10 2>/dev/null" | cut -f3 || true)"
 fi
 
-python3 - "$JSON_MODE" "$ACTIVE_YAML" "$OPEN_THREADS" "$TASKS_YAML" "$CP_QUESTIONS_DIR" "$TOP10_IDS" <<'PY'
-import sys, os, json, glob, datetime, re
+python3 - "$JSON_MODE" "$ACTIVE_YAML" "$TASKS_YAML" "$CP_QUESTIONS_DIR" "$TOP10_IDS" <<'PY'
+import sys, os, json, glob
 
-json_mode, active_yaml, open_threads, tasks_yaml, cp_dir, top10_ids_raw = sys.argv[1:7]
+json_mode, active_yaml, tasks_yaml, cp_dir, top10_ids_raw = sys.argv[1:6]
 json_mode = json_mode == "1"
 
 MAX_LINES = 80
@@ -140,95 +139,19 @@ for s in (active_data.get("sessions") or []):
         "blocker": q_by_task.get(tid, "-"),
     })
 
-# -- open-threads.md: role head (sacrosanct) + freshest tail --
+# -- role/focus/next-action/recent: permanently retired (ROLE-LEDGER-RETIRE-01) --
+# The founder-session ledger this composer used to read for these fields is
+# retired and nothing replaces it. Report the keys honestly rather than
+# dropping them -- callers still read this shape.
 role_lines = []
 recent_entries = []
 next_action = None
 focus = None
 stale_warning = None
-degraded_resume_instruction = None
-
-def extract_role_section(lines):
-    """Return the semantic role section, falling back to the first heading."""
-    heading_re = re.compile(r"^(#{1,6})\s+(.*)$")
-    role_re = re.compile(
-        r"^\W*(?:1\.(?=\s|$)|ROLE\b|SESSION MODE\b|SESSION HANDOFF\b|FOUNDER\b)",
-        re.IGNORECASE,
-    )
-    headings = []
-    for index, line in enumerate(lines):
-        match = heading_re.match(line)
-        if match:
-            headings.append((index, len(match.group(1)), match.group(2).strip()))
-
-    if not headings:
-        return [], "open-threads.md: no heading found while searching for role/session/founder section"
-
-    start_index = None
-    start_depth = None
-    for index, depth, text in headings:
-        if role_re.match(text):
-            start_index, start_depth = index, depth
-            break
-
-    if start_index is None:
-        first_index, first_depth, _ = headings[0]
-        if first_index == 0:
-            start_index, start_depth = first_index, first_depth
-        else:
-            # The contract only degrades when no heading exists. A non-heading
-            # preamble does not authorize selecting a later unrelated section.
-            return [], None
-
-    end_index = min(start_index + 30, len(lines))
-    for index, depth, _ in headings:
-        if index > start_index and depth <= start_depth:
-            end_index = min(end_index, index)
-            break
-    return lines[start_index:end_index], None
-
-if not os.path.isfile(open_threads):
-    degraded.append(f"open-threads.md unavailable ({open_threads})")
-else:
-    age_h = (datetime.datetime.now().timestamp() - os.path.getmtime(open_threads)) / 3600.0
-    if age_h > 48:
-        stale_warning = f"STALE open-threads.md (age {age_h:.0f}h) -- tail below omitted, role/rules still shown"
-    try:
-        with open(open_threads, encoding="utf-8", errors="replace") as fh:
-            lines = fh.read().splitlines()
-    except OSError as exc:
-        lines = []
-        degraded.append(f"open-threads.md unreadable ({open_threads}: {exc})")
-
-    if not lines:
-        if not any(item.startswith("open-threads.md unreadable") for item in degraded):
-            degraded.append(f"open-threads.md empty ({open_threads})")
-    else:
-        role_lines, role_reason = extract_role_section(lines)
-        if role_reason:
-            degraded.append(role_reason)
-
-    if stale_warning is None:
-        heading_idxs = [i for i, ln in enumerate(lines) if ln.startswith("## ")]
-        for idx in heading_idxs[-3:]:
-            heading = lines[idx].lstrip("#").strip()
-            body = ""
-            for j in range(idx + 1, min(idx + 4, len(lines))):
-                if lines[j].strip().startswith("-"):
-                    body = lines[j].strip()
-                    break
-            recent_entries.append((heading, body))
-        if heading_idxs:
-            focus = lines[heading_idxs[-1]].lstrip("#").strip()
-        for ln in lines:
-            if ln.strip().startswith("ON RESUME FIRST"):
-                next_action = ln.strip()  # last match wins -- freshest
-
-if not role_lines:
-    degraded_resume_instruction = (
-        "ROLE UNAVAILABLE: read docs/leadv2/open-threads.md head verbatim; "
-        "do not hand-rank docs/tasks.yaml"
-    )
+degraded.append("founder-session ledger retired (ROLE-LEDGER-RETIRE-01) -- role/focus/next-action/recent unavailable")
+degraded_resume_instruction = (
+    "ROLE UNAVAILABLE: founder-session ledger is retired; rank docs/tasks.yaml directly"
+)
 
 # -- tasks.yaml P0/P1 top-10 (id/status/intent) --
 tasks_top = []
@@ -246,7 +169,7 @@ else:
         tasks_top.append({"id": tid, "status": t.get("status", "?"), "intent": intent})
 
 # -- Render, with tail-truncates-first cap enforcement --
-POINTERS = "Full: docs/leadv2/open-threads.md . docs/leadv2/active.yaml . docs/tasks.yaml"
+POINTERS = "Full: docs/leadv2/active.yaml . docs/tasks.yaml"
 
 def render(recent_n, tasks_n, lanes_n):
     out = ["<supervisor-handoff>", "ROLE (sacrosanct):"]

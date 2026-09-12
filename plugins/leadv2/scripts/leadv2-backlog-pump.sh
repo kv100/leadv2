@@ -832,7 +832,6 @@ cmd_async_dispatch() {  # $1=task_id $2=mission $3=lane $4=priority $5=rank (las
       jemit decision "pump_deferred_to_founder task=${tid} reason=opus_arm_requires_judgment"
       leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
       _pump_release_lane "$tid"
-      _surface_to_founder "$tid" "requires judgment (opus arm) — pump will not auto-start this"
       return 3
       ;;
     6)
@@ -1039,7 +1038,6 @@ cmd_check() {
       jemit decision "pump_deferred_to_founder task=${iid} reason=phases_required class=${adm_cls:-Standard}"
       leadv2_tasks_unclaim "$iid" >/dev/null 2>&1 || true
       _pump_release_lane "$iid"
-      _surface_to_founder "$iid" "requires the full phase cycle (class ${adm_cls:-Standard}, route=phases) and the adopt path is unavailable — pump will not auto-start this as a bare worker"
       continue
     fi
 
@@ -1079,13 +1077,6 @@ cmd_check() {
   local _live_scope
   _live_scope="$(basename "$(dirname "${ACTIVE_YAML}")" 2>/dev/null)"
   log "check complete: examined=${examined} dispatched=${dispatched} live=${active} live_scope=${_live_scope:-unknown} live_means=lane_rows_in_this_repo_registry remaining_capacity=${cap} below_floor=${below_floor}"
-}
-
-_surface_to_founder() {  # $1=task_id $2=reason -> append to open-threads.md
-  local iid="$1" reason="$2"
-  local threads; threads="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-state-path.sh" open-threads.md 2>/dev/null)"
-  [[ -n "$threads" ]] || return 0
-  printf -- '- [ ] %s — backlog-pump: task %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$iid" "$reason" >>"$threads" 2>/dev/null || true
 }
 
 # ── reap: detect empty-outcome close, bound the retry, never spin forever ──
@@ -1136,7 +1127,6 @@ cmd_reap() {
   if (( streak >= 2 )); then
     jemit decision "pump_reap task=${tid} outcome=empty streak=${streak} action=parked_human_needed"
     leadv2_tasks_update "$tid" --key lane --value human-needed >/dev/null 2>&1 || true
-    _surface_to_founder "$tid" "closed empty ${streak}x in a row — parked, will not auto-retry"
     rm -f "$streak_file" 2>/dev/null || true
   else
     jemit decision "pump_reap task=${tid} outcome=empty streak=${streak} action=requeued"
