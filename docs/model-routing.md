@@ -1,7 +1,9 @@
 # Model Routing — leadv2 plugin (universal, all consuming repos)
 
 This is the plugin-level template for per-repo `docs/model-routing.md`. Each consuming
-repo (persona-engine, m3-market, respiro-ios, ...) may keep its own concrete copy with
+repo (persona-engine, respiro-ios, ...; plus the m3-market control directory, which is
+not a repo — M3-MARKET-IS-NOT-A-GIT-REPO-01, code repo at ~/MythicalGames/m3-market/m3)
+may keep its own concrete copy with
 repo-specific numbers; this file is the shared authority for the ARCHITECTURE behind it.
 
 ## Gating metric = Claude token QUOTA, not dollars

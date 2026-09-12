@@ -1,5 +1,9 @@
 # TODO: sync m3-market to public leadv2 plugin
 
+> NOTE 2026-09-13 (M3-MARKET-IS-NOT-A-GIT-REPO-01): `~/MythicalGames/m3-market` is a leadv2
+> CONTROL DIRECTORY, not a repo — the m3 code repo is `~/MythicalGames/m3-market/m3`. Read
+> `plugins/leadv2/ref/m3-control-directory.md` before acting on this TODO.
+
 > Deferred from session 2026-05-15 — founder was actively working in m3-market and asked to skip it. Persona-engine and respiro-ios were synced.
 
 ## Context

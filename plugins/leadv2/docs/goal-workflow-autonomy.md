@@ -68,7 +68,8 @@ Plan/Review meets the fan-out test above.
 **Cost discipline (non-negotiable):**
 - Every `agent()` carries an explicit `model:` — `haiku` for reads/scans/discovery, `sonnet` for
   synthesis/judgment, `opus` only when genuinely needed. A bare `agent()` runs the whole fleet on the
-  lead's model (see `leadv2-token-discipline` SKILL §Workflow). Applies in all repos; in m3-market,
+  lead's model (see `leadv2-token-discipline` SKILL §Workflow). Applies in all repos; in the
+  m3-market control directory (not a repo — M3-MARKET-IS-NOT-A-GIT-REPO-01),
   Claude tiers only — no Codex/gpt-5 routing inside scripts.
 - Prefer `pipeline()` over `parallel()` barriers unless a stage genuinely needs all prior results
   (dedup / merge / early-exit-on-zero).

@@ -351,9 +351,12 @@ fi
 #
 # LEADV2_STATE_ROOT is a sandbox-only signal: production NEVER sets it (a
 # real /leadv2 session always resolves STATE_ROOT via git-common-dir above).
-# A real leadv2/persona-engine/m3-market/respiro-ios checkout always carries
+# A real leadv2/persona-engine/respiro-ios checkout always carries
 # a configured git remote; a scratch `git init` fixture never does (same
 # signal leadv2-temp.sh's lv2_assert_scratch_repo already uses test-side).
+# EXCEPTION (M3-MARKET-IS-NOT-A-GIT-REPO-01): ~/MythicalGames/m3-market is a
+# control directory with NO .git at all — it is not a checkout and carries no
+# remote, so it can never satisfy this signal. Its code repo is …/m3-market/m3.
 # If a caller set LEADV2_STATE_ROOT (declaring "sandbox this") but LINK_ROOT
 # nonetheless resolves to a real checkout, that is exactly the contradiction
 # that produced the retarget: hard-abort instead of silently mutating it.

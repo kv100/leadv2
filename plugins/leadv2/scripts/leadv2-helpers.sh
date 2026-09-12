@@ -42,6 +42,29 @@ else
 fi
 unset _git_toplevel _git_dir
 
+# ── M3-MARKET-IS-NOT-A-GIT-REPO-01 (founder decision 2026-09-13) ──────────
+# ~/MythicalGames/m3-market is a leadv2 CONTROL DIRECTORY (.claude/leadv2-
+# overrides, CLAUDE.md, leadv2 tasks), NOT a git repo — never `git init` it.
+# The m3 code repo is ~/MythicalGames/m3-market/m3 (own .git); a second,
+# separate clone lives at ~/MythicalGames/m3. A `git -C <control-dir> …`
+# fails on stderr only, so piping it (`| wc -l`) reads as a confident 0
+# ("m3 is dormant") — that shape already produced two wrong answers. Any
+# component about to run a git query against a resolved project root calls
+# this guard first and aborts on rc=1. Doctrine: ref/m3-control-directory.md.
+leadv2_control_dir_git_guard() { # <dir-about-to-receive-a-git-query>
+  local _target="${1:-}"
+  [[ -z "${_target}" ]] && return 0
+  local _physical _control="${HOME}/MythicalGames/m3-market"
+  _physical="$(cd "${_target}" 2>/dev/null && pwd -P || printf '%s' "${_target}")"
+  [[ "${_physical}" == "${_control}" ]] || return 0
+  # If it ever gains a .git the 2026-09-13 decision was reversed; let git
+  # answer normally — the suite test-m3-market-is-not-a-repo.sh catches the
+  # reversal itself.
+  [[ -e "${_control}/.git" ]] && return 0
+  printf '[leadv2] REFUSED: %s is a leadv2 CONTROL DIRECTORY, not a git repo (M3-MARKET-IS-NOT-A-GIT-REPO-01, founder decision 2026-09-13). The m3 code repo is %s/m3 — run git queries there. A git query aimed at the control directory false-zeros (stderr-only failure reads as 0 rows). Doctrine: plugins/leadv2/ref/m3-control-directory.md\n' "${_control}" "${_control}" >&2
+  return 1
+}
+
 # ── DOD-GATE-CHARGES-LANES-FOR-HARNESS-WRITES-01 ──────────────────────────
 # LEAD_V2_STATE.md is a markdown VIEW rendered from active.yaml (the
 # regenerator is leadv2-active-registry.sh:leadv2_active_render_index), and

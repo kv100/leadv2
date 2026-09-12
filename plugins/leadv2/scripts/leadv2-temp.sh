@@ -45,7 +45,7 @@ lv2_assert_scratch_repo() {
       ;;
   esac
   if git -C "$repo" remote 2>/dev/null | grep -q .; then
-    printf -- '[TEST-SAFETY] ABORT: fixture repo %s has a configured git remote — this is not a throwaway fixture (every real leadv2/persona-engine/m3-market/respiro-ios checkout has one; a scratch `git init` has none). Refusing to run.\n' "$repo" >&2
+    printf -- '[TEST-SAFETY] ABORT: fixture repo %s has a configured git remote — this is not a throwaway fixture (every real leadv2/persona-engine/respiro-ios checkout has one, and so does the m3 code repo m3-market/m3; a scratch `git init` has none; the m3-market control directory itself has no .git at all — M3-MARKET-IS-NOT-A-GIT-REPO-01). Refusing to run.\n' "$repo" >&2
     exit 1
   fi
   if [[ -f "$repo/REAL-REPO" || -f "$repo/.git/leadv2-real-repo-marker" ]]; then

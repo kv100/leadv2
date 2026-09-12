@@ -459,6 +459,19 @@ if [[ -n "${_LV2_ENV_ROOT}" ]]; then
 else
   PROJECT_ROOT="${_LV2_CWD_GIT_ROOT:-$(pwd)}"
 fi
+# M3-MARKET-IS-NOT-A-GIT-REPO-01 (founder decision 2026-09-13): dispatch needs
+# a git repo to host the lane worktree. ~/MythicalGames/m3-market is a leadv2
+# CONTROL DIRECTORY (no .git, never gets one); the m3 code repo is …/m3-market/m3.
+# Rooted there, every git query below would fail stderr-only and false-zero into
+# "no branches / dormant", so refuse loudly before the first one (LEDGER_REPO_ROOT
+# at the next git call). leadv2-helpers.sh is sourced only at line ~520, after
+# that first query, so this check is inline rather than a helpers call.
+_lv2_m3_guard_root="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P || printf '%s' "${PROJECT_ROOT}")"
+if [[ "${_lv2_m3_guard_root}" == "${HOME}/MythicalGames/m3-market" && ! -e "${_lv2_m3_guard_root}/.git" ]]; then
+  printf '[leadv2-dispatch-code] REFUSED: %s is a leadv2 CONTROL DIRECTORY, not a git repo (M3-MARKET-IS-NOT-A-GIT-REPO-01). The m3 code repo is %s/m3 — dispatch from that checkout. Git queries aimed at the control directory false-zero. Doctrine: plugins/leadv2/ref/m3-control-directory.md\n' "${_lv2_m3_guard_root}" "${_lv2_m3_guard_root}" >&2
+  exit 2
+fi
+unset _lv2_m3_guard_root
 # LANDING-BLOCKER-R2 (C1): WORK_ROOT is the tree the lane's code edits land in -- it is
 # NOT PROJECT_ROOT. PROJECT_ROOT stays the control-plane root (journal, docs/handoff,
 # active.yaml, cache, ledger) everywhere below; only worker --cwd and the review-gate's

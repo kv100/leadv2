@@ -4,7 +4,8 @@ Everything project-specific in leadv2 lives in `.claude/leadv2-overrides/`. The 
 
 Override files live under `<repo-root>/.claude/leadv2-overrides/`.
 All files and all keys are **optional** — missing file or key falls back to the
-documented default so existing repos (persona-engine, m3-market, respiro-ios)
+documented default so existing projects (persona-engine, respiro-ios, and the
+m3-market control directory — not a repo, M3-MARKET-IS-NOT-A-GIT-REPO-01)
 behave identically to before this feature was introduced.
 
 ---
