@@ -275,6 +275,13 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-workflow-bypass-guard.sh\"",
             "timeout": 5,
             "statusMessage": "Workflow-first guard..."
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-judge-shaped-agent-guard.sh\"",
+            "timeout": 5,
+            "continueOnBlock": true,
+            "statusMessage": "Judge-shaped Agent prompt (WARN-only)..."
           }
         ]
       },
