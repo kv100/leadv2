@@ -21,7 +21,7 @@
 # (a protected:false arm stays EXCLUDED no matter how its price moves), the
 # WRITER half (lib/leadv2-cost-actuals.sh derives rounds/arm from the same
 # journal and refuses rows for never-spawned sigs), and a before/after pair
-# against the pristine HEAD arbiter for the same history.
+# against the pre-feature arbiter for the same history.
 #
 # Every case drives the REAL sourced function under bash -c (never an
 # emulation), with only the ambient probes stubbed: quota, freepool gate,
@@ -271,26 +271,33 @@ else
   printf 'PROD-PAIR: skipped (mutant arbiter under test or routing unreadable)\n'
 fi
 
-# (12) Old-arbiter control: the pristine HEAD arbiter, given the SAME burn
+# (12) Old-arbiter control: the PRE-FEATURE arbiter, given the SAME burn
 # history, must still pick glm-flash — the estimate-blind behaviour this row
 # exists to end. If it moves too, the suite is proving nothing about this diff.
+# Anchored on the commit that ADDED lib/leadv2-cost-actuals.sh (its parent's
+# arbiter is the last blind one), never on HEAD: HEAD carried the feature from
+# the moment this row's diff landed, and a HEAD-anchored control rotted into a
+# permanent red the day it was committed (case-12 red on a green feature,
+# measured 2026-09-12). The add-commit anchor cannot rot by landing.
 if command -v git >/dev/null 2>&1 \
    && git -C "${SCRIPTS_DIR}/../../.." rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  git -C "${SCRIPTS_DIR}/../../.." show "HEAD:plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh" >"$TMP/arbiter-head.sh" 2>/dev/null
+  _feat_rev="$(git -C "${SCRIPTS_DIR}/../../.." log -1 --format=%H --diff-filter=A \
+    -- plugins/leadv2/scripts/lib/leadv2-cost-actuals.sh 2>/dev/null)"
+  git -C "${SCRIPTS_DIR}/../../.." show "${_feat_rev}^:plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh" >"$TMP/arbiter-head.sh" 2>/dev/null
   if [[ -s "$TMP/arbiter-head.sh" ]]; then
     old_out="$(env LEADV2_ROUTE_ARBITER_ROUTING_YAML="$TMP/routing.yaml" \
       LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" \
       LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state" LEADV2_ROUTE_ARBITER_EVENTS_JOURNAL="$TMP/ev-burn.jsonl" \
       ROUTE_ARBITER_FAILURE_LEDGER="$TMP/ledger.jsonl" ROUTE_TEST_QUOTA="$Q" \
       bash -c 'source "$0"; route_arbiter worker "$1"' "$TMP/arbiter-head.sh" "$DESC" 2>&1)"
-    printf 'HEAD-ARBITER-ON-BURN-HISTORY: %s\n' "$(arm_of "$old_out")"
+    printf 'PRE-FEATURE-ARBITER-ON-BURN-HISTORY: %s (rev=%s^)\n' "$(arm_of "$old_out")" "${_feat_rev:0:12}"
     if [[ "$(arm_of "$old_out")" == "glm-flash" ]]; then
-      pass "(12) HEAD arbiter on the same history still picks glm-flash (blind) — the delta is this diff"
+      pass "(12) pre-feature arbiter on the same history still picks glm-flash (blind) — the delta is this diff"
     else
-      fail "(12) HEAD arbiter moved too (arm=$(arm_of "$old_out")) — history is leaking through something older"
+      fail "(12) pre-feature arbiter moved too (arm=$(arm_of "$old_out")) — history is leaking through something older"
     fi
   else
-    printf 'HEAD-ARBITER: skipped (git show produced nothing)\n'
+    printf 'PRE-FEATURE-ARBITER: skipped (git show produced nothing)\n'
   fi
 fi
 
