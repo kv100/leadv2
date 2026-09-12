@@ -9,7 +9,10 @@
 # the account weekly_all). A suite proving only the "not penalised"
 # direction would turn the mispricing into an exemption; every case here
 # names which direction it pins.
-# run-all-triggers: leadv2-quota-read.py leadv2-route-arbiter leadv2-glm-policy-resolve.py
+# run-all-triggers: leadv2-quota-read leadv2-route-arbiter leadv2-glm-policy-resolve.py
+# NB token shapes: scripts/*.py stems strip their extension (leadv2-quota-read),
+# lib/leadv2-glm-policy-resolve.py keeps it (run-all.sh special case, FABLE-
+# THINK-TIER-01 R6) -- a dotted quota-read token here would be a dead row.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
