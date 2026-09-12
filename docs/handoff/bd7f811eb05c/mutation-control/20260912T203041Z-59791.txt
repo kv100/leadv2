@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-claude-profile-select.sh
+file=plugins/leadv2/scripts/leadv2-claude-profile-select.sh
+anchor=s/if code in ("401", "403") or "http 401" in err/if code in ("401", "403", "429") or "http 401" in err/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] PASS: T15: exit 0 (fail-open)
+diff_hash=e0995f0d9588f2b8fea1d1f62ded2a991abc81d90b6ecdb6e33a4b41ffdb4e69
+lane_diff_hash=f66920593660416009c6ca32c412a4d124ce78376dc82513ae9548cad6eae405
