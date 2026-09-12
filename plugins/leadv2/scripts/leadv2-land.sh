@@ -12,22 +12,27 @@
 #   hygiene -> merge-safety gate -> ff main -> push -> land-ledger row
 #
 # Contract (brief §3/§5 — split with LANE-SALVAGE-TOOL-01):
-#   - land takes ONE branch that is already a descendant of current main
-#     (behind <= LEADV2_LAND_MAX_BEHIND, default 0). Anything further behind
-#     is refused with reason=behind_main and named over to
-#     plugins/leadv2/scripts/leadv2-lane-salvage.sh, which owns REBASING
-#     THE PAST. land owns LANDING THE PRESENT. Not one line of the salvage
-#     tool is imported, sourced or duplicated here — the contract between
-#     them is that salvage's output branch is land's input.
+#   - land takes ONE branch with a bounded amount of ordinary main drift
+#     (behind <= LEADV2_LAND_MAX_BEHIND, default 50). The merge-safety gate
+#     decides whether that drift is actually safe to land; it is the present
+#     lander's job, not an automatic 25-minute salvage run. A caller needing
+#     a stricter policy may set the bound explicitly. Larger stale history is
+#     refused and named over to plugins/leadv2/scripts/leadv2-lane-salvage.sh,
+#     which owns REBASING THE PAST. land owns LANDING THE PRESENT. Not one line
+#     of the salvage tool is imported, sourced or duplicated here — the
+#     contract between them is that salvage's output branch is land's input.
 #   - Deploy is NOT this script's job. leadv2-deploy-merge.sh's conflation
 #     of merge and deploy is exactly why its rc=1 means two different
 #     things. land ends at the push.
 #
 # Usage:
-#   leadv2-land.sh <lane-branch> [--dry-run] [--no-ff]
+#   leadv2-land.sh <lane-branch> [--dry-run] [--no-ff] [--no-push]
 #
 # Environment:
-#   LEADV2_LAND_MAX_BEHIND  max allowed behind-main count (default 0)
+#   LEADV2_LAND_MAX_BEHIND  max allowed behind-main count (default 50)
+#   LEADV2_LAND_PUSH        1 (default) pushes origin after the local land;
+#                           0 has the same queue, gate and ledger path but
+#                           deliberately lands locally with pushed:false.
 #   LEADV2_LAND_WRITE_SET   the lane's write set for the merged-tree check
 #                           inside land_safety_gate (W-LEAD-LAST-MILE-01 §1):
 #                           either a comma/colon-separated list of
@@ -69,19 +74,24 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ROOT is normally the PRIMARY checkout (dirname of the git common dir), never
-# a lane worktree. The product-close probe may run from a consumer repo whose
-# plugin script is symlinked from the canonical checkout, so it supplies ROOT.
-if [[ -n "${LEADV2_LAND_PROBE_ROOT:-}" ]]; then
-  ROOT="$(cd "${LEADV2_LAND_PROBE_ROOT}" 2>/dev/null && pwd)"
-else
-  _COMMON_DIR="$(git -C "${SCRIPT_DIR}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-  if [[ -z "${_COMMON_DIR}" ]]; then
-    printf 'leadv2-land: cannot resolve git common dir from %s\n' "${SCRIPT_DIR}" >&2
-    exit 1
+# The plugin may be symlinked from the canonical plugin checkout into a
+# consumer. The invocation is about the caller's repository, so resolve ROOT
+# from the caller's cwd, never from SCRIPT_DIR. LEADV2_LAND_PROBE_ROOT remains
+# an explicit product-close override.
+land_resolve_root() { # -> repo root; caller cwd wins over plugin install path
+  local caller_root
+  if [[ -n "${LEADV2_LAND_PROBE_ROOT:-}" ]]; then
+    cd "${LEADV2_LAND_PROBE_ROOT}" 2>/dev/null && pwd
+    return $?
   fi
-  ROOT="$(cd "$(dirname "${_COMMON_DIR}")" && pwd)"
-fi
+  caller_root="$(git -C "${PWD}" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -z "${caller_root}" ]]; then
+    printf 'leadv2-land: cannot resolve caller repository from %s\n' "${PWD}" >&2
+    return 1
+  fi
+  cd "${caller_root}" 2>/dev/null && pwd
+}
+ROOT="$(land_resolve_root)" || exit 1
 if ! git -C "${ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   printf 'leadv2-land: cannot resolve repository root %s\n' "${ROOT:-unset}" >&2
   exit 1
@@ -92,18 +102,20 @@ REPO_SLUG="$(basename "${ROOT}")"
 source "${SCRIPT_DIR}/leadv2-branch-merged.sh"
 
 usage() {
-  printf 'Usage: %s <lane-branch> [--dry-run] [--no-ff] | %s --root-dirt-check <lane-branch>\n' \
+  printf 'Usage: %s <lane-branch> [--dry-run] [--no-ff] [--no-push] | %s --root-dirt-check <lane-branch>\n' \
     "$(basename "$0")" "$(basename "$0")" >&2
 }
 
 DRY_RUN=0
 NO_FF=0
+PUSH="${LEADV2_LAND_PUSH:-1}"
 ROOT_DIRT_CHECK=0
 LANE=""
 for _a in "$@"; do
   case "${_a}" in
     --dry-run) DRY_RUN=1 ;;
     --no-ff) NO_FF=1 ;;
+    --no-push) PUSH=0 ;;
     --root-dirt-check) ROOT_DIRT_CHECK=1 ;;
     -*) usage; exit 2 ;;
     *)
@@ -114,7 +126,12 @@ for _a in "$@"; do
 done
 [[ -n "${LANE}" ]] || { usage; exit 2; }
 
-MAX_BEHIND="${LEADV2_LAND_MAX_BEHIND:-0}"
+case "${PUSH}" in
+  0|1) ;;
+  *) printf 'leadv2-land: LEADV2_LAND_PUSH must be 0 or 1 (got %s)\n' "${PUSH}" >&2; exit 2 ;;
+esac
+
+MAX_BEHIND="${LEADV2_LAND_MAX_BEHIND:-50}"
 [[ "${MAX_BEHIND}" =~ ^[0-9]+$ ]] || { printf 'leadv2-land: LEADV2_LAND_MAX_BEHIND must be a non-negative integer (got %s)\n' "${MAX_BEHIND}" >&2; exit 2; }
 
 # ── ledger row state ─────────────────────────────────────────────────────────
@@ -264,7 +281,7 @@ L_BEHIND="$(git -C "${ROOT}" rev-list --count "${LANE}..${DEFAULT}" 2>/dev/null 
 L_AHEAD="$(git -C "${ROOT}" rev-list --count "${DEFAULT}..${LANE}" 2>/dev/null || printf -- '-1')"
 _ledger_prewrite
 
-# ── step: refuse behind-main (the salvage handoff) ───────────────────────────
+# ── step: bound exceptional behind-main (the salvage handoff) ────────────────
 land_refuse_behind() {
   if [[ "${L_BEHIND}" -gt "${MAX_BEHIND}" ]]; then
     L_OUTCOME="refused"; L_REASON="behind_main"; L_MODE="refused"
@@ -490,23 +507,29 @@ land_safety_gate() {
 }
 
 # ── step: the four landing conditions (brief §4), against the repo ───────────
-# 1. outcome=landed (reaching here means ff+push both returned 0)
+# 1. outcome=landed (reaching here means the local merge completed; push is
+#    separately verified only when enabled)
 # 2. main_after != main_before
-# 3. merge-base --is-ancestor <lane_tip> <remote tip>
-# 4. pushed: the remote's LIVE tip (ls-remote, not a local remote-tracking
-#    ref, not a push return code) == main_after
+# 3. merge-base --is-ancestor <lane_tip> <local main>
+# 4. when push is enabled, the remote's LIVE tip (ls-remote, not a local
+#    remote-tracking ref, not a push return code) == main_after; --no-push
+#    intentionally records pushed:false without querying or changing origin.
 land_verify_landed() {
   local remote_sha
-  remote_sha="$(git -C "${ROOT}" ls-remote origin "refs/heads/${DEFAULT}" 2>/dev/null | awk '{print $1}' | head -1)"
   if [[ "${L_MAIN_AFTER}" == "${L_MAIN_BEFORE}" ]]; then
     printf 'leadv2-land: FAILED reason=verify_failed: main did not move (%s)\n' "${L_MAIN_AFTER}" >&2
     return 1
   fi
-  if ! git -C "${ROOT}" merge-base --is-ancestor "${LANE_TIP}" "${remote_sha}" 2>/dev/null; then
-    printf 'leadv2-land: FAILED reason=verify_failed: lane tip %s is not an ancestor of remote %s (%s)\n' \
-      "${LANE_TIP}" "${DEFAULT}" "${remote_sha:-unresolved}" >&2
+  if ! git -C "${ROOT}" merge-base --is-ancestor "${LANE_TIP}" "${L_MAIN_AFTER}" 2>/dev/null; then
+    printf 'leadv2-land: FAILED reason=verify_failed: lane tip %s is not an ancestor of local %s (%s)\n' \
+      "${LANE_TIP}" "${DEFAULT}" "${L_MAIN_AFTER}" >&2
     return 1
   fi
+  if [[ "${PUSH}" -eq 0 ]]; then
+    L_PUSHED=false
+    return 0
+  fi
+  remote_sha="$(git -C "${ROOT}" ls-remote origin "refs/heads/${DEFAULT}" 2>/dev/null | awk '{print $1}' | head -1)"
   if [[ -z "${remote_sha}" || "${remote_sha}" != "${L_MAIN_AFTER}" ]]; then
     printf 'leadv2-land: FAILED reason=verify_failed: remote tip %s != main_after %s\n' \
       "${remote_sha:-unresolved}" "${L_MAIN_AFTER}" >&2
@@ -516,6 +539,30 @@ land_verify_landed() {
   return 0
 }
 
+land_push_or_verify() { # keeps --no-push inside the landing transaction
+  if [[ "${PUSH}" -eq 1 ]]; then
+    if ! git -C "${ROOT}" push origin "${DEFAULT}" >/dev/null 2>&1; then
+      # main has already moved locally; the row records that honestly
+      L_OUTCOME="failed"; L_REASON="push_failed"; L_MODE="$(land_mode)"
+      L_PUSHED=false
+      L_FILES="$(git -C "${ROOT}" diff --name-only "${L_MAIN_BEFORE}..${L_MAIN_AFTER}" 2>/dev/null | wc -l | tr -d ' ')"
+      printf 'leadv2-land: FAILED reason=push_failed: main moved to %s locally but the push was refused\n' "${L_MAIN_AFTER}" >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+land_mode() { # -> ledger mode; ordinary drift needs a real merge, not ff
+  if [[ ${NO_FF} -eq 1 ]]; then
+    printf 'no_ff'
+  elif [[ ${L_BEHIND} -gt 0 ]]; then
+    printf 'auto_no_ff'
+  else
+    printf 'ff'
+  fi
+}
+
 # ── flow ─────────────────────────────────────────────────────────────────────
 if [[ ${ROOT_DIRT_CHECK} -eq 1 ]]; then
   land_root_dirt_check "${LANE_TIP}"
@@ -523,6 +570,13 @@ if [[ ${ROOT_DIRT_CHECK} -eq 1 ]]; then
 fi
 
 land_refuse_behind
+
+# A branch behind current main cannot fast-forward. Its bounded drift has
+# already passed the safety gate below, so create the same real merge a lead
+# would otherwise have supplied with --no-ff. Explicit --no-ff remains
+# distinguishable in the ledger through land_mode().
+MERGE_NO_FF=${NO_FF}
+[[ ${L_BEHIND} -gt 0 ]] && MERGE_NO_FF=1
 
 # The ff runs in the primary checkout; it may only do so ON the default branch.
 if [[ "$(git -C "${ROOT}" symbolic-ref --short -q HEAD 2>/dev/null || printf 'DETACHED')" != "${DEFAULT}" ]]; then
@@ -561,17 +615,17 @@ land_safety_gate
 land_hygiene_state
 
 if [[ ${DRY_RUN} -eq 1 ]]; then
-  if [[ ${NO_FF} -eq 1 ]]; then
-    printf 'leadv2-land: DRY-RUN ok — would merge --no-ff %s onto %s (trailers Landed-lane: %s / Landed-branch: %s) and push origin %s (state restored: %d file(s); land tip %s)\n' \
-      "${LAND_TIP}" "${DEFAULT}" "${L_TASK}" "${LANE}" "${DEFAULT}" "${#L_HYGIENE[@]}" "${LAND_TIP}" >&2
+  if [[ ${MERGE_NO_FF} -eq 1 ]]; then
+    printf 'leadv2-land: DRY-RUN ok — would merge --no-ff %s onto %s (trailers Landed-lane: %s / Landed-branch: %s) and %s origin %s (state restored: %d file(s); land tip %s)\n' \
+      "${LAND_TIP}" "${DEFAULT}" "${L_TASK}" "${LANE}" "$([[ "${PUSH}" -eq 1 ]] && printf push || printf 'not push')" "${DEFAULT}" "${#L_HYGIENE[@]}" "${LAND_TIP}" >&2
   else
-    printf 'leadv2-land: DRY-RUN ok — would ff %s to %s and push origin %s (state restored: %d file(s); land tip %s)\n' \
-      "${DEFAULT}" "${LAND_TIP}" "${DEFAULT}" "${#L_HYGIENE[@]}" "${LAND_TIP}" >&2
+    printf 'leadv2-land: DRY-RUN ok — would ff %s to %s and %s origin %s (state restored: %d file(s); land tip %s)\n' \
+      "${DEFAULT}" "${LAND_TIP}" "$([[ "${PUSH}" -eq 1 ]] && printf push || printf 'not push')" "${DEFAULT}" "${#L_HYGIENE[@]}" "${LAND_TIP}" >&2
   fi
   exit 0
 fi
 
-if [[ ${NO_FF} -eq 1 ]]; then
+if [[ ${MERGE_NO_FF} -eq 1 ]]; then
   # The lead's close-ritual shape (W-LEAD-LAST-MILE-01 §3): a real merge
   # commit carrying the Landed-lane: / Landed-branch: trailers instead of
   # ff. Still the SAME lander — queue, ledger, push and verification are
@@ -583,7 +637,7 @@ if [[ ${NO_FF} -eq 1 ]]; then
       "${LANE}" "${DEFAULT}" >&2
     exit 1
   fi
-  L_MODE="no_ff"
+  L_MODE="$(land_mode)"
   if ! git -C "${ROOT}" merge --no-ff -m "merge: lane ${L_TASK} landed
 
 Landed-lane: ${L_TASK}
@@ -595,7 +649,7 @@ Landed-branch: ${LANE}" "${LAND_TIP}" >/dev/null 2>&1; then
   fi
 else
   if ! git -C "${ROOT}" merge --ff-only "${LAND_TIP}" >/dev/null 2>&1; then
-    L_OUTCOME="failed"; L_REASON="ff_failed"; L_MODE="ff"
+    L_OUTCOME="failed"; L_REASON="ff_failed"; L_MODE="$(land_mode)"
     _lane_files
     printf 'leadv2-land: FAILED reason=ff_failed: git merge --ff-only %s failed\n' "${LAND_TIP}" >&2
     exit 1
@@ -603,18 +657,13 @@ else
 fi
 L_MAIN_AFTER="$(git -C "${ROOT}" rev-parse "${DEFAULT}")"
 
-if ! git -C "${ROOT}" push origin "${DEFAULT}" >/dev/null 2>&1; then
-  # main has already moved locally; the row records that honestly
-  L_OUTCOME="failed"; L_REASON="push_failed"; L_MODE="$([[ ${NO_FF} -eq 1 ]] && printf 'no_ff' || printf 'ff')"
-  L_PUSHED=false
-  L_FILES="$(git -C "${ROOT}" diff --name-only "${L_MAIN_BEFORE}..${L_MAIN_AFTER}" 2>/dev/null | wc -l | tr -d ' ')"
-  printf 'leadv2-land: FAILED reason=push_failed: main moved to %s locally but the push was refused\n' "${L_MAIN_AFTER}" >&2
+if ! land_push_or_verify; then
   exit 1
 fi
 
-L_OUTCOME="landed"; L_REASON="ok"; L_MODE="$([[ ${NO_FF} -eq 1 ]] && printf 'no_ff' || printf 'ff')"
+L_OUTCOME="landed"; L_REASON="ok"; L_MODE="$(land_mode)"
 if ! land_verify_landed; then
-  L_OUTCOME="failed"; L_REASON="verify_failed"; L_MODE="ff"
+  L_OUTCOME="failed"; L_REASON="verify_failed"; L_MODE="$(land_mode)"
   exit 1
 fi
 L_FILES="$(git -C "${ROOT}" diff --name-only "${L_MAIN_BEFORE}..${L_MAIN_AFTER}" 2>/dev/null | wc -l | tr -d ' ')"
