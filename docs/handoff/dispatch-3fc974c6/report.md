@@ -55,8 +55,12 @@ SUMMARY: pass=5 fail=0
 \`\`\`
 
 Both controls are anchored in the suite with count == 1 assertions before
-replacement. The required leadv2-mutation-control.sh artifacts are added in
-the committed follow-up below.
+replacement. The required leadv2-mutation-control.sh artifacts are:
+
+- mutation-control/20260912T113656Z-69045.txt: baseline_rc=0, mutated_rc=1,
+  with the false five-hour refusal on the domain-guard mutation.
+- mutation-control/20260912T113718Z-84416.txt: baseline_rc=0, mutated_rc=1,
+  with the exhausted-window refusal removed on the fit mutation.
 
 ## Guarding suites
 
@@ -95,5 +99,11 @@ bash -n plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
 bash -n plugins/leadv2/scripts/tests/test-forecast-cannot-exceed-its-own-window.sh
 \`\`\`
 
-Both commands exited 0. git diff --stat is recorded after the final
-mutation-control artifacts are added.
+Both commands exited 0. Final committed diff stat:
+
+\`\`\`text
+docs/handoff/dispatch-3fc974c6/report.md                    | 103
+plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh           |  32
+plugins/leadv2/scripts/tests/test-forecast-cannot-exceed-its-own-window.sh | 108
+docs/handoff/dispatch-3fc974c6/mutation-control/*.txt        |  24
+\`\`\`

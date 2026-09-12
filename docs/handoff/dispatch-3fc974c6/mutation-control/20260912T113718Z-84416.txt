@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-forecast-cannot-exceed-its-own-window.sh
+file=plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+anchor=s/if fc > rem:  # fit-vs-remainder (W1-FORECAST-THE-SPEND-01 mutation anchor)/if False:  # fit-vs-remainder (W1-FORECAST-THE-SPEND-01 mutation anchor)/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: exhausted-window refusal expected, rc=0: arm=glm kind=code model=glm-5.3 tier=standard effort=low reason=cheapest_capable chain=glm util_glm=79 util_codex=1 util_claude=1 util_freepool=100 reset_glm=96.00h_live reset_codex=96.00h_live reset_claude=96.00h_live reset_freepool=n/a headroom_w=1 headroom_unknown=no_usable_now claude_account_state=ok claude_probe_penalty=0 claude_priced_from=measured arm_excluded=codex:not_in_pool,freepool:not_in_pool,glm-flash:not_in_pool,sonnet:not_in_pool arb_rev=dcd48dd02475 matrix_rev=5ae0b114845b floor_mode=bulk_only floor_mode_source=yaml test_only=0 complexity=unknown duration_class=unknown complexity_policy=capability_fit remaining=21.0 reset_in=96.00h reset_basis=live failure_memory=unavailable complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=on fit_pick=glm fit_differs=0 fit_bucket=glm:0 forecast_hours=1.10h forecast_basis=journal:provider=4 forecast_stat=p75 forecast_class=standard/unknown caller_min_cap=none caller_max_cost=none
+diff_hash=658cf69da235b3bc021ced11aad63334bd1e26a500f3b81e6a50d57d54f38f08
+lane_diff_hash=63013baff2cb43b0f323cfbe24e45be1e76726c2ba05454dc8c67161fe794bd1

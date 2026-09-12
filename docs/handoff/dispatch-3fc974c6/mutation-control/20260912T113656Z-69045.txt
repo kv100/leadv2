@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-forecast-cannot-exceed-its-own-window.sh
+file=plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+anchor=s/if fc > 100.0:  # forecast-window-domain mutation anchor/if False:  # forecast-window-domain mutation anchor/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: self-window skip expected GLM route, rc=3: arm=refuse model=none tier=none reason=forecast_exceeds_window kind=code window=five_hour remaining=99.0pct forecast=120.0pct forecast_hours=6.00h forecast_basis=journal:provider=4 forecast_stat=p75 chain= util_glm=1 util_codex=1 util_claude=1 util_freepool=100 reset_glm=96.00h_live reset_codex=96.00h_live reset_claude=96.00h_live reset_freepool=n/a failure_memory=unavailable arm_excluded=codex:not_in_pool,freepool:not_in_pool,glm:forecast,glm-flash:not_in_pool+forecast,sonnet:not_in_pool+forecast arb_rev=9015e3e03531 matrix_rev=5ae0b114845b
+diff_hash=b91e3b1516c152e4ecae9080531c27b311ba6ba0a933c9f0c90d981dbb3b9eaa
+lane_diff_hash=63013baff2cb43b0f323cfbe24e45be1e76726c2ba05454dc8c67161fe794bd1
