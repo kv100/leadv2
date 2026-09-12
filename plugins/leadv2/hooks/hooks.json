@@ -38,13 +38,6 @@
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-learn-consume.sh\"",
-            "timeout": 5,
-            "continueOnBlock": true,
-            "statusMessage": "Flywheel: checking for learn trigger..."
-          },
-          {
-            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-pending-close-inject.sh\"",
             "timeout": 5,
             "continueOnBlock": true,

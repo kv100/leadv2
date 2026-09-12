@@ -2,7 +2,7 @@
 # PreToolUse(Bash) hook: block close-style git commits when the close ritual is not complete.
 #
 # WHY: leads routinely commit task-close messages (e.g. "chore: close TASK-123") without
-# running phase8-close.sh first, bypassing the entire learning/observability pipeline
+# running phase8-close.sh first, bypassing the entire close/observability pipeline
 # (reflect-history, scorecard, ledger, route-bandit). This hook hard-blocks such commits
 # until docs/leadv2/closed/<task_id>.yaml AND docs/handoff/<task_id>/phase8-passed.flag
 # both exist.

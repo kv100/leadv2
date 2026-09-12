@@ -7,7 +7,7 @@
 # mapping missed these eight, so the contract suite would not re-run on them.
 # LEAD-IS-OPUS-THINK-IS-FABLE-01: the plugin-canonical main-model default now
 # carries its own axis (opus) — a change to it must re-run the split contract.
-# run-all-triggers: leadv2-ask.sh leadv2-cache-warm.sh leadv2-diagnose.js leadv2-dispatch-code.sh leadv2-diverge.js leadv2-fanout-classify.sh leadv2-fanout.sh leadv2-glm-policy-resolve.py leadv2-learn.js leadv2-llm-judge.sh leadv2-main-model.yaml leadv2-phase-record.sh leadv2-po-feedback-loop.js leadv2-repo-install.sh leadv2-review-run.sh leadv2-route-bandit.sh leadv2-router.sh leadv2-session-route.sh leadv2-think-model.sh model-capability.yaml
+# run-all-triggers: leadv2-ask.sh leadv2-cache-warm.sh leadv2-diagnose.js leadv2-dispatch-code.sh leadv2-diverge.js leadv2-fanout-classify.sh leadv2-fanout.sh leadv2-glm-policy-resolve.py leadv2-llm-judge.sh leadv2-main-model.yaml leadv2-phase-record.sh leadv2-po-feedback-loop.js leadv2-repo-install.sh leadv2-review-run.sh leadv2-route-bandit.sh leadv2-router.sh leadv2-session-route.sh leadv2-think-model.sh model-capability.yaml
 # FABLE-THINK-TIER-01 (2026-09-01, founder order).
 #
 # THE CONTRACT THIS SUITE PINS: every role whose value is THINKING (not typing)
@@ -239,7 +239,6 @@ ALLOWLIST=(
   'leadv2-router-v2.py::not in \("sonnet", "opus"\)::allowed-arms membership validation'
   'leadv2-glm-policy-resolve.py::DISPATCHABLE_PLAN_ARMS|DEFAULT_REVIEW_ARM_ORDER|"opus", "opus_mission_kind"::pool-resolver arm constants; fable ordered before opus (pinned by section 3)'
   'leadv2-worker-reason.sh::any\(k in arm for k in \("sonnet", "claude", "opus", "haiku"\)\)::provider-class membership check on an already-resolved arm; spawns nothing'
-  'leadv2-causal-critique.js::TASK_CLASS === .Heavy. \? .opus.::PRE-EXISTING think-role pin — workflow file OUTSIDE this lane LANE_WRITES; the old lowercase-only census regex missed it (this match proves review HIGH-1). NOT fixed here — flagged for a follow-up lane in the round-4 report'
   'leadv2-review/SKILL.md::critic=opus::skill doc table prose (auto-upgrade description); live review pool comes from glm-policy-resolve'
   'SCHEMAS.md::model_used: opus::skill schema doc prose'
   'WRITER.md::"model_used": judge.get::skill doc example'
@@ -330,11 +329,8 @@ excused_files="$(printf '%s' "$excused" | sed '/^$/d' | sed 's#.*/##' | cut -d: 
 if [[ -z "$census" && -z "$census2" ]]; then
   excused_n="$(printf '%s' "$excused" | grep -c . || true)"
   pass "tree-wide census: zero UNEXCUSED live think-role 'opus' spawn pins (excused=${excused_n:-0}: ${excused_files:-none})"
-  if printf '%s' "$excused" | grep -q 'leadv2-causal-critique.js'; then
-    pass "census honesty: leadv2-causal-critique.js Heavy-pin still EXCUSED and tracked (follow-up lane; R4 review HIGH-1)"
-  else
-    fail "census honesty: leadv2-causal-critique.js no longer excused — either the follow-up lane fixed the pin (remove the stale ALLOWLIST entry) or the census regex drifted"
-  fi
+  # (The Heavy-pin honesty sub-check for the retired critique workflow was
+  #  removed 2026-09-12 with the file itself — REFLECT-SELF-LEARNING-DECISION.)
 else
   [[ -n "$census"  ]] && fail "tree-wide census: unclassified 'opus' literal(s): $census"
   [[ -n "$census2" ]] && fail "tree-wide census: think-role spawn line pinning opus: $census2"
@@ -485,10 +481,11 @@ else
   fail "session-route Heavy: unreachable resolver -> rc=$sr_rc model=${sr_model2:-<none>} (expected rc=0/model=fable — unguarded resolver substitution?)"
 fi
 
-# The four migrated workflows keep their THINK_MODEL const (resolver wiring).
+# The migrated workflows keep their THINK_MODEL const (resolver wiring).
 # R5: the const must honour LEADV2_THINK_MODEL env — the ONLY kill-switch
 # channel that reaches the JS sandbox (no yaml access mid-workflow).
-for wf in leadv2-diverge leadv2-learn leadv2-diagnose leadv2-po-feedback-loop; do
+# (leadv2-learn removed 2026-09-12 — REFLECT-SELF-LEARNING-DECISION.)
+for wf in leadv2-diverge leadv2-diagnose leadv2-po-feedback-loop; do
   f="$PLUGIN_ROOT/workflows/${wf}.js"
   if [[ ! -f "$f" ]]; then fail "workflow missing: $f"; continue; fi
   if grep -n "const THINK_MODEL" "$f" >/dev/null 2>&1; then
@@ -689,12 +686,12 @@ fi
 # answer back in as the env and merely asserted node echoed it ('opus' in,
 # 'opus' out) — it never exercised an UNRESOLVED pin, so it never ran the
 # brief's actual probe (judge round-7, item 1b/3). This extracts the REAL
-# sentinel-bracketed source block from each of the four THINK workflows and
+# sentinel-bracketed source block from each of the THINK workflows and
 # evaluates it with node, injecting a mock agent() that itself shells out to
 # the REAL router — so the assertion is against the file's real source text
 # with a genuine resolver round-trip on one end, not a re-implementation of
-# either side.
-JS_WORKFLOWS=(leadv2-diverge leadv2-diagnose leadv2-learn leadv2-po-feedback-loop)
+# either side. (leadv2-learn removed 2026-09-12 — REFLECT-SELF-LEARNING-DECISION.)
+JS_WORKFLOWS=(leadv2-diverge leadv2-diagnose leadv2-po-feedback-loop)
 _extract_think_block() { # $1=file -> prints sentinel-bracketed source, rc1 if absent
   local f="$1" s e
   s="$(grep -n 'think-model-resolve:start' "$f" 2>/dev/null | head -1 | cut -d: -f1)"

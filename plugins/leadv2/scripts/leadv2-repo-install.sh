@@ -221,7 +221,7 @@ fi
 
 # ---- 2b. the bare /leadv2 command ------------------------------------------
 # THE actual reason a fresh repo has no /leadv2 (founder screenshot, 2026-08-25):
-# the plugin's own command is namespaced (it offers /leadv2-audit, /leadv2-learn
+# the plugin's own command is namespaced (it offers /leadv2-audit, /leadv2-diverge
 # and friends), while the bare `/leadv2` every repo actually uses comes from a
 # PROJECT command file. persona-engine and respiro-ios each carry a real copy —
 # and persona-engine's had silently rotted into a months-old fork ("Fable main",

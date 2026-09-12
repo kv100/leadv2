@@ -2,7 +2,7 @@
 # tests/test-leadv2-codemap.sh — Unit tests for CODEMAP-CONTEXT-01 (+ fix-round-1) additions.
 #
 # Runs the REAL, unmodified workflow source (see fixtures/codemap-plan-harness.mjs for the
-# execution methodology, same as causal-critique-harness.mjs) against a real fixture git repo.
+# execution methodology) against a real fixture git repo.
 # Scenario outputs are written to temp files (never interpolated into python -c strings) to
 # avoid shell-quoting corruption of JSON payloads.
 #

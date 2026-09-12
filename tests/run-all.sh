@@ -571,9 +571,10 @@ $(git -C "${ROOT}" diff --name-only "${_range_start}..HEAD" 2>/dev/null)"
         # change must select its suite, same shape as the row above.
         stem="leadv2-routing-merge.py"
       elif [[ "${cf}" == plugins/leadv2/workflows/*.js ]]; then
-        # FABLE-THINK-TIER-01 R6: the four THINK workflows (diverge/learn/
+        # FABLE-THINK-TIER-01 R6: the THINK workflows (diverge/
         # diagnose/po-feedback-loop) are js carriers — the R5 map rows were
         # dead because the loop continued before any non-.sh reached here.
+        # (leadv2-learn.js removed 2026-09-12 — REFLECT-SELF-LEARNING-DECISION.)
         stem="$(basename "${cf}")"
       elif [[ "${cf}" == ".claude/leadv2-overrides/status-collector-facts.sh" ]]; then
         # CODE-INTEL-IS-INSTALLED-AND-UNUSED-01 item 5: the repo_facts hook

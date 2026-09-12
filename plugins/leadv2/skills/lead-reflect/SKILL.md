@@ -91,19 +91,10 @@ signature:
 
 ---
 
-## §4.5. Causal critique (gated) — LEADV2_CAUSAL_CRITIQUE
-
-Runs BEFORE §5a (reflect-history.yaml write) so its output can be folded into the entry.
-Default OFF. Skip entirely — no Workflow invocation, no tempfile written, the §5a entry stays
-byte-identical to today — unless BOTH hold: `LEADV2_CAUSAL_CRITIQUE` is set to a non-`0` value,
-AND task_class is NOT Trivial/Light. Never blocks close: any error/exception/unavailable-tool
-result is treated as skip.
-
-For the exact invocation snippet, the `cc_tmp_path` write contract (Write tool only — never a
-shell/Python string splice, per REFLECT-CAUSAL-CRITIQUE-01 fix-round-2), and the
-`freeform_insight` fold-in rule, see [CAUSAL-CRITIQUE.md](./CAUSAL-CRITIQUE.md).
-
----
+<!-- §4.5 Causal critique DELETED 2026-09-12 (REFLECT-SELF-LEARNING-DECISION,
+     VERDICT delete): the critique workflow and its doc were retired with the
+     self-learning loop; the §5a fold-in that read the critique tempfile went
+     with them, so the entry is byte-identical to the pre-critique shape. -->
 
 ## §5. Append to STATE history and reflect-history.yaml
 
@@ -140,26 +131,6 @@ entry = {
         "change_kind": "${change_kind}",
     },
 }
-
-# §4.5 fold-in: omit causal_critique entirely if cc_tmp_path is missing (flag off / Trivial-Light
-# / skip / error) -> byte-identical to pre-REFLECT-CAUSAL-CRITIQUE-01 behavior. Full rationale for
-# why this reads from a file instead of string-splicing LLM-derived text: see CAUSAL-CRITIQUE.md.
-try:
-    cc_tmp_path = "docs/handoff/${task_id}/.causal-critique.json.tmp"
-    causal_critique_json = ""
-    try:
-        with open(cc_tmp_path, encoding="utf-8") as fh:
-            causal_critique_json = fh.read()
-    except FileNotFoundError:
-        causal_critique_json = ""
-    if causal_critique_json.strip():
-        entry["causal_critique"] = json.loads(causal_critique_json)
-        try:
-            os.remove(cc_tmp_path)  # best-effort cleanup, never fatal
-        except OSError:
-            pass
-except Exception:
-    pass  # malformed/unreadable tempfile -- never blocks the reflect-history write
 
 path = "${REFLECT_HISTORY}"
 try:

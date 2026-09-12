@@ -617,66 +617,12 @@ else
 fi
 # ── end backlog-row close ──────────────────────────────────────────────────────
 
-# ── [R4] Learn trigger: every N closes drop a signal for leadv2-learn ────────
-# Gated by LEADV2_LEARN_ON_CLOSE=1 (DEFAULT ON — founder 2026-06-17 flywheel fix).
-# Counts lines in scorecard.jsonl when available; falls back to a persistent
-# close-counter file so the trigger fires even when scorecard is disabled.
-# When count % N == 0 writes a trigger file lead picks up at next session start.
-# Non-blocking: never gates close.
-# LEADV2_LEARN_EVERY_N tunes the interval (default 5; was 10, halved for faster feedback).
-if [[ "${LEADV2_LEARN_ON_CLOSE:-1}" == "1" ]]; then
-  _learn_n="${LEADV2_LEARN_EVERY_N:-5}"
-  # Monotonic persistent counter — independent of LEADV2_SCORECARD_ON_CLOSE.
-  # PLUGIN-REVIEW-FIX-01 fix3: scorecard-line-count was the primary source, but
-  # scorecard.jsonl was frozen (default-OFF for weeks) which froze this trigger
-  # too. Always increment the counter file so learn-trigger fires regardless of
-  # scorecard state.
-  # MEM-WRITE-PATH-FIX-01: PROJECT_ROOT resolves via `git rev-parse --show-toplevel`,
-  # which returns the CURRENT WORKTREE (not the main checkout) when close runs inside
-  # an in-flight task worktree. A worktree-local counter evaporates on worktree sweep,
-  # freezing this trigger forever (proven: counter stuck at 1 across 237 real closes).
-  # git-common-dir is the one .git shared by every worktree -- anchor the durable
-  # counter/trigger there so it survives regardless of which worktree ran close.
-  # NOTE (round2 finding #4, comment-only -- counter/trigger logic below is
-  # untouched, live-proven across 237 closes): outside a git repo the pipe exits 0
-  # with EMPTY stdout, so `|| true` here never actually fires for that case. The
-  # real protection is the downstream `[[ -d ]]` check on the next line, which
-  # correctly falls back to $PROJECT_ROOT on an empty/invalid result either way.
-  _durable_root="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | xargs dirname 2>/dev/null || true)"
-  [[ -d "$_durable_root" ]] || _durable_root="$PROJECT_ROOT"
-  _counter_file="${_durable_root}/docs/leadv2/.learn-close-counter"
-  mkdir -p "${_durable_root}/docs/leadv2"
-  _prev=$(cat "$_counter_file" 2>/dev/null || echo 0)
-  [[ "$_prev" =~ ^[0-9]+$ ]] || _prev=0   # M1: validate before arithmetic (shell-injection guard)
-  _close_count=$(( (_prev + 1) % 1000000 ))
-  printf -- '%d\n' "$_close_count" > "${_counter_file}.tmp" && mv "${_counter_file}.tmp" "$_counter_file"  # H1: atomic write
-  if [[ $_learn_n -gt 0 && $(( _close_count % _learn_n )) -eq 0 && $_close_count -gt 0 ]]; then
-    _trigger_dir="${_durable_root}/docs/leadv2"
-    mkdir -p "$_trigger_dir"
-    _trigger_file="${_trigger_dir}/.learn-trigger"
-    # Read task_class from context.yaml; default to 'general' if absent.
-    _task_class=$(python3 -c "
-import yaml, pathlib
-p = pathlib.Path('${PROJECT_ROOT}/docs/handoff/${TASK_ID}/context.yaml')
-if p.exists():
-    d = yaml.safe_load(p.read_text()) or {}
-    print(d.get('task_class', 'general'))
-else:
-    print('general')
-" 2>/dev/null || echo 'general')
-    printf -- 'trigger_task_id: %s
-trigger_close_count: %d
-triggered_at: %s
-trigger_task_class: %s
-'       "$TASK_ID" "$_close_count" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$_task_class" > "$_trigger_file" 
-    log_info "[learn-trigger] wrote ${_trigger_file} (close_count=${_close_count}, every_n=${_learn_n})"
-  else
-    log_info "[skip] learn-trigger not due (close_count=${_close_count} mod ${_learn_n} != 0, or LEADV2_LEARN_ON_CLOSE not triggering)"
-  fi
-else
-  log_info "[skip] learn-trigger skipped (LEADV2_LEARN_ON_CLOSE not set)"
-fi
-# ── end learn trigger ─────────────────────────────────────────────────────────
+# [R4] learn-trigger block DELETED 2026-09-12 (REFLECT-SELF-LEARNING-DECISION,
+# VERDICT delete — 0/194 dispatched runs reached reflect, zero live readers).
+# The durable close-counter / trigger-file writer, its two env knobs, the two
+# SessionStart hooks and the aggregation workflow that consumed them are all
+# gone. Backup:
+# docs/handoff/d4ef053f1742/retired-reflect-self-learning-20260912.tar.gz
 
 
 # ── [SYS-DRAIN-FOLLOWUPS-AT-CLOSE-01] Followup drain warning ────────────────
@@ -845,8 +791,8 @@ fi
 # ── end worktree sweep ────────────────────────────────────────────────────────
 
 # ── [LONG-SESSION-01] Session-close advisory ─────────────────────────────────
-# Tracks closes-per-session via a durable-pid counter file (mirrors the
-# .learn-close-counter tmp+mv pattern). At 2+ closes in one session, recommend
+# Tracks closes-per-session via a durable-pid counter file (same tmp+mv atomic
+# write pattern the retired durable counter used). At 2+ closes in one session, recommend
 # starting a fresh session — the journal layer makes resume free, so there is
 # no reason to keep compacting a long-running session. Non-fatal; never blocks close.
 _SESSION_PID="$(

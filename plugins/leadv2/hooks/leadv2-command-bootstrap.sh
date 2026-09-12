@@ -5,7 +5,7 @@
 # WHY (founder, 2026-08-25: "я хочу чтобы в любом проекте я просто написал
 # /leadv2 и просто запускать работу"): the plugin's own command is namespaced,
 # so a repo that has never been adopted offers `/leadv2-audit` and
-# `/leadv2-learn` but NO bare `/leadv2` — the one everybody actually types. That
+# `/leadv2-diverge` but NO bare `/leadv2` — the one everybody actually types. That
 # command has always come from a PROJECT file, `.claude/commands/leadv2.md`,
 # which nothing created automatically. platform had none; and because the full
 # adoption pass lives at Step 0 INSIDE that command, a repo without it could

@@ -28,7 +28,7 @@
 # drifted content is a FAIL.
 #
 # Run: bash scripts/tests/test-portable-guards-are-plugin-owned.sh [--selftest]
-# run-all-triggers: leadv2-bash-hook-dispatcher scheduled-decisions-inject anti-silence-pulse-detector mojibake-guard pending-questions-inject session-start-safe-pull learn-trigger-inject lane-lesson-capture-hook leadv2-phase-pulse-sync
+# run-all-triggers: leadv2-bash-hook-dispatcher scheduled-decisions-inject anti-silence-pulse-detector mojibake-guard pending-questions-inject session-start-safe-pull lane-lesson-capture-hook leadv2-phase-pulse-sync
 
 set -uo pipefail
 
@@ -44,7 +44,7 @@ GETMANY="${G01_GETMANY:-$DEF_GETMANY}"
 CANON_HOOKS="${G01_CANONICAL_HOOKS:-$DEF_CANON_HOOKS}"
 
 # bash-guard: allow
-GUARD_NAMES="leadv2-bash-hook-dispatcher.sh scheduled-decisions-inject.sh anti-silence-pulse-detector.sh mojibake-guard.sh pending-questions-inject.sh session-start-safe-pull.sh learn-trigger-inject.sh lane-lesson-capture-hook.sh leadv2-phase-pulse-sync.sh"
+GUARD_NAMES="leadv2-bash-hook-dispatcher.sh scheduled-decisions-inject.sh anti-silence-pulse-detector.sh mojibake-guard.sh pending-questions-inject.sh session-start-safe-pull.sh lane-lesson-capture-hook.sh leadv2-phase-pulse-sync.sh"
 
 # event each guard must be registered under in getmany-followup-bot
 event_for() {
@@ -52,7 +52,6 @@ event_for() {
     leadv2-bash-hook-dispatcher.sh)       echo "PreToolUse" ;;
     scheduled-decisions-inject.sh)        echo "SessionStart" ;;
     session-start-safe-pull.sh)           echo "SessionStart" ;;
-    learn-trigger-inject.sh)              echo "SessionStart" ;;
     anti-silence-pulse-detector.sh)       echo "UserPromptSubmit" ;;
     pending-questions-inject.sh)          echo "UserPromptSubmit" ;;
     mojibake-guard.sh)                    echo "Stop" ;;
@@ -232,9 +231,9 @@ build_fixture() { # $1=scratch root: plug/hooks, canon/hooks, persona, getmany
   python3 - "$s/getmany/.claude/settings.json" <<'PY'
 import json, sys
 out = sys.argv[1]
-names = "leadv2-bash-hook-dispatcher.sh scheduled-decisions-inject.sh anti-silence-pulse-detector.sh mojibake-guard.sh pending-questions-inject.sh session-start-safe-pull.sh learn-trigger-inject.sh lane-lesson-capture-hook.sh leadv2-phase-pulse-sync.sh".split()
+names = "leadv2-bash-hook-dispatcher.sh scheduled-decisions-inject.sh anti-silence-pulse-detector.sh mojibake-guard.sh pending-questions-inject.sh session-start-safe-pull.sh lane-lesson-capture-hook.sh leadv2-phase-pulse-sync.sh".split()
 ev = {"leadv2-bash-hook-dispatcher.sh":"PreToolUse","scheduled-decisions-inject.sh":"SessionStart",
-      "session-start-safe-pull.sh":"SessionStart","learn-trigger-inject.sh":"SessionStart",
+      "session-start-safe-pull.sh":"SessionStart",
       "anti-silence-pulse-detector.sh":"UserPromptSubmit",
       "pending-questions-inject.sh":"UserPromptSubmit",
       "mojibake-guard.sh":"Stop","lane-lesson-capture-hook.sh":"PostToolUse",
@@ -255,9 +254,9 @@ selftest() {
     build_fixture "$SCR/$sn"
     strict=0
     case "$sn" in
-      scratch-copy) rm "$SCR/$sn/persona/.claude/hooks/learn-trigger-inject.sh"
+      scratch-copy) rm "$SCR/$sn/persona/.claude/hooks/session-start-safe-pull.sh"
         printf '# mutated copy\n' >"$SCR/$sn/mutated.sh"
-        ln -s "$SCR/$sn/mutated.sh" "$SCR/$sn/persona/.claude/hooks/learn-trigger-inject.sh" ;;
+        ln -s "$SCR/$sn/mutated.sh" "$SCR/$sn/persona/.claude/hooks/session-start-safe-pull.sh" ;;
       drift) printf '# drifted bytes\n' >>"$SCR/$sn/canon/hooks/pending-questions-inject.sh" ;;
       dangling) rm "$SCR/$sn/canon/hooks/mojibake-guard.sh"; strict=1 ;;
       ghost-reg) python3 -c "

@@ -61,7 +61,7 @@ Each phase entry calls `leadv2_pulse_log "<phase>" "<one-line summary>"` — emi
 
 - **Pre-flight git-log check (BEFORE worktree create):** `bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-preflight-gitlog.sh" "$LEADV2_TASK_ID"`. Exit 2 → surface oneline commits to founder via single AskUserQuestion (`already-shipped → admin-close` vs `continue anyway`). Saves the entire setup cycle on already-landed tasks.
 - **Parallel-session collision sniff:** `bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-collision-check.sh"`. Exit 2 → log warning into pulse + plan rebase-flow vs ff-merge BEFORE EnterWorktree.
-- **MANDATORY — active.yaml session registration (BEFORE any other work):** write provisional entry to `docs/leadv2/active.yaml` so other sessions see it claimed. This registration is also what enables the `leadv2-force-reflect.sh` Stop hook to fire at session end — without it the hook has no sessions to iterate and the reflect/self-learning loop is silently skipped (root cause confirmed 2026-06-22).
+- **MANDATORY — active.yaml session registration (BEFORE any other work):** write provisional entry to `docs/leadv2/active.yaml` so other sessions see it claimed. This registration is also what enables the `leadv2-force-reflect.sh` Stop hook to fire at session end — without it the hook has no sessions to iterate and the reflect close-history is silently skipped (root cause confirmed 2026-06-22).
   ```bash
   python3 -c "
   import yaml, datetime, os, sys
@@ -317,12 +317,14 @@ live in the Workflow's `reviewers[]` array now lives in the engine's `run_review
 (codex/glm/kimi/fable/sonnet/opus branches — fable enters the pool ahead of opus, same anthropic 95 ceiling, FABLE-THINK-TIER-01) and `resolve_review_pool_call()`.
 
 **`workflows/leadv2-review.js` is deleted** (ONE-PATH-EVERYWHERE-01) — canonical, the
-`~/.claude/workflows/` shared copy, and the plugin cache copy are all gone. The three test
+`~/.claude/workflows/` shared copy, and the plugin cache copy are all gone. The test
 suites that used to assert its presence/content (`test-codex-doc-pointer.sh`,
-`test-leadv2-review-routing.sh`, `test-leadv2-phase8-learn-counter.sh`) were migrated to
-assert the same invariants against `leadv2-review-run.sh` (or, for the JS-side
-git-common-dir one-liner, against `leadv2-causal-critique.js`) rather than dropped —
-nothing was left stranded. `leadv2-dispatch-product-close.sh` still contains its own
+`test-leadv2-review-routing.sh`) were migrated to assert the same invariants against
+`leadv2-review-run.sh` rather than dropped — nothing was left stranded.
+`test-leadv2-phase8-learn-counter.sh` and its JS-side anchor critique workflow
+were later retired whole (2026-09-12, REFLECT-SELF-LEARNING-DECISION VERDICT delete) —
+both subjects are gone, so the suite went with them; backup tarball
+`docs/handoff/d4ef053f1742/`. `leadv2-dispatch-product-close.sh` still contains its own
 inline `run_reviewer_arm()` fallback body, used only when `LEADV2_REVIEW_ENGINE=0` (the
 default everywhere) — this is intentional so a mid-flight lane sees byte-identical
 behavior at flag=0, not a leftover duplicate to clean up.

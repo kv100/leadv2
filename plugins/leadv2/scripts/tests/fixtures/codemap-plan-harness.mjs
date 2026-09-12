@@ -1,6 +1,6 @@
 // Test harness for leadv2-plan.js CODEMAP-CONTEXT-01 additions (+ fix-round-1) and
 // WORKFLOW-BASH-FIX-01 (bash-call migration).
-// Same execution methodology as fixtures/causal-critique-harness.mjs: read the real,
+// Execution methodology: read the real,
 // unmodified workflow .js file verbatim, strip the `export` keyword, wrap in an async IIFE,
 // and run it via `new Function(...)` injecting mock agent/phase/log/parallel/pipeline/budget —
 // the same primitive surface the real Workflow runtime provides.

@@ -213,17 +213,17 @@ are clamped down and logged to STATE.md (`diverge: selection clamped`).
 
 ---
 
-## Environment variable flags (learn trigger + scorecard)
+## Environment variable flags (scorecard)
 
-Set these in your repo's `.env` (or shell environment). Both default to `1` (on) as of 2026-06-17 flywheel fix — set to `0` to disable.
+Set these in your repo's `.env` (or shell environment).
 
 | Variable | Default | Description |
 |---|---|---|
-| `LEADV2_LEARN_ON_CLOSE` | `1` | Fire the learn trigger on every Phase 8 close (every `LEADV2_LEARN_EVERY_N` closes). Set `0` to disable self-learning. |
-| `LEADV2_SCORECARD_ON_CLOSE` | `1` | Write a scorecard row to `docs/leadv2/scorecard.jsonl` at Phase 8 close. When `0`, the close-counter fallback in `leadv2-phase8-close.sh` is used instead. |
-| `LEADV2_LEARN_EVERY_N` | `5` | Trigger learn every N closes (was 10, halved 2026-06-17 for faster feedback). |
+| `LEADV2_SCORECARD_ON_CLOSE` | `1` | Write a scorecard row to `docs/leadv2/scorecard.jsonl` at Phase 8 close. When `0`, no scorecard row is written. |
 
-> **Note:** repos with neither `LEADV2_LEARN_ON_CLOSE` nor `LEADV2_SCORECARD_ON_CLOSE` set now fire learn and scorecard on every close. If this is unexpected, set `LEADV2_LEARN_ON_CLOSE=0` to restore the old behaviour.
+> **Note:** the learn-flywheel close knobs were retired 2026-09-12
+> (REFLECT-SELF-LEARNING-DECISION, VERDICT delete) — they no longer exist and
+> setting them does nothing.
 
 ---
 

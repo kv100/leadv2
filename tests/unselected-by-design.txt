@@ -37,8 +37,6 @@ test-core-offline-shard-scope-01.sh	no-production-file
 test-core-offline-shards-01.sh	no-production-file
 test-core-offline-tmpdir-01.sh	no-production-file
 test-lane-behind-base.sh	no-production-file
-test-leadv2-causal-critique.sh	no-production-file
-test-leadv2-learn-freeform-flag.sh	no-production-file
 test-plan-arms-role-scoped.sh	no-production-file
 test-plan-run-arms-role-scoped.sh	no-production-file
 test-status-collector-facts.sh	no-production-file

@@ -223,7 +223,6 @@ leadv2-main-model.yaml:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-phase-record.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-llm-judge.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-diverge.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-leadv2-learn.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-diagnose.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-po-feedback-loop.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-diverge.js:plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh

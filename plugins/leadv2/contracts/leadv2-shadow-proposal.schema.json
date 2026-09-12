@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "leadv2-shadow-proposal",
   "title": "leadv2 Shadow Proposal",
-  "description": "A shadow A/B proposal emitted by leadv2-learn.js and applied by leadv2-shadow-apply.sh. risk_level is REQUIRED and written at proposal-emit time (not derived at apply time). Proposal is in exactly one status state at all times (D10).",
+  "description": "A shadow A/B proposal applied by leadv2-shadow-apply.sh. The original emitter (leadv2-learn.js) was retired 2026-09-12 with the self-learning loop (REFLECT-SELF-LEARNING-DECISION, VERDICT delete); the schema and applier are kept for existing proposal records. risk_level is REQUIRED and written at proposal-emit time (not derived at apply time). Proposal is in exactly one status state at all times (D10).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -31,7 +31,7 @@
     },
     "kind": {
       "type": "string",
-      "description": "Proposal type from leadv2-learn.js kind enum.",
+      "description": "Proposal type from the retired self-learning emitter's kind enum (kept for existing records; REFLECT-SELF-LEARNING-DECISION).",
       "enum": [
         "prompt-tweak",
         "routing-change",

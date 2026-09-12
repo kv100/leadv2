@@ -194,7 +194,7 @@ _run_close() {
   LEADV2_HANDOFF_DIR="${root}/docs/handoff" \
   LEADV2_E2E_CMD="bash ${root}/fake-e2e.sh" LEADV2_PHASE8_E2E_TIMEOUT_S=15 \
   LEADV2_E2E_OWNERSHIP=0 LEADV2_LANE_WORK_ROOT="$root" \
-  LEADV2_SCORECARD_ON_CLOSE=0 LEADV2_LEARN_ON_CLOSE=0 \
+  LEADV2_SCORECARD_ON_CLOSE=0 \
   LEADV2_OUTCOME="$outcome" \
     env -u CLAUDE_PROJECT_DIR bash "$CLOSE_SH" "$task_id" \
     >"${root}/close.log" 2>&1 || FX_RC=$?

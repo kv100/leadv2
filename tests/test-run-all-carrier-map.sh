@@ -5,11 +5,13 @@
 # selects the think-tier contract suite when a NON-.sh carrier changes.
 #
 # R5 defect: the changed-file loop `continue`d on anything that was not
-# plugins/leadv2/scripts/*.sh, scripts/lib/*.sh or hooks/*.sh, so the six R5
+# plugins/leadv2/scripts/*.sh, scripts/lib/*.sh or hooks/*.sh, so the R5
 # carrier rows (leadv2-glm-policy-resolve.py, model-capability.yaml,
-# leadv2-diverge.js, leadv2-learn.js, leadv2-diagnose.js,
+# leadv2-diverge.js, leadv2-diagnose.js,
 # leadv2-po-feedback-loop.js) were dead map entries — no such stem was ever
 # produced and the contract suite never re-ran on them.
+# (The retired aggregation workflow's carrier row was removed 2026-09-12 —
+#  REFLECT-SELF-LEARNING-DECISION.)
 #
 # Method: build a scratch git repo with the run-all layout, copy the REAL
 # run-all.sh in, dirty exactly one carrier, and assert the [RUN] line for the

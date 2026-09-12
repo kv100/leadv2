@@ -134,10 +134,10 @@ for sess in sessions:
     except OSError:
         pass  # best-effort; still emit block
 
-    # Write a stub reflect-history.yaml entry so leadv2-learn.js has data even
-    # when the lead skips the full Phase 8 close skill.  The learn workflow reads
-    # docs/leadv2/reflect-history.yaml entries[].{task,failure_class,pattern,lesson}.
-    # This is the authoritative sink — without it, synthesis never fires (303 tasks,
+    # Write a stub reflect-history.yaml entry so the close-history audit (phase8-assert
+    # A4) has data even when the lead skips the full Phase 8 close skill.  The audit
+    # reads docs/leadv2/reflect-history.yaml entries[].{task,failure_class,pattern,lesson}.
+    # This is the authoritative sink — without it, A4 hard-fails (303 tasks,
     # 0 entries confirmed 2026-06-17).  Full close should overwrite with richer data.
     try:
         import datetime

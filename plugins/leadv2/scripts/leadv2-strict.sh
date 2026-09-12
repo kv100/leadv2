@@ -26,9 +26,10 @@
 #     embed helper crash, malformed response. Those must stay silent/fail-open
 #     in ALL modes (strict or not) — they are transient runtime conditions,
 #     not misconfiguration.
-#   - T4 (REFLECT-CAUSAL-CRITIQUE-01) try/catch fail-open skip object. Same
-#     reasoning — an agent()/bash() exception there is a runtime condition,
-#     not a misconfigured enabling flag.
+#   - T4 (retired 2026-09-12 with its workflow — REFLECT-SELF-LEARNING-DECISION)
+#     was a try/catch fail-open skip object; same reasoning applied — an
+#     agent()/bash() exception there was a runtime condition, not a
+#     misconfigured enabling flag.
 # The ONLY class of degrade point this helper targets is: "an enabling flag
 # is ON, but the artifact/config it depends on is missing or the loader that
 # backs it crashed" — i.e. genuine misconfiguration that should surface in
