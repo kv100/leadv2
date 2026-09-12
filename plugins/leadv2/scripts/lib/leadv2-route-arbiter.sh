@@ -601,11 +601,17 @@ def _constraint_ok(c):
 # switches away -- exactly the pre-change behaviour -- and reset_basis
 # surfaces which of the two unknowns produced the verdict.
 WAIT_FRACTION_OF_PERIOD=0.10
-WINDOW_PERIOD_HOURS={'five_hour':5.0,'weekly':168.0,'seven_day':168.0}
+# 0485: 'weekly_scoped' names carry the scope label after the colon
+# ('weekly_scoped:Fable') -- the base before ':'/'(' still resolves the period,
+# and the publisher stamps limit_window_seconds on every parsed scoped window
+# so the payload outranks any name-derived table anyway.
+WINDOW_PERIOD_HOURS={'five_hour':5.0,'weekly':168.0,'seven_day':168.0,'weekly_scoped':168.0}
 def window_period_hours(name, window):
     lws=num((window or {}).get('limit_window_seconds'))
     if lws is not None: return lws/3600.0
-    return WINDOW_PERIOD_HOURS.get(name)
+    if name in WINDOW_PERIOD_HOURS: return WINDOW_PERIOD_HOURS.get(name)
+    base=str(name or '').split('(')[0].split(':')[0]
+    return WINDOW_PERIOD_HOURS.get(base)
 def window_reset(name, window):
     period=window_period_hours(name, window)
     h=num((window or {}).get('hours_to_reset'))
@@ -621,7 +627,29 @@ _partial_windows={}
 # cannot answer "does the next task fit" -- the 5h window can be the tighter
 # container while weekly binds on pct -- so the forecast below needs them all.
 _allwin={}
-def util(provider):
+# 0485 FABLE-IS-PRICED-FROM-A-WINDOW-IT-DOES-NOT-BURN-01: the account the
+# claude branch of util() below resolved to, stashed so arm-scoped repricing
+# can find that account's weekly_scoped map without re-running the choice.
+# None until util('claude') has run (or when no ok account existed -- then the
+# provider is already priced unknown/pessimistic and no scoped lookup applies).
+_claude_a=[None]
+def _norm_mkey(s):
+    return ''.join(ch for ch in str(s or '').lower() if ch.isalnum())
+def _scoped_hit(arm, a):
+    # 0485: -> (scope_label, window) when account `a` carries a model-scoped
+    # weekly window whose scope key normalizes to the arm name, else None.
+    # PAYLOAD-DERIVED by construction: the set of scoped models comes from the
+    # quota payload (weekly_scoped map), and the join rule is normalized name
+    # equality -- a repo-banned hand-kept model list would live here if this
+    # were wrong. This repo has banned exactly that (feedback: never hardcode
+    # an arm out of routing); the payload decides.
+    sw=(a or {}).get('weekly_scoped') or {}
+    k=_norm_mkey(arm)
+    if not k: return None
+    for key,w in sw.items():
+        if isinstance(w,dict) and _norm_mkey(key)==k: return (str(key),w)
+    return None
+def util(provider, arm=None):
     # T17 fix-round (C3): a provider whose probe is broken/unknown must be
     # PESSIMISTIC (maximally capped), never the cheapest-looking arm. The old
     # `return 0.0` on status!='ok' made a dead probe sort to the front of
@@ -681,6 +709,23 @@ def util(provider):
             return dict(empty, pct=100.0, unknown=True)
         windows={'five_hour':(a.get('five_hour') or {'pct':a.get('five_hour_pct'),'reset_iso':a.get('five_hour_reset_iso')}),
                  'seven_day':(a.get('seven_day') or {'pct':a.get('seven_day_pct'),'reset_iso':a.get('seven_day_reset_iso')})}
+        _claude_a[0]=a
+        if arm is not None:
+            # 0485: price a model-scoped arm from ITS OWN weekly window. The
+            # payload (leadv2-quota-read.py anthropic_scoped_windows, key =
+            # scope.model.display_name lowercased) names which models have a
+            # scoped meter -- never a hand-kept model list here. When the arm
+            # matches one, the scoped window REPLACES the account weekly
+            # aggregate for this arm: the provider enforces the scoped meter,
+            # so weekly_all is a window this arm barely touches in one
+            # direction and a blindness to its own exhaustion in the other.
+            # The SHARED session window (five_hour) stays in the set -- an arm
+            # scoped on the weekly group still burns the account session
+            # window; a fix that freed it from five_hour would be wrong.
+            _sh=_scoped_hit(arm, a)
+            if _sh is not None:
+                windows.pop('seven_day', None)
+                windows['weekly_scoped:%s'%_sh[0]]=_sh[1]
         pct_key='pct'
     # The BINDING (worst-case, highest-used) window decides both the pct AND
     # -- new -- travels its own reset/period with it, so a provider with two
@@ -699,7 +744,7 @@ def util(provider):
         if p is None: _skipped.append(name); continue
         if best_pct is None or p>best_pct: best_name,best_pct,best_window=name,p,w
     if best_pct is not None and _skipped:
-        _partial_windows.setdefault(provider, sorted(_skipped))
+        _partial_windows.setdefault(('%s/%s'%(provider,arm)) if arm is not None else provider, sorted(_skipped))
     # ARBITER-UNKNOWN-BECOMES-A-DEFAULT-IN-FIVE-DECISIONS-01: windows existed but
     # not one carried a number. That is the instrument failing to answer, exactly
     # like `status != ok` (:14) and "no ok account" (:260) -- both of which return
@@ -717,7 +762,10 @@ def util(provider):
     for _n,_w in windows.items():
         _p2=num((_w or {}).get(pct_key))
         if _p2 is not None: _aw.append((_n,_p2,_w))
-    if _aw: _allwin.setdefault(provider,_aw)
+    # 0485: an arm-scoped view keys _allwin 'claude/<arm>' so the forecast fit
+    # below can check the arm's OWN windows without colliding with the
+    # provider aggregate view a non-scoped arm still uses.
+    if _aw: _allwin.setdefault(('%s/%s'%(provider,arm)) if arm is not None else provider,_aw)
     h,period,basis=window_reset(best_name,best_window)
     # ARBITER-QUOTA-IS-A-CLIFF-NOT-A-GRADIENT-01: carry the BINDING window's
     # usable_now (remaining percentage-points per hour, produced upstream by
@@ -728,8 +776,8 @@ def util(provider):
 _uraw={p:util(p) for p in ('glm','codex','claude','freepool')}
 u={p:_uraw[p]['pct'] for p in _uraw}; unk={p:_uraw[p]['unknown'] for p in _uraw}
 usable={p:_uraw[p].get('usable_now') for p in _uraw}
-def near_reset_wait(provider):
-    info=_uraw[provider]; h=info.get('hours_to_reset'); period=info.get('period_hours')
+def near_reset_wait(provider, arm=None):
+    info=_raw_for(provider,arm); h=info.get('hours_to_reset'); period=info.get('period_hours')
     if h is None or period is None: return False
     return h <= (period * WAIT_FRACTION_OF_PERIOD)
 # W1-FORECAST-THE-SPEND-01 (founder order 2026-09-09, PRE-WAVES-PLAN §1.4):
@@ -785,6 +833,33 @@ def _arm_to_provider(a):
     if a.startswith('glm'): return 'glm'
     if a.startswith(('codex','gpt')): return 'codex'
     return None
+# ── 0485 arm-aware pricing layer ────────────────────────────────────────────
+# Every provider-level table above (_uraw/u/unk/usable) prices the AGGREGATE.
+# An arm the payload gives its OWN weekly window must be priced by
+# max(session, own scoped weekly) instead -- the aggregate weekly never binds
+# it, the session window always does. The layer below memoizes one repriced
+# dict per scoped arm and redirects the per-candidate read sites
+# (over_ceiling/capped/near_reset_wait/ecost/headroom_weight/forecast) through
+# _raw_for(); arm=None is byte-identical to the pre-0485 provider read.
+_arm_raw={}
+def arm_scoped(arm):
+    return _scoped_hit(str(arm or ''), _claude_a[0]) is not None
+def arm_raw(arm):
+    arm=str(arm or '')
+    if arm not in _arm_raw:
+        _arm_raw[arm]=util('claude', arm) if arm_scoped(arm) else None
+    return _arm_raw[arm]
+def _raw_for(provider, arm=None):
+    arm=str(arm or '')
+    if arm and provider=='claude':
+        r=arm_raw(arm)
+        if r is not None: return r
+    return _uraw[provider]
+def _hw_label(provider, arm=None):
+    # One label space for headroom_priced/headroom_unknown/_allwin keys:
+    # 'claude' for the aggregate, 'claude/<arm>' for a scoped arm's own view.
+    arm=str(arm or '')
+    return '%s/%s'%(provider,arm) if (arm and provider=='claude' and arm_scoped(arm)) else provider
 def _journal_durations():
     # -> ({provider: [hours...]}, status ok|unavailable). A terminal is
     # attributed to the LAST spawn of its task at or before it -- the same
@@ -850,19 +925,20 @@ def _expected_hours_for(provider):
     _fc_cache[provider]=r
     return r
 _forecast_view={}; _forecast_block={}; _forecast_wait=[]; _forecast_skipped={}
-def _forecast_check(provider):
-    # One view per provider: the estimate's hours+basis, every failing
+def _forecast_check(wkey, provider):
+    # One view per PRICING KEY (a provider, or 'claude/<arm>' for a scoped
+    # arm's own window set -- 0485): the estimate's hours+basis, every failing
     # window, the worst of them, and whether ALL failures reset soon (the
     # wait rule needs every failing window near -- a far failure is not
     # rescued by a near one).
-    if provider not in _allwin: return None
+    if wkey not in _allwin: return None
     hours,basis=_expected_hours_for(provider)
     if hours is None: return {'hours':None,'basis':basis,'fails':[],'worst':None,'near_all':False}
     fails=[]
-    for name,pct,w in _allwin[provider]:
+    for name,pct,w in _allwin[wkey]:
         h,period,_why=window_reset(name,w)
         if period is None or period<=0:
-            _forecast_skipped[provider]='unknown_period:%s'%name
+            _forecast_skipped[wkey]='unknown_period:%s'%name
             continue
         fc=hours/period*100.0
         rem=100.0-pct
@@ -871,7 +947,7 @@ def _forecast_check(provider):
         # window's domain. Name the skip instead of turning that limitation
         # into a permanent provider refusal; other readable windows still run.
         if fc > 100.0:  # forecast-window-domain mutation anchor
-            _forecast_skipped.setdefault(provider,[]).append('exceeds_window_period:%s'%name)
+            _forecast_skipped.setdefault(wkey,[]).append('exceeds_window_period:%s'%name)
             continue
         if fc > rem:  # fit-vs-remainder (W1-FORECAST-THE-SPEND-01 mutation anchor)
             fails.append({'window':name,'remaining':rem,'forecast':fc,'hours':hours,
@@ -893,13 +969,19 @@ def _forecast_refuse():
     print('arm=refuse model=none tier=none reason=forecast_exceeds_window kind=%s window=%s remaining=%.1fpct forecast=%.1fpct forecast_hours=%.2fh forecast_basis=%s forecast_stat=p75%s chain= %s%s%s%s%s' % (kind,_w['window'],_w['remaining'],_w['forecast'],_w['hours'],_forecast_view[_p]['basis'],((' forecast_skipped=%s'%_skip) if _skip else ''),ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
     raise SystemExit(3)
 if FORECAST_ON:
-    for _p in ('glm','codex','claude'):
-        _v=_forecast_check(_p)
+    # 0485: beside the three provider views, every model the PAYLOAD scopes
+    # ('claude/<model>' keys from weekly_scoped) gets its own fit view -- a
+    # scoped arm's forecast must fit ITS session+scoped remainders, not the
+    # aggregate weekly's. The key set is payload-derived; no arm list here.
+    _fkeys=['glm','codex','claude']+['claude/%s'%k for k in sorted(((_claude_a[0] or {}).get('weekly_scoped') or {}))]
+    for _fk in _fkeys:
+        if '/' in _fk: arm_raw(_fk.split('/',1)[1])  # populate _allwin['claude/<arm>']
+        _v=_forecast_check(_fk,_fk.split('/')[0])
         if _v is None: continue
-        _forecast_view[_p]=_v
+        _forecast_view[_fk]=_v
         if _v['fails']:
-            _forecast_block[_p]=_v['worst']
-            if _v['near_all']: _forecast_wait.append(_p)
+            _forecast_block[_fk]=_v['worst']
+            if _v['near_all']: _forecast_wait.append(_fk)
 # FP-08 fix-round (M1): the floor keys on the RAW --task-class, not the
 # SIZE_MAP-folded bucket. trivial|light ("simple") fold into the 'standard'
 # matrix cell for CAPABILITY lookups but must stay freepool-eligible, and
@@ -937,13 +1019,26 @@ def ufmt():
     # numeric pct and are named by the freepool_gate= token on the line.
     util_part=' '.join('util_%s=%s' % (p, 'unmetered' if _uraw[p].get('account_state')=='unmetered' else 'unknown_capped' if unk[p] else ('down' if (p=='freepool' and _uraw['freepool'].get('status')=='down') else '%d'%u[p])) for p in ('glm','codex','claude','freepool'))
     reset_part=' '.join('reset_%s=%s' % (p, ('%.2fh_%s' % (_uraw[p]['hours_to_reset'], _uraw[p]['reset_basis'])) if _uraw[p].get('hours_to_reset') is not None else 'n/a') for p in ('glm','codex','claude','freepool'))
-    return util_part + ' ' + reset_part
+    # 0485: every model the payload scopes gets its own util token beside the
+    # provider aggregate, naming the window it was priced from -- a line that
+    # says util_claude=81 must also be able to say util_claude_fable=54, or
+    # the two numbers cannot be told apart as meter vs aggregate.
+    scoped_part=''
+    for _sk in sorted(((_claude_a[0] or {}).get('weekly_scoped') or {})):
+        _sr=arm_raw(_sk)
+        _sh=_scoped_hit(_sk,_claude_a[0])
+        _val='unknown_capped' if _sr.get('unknown') else ('%d'%int(_sr['pct']))
+        scoped_part+=' util_claude_%s=%s scoped_window_%s=weekly_scoped(%s)' % (_sk,_val,_sk,(_sh[0] if _sh else _sk))
+    return util_part + ' ' + reset_part + scoped_part
 ceil=((data.get('router_v2') or {}).get('quota_ceilings') or {})
-def over_ceiling(provider):
+def over_ceiling(provider, arm=None):
+    # 0485: arm-aware -- a scoped arm compares ITS pct (max of its session and
+    # own scoped weekly) against the same claude ceiling; arm=None keeps the
+    # provider aggregate read byte-identical.
     if provider=='freepool': return not free_ok
     key='claude' if provider=='claude' else provider
     c=(ceil.get(key) or {}).get('review_pct' if role=='reviewer' else 'work_pct',100)
-    return u[provider] >= float(c)
+    return _raw_for(provider,arm)['pct'] >= float(c)
 # CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01: an over-ceiling provider whose
 # binding window resets within the wait threshold is NOT excluded -- the task
 # waits on it (it stays in `ok` and competes on cost as before, so it is only
@@ -956,7 +1051,7 @@ _waited=[p for p in ('glm','codex','claude') if over_ceiling(p) and near_reset_w
 # window resets within WAIT_FRACTION_OF_PERIOD of its own period waits too --
 # same token, same semantics, one wait rule rather than a second one.
 _waited += [p for p in _forecast_wait if p not in _waited]
-def capped(provider):
+def capped(provider, arm=None):
     # ARBITER-REMEMBERS-FAILURES-01 edit B (founder 2026-09-05): `unknown` is a
     # THIRD state, never a synonym for "busy". util() already returns pct=100.0
     # WITH unknown=True when a provider's probe did not answer (the status!='ok'
@@ -972,10 +1067,11 @@ def capped(provider):
     # refusing the work outright. Rejected alternatives: "skip it" is today's bug
     # verbatim; "take it as free" would spend a genuinely burnt provider on the
     # strength of a failed reading.
-    if unk.get(provider) or _uraw[provider].get('account_state')=='unmetered': return False
-    if over_ceiling(provider) and near_reset_wait(provider):
+    _info=_raw_for(provider,arm)
+    if _info.get('unknown') or _info.get('account_state')=='unmetered': return False
+    if over_ceiling(provider,arm) and near_reset_wait(provider,arm):
         return False
-    return over_ceiling(provider)
+    return over_ceiling(provider,arm)
 cells=((data.get('router_v2') or {}).get('capability_matrix') or [])
 # T17 fix-round (C1): split the config-vocabulary gap ("no cell matches kind/
 # size/protected" -- a routing.yaml drift, never a real refusal) from the
@@ -1367,7 +1463,7 @@ if requested_arm:
         print('arm=refuse model=none tier=none reason=requested_arm_incapable kind=%s requested_arm=%s chain= %s%s%s%s%s' % (kind,requested_arm,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
         raise SystemExit(69)
     _pin_prov=next((c.get('provider') for c in _arm_cells[requested_arm]),None)
-    if capped(_pin_prov): _stage_add(requested_arm,'capped')
+    if capped(_pin_prov, requested_arm): _stage_add(requested_arm,'capped')
     _pin_stages=_stages.get(requested_arm,[])
     if _pin_stages:
         _pin_reason='requested_arm_%s' % _pin_stages[0]
@@ -1439,15 +1535,17 @@ if not capable:
     _record('refuse','none','none',refusal_reason)
     print('arm=refuse model=none tier=none reason=%s kind=%s chain= %s%s%s%s%s' % (refusal_reason,kind,ufmt(),_outage,_fm_tok,_excl_render(),_rev_tok))
     raise SystemExit(68)
-ok=[c for c in capable if not capped(c.get('provider'))]
-for _cap_a in sorted({c.get('arm') for c in capable if capped(c.get('provider'))}):
+ok=[c for c in capable if not capped(c.get('provider'), c.get('arm'))]
+for _cap_a in sorted({c.get('arm') for c in capable if capped(c.get('provider'), c.get('arm'))}):
     _stage_add(_cap_a,'capped')
 # W1-FORECAST-THE-SPEND-01: the fit filter runs AFTER the capped filter so a
 # capped-empty pool keeps its exact all_arms_capped meaning; an arm the fit
 # removed alone is named by its stage, and a pool the fit emptied alone gets
 # the loud forecast refusal instead of a silent fall-open to the ladder.
 if FORECAST_ON and _forecast_block:
-    _ok_fc=[c for c in ok if not (_forecast_block.get(c.get('provider')) and c.get('provider') not in _forecast_wait)]
+    # 0485: the fit key is arm-aware -- a scoped arm checks its OWN
+    # 'claude/<arm>' forecast view, never the provider aggregate's.
+    _ok_fc=[c for c in ok if not (_forecast_block.get(_hw_label(c.get('provider'), c.get('arm'))) and _hw_label(c.get('provider'), c.get('arm')) not in _forecast_wait)]
     if _ok_fc: ok=_ok_fc
     elif ok: _forecast_refuse()
 if requested_arm:
@@ -1602,22 +1700,27 @@ def _headroom_ramp(un):
     # tests/test-headroom-continuous.sh.
     _u=min(un,_HEADROOM_U_SAT)
     return max(_HEADROOM_W_MIN, min(_HEADROOM_W_MAX, _HEADROOM_W_MIN + (_HEADROOM_W_MAX-_HEADROOM_W_MIN)*_u/_HEADROOM_U_SAT))
-def headroom_weight(provider):
+def headroom_weight(provider, arm=None):
+    # 0485: arm-aware -- a scoped arm's gradient is priced from ITS OWN
+    # binding window (session or scoped weekly, whichever binds it), so the
+    # winner's headroom_w= reads back off the same meter that priced the arm.
+    _lbl=_hw_label(provider,arm)
+    _info=_raw_for(provider,arm)
     if not _HEADROOM_ON: return 1.0
-    if _uraw[provider].get('account_state')=='unmetered':
+    if _info.get('account_state')=='unmetered':
         # Configured matrix cost, charged at the least generous point of the
         # ramp (its floor). No fabricated usage/reset rate or unknown penalty.
         return _HEADROOM_W_MIN
-    if unk.get(provider):
-        _headroom_unknown[provider]='probe'; return 1.0
-    un=usable.get(provider)
+    if _info.get('unknown'):
+        _headroom_unknown[_lbl]='probe'; return 1.0
+    un=_info.get('usable_now')
     if un is None:
-        _headroom_unknown[provider]='no_usable_now'; return 1.0
+        _headroom_unknown[_lbl]='no_usable_now'; return 1.0
     try: un=float(un)
     except (TypeError, ValueError):
-        _headroom_unknown[provider]='unreadable'; return 1.0
+        _headroom_unknown[_lbl]='unreadable'; return 1.0
     _w=_headroom_ramp(un)
-    if _w != 1.0: _headroom_priced[provider]=_w
+    if _w != 1.0: _headroom_priced[_lbl]=_w
     return _w
 # ARBITER-LEARNS-WHAT-WORK-COSTS-01 (founder order 2026-09-12, row
 # 4c06462a1a71): the READ half of the observed-cost loop. A cost estimate is
@@ -1701,16 +1804,16 @@ def _observed_rounds(c):
     _obs_priced['%s/%s'%(size_raw,c.get('arm'))]='n=%d,avg_rounds=%.2f'%(len(_rows),_r)
     return _r
 def ecost(c):
-    _w=headroom_weight(c.get('provider'))
+    _w=headroom_weight(c.get('provider'), c.get('arm'))
     _base=float(c.get('cost',999))/(_w if _w > 0 else 1.0)
     _base*=_observed_rounds(c)
-    return _base + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + (UNKNOWN_PROBE_PENALTY if unk.get(c.get('provider')) else 0.0) + complexity_penalty(c)
+    return _base + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + (UNKNOWN_PROBE_PENALTY if _raw_for(c.get('provider'), c.get('arm')).get('unknown') else 0.0) + complexity_penalty(c)
 # ARBITER-SCORING-DESIGN-01 step 1: _cost_order/_fit_order/fit_differs are
 # ALWAYS computed, in every FIT_MODE, so the shadow comparison exists before
 # the sort is ever flipped to use it (§9's validation plan reads this off the
 # decision line, not off a live pick change). Only which key actually SORTS
 # `ok` depends on FIT_MODE.
-_cost_key=lambda c:(ecost(c),u[c['provider']],c['arm'],c.get('tier',''))
+_cost_key=lambda c:(ecost(c),_raw_for(c['provider'], c.get('arm'))['pct'],c['arm'],c.get('tier',''))
 _fit_key=lambda c:(fit_bucket(c),) + _cost_key(c)
 _cost_order=sorted(ok, key=_cost_key)                       # today's order, always computed (shadow baseline)
 ok.sort(key=_fit_key if FIT_MODE == 'on' else _cost_key)
@@ -1903,10 +2006,11 @@ _extra += (' ceiling_default=%s' % w['provider']) if (w.get('provider') and not 
 # back off the line -- weight, the number it came from, and, when it could not be
 # priced, why. headroom_unknown= is the loud third value; it means "charged at
 # 1.0 because we do not know", never "plenty".
-_hw_w = headroom_weight(w.get('provider')) if (_HEADROOM_ON and w.get('provider')) else None
+_hw_w = headroom_weight(w.get('provider'), w.get('arm')) if (_HEADROOM_ON and w.get('provider')) else None
+_winfo = _raw_for(w.get('provider'), w.get('arm')) if w.get('provider') else {}
 _extra += (' headroom_w=%s' % ('%g' % _hw_w)) if _hw_w is not None else ''
-_extra += (' usable_now=%s' % ('%g' % float(usable.get(w['provider'])))) if (_hw_w is not None and usable.get(w['provider']) is not None and not unk.get(w['provider'])) else ''
-_extra += (' headroom_unknown=%s' % _headroom_unknown[w['provider']]) if (_hw_w is not None and w['provider'] in _headroom_unknown) else ''
+_extra += (' usable_now=%s' % ('%g' % float(_winfo.get('usable_now')))) if (_hw_w is not None and _winfo.get('usable_now') is not None and not _winfo.get('unknown')) else ''
+_extra += (' headroom_unknown=%s' % _headroom_unknown[_hw_label(w.get('provider'), w.get('arm'))]) if (_hw_w is not None and _hw_label(w.get('provider'), w.get('arm')) in _headroom_unknown) else ''
 # headroom_w= alone answers "what did the WINNER cost"; it cannot answer "why is
 # the winner not the cheapest arm", because the arm that lost is the one that got
 # priced. headroom_priced= names every candidate provider whose cost was scaled at

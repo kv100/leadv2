@@ -185,6 +185,62 @@ def binding_window(windows):
     return min(known, key=lambda item: item[1])[0] if known else None
 
 
+# ── model-scoped anthropic windows (row 0485ea90c9e0, 2026-09-13) ───────────
+# FABLE-IS-PRICED-FROM-A-WINDOW-IT-DOES-NOT-BURN-01. The usage endpoint meters
+# THREE window kinds, live on max_20x 2026-09-12/13:
+#   {"kind":"session","percent":7}
+#   {"kind":"weekly_all","percent":4}
+#   {"kind":"weekly_scoped","percent":2,"scope":{"model":{"display_name":"Fable"}}}
+# Until now only the first two were parsed (five_hour/seven_day) and limits[]
+# was passed through raw -- nobody read the scoped window (falsified twice in
+# docs/handoff/DECISION-LAYER-CONTRACT/decision.md census #2), so an arm with
+# its own weekly meter was priced from the account aggregate in BOTH
+# directions: penalised for a window it barely touches, and free to exhaust
+# its own window invisibly.
+# CONTRACT QUOTA-WINDOWS: the kind->window-name mapping is declared HERE, in
+# the publisher, ONE place -- never re-inferred per reader. Consumers see
+# named windows only. "Which arms are model-scoped" is derived from THIS
+# payload (a weekly_scoped row with a scope.model), never from a hand-kept
+# list of model names.
+ANTHROPIC_LIMIT_KINDS = {"session": "five_hour", "weekly_all": "seven_day",
+                         "weekly_scoped": "weekly_scoped"}
+ANTHROPIC_LIMIT_PERIOD_SECONDS = {"session": 18000, "weekly_all": 604800,
+                                  "weekly_scoped": 604800}
+
+
+def anthropic_scoped_windows(limits, now=None):
+    """Parse limits[] into {normalized_scope_model_key: window} for scoped rows.
+
+    Only kind=weekly_scoped rows with a scope.model produce entries; the key is
+    the scope model's display_name (or id), lowercased -- the SAME
+    normalization consumers use to join an arm name onto its window, so the
+    join rule lives with the payload shape, not in a model list. Each window
+    carries pct/reset_iso (source fields, key 'pct' matching the anthropic
+    account windows) plus kind, the scope label, the weekly period as
+    limit_window_seconds (so a reader never has to guess a window name's
+    period), and the normalize_window truth (remaining/hours_to_reset/
+    usable_now). Rows without a readable percent still produce an entry with
+    pct None -- an unreadable window is a fact a consumer must see, not a
+    silent fall-back to the aggregate.
+    """
+    out = {}
+    for row in limits or []:
+        if not isinstance(row, dict) or row.get("kind") != "weekly_scoped":
+            continue
+        scope = (row.get("scope") or {}).get("model") or {}
+        label = scope.get("display_name") or scope.get("id")
+        if not label:
+            continue
+        key = str(label).strip().lower()
+        if key in out:
+            continue
+        window = {"pct": row.get("percent"), "reset_iso": row.get("resets_at"),
+                  "kind": "weekly_scoped", "scope_model": label,
+                  "limit_window_seconds": ANTHROPIC_LIMIT_PERIOD_SECONDS["weekly_scoped"]}
+        out[key] = with_window_truth(window, "pct", now=now)
+    return out
+
+
 # ── granularity (W1-QUOTA-DAEMON-01 part A) ─────────────────────────────────
 # Live probes 2026-09-09 (artifacts in docs/handoff/w1-quota-daemon/report.md):
 # z.ai's quota endpoint ignores ?model= and returns two account-level
@@ -886,6 +942,12 @@ def read_anthropic(credential_file=None):
                              "seven_day": sd_window,
                              "binding_window": binding_window({"five_hour": fh_window,
                                                                "seven_day": sd_window}),
+                             # Row 0485: scoped windows ADD to the account
+                             # reading; binding_window stays the AGGREGATE pair
+                             # (the account-level balancer ranks accounts, not
+                             # arms, and must not see a scoped meter as the
+                             # account's own binding window).
+                             "weekly_scoped": anthropic_scoped_windows(u.get("limits")),
                              "limits": u.get("limits")})
             except Exception as ex:
                 acct.update({"status": "unknown", "account_state": ACCOUNT_STATE_UNKNOWN,
@@ -986,6 +1048,11 @@ def normalize_payload(obj):
                                                "reset_iso": account.get("seven_day_reset_iso")}, "pct")
             account["binding_window"] = binding_window({"five_hour": account["five_hour"],
                                                         "seven_day": account["seven_day"]})
+            # Row 0485: a cache written before the scoped-window parser landed
+            # carries limits[] but no weekly_scoped map -- upgrade it here so
+            # every consumer sees the same shape regardless of cache age.
+            if not isinstance(account.get("weekly_scoped"), dict):
+                account["weekly_scoped"] = anthropic_scoped_windows(account.get("limits"))
         if len([a for a in accounts if a.get("active")]) != 1:
             for account in accounts:
                 account["active"] = False

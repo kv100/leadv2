@@ -97,11 +97,14 @@ DEFAULT_REVIEW_THRESHOLD_PCT = 98.0
 # of opus (opus is fable's fallback, not the default) but after the two proven
 # free/cheap arms glm and kimi -- same "unproven quality, never the only
 # reviewer if a proven arm has headroom" reasoning KIMI-CHANNEL-01b applied to
-# kimi. fable maps onto the single "anthropic" ACCOUNT reading with opus/sonnet
-# (see _pct_for below) as the CONSERVATIVE ceiling only -- bucket identity with
-# opus is UNVERIFIED: the 2026-09-01 quota-read probe showed five_hour unchanged
-# across a live fable probe and a separate Fable weekly_scoped window in the
-# reader (evidence: model-capability.yaml fable row, round 2).
+# kimi. Row 0485 (2026-09-13): fable is priced from its OWN weekly_scoped
+# window when the payload carries one (see _pct_for / live_anthropic_pct) --
+# max(session, scoped), never the account weekly_all; with no scoped window in
+# the payload it falls back to the single "anthropic" ACCOUNT reading with
+# opus/sonnet as the conservative ceiling. Bucket identity with opus remains
+# UNVERIFIED either way (evidence: model-capability.yaml fable row, round 2:
+# five_hour unchanged across a live fable probe, separate Fable weekly_scoped
+# window in the reader).
 DEFAULT_REVIEW_ARM_ORDER = ["codex", "glm", "kimi", "fable", "opus", "sonnet"]
 DEFAULT_GLM_REVIEW_THRESHOLD_PCT = 90.0
 DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT = 95.0
@@ -421,10 +424,27 @@ def live_glm_pct(quota_live_bin):
         return None
 
 
-def live_anthropic_pct(quota_live_bin):
+def _scoped_mkey(s):
+    """Row 0485: same normalization the publisher keys weekly_scoped by --
+    lowercase alphanumerics only -- so an arm name joins its scoped window by
+    payload data, never by a hand-kept model list."""
+    return "".join(ch for ch in str(s or "").lower() if ch.isalnum())
+
+
+def live_anthropic_pct(quota_live_bin, arm=None):
     """Fail-open: any error -> None. The ACTIVE account's max(five_hour_pct,
     seven_day_pct) -- mirrors leadv2-quota-read.py's own account_resolution;
-    reviewing arms (opus/sonnet) share this one Anthropic-account reading."""
+    reviewing arms (opus/sonnet) share this one Anthropic-account reading.
+
+    Row 0485 (FABLE-IS-PRICED-FROM-A-WINDOW-IT-DOES-NOT-BURN-01): when `arm`
+    is given AND the account payload carries a weekly_scoped window whose
+    scope key normalizes to the arm name, the arm is priced by
+    max(five_hour_pct, scoped_pct) -- the account's weekly_all aggregate never
+    binds a model the provider meters on its own window. The scoped map is
+    parsed by leadv2-quota-read.py (anthropic_scoped_windows) and served on
+    every quota-live read regardless of cache age (normalize_payload upgrades
+    old caches in memory). No scoped window for the arm -> exactly the old
+    aggregate reading."""
     if not quota_live_bin or not os.path.exists(quota_live_bin):
         return None
     try:
@@ -445,8 +465,19 @@ def live_anthropic_pct(quota_live_bin):
         if active is None:
             return None
         five = active.get("five_hour_pct")
-        weekly = active.get("seven_day_pct")
-        vals = [v for v in (five, weekly) if v is not None]
+        scoped_pct = None
+        if arm:
+            scoped = active.get("weekly_scoped") or {}
+            key = _scoped_mkey(arm)
+            for k, w in scoped.items():
+                if isinstance(w, dict) and _scoped_mkey(k) == key:
+                    scoped_pct = w.get("pct")
+                    break
+        if scoped_pct is not None:
+            vals = [v for v in (five, scoped_pct) if v is not None]
+        else:
+            weekly = active.get("seven_day_pct")
+            vals = [v for v in (five, weekly) if v is not None]
         return max(vals) if vals else None
     except Exception:
         return None
@@ -498,29 +529,31 @@ def _fmt_pct(pct):
 _LIVE_PCT_MEMO = {}
 
 
-def _live_pct_memo(bucket: str, quota_live_bin):
-    if (bucket, quota_live_bin) not in _LIVE_PCT_MEMO:
+def _live_pct_memo(bucket: str, quota_live_bin, arm: str = None):
+    key = (bucket, arm or "", quota_live_bin)
+    if key not in _LIVE_PCT_MEMO:
         if bucket == "codex":
             v = live_codex_weekly_pct(quota_live_bin)
         elif bucket == "glm":
             v = live_glm_pct(quota_live_bin)
         else:
-            v = live_anthropic_pct(quota_live_bin)
-        _LIVE_PCT_MEMO[(bucket, quota_live_bin)] = v
-    return _LIVE_PCT_MEMO[(bucket, quota_live_bin)]
+            v = live_anthropic_pct(quota_live_bin, arm)
+        _LIVE_PCT_MEMO[key] = v
+    return _LIVE_PCT_MEMO[key]
 
 
 def _live_pct_for_arm(arm: str, quota_live_bin):
     """GLM-FIRST-RECOVERY-01 (C2): the live reading for a spill candidate, via
     the same arm->bucket mapping resolve_review_pool's _pct_for uses (opus and
-    sonnet share the one Anthropic-account reading). Unknown arms (and any arm
-    when no bin was supplied) read None = unknown."""
+    sonnet share the one Anthropic-account reading; a payload-scoped arm --
+    fable today -- is priced from its OWN window, row 0485). Unknown arms (and
+    any arm when no bin was supplied) read None = unknown."""
     if arm == "codex":
         return _live_pct_memo("codex", quota_live_bin)
     if arm in ("glm", "glm-flash"):  # GLM-53-FLASH-ARM-01: one glm bucket
         return _live_pct_memo("glm", quota_live_bin)
     if arm in ("opus", "sonnet", "fable"):
-        return _live_pct_memo("anthropic", quota_live_bin)
+        return _live_pct_memo("anthropic", quota_live_bin, arm)
     return None
 
 
@@ -546,8 +579,11 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
     the first eligible arm and still audit why every other arm was skipped.
 
     pcts: optional injection for pure/test use -- keys "codex"/"glm"/"anthropic"
-    (opus and sonnet share the single "anthropic" account reading). When a key is
-    absent, the live read is fetched via quota_live_bin (fail-open to None).
+    (opus and sonnet share the single "anthropic" account reading) plus the
+    row-0485 scoped override "anthropic:<arm>" (an arm the payload scopes --
+    fable today -- carries its OWN window reading under that key and outranks
+    the aggregate). When a key is absent, the live read is fetched via
+    quota_live_bin (fail-open to None).
 
     kimi_bin / signals (KIMI-CHANNEL-01b): both optional and defaulted so every
     existing caller is byte-compatible. kimi is PROBE-gated (kimi_review_available),
@@ -592,9 +628,15 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
         if arm in ("glm", "glm-flash"):  # GLM-53-FLASH-ARM-01: one glm bucket
             return live_glm_pct(quota_live_bin)
         if arm in ("opus", "sonnet", "fable"):
+            # Row 0485: a payload-scoped arm may carry its own injected reading
+            # under "anthropic:<arm>" (the scoped window), which outranks the
+            # aggregate "anthropic" key; the aggregate key stays the fallback
+            # so existing injected tests keep their conservative ceiling.
+            if "anthropic:%s" % arm in pcts:
+                return pcts["anthropic:%s" % arm]
             if "anthropic" in pcts:
                 return pcts["anthropic"]
-            return live_anthropic_pct(quota_live_bin)
+            return live_anthropic_pct(quota_live_bin, arm)
         return None
 
     def _threshold_for(arm):
