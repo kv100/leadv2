@@ -304,13 +304,48 @@ fi
 # If a caller set LEADV2_STATE_ROOT (declaring "sandbox this") but LINK_ROOT
 # nonetheless resolves to a real checkout, that is exactly the contradiction
 # that produced the retarget: hard-abort instead of silently mutating it.
-if [[ "$NO_LINK" -eq 0 && -n "${LEADV2_STATE_ROOT:-}" ]]; then
+#
+# ── E2E-FIXTURES-CANNOT-WRITE-INTO-THE-REPO-01 (2026-09-12): the SAME net for
+# LEADV2_STATE_BASE ──────────────────────────────────────────────────────────
+# Measured incident: the tracked file docs/leadv2/open-threads.md in this repo
+# was found at merge time replaced by a symlink into
+# /tmp/leadv2-plugin-papercuts-W1ZI8Z/e2e/state/leadv2/open-threads.md — a
+# plugin-papercuts e2e sandbox. The writer is THIS script's migration block:
+# relink_if_needed()/os.symlink below re-point any docs/leadv2/<name> path
+# that is already a symlink (or moves an untracked regular file out and links
+# it) at THIS call's own state_root. The e2e arms that env at
+# test-plugin-papercuts.sh e2e_setup (`export LEADV2_STATE_BASE="$E2E_STATE"`,
+# suite-wide from P3 on) while P8's production scripts (leadv2-pulse-beat.sh,
+# leadv2-lane-heartbeat.sh) run with cwd = the launch checkout — a REAL repo
+# whenever the suite is invoked from one. Any state-path invocation in that
+# tree that misses PROJECT_ROOT threading (the exact class B1 documents:
+# "forgot to ALSO thread PROJECT_ROOT for one specific call", twice before)
+# then resolves LINK_ROOT=<real checkout>, STATE_ROOT=<sandbox>/state/<slug>
+# and relinks repo paths into the throwaway tree. Live-fired on main
+# 2026-09-12: one unpinned call with LEADV2_STATE_BASE=<tmp> + cwd inside a
+# leadv2 checkout retargeted docs/leadv2/glm-deferred.jsonl (MERGE_FILE set
+# member, untracked symlink) into the tmp root. Both guards above/below this
+# block skipped it: the B1 net keys on LEADV2_STATE_ROOT only, and the
+# TEST-FIXTURE reverse guard (line ~173) explicitly exempts itself when
+# LEADV2_STATE_BASE is set. Production never sets EITHER var (see the
+# EPHEMERAL-REDIRECT doctrine above), so LEADV2_STATE_BASE is exactly as
+# sandbox-declaring as LEADV2_STATE_ROOT here: the contradiction is refused,
+# not re-pointed — a redirected LINK_ROOT would be a corrected variable, and
+# a corrected variable drifts back.
+_LV2_SANDBOX_SIGNAL=""
+if [[ -n "${LEADV2_STATE_ROOT:-}" ]]; then
+  _LV2_SANDBOX_SIGNAL="LEADV2_STATE_ROOT"
+elif [[ -n "${LEADV2_STATE_BASE:-}" ]]; then
+  _LV2_SANDBOX_SIGNAL="LEADV2_STATE_BASE"
+fi
+if [[ "$NO_LINK" -eq 0 && -n "${_LV2_SANDBOX_SIGNAL}" ]]; then
   if git -C "$LINK_ROOT" remote 2>/dev/null | grep -q . \
      || [[ -f "$LINK_ROOT/REAL-REPO" || -f "$LINK_ROOT/.git/leadv2-real-repo-marker" ]]; then
-    printf -- '[leadv2-state-path] ABORT: LEADV2_STATE_ROOT is set (a sandbox-only signal — production never sets this) but the resolved LINK_ROOT (%s) is a real repo checkout (has a git remote or a REAL-REPO marker). This means PROJECT_ROOT/LEADV2_PROJECT_ROOT/CLAUDE_PROJECT_DIR was not threaded to THIS specific call, so LINK_ROOT fell back to cwd. Refusing to touch its docs/leadv2/* control-plane symlinks — fix the caller to pass PROJECT_ROOT explicitly; never mutate a real checkout from a sandboxed test.\n' "$LINK_ROOT" >&2
+    printf -- '[leadv2-state-path] ABORT: %s is set (a sandbox-only signal — production never sets LEADV2_STATE_ROOT or LEADV2_STATE_BASE) but the resolved LINK_ROOT (%s) is a real repo checkout (has a git remote or a REAL-REPO marker). This means PROJECT_ROOT/LEADV2_PROJECT_ROOT/CLAUDE_PROJECT_DIR was not threaded to THIS specific call, so LINK_ROOT fell back to cwd. Refusing to touch its docs/leadv2/* control-plane symlinks — fix the caller to pass PROJECT_ROOT explicitly; never mutate a real checkout from a sandboxed test.\n' "${_LV2_SANDBOX_SIGNAL}" "$LINK_ROOT" >&2
     exit 1
   fi
 fi
+unset _LV2_SANDBOX_SIGNAL 2>/dev/null || true
 
 # ── Orphan-root reconciliation (QUESTION-CHANNEL-DEAD-01) ──────────────────
 # A prior control-plane root has been observed at "${COMMON_DIR}/leadv2-state"
