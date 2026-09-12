@@ -3,10 +3,10 @@
 # run-all-triggers: leadv2-dispatch-code leadv2-markdown-backlog-read.py
 #
 # The defect (measured 2026-09-11): _premise_probe_gate's yaml resolver
-# returns status=none for every repo with no docs/tasks.yaml at all
-# (getmany-followup-bot), so the gate silently no-ops there forever even
-# though the repo has a real backlog in a markdown pipe table. This suite
-# proves the markdown fallback: Tier A drives the new reader directly
+# cannot identify an owner when docs/tasks.yaml is absent. The old gate
+# silently no-oped there forever even though the repo has a real backlog in a
+# markdown pipe table. This suite proves the markdown fallback: Tier A drives
+# the new reader directly
 # (plugins/leadv2/scripts/lib/leadv2-markdown-backlog-read.py), Tier B
 # drives the REAL dispatch script end to end, the same hermetic-fixture
 # discipline as test-dispatch-refuses-a-dead-premise.sh.
@@ -395,6 +395,7 @@ _dispatch() {
   local _rc=0 _out
   _out="$(env \
     CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
+    LEADV2_PREMISE_BACKLOG_ROOTS="${ROOT}" \
     LEADV2_STATE_ROOT="${TMP}/state-root" \
     LEADV2_DISPATCH_CACHE_DIR="${CACHE_DIR}" \
     LEADV2_DISPATCH_GLM_BIN="${TMP}/fake-glm.sh" \
@@ -411,7 +412,7 @@ _dispatch() {
     LEADV2_MARKDOWN_BACKLOG_READER="${READER}" \
     ${_env[@]+"${_env[@]}"} \
     bash "${DISPATCH_SH}" "premise-md suite ${_case} $$ $(date +%s 2>/dev/null || echo 0)" \
-      --spawn --task-id "${_tid}" ${DISPATCH_EXTRA[@]+"${DISPATCH_EXTRA[@]}"} 2>&1)" || _rc=$?
+      --spawn --kind docs --task-class trivial --task-id "${_tid}" ${DISPATCH_EXTRA[@]+"${DISPATCH_EXTRA[@]}"} 2>&1)" || _rc=$?
   RC="${_rc}"; OUT="${_out}"
 }
 # bash-guard: allow
@@ -485,26 +486,17 @@ _dispatch b4 44
 grep -q "reason=markdown_row_ambiguous" "${JOURNAL_REC}" && pass "B4 journal reason=markdown_row_ambiguous" || fail "B4 journal: $(cat "${JOURNAL_REC}")"
 [[ ! -s "${SPAWN_MARK:-/dev/nonexistent}" ]] && pass "B4 worker never started" || fail "B4 worker started"
 
-# ── B5: no declaration, no tasks.yaml -> unchanged no_backlog_row skip ────
+# ── B5: no declaration, no tasks.yaml -> loud missing-row refusal ──────────
 rm -f "${ROOT}/.claude/leadv2-overrides/markdown-backlog.yaml"
 DISPATCH_EXTRA=(--acceptance-cmd 'true')
 _dispatch b5 TASK-UNRESOLVED-99
 DISPATCH_EXTRA=()
-[[ "${RC}" == "0" ]] && pass "B5 no declaration/no row: rc=0" || fail "B5 rc=${RC}: $(printf '%s' "${OUT}" | tail -1)"
-if grep -qx "JOURNAL append premise-md suite b5 $$ 0 decision premise_probe task=$(printf '%s' "${OUT}" | grep -oE 'task=[a-f0-9]+' | head -1 | cut -d= -f2) verdict=skipped reason=no_backlog_row" "${JOURNAL_REC}" 2>/dev/null; then
-  pass "B5 journal exact no_backlog_row line (byte match)"
-else
-  # exact byte-for-byte assertion via grep -F for the fixed suffix instead,
-  # which is what actually matters (today's ad-hoc contract byte-identical)
-  if grep -qE 'verdict=skipped reason=no_backlog_row$' "${JOURNAL_REC}"; then
-    pass "B5 journal reason=no_backlog_row with NO md= suffix (byte-identical contract)"
-  else
-    fail "B5 journal: $(cat "${JOURNAL_REC}")"
-  fi
-fi
-grep -q '^SPAWN ' "${SPAWN_MARK:-/dev/nonexistent}" && pass "B5 worker started (ad-hoc contract intact)" || fail "B5 worker not started"
+[[ "${RC}" == "8" ]] && pass "B5 no declaration/no row: rc=8" || fail "B5 rc=${RC}: $(printf '%s' "${OUT}" | tail -1)"
+grep -q "reason=backlog_row_not_found" "${JOURNAL_REC}" \
+  && pass "B5 journal reason=backlog_row_not_found" || fail "B5 journal: $(cat "${JOURNAL_REC}")"
+[[ ! -s "${SPAWN_MARK:-/dev/nonexistent}" ]] && pass "B5 worker never started" || fail "B5 worker started"
 
-# ── B6: declaration present, file missing -> skip with md= diag suffix ───
+# ── B6: declaration present, file missing -> loud missing-row refusal ─────
 cat > "${ROOT}/.claude/leadv2-overrides/markdown-backlog.yaml" <<'YAML'
 file: docs/does-not-exist.md
 id_column: "#"
@@ -513,10 +505,10 @@ id_pattern: '^[0-9]+$'
 closed_statuses: ["в проде"]
 YAML
 _dispatch b6 45
-[[ "${RC}" == "0" ]] && pass "B6 decl_file_missing: rc=0" || fail "B6 rc=${RC}: $(printf '%s' "${OUT}" | tail -1)"
-grep -q "reason=no_backlog_row md=decl_file_missing" "${JOURNAL_REC}" \
-  && pass "B6 journal reason=no_backlog_row md=decl_file_missing" || fail "B6 journal: $(cat "${JOURNAL_REC}")"
-grep -q '^SPAWN ' "${SPAWN_MARK:-/dev/nonexistent}" && pass "B6 worker started (fail-open on unusable decl)" || fail "B6 worker not started"
+[[ "${RC}" == "8" ]] && pass "B6 decl_file_missing: rc=8" || fail "B6 rc=${RC}: $(printf '%s' "${OUT}" | tail -1)"
+grep -q "reason=backlog_row_not_found" "${JOURNAL_REC}" \
+  && pass "B6 journal reason=backlog_row_not_found" || fail "B6 journal: $(cat "${JOURNAL_REC}")"
+[[ ! -s "${SPAWN_MARK:-/dev/nonexistent}" ]] && pass "B6 worker never started" || fail "B6 worker started"
 
 printf -- '\n%d passed, %d failed\n' "${PASS}" "${FAIL}"
 if [[ "${FAIL}" -gt 0 ]]; then

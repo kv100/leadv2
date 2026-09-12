@@ -40,14 +40,13 @@
 #   T5 BUDGET     probe exceeds LEADV2_PREMISE_PROBE_BUDGET_SEC -> rc=8
 #                reason=probe_budget_exceeded (premise_unknown class)
 #   T6 NOTRUNNABLE probe command missing -> rc=8 reason=probe_not_runnable
-#   T7 NO-ROW     --task-id resolving to no row, no probe -> rc=0 today's
-#                ad-hoc contract preserved, worker started
+#   T7 NO-ROW     --task-id resolving to no row -> rc=8 refusal; the explicit
+#                --no-probe-yet override is then audited and dispatches
 #   T8 NO-SEAM    green probe but no scripts/task-close.sh in the repo ->
 #                rc=7 still, row left to its owning repo, no worker
 #   T9 AMBIG      2 rows match the founder id -> rc=8 reason=row_ambiguous
-#   T10 DECLCMD    --acceptance-cmd 'true' with NO row -> rc=0, worker
-#                started (declarative callers -- lane-shape, papercuts --
-#                keep today's contract; the premise is a property of the ROW)
+#   T10 DECLCMD    --acceptance-cmd 'true' with NO row plus --no-probe-yet
+#                -> rc=0, worker started (declarative callers must opt in)
 #   T11 MULTILINE  row acceptance_cmd is a YAML block scalar -> rc=8,
 #                reason=acceptance_cmd_multiline, no worker
 #   T12 ONELINE    row acceptance_cmd remains a one-line red probe -> rc=0,
@@ -239,6 +238,7 @@ _dispatch() {
   local _rc=0 _out
   _out="$(env \
     CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
+    LEADV2_PREMISE_BACKLOG_ROOTS="${ROOT}" \
     LEADV2_DISPATCH_CACHE_DIR="${CACHE_DIR}" \
     LEADV2_DISPATCH_GLM_BIN="${TMP}/fake-glm.sh" \
     LEADV2_DISPATCH_SUBSESSION_BIN="${TMP}/fake-subsession.sh" \
@@ -254,7 +254,7 @@ _dispatch() {
     LEADV2_BURN_GOVERNOR=0 \
     ${_env[@]+"${_env[@]}"} \
     bash "${DISPATCH_SH}" "premise-probe suite ${_case} $$ $(date +%s 2>/dev/null || echo 0)" \
-      --spawn --task-id "${_tid}" ${DISPATCH_EXTRA[@]+"${DISPATCH_EXTRA[@]}"} 2>&1)" || _rc=$?
+      --spawn --kind docs --task-class trivial --task-id "${_tid}" ${DISPATCH_EXTRA[@]+"${DISPATCH_EXTRA[@]}"} 2>&1)" || _rc=$?
   RC="${_rc}"; OUT="${_out}"
 }
 # bash-guard: allow
@@ -318,11 +318,18 @@ if [[ "${RC}" == "8" ]]; then pass "T6 not-runnable: exit 8"; else fail "T6 not-
 grep -q "reason=probe_not_runnable" <<<"${OUT}" && pass "T6 reason=probe_not_runnable" || fail "T6 reason missing: $(printf '%s' "${OUT}" | tail -1)"
 [[ ! -s "${SPAWN_MARK:-/dev/nonexistent}" ]] && pass "T6 worker not started" || fail "T6 worker started"
 
-# ── T7: --task-id resolving to no row keeps today's ad-hoc contract ───────
+# ── T7: an unresolved task id is a loud refusal; explicit ad-hoc is separate
 _dispatch norow TASK-UNRESOLVED-99
-if [[ "${RC}" == "0" ]]; then pass "T7 no-row: dispatch proceeds rc=0"; else fail "T7 no-row: expected rc=0 got ${RC}: $(printf '%s' "${OUT}" | tail -1)"; fi
-grep -q '^SPAWN ' "${SPAWN_MARK:-/dev/nonexistent}" && pass "T7 worker started (ad-hoc path intact)" || fail "T7 worker not started"
-[[ ! -s "${CLOSE_CAP:-/dev/nonexistent}" ]] && pass "T7 nothing closed" || fail "T7 row closed with no row"
+if [[ "${RC}" == "8" ]]; then pass "T7 no-row: refusal rc=8"; else fail "T7 no-row: expected rc=8 got ${RC}: $(printf '%s' "${OUT}" | tail -1)"; fi
+grep -q 'reason=backlog_row_not_found' <<<"${OUT}" && pass "T7 reason=backlog_row_not_found" || fail "T7 refusal reason missing"
+[[ ! -s "${SPAWN_MARK:-/dev/nonexistent}" ]] && pass "T7 worker not started" || fail "T7 worker started on unresolved id"
+
+DISPATCH_EXTRA=(--no-probe-yet)
+_dispatch ad-hoc TASK-UNRESOLVED-99
+DISPATCH_EXTRA=()
+if [[ "${RC}" == "0" ]]; then pass "T7 explicit no-probe-yet: dispatch proceeds rc=0"; else fail "T7 explicit override: expected rc=0 got ${RC}: $(printf '%s' "${OUT}" | tail -1)"; fi
+grep -q 'reason=no_probe_yet' <<<"${OUT}" && pass "T7 override is audited" || fail "T7 audit line missing"
+grep -q '^SPAWN ' "${SPAWN_MARK:-/dev/nonexistent}" && pass "T7 explicit override worker started" || fail "T7 explicit override worker not started"
 
 # ── T8: green probe, no task-close.sh seam -> still exit 7, row skipped ───
 rm -f "${ROOT}/scripts/task-close.sh"
@@ -339,10 +346,10 @@ grep -q "reason=row_ambiguous" <<<"${OUT}" && pass "T9 reason=row_ambiguous" || 
 
 # ── T10: bare --acceptance-cmd, no row -> declaration, not a premise ─────
 rm -f "${SPAWN_MARK}" "${CLOSE_CAP}"; : > "${JOURNAL_REC}"
-DISPATCH_EXTRA=(--acceptance-cmd 'true')
+DISPATCH_EXTRA=(--acceptance-cmd 'true' --no-probe-yet)
 _dispatch declcmd TASK-UNRESOLVED-88
 DISPATCH_EXTRA=()
-if [[ "${RC}" == "0" ]]; then pass "T10 declarative --acceptance-cmd: dispatch proceeds rc=0"; else fail "T10 declarative cmd: expected rc=0 got ${RC}: $(printf '%s' "${OUT}" | tail -1)"; fi
+if [[ "${RC}" == "0" ]]; then pass "T10 declarative --acceptance-cmd + explicit override: rc=0"; else fail "T10 declarative cmd: expected rc=0 got ${RC}: $(printf '%s' "${OUT}" | tail -1)"; fi
 grep -q '^SPAWN ' "${SPAWN_MARK:-/dev/nonexistent}" && pass "T10 worker started (declarative callers intact)" || fail "T10 worker not started"
 [[ ! -s "${CLOSE_CAP:-/dev/nonexistent}" ]] && pass "T10 nothing closed" || fail "T10 row closed with no row"
 

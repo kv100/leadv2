@@ -7932,28 +7932,30 @@ atomic_dispatch_reserve_confirm_opus() {  # <sig> <arm> <rule>
 #   return 0  premise alive (red probe) or gate not applicable -- dispatch
 #             proceeds byte-identically past this point.
 #   exit 7    premise DEAD (probe green): the row is closed through the
-#             repo-native seam FIRST (${PROJECT_ROOT}/scripts/task-close.sh,
+#             repo-native seam FIRST (the owning repo's scripts/task-close.sh,
 #             the same seam phase8 close calls), then the lane is refused --
 #             never spent. A close failure is loud but never re-opens the
 #             lane: the row stays queued and the next dispatch re-probes.
-#   exit 8    premise REFUSED, row NOT closed: no_premise_probe |
-#             probe_cmd_unreadable | acceptance_cmd_multiline | row_ambiguous |
+#   exit 8    premise REFUSED, row NOT closed: backlog_row_not_found |
+#             row_owner_ambiguous | no_premise_probe | probe_cmd_unreadable |
+#             acceptance_cmd_multiline | row_ambiguous |
 #             probe_not_runnable |
 #             probe_budget_exceeded | resolver_failed. The reason is always
 #             the LAST stderr line and every refusal names its remedy.
 #             Never a silent pass-through, never "assume alive by default".
 # The premise is a PROPERTY OF THE ROW: the gate runs only when --task-id
-# resolves to exactly one docs/tasks.yaml row (matched via the shared
-# colon-anchored matcher leadv2_tasks_yaml_common.row_matches -- the same
-# resolver phase8 close uses, never a substring). The row's probe command
+# resolves to exactly one docs/tasks.yaml row in the repository that owns the
+# id. The shared colon-anchored matcher leadv2_tasks_yaml_common.row_matches
+# is used (the same resolver phase8 close uses, never a substring). The row's probe command
 # comes from --acceptance-cmd (leadv2-fanout.sh already forwards the row's
 # acceptance_cmd field through it) or the row's OWN acceptance_cmd field.
 # acceptance_probe_id alone points into the Supabase probe_registry, which
 # no plugin-side path can read -> refused as probe_cmd_unreadable with the
 # remedy naming how to attach a runnable probe. Scope: a --task-id that
-# resolves to no row keeps today's contract (advisory binding; phase8 SKIPs
-# it at close the same way) and a bare --acceptance-cmd without a row is a
-# downstream-gate declaration, never a premise; --resume-lane / --worktree
+# resolves to no row is a loud refusal. Deliberately ad-hoc work must say
+# --no-probe-yet, which is journalled with actor and why; a bare
+# --acceptance-cmd without a row is a downstream-gate declaration, never a
+# premise. --resume-lane / --worktree
 # pins finish in-flight lanes whose premise was judged at first dispatch. Budget: LEADV2_PREMISE_PROBE_BUDGET_SEC (default 120, minimum
 # 1, non-numeric falls back to the default); a probe killed at the deadline
 # is premise_unknown -- a class APART from green and red, also refused.
@@ -7970,6 +7972,8 @@ _premise_probe_gate() {
   local PREMISE_DEAD_RC=7 PREMISE_REFUSED_RC=8
   local _pp_status="none" _pp_sid="" _pp_probe_id="" _pp_needs="0" _pp_root="" _pp_cmd=""
   local _pp_line _pp_first _pp_plan _pp_reason _pp_remedy _pp_multiline="0"
+  local _pp_candidate _pp_actor _pp_why
+  local -a _pp_roots=()
   if [[ "${LEADV2_PREMISE_PROBE:-1}" != "1" ]]; then
     emit decision "premise_probe task=${sig8} verdict=skipped reason=gate_disabled"
     return 0
@@ -7980,11 +7984,11 @@ _premise_probe_gate() {
     emit decision "premise_probe task=${sig8} verdict=skipped reason=resume_lane"
     return 0
   fi
-  # Resolve the founder's backlog row (roots rule + write-once protocol
-  # mirror phase8 close's [backlog-row] resolver: PROJECT_ROOT first, then
-  # the git-common-dir parent every linked worktree shares; the first root
-  # with any hits decides). Fail-CLOSED: a resolver crash refuses the
-  # dispatch -- an unreadable registry must never wave a lane through.
+  # Resolve the founder's backlog row from the repository that owns the id.
+  # The resolver returns every candidate root so the markdown fallback below
+  # uses the same owner search instead of reverting to PROJECT_ROOT.
+  # Fail-CLOSED: a resolver crash refuses the dispatch -- an unreadable
+  # registry must never wave a lane through.
   _pp_plan="$(
     PROJECT_ROOT="${PROJECT_ROOT}" PP_FOUNDER_TASK="${founder_task_id:-}" \
     PP_EXPLICIT_CMD="${lane_acceptance_cmd}" \
@@ -8008,37 +8012,72 @@ def _durable_root():
     root = os.path.dirname(out) if out else ""
     return root if root and os.path.isdir(root) else ""
 
-roots = [project_root]
+roots = []
+def add_root(value):
+    if not value:
+        return
+    value = os.path.realpath(value)
+    if os.path.isdir(value) and value not in roots:
+        roots.append(value)
+
+add_root(project_root)
 _durable = _durable_root()
-if _durable and _durable != project_root:
-    roots.append(_durable)
+add_root(_durable)
+canonical = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(scripts_dir))))
+add_root(canonical)
+explicit_roots = [raw for raw in os.environ.get("LEADV2_PREMISE_BACKLOG_ROOTS", "").split(os.pathsep) if raw]
+for raw in explicit_roots:
+    add_root(raw)
+
+# The plugin is commonly invoked from one checkout while the task projection
+# lives in a sibling checkout (for example persona-engine next to leadv2).
+# Search only immediate sibling repositories, never an unbounded filesystem
+# walk. An explicit LEADV2_PREMISE_BACKLOG_ROOTS remains available for tests
+# and deployments whose checkouts do not share a parent directory.
+if not explicit_roots:
+    for parent in {os.path.dirname(project_root), os.path.dirname(canonical)}:
+        try:
+            for entry in os.scandir(parent):
+                if entry.is_dir(follow_symlinks=True) and os.path.isfile(os.path.join(entry.path, "docs", "tasks.yaml")):
+                    add_root(entry.path)
+        except OSError:
+            pass
 
 explicit = os.environ.get("PP_EXPLICIT_CMD", "")
 founder = os.environ.get("PP_FOUNDER_TASK", "")
 status, sid, probe_id, needs, root, cmd = "none", "", "", "0", project_root, ""
+matches = []
+same_root_many = False
 
-if founder and not founder.startswith("dispatch-"):
-    for r in roots:
-        items = load_tasks_items(os.path.join(r, "docs", "tasks.yaml"))
-        hits = [it for it in items if isinstance(it, dict) and row_matches(it, founder)]
-        if hits:
-            root = r
-            if len(hits) == 1:
-                status = "one"
-                sid = str(hits[0].get("id") or "")
-                probe_id = str(hits[0].get("acceptance_probe_id") or "")
-                needs = "1" if hits[0].get("needs_acceptance_probe") else "0"
-                # explicit --acceptance-cmd is a SOURCE for the ROW's probe
-                # (fanout forwards the row's own field through it), never a
-                # standalone premise: without a row there is nothing to probe.
-                cmd = explicit if explicit else str(hits[0].get("acceptance_cmd") or "").strip()
-            else:
-                status = "many"
-            break  # first root with any hits decides; later roots never override
+for r in roots:
+    items = load_tasks_items(os.path.join(r, "docs", "tasks.yaml"))
+    hits = [it for it in items if isinstance(it, dict) and row_matches(it, founder)]
+    if len(hits) > 1:
+        same_root_many = True
+    for hit in hits:
+        matches.append((r, hit))
+
+if len(matches) == 1:
+    root, hit = matches[0]
+    status = "one"
+    sid = str(hit.get("id") or "")
+    probe_id = str(hit.get("acceptance_probe_id") or "")
+    needs = "1" if hit.get("needs_acceptance_probe") else "0"
+    # explicit --acceptance-cmd is a SOURCE for the ROW's probe (fanout
+    # forwards the row's own field through it), never a standalone premise.
+    cmd = explicit if explicit else str(hit.get("acceptance_cmd") or "").strip()
+elif same_root_many:
+    status = "many"
+    root = matches[0][0]
+elif len(matches) > 1:
+    status = "owner_many"
+    root = matches[0][0]
 
 # Tab-separated, '-' for empty (tab runs collapse under IFS-whitespace --
 # same wire convention leadv2-fanout.sh documents for its lane contract).
 print("\t".join((status, sid or "-", probe_id or "-", needs, root)))
+for candidate in roots:
+    print("root_candidate=%s" % shlex.quote(candidate))
 if cmd:
     # A newline makes the newline-delimited shell wire format ambiguous. Mark
     # it and refuse before the caller's eval can see a torn quoted command.
@@ -8061,6 +8100,10 @@ PYEOF
       case "${_pp_line}" in
         cmd_multiline=1) _pp_multiline="1" ;;
         cmd=*) eval "_pp_cmd=${_pp_line#cmd=}" ;;  # shlex.quote'd by the resolver
+        root_candidate=*)
+          eval "_pp_candidate=${_pp_line#root_candidate=}"
+          _pp_roots+=("${_pp_candidate}")
+          ;;
       esac
     fi
   done < <(printf '%s\n' "${_pp_plan}")
@@ -8074,6 +8117,14 @@ PYEOF
   fi
   # ── decision tree ──────────────────────────────────────────────────────
   if [[ "${_pp_status}" == "none" ]]; then
+    if [[ "${premise_no_probe_yet:-0}" == "1" ]]; then
+      _pp_actor="${LEADV2_PREMISE_OVERRIDE_ACTOR:-${USER:-unknown}}"
+      _pp_why="${LEADV2_PREMISE_OVERRIDE_REASON:-explicit_no_probe_yet}"
+      _pp_actor="${_pp_actor//$' '/_}"
+      _pp_why="${_pp_why//$' '/_}"
+      emit decision "premise_probe task=${sig8} verdict=skipped reason=no_probe_yet actor=${_pp_actor} why=${_pp_why}"
+      return 0
+    fi
     # No yaml row claims this premise. Before falling back to the ad-hoc
     # contract, consult the repo's markdown backlog declaration (per-repo
     # override at .claude/leadv2-overrides/markdown-backlog.yaml) --
@@ -8082,15 +8133,16 @@ PYEOF
     # A --task-id that is empty or a synthetic dispatch-* id is never a
     # backlog row in either resolver -- do not even try the reader.
     local _md_status="none" _md_id="-" _md_text="-" _md_file="-" _md_line=""
-    if [[ -n "${founder_task_id:-}" && "${founder_task_id}" != dispatch-* ]]; then
-      if [[ -x "${_MARKDOWN_BACKLOG_READER}" || -r "${_MARKDOWN_BACKLOG_READER}" ]]; then
-        _md_line="$(python3 "${_MARKDOWN_BACKLOG_READER}" --root "${PROJECT_ROOT}" --task-id "${founder_task_id}" 2>/dev/null)"
-      fi
-      if [[ -n "${_md_line}" ]]; then
+    if [[ -n "${founder_task_id:-}" ]]; then
+      for _pp_candidate in "${_pp_roots[@]}"; do
+        if [[ -x "${_MARKDOWN_BACKLOG_READER}" || -r "${_MARKDOWN_BACKLOG_READER}" ]]; then
+          _md_line="$(python3 "${_MARKDOWN_BACKLOG_READER}" --root "${_pp_candidate}" --task-id "${founder_task_id}" 2>/dev/null)"
+        fi
+        [[ -n "${_md_line}" ]] || continue
+        _pp_root="${_pp_candidate}"
         IFS=$'\t' read -r _md_status _md_id _md_text _md_file <<<"${_md_line}"
-      else
-        _md_status="reader_failed"
-      fi
+        break
+      done
     fi
     case "${_md_status}" in
       md_open)
@@ -8107,38 +8159,28 @@ PYEOF
         log_err "premise refused: reason=markdown_row_ambiguous task=${sig8} row=md:${_md_id} file=${_md_file} -- 2+ rows carry id ${_md_id} in the markdown backlog; disambiguate"
         exit "${PREMISE_REFUSED_RC}"
         ;;
-      reader_failed)
-        emit decision "premise_probe task=${sig8} verdict=skipped reason=no_backlog_row md=reader_failed"
-        log "premise: markdown backlog reader unavailable or produced no output (${_MARKDOWN_BACKLOG_READER}) -- treated as no row"
-        return 0
-        ;;
       none)
-        if [[ "${_md_text}" == "-" ]]; then
-          # No row claims this premise: --task-id is advisory binding metadata
-          # here (phase8 close SKIPs the same shape at the other end) and a
-          # bare --acceptance-cmd is a downstream-gate declaration (lane-shape
-          # classify, product-close), not a premise -- ad-hoc dispatch keeps
-          # today's contract byte-for-byte. Measured 2026-09-11:
-          # test-leadv2-lane-shape.sh and test-plugin-papercuts.sh dispatch
-          # with --acceptance-cmd 'true' and no row; gating those would have
-          # refused them on a green 'true'.
-          emit decision "premise_probe task=${sig8} verdict=skipped reason=no_backlog_row"
-        else
-          emit decision "premise_probe task=${sig8} verdict=skipped reason=no_backlog_row md=${_md_text}"
-          log "premise: markdown backlog declaration unusable (${_md_text}) -- treated as no row"
-        fi
-        return 0
+        emit decision "premise_probe task=${sig8} verdict=refused reason=backlog_row_not_found"
+        log_err "premise refused: reason=backlog_row_not_found task=${sig8} founder=${founder_task_id:-none} -- no docs/tasks.yaml or markdown backlog row carries this id; use --no-probe-yet only for deliberately ad-hoc work (audited with actor and why)"
+        exit "${PREMISE_REFUSED_RC}"
         ;;
       *)
-        emit decision "premise_probe task=${sig8} verdict=skipped reason=no_backlog_row md=reader_failed"
-        log "premise: markdown backlog reader returned an unparseable status (${_md_status}) -- treated as no row"
-        return 0
+        emit decision "premise_probe task=${sig8} verdict=refused reason=backlog_row_not_found md=${_md_status}"
+        log_err "premise refused: reason=backlog_row_not_found task=${sig8} founder=${founder_task_id:-none} -- markdown backlog lookup did not identify an owner row; use --no-probe-yet only for deliberately ad-hoc work (audited with actor and why)"
+        exit "${PREMISE_REFUSED_RC}"
         ;;
     esac
   fi
-  if [[ "${_pp_status}" == "many" ]]; then
-    emit decision "premise_probe task=${sig8} row=ambiguous verdict=refused reason=row_ambiguous"
-    log_err "premise refused: reason=row_ambiguous task=${sig8} founder=${founder_task_id:-none} -- 2+ docs/tasks.yaml rows match this founder id; disambiguate the id before dispatching"
+  if [[ "${_pp_status}" == "many" || "${_pp_status}" == "owner_many" ]]; then
+    if [[ "${_pp_status}" == "many" ]]; then
+      _pp_reason="row_ambiguous"
+      _pp_remedy="2+ rows in one backlog match this founder id; disambiguate the id before dispatching"
+    else
+      _pp_reason="row_owner_ambiguous"
+      _pp_remedy="2+ backlog rows across the searched repositories match this id; disambiguate the owner before dispatching"
+    fi
+    emit decision "premise_probe task=${sig8} row=ambiguous verdict=refused reason=${_pp_reason}"
+    log_err "premise refused: reason=${_pp_reason} task=${sig8} founder=${founder_task_id:-none} -- ${_pp_remedy}"
     exit "${PREMISE_REFUSED_RC}"
   fi
   if [[ -z "${_pp_cmd}" ]]; then
@@ -8182,16 +8224,16 @@ PYEOF
       # the row through the repo-native seam, journal, refuse the lane.
       emit decision "premise_dead task=${sig8} row=${_pp_sid:-none} probe=green rc=0"
       if [[ -n "${_pp_sid}" ]]; then
-        local _pp_bin="${PROJECT_ROOT}/scripts/task-close.sh"
+        local _pp_bin="${_pp_root}/scripts/task-close.sh"
         if [[ -x "${_pp_bin}" ]]; then
-          if bash "${_pp_bin}" "${_pp_sid}" \
+          if CLAUDE_PROJECT_ROOT="${_pp_root}" LEADV2_PROJECT_ROOT="${_pp_root}" bash "${_pp_bin}" "${_pp_sid}" \
               --reason "premise probe green at dispatch (PREMISE-PROBE-BEFORE-A-LANE-IS-DISPATCHED-01): acceptance already satisfied, lane not spent [task=${sig8} founder=${founder_task_id:-none}]"; then
             log "premise_dead: backlog row ${_pp_sid} closed (probe green) -- lane not spent"
           else
             log_err "premise_dead: task-close.sh FAILED for row ${_pp_sid} -- row left open and will re-probe on the next dispatch; close manually: scripts/task-close.sh ${_pp_sid} --reason 'premise green at dispatch'"
           fi
         else
-          log "premise_dead: ${PROJECT_ROOT}/scripts/task-close.sh not present/not executable -- backlog row ${_pp_sid} left to its owning repo"
+          log "premise_dead: ${_pp_root}/scripts/task-close.sh not present/not executable -- backlog row ${_pp_sid} left to its owning repo"
         fi
       fi
       rm -f "${_pp_out}"
@@ -8224,7 +8266,7 @@ usage() {
 Usage:
   $SCRIPT_NAME <mission|@file|-> [--protected] [--safety] [--subsystems N]
                 [--ui-judgment] [--interactive] [--kind <k>] [--glm-failures N]
-                [--glm-lock-busy] [--force] [--no-spawn] [--task-class <class>]
+                [--glm-lock-busy] [--force] [--no-spawn] [--no-probe-yet] [--task-class <class>]
                 [--resume-lane <task-sig8|founder-id>] [--worktree <abs-path>]
                 [--task-id <founder-task-id>]
                 --task-id <founder-task-id>: binds founder_task_id explicitly. --resume-lane
@@ -8254,8 +8296,8 @@ Usage:
                 green, the backlog row was closed via scripts/task-close.sh and the lane was
                 NOT spent; no ledger row, no worktree, no spawn), 8 premise refused (no
                 readable acceptance probe on the row / probe unrunnable / probe budget
-                exceeded / 2+ rows match the founder id -- the reason and remedy are the
-                last stderr line; never a silent pass-through, never assume-alive).
+                exceeded / missing owner row / ambiguous owner -- the reason and remedy are
+                the last stderr line; never a silent pass-through, never assume-alive).
   $SCRIPT_NAME record-review --diff-hash <h> --verdict <PASS|FAIL|PASS_WITH_NITS>
                 [--reviewer <s>] [--run-id <s>]
                 Record a Codex review verdict; refuse a duplicate diff-hash (ATOMIC).
@@ -8280,6 +8322,10 @@ Env: LEADV2_DISPATCH_ENFORCE=0 disables dedup (no-op/pass-through). LEADV2_DISPA
      LEADV2_PREMISE_PROBE=0 disables the premise-probe gate (PREMISE-PROBE-BEFORE-A-
      LANE-IS-DISPATCHED-01). LEADV2_PREMISE_PROBE_BUDGET_SEC caps the acceptance probe
      runtime (default 120s; a probe exceeding it is premise_unknown -> exit 8).
+     --no-probe-yet is the explicit, audited escape hatch for an intentionally ad-hoc
+     dispatch with no backlog row; it emits actor and why in the premise journal line.
+     LEADV2_PREMISE_BACKLOG_ROOTS adds colon-separated owner-repository roots to the
+     bounded backlog search.
 EOF
   # DISPATCH-EXITS-ZERO-ON-UNREADABLE-MISSION-01: the exit code was never the defect --
   # this is exit 1, and an unrecognised flag reaches it through the `--*` branch below,
@@ -8507,7 +8553,7 @@ cmd_resolve() {
   # R6: computed once for this invocation so a single dispatch never straddles two
   # daily counter files even if it runs across a UTC-midnight boundary.
   local _LEADV2_EXC_DAY; _LEADV2_EXC_DAY="$(date -u +%Y%m%d)"
-  local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard" task_class_flagged=0
+  local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 premise_no_probe_yet=0 task_class="Standard" task_class_flagged=0
   # EXPLICIT-ARM-REQUEST-01 (founder, via Leadmain, 2026-09-07): the arbiter
   # already honours `requested_arm` in its own descriptor (route-arbiter.sh
   # commit 9de02b18) but nothing here ever set it -- the same "written and
@@ -8582,6 +8628,7 @@ cmd_resolve() {
       --glm-lock-busy) lockbusy=1;   shift ;;
       --force)        force=1;       shift ;;
       --kimi-fit)     kimi_fit=1;    shift ;;
+      --no-probe-yet) premise_no_probe_yet=1; shift ;;
       --spawn)        spawn=1;       shift ;;  # default; kept explicit for callers/back-compat
       --no-spawn)     spawn=0;       shift ;;  # resolve+journal only, no worker launched (tests)
       # LANE-SHAPE-01: optional lane-shape declaration inputs (spec §8 context.yaml
