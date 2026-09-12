@@ -53,6 +53,18 @@ if [[ -f "${_PARKED_DETECT_SH}" ]]; then
   # shellcheck source=lib/leadv2-parked-detect.sh
   source "${_PARKED_DETECT_SH}" || true
 fi
+# ARBITER-LEARNS-WHAT-WORK-COSTS-01 (founder order 2026-09-12): the WRITE half
+# of the observed-cost loop. This funnel owns the landed/dead terminal verdicts
+# (dispatch-code's _dl_note owns refused/parked), so this is where a LANED
+# dispatch's actual spend -- arm/rounds/wall, derived from the same events
+# journal the arbiter reads -- gets recorded beside the pre-arm estimate.
+# Guarded like its neighbours: per-file symlink installs have no lib/ sibling.
+_COST_ACTUALS_SH="${SCRIPT_DIR}/lib/leadv2-cost-actuals.sh"
+[[ -f "${_COST_ACTUALS_SH}" ]] || _COST_ACTUALS_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-cost-actuals.sh"
+if [[ -f "${_COST_ACTUALS_SH}" ]]; then
+  # shellcheck source=lib/leadv2-cost-actuals.sh
+  source "${_COST_ACTUALS_SH}" || true
+fi
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 # REPORT-ONLY-GATE-01: optional lane deliverable declaration threaded from
 # leadv2-dispatch-code.sh (row/CLI --lane-deliverable wins; else the mission's own
@@ -292,6 +304,24 @@ _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
   bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${_PC_TERMINAL_EVIDENCE}" "${_PC_ATTEMPT}" "${LANE_NAME}" "${_PC_TERMINAL_COMMIT:-none}" "${_PC_TERMINAL_DELIVERABLE:-unknown}" "${_wr}" >/dev/null 2>&1 9>&- || true
   fi
   _pc_journal_terminal_once "$1" "$2" "${_PC_TERMINAL_EVIDENCE}"
+  # ARBITER-LEARNS-WHAT-WORK-COSTS-01: the actual beside the estimate, for the
+  # terminal THIS funnel owns (landed/dead). Arm/rounds/wall are derived by the
+  # lib from the events journal (last spawn's arm, spawn count); the class is
+  # the intake admission class already sitting in this lane's own journal --
+  # the same class the arbiter buckets history by. Once-flag keeps the EXIT
+  # trap's idempotent replay from appending a second identical row; fail-open
+  # throughout: a cost row is for the NEXT dispatch, never a gate on THIS one.
+  if [[ "${_PC_COST_ACTUAL_DONE:-0}" == "0" ]] && command -v leadv2_cost_actual_record >/dev/null 2>&1; then
+    _PC_COST_ACTUAL_DONE=1
+    local _ca_cls=""
+    _ca_cls="$(bash "${JOURNAL_BIN}" tail "dispatch-${TASK}" 100000 2>/dev/null \
+      | grep -oE 'task_class=[A-Za-z]+' | head -1 | cut -d= -f2 | tr '[:upper:]' '[:lower:]')"
+    local _ca_line=""
+    _ca_line="$(leadv2_cost_actual_record \
+      "$(printf '%s' "${ROOT##*/}" | tr -cd 'A-Za-z0-9._-')" \
+      "${TASK}" "$1" "$2" "${_ca_cls:-unknown}" 2>/dev/null || true)"
+    [[ -n "${_ca_line}" ]] && emit decision "${_ca_line}"
+  fi
 }
 # LANE-TERMINAL-ROW (2026-09-09): the journal half of the terminal-row
 # guarantee. _dl_note is the single funnel every terminal verdict passes

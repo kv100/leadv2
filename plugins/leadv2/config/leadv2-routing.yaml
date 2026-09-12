@@ -146,6 +146,18 @@ router_v2:
       - dead:no_verdict_marker
       - dead:review_body_lost
 
+  # ARBITER-LEARNS-WHAT-WORK-COSTS-01 (founder order 2026-09-12): observed-cost
+  # history. kind=cost_actual rows in the per-repo events journal (written by
+  # lib/leadv2-cost-actuals.sh at dispatch terminal state, read by the arbiter
+  # at ranking time) re-price the matrix base cost by the mean observed rounds
+  # per (task class, arm) -- but only once a bucket holds >= min_rows tasks
+  # (one lucky task is no basis, the same rule the spend forecast's
+  # FORECAST_MIN_ROWS sets). Below that, and with no rows at all, the matrix
+  # price alone decides and the decision line says so (cost_actuals=no_history
+  # / matrix_only). Rollback is one flag: LEADV2_ARBITER_OBSERVED_COST=0.
+  observed_cost:
+    min_rows: 3
+
   # T17 route arbiter capability matrix. This is data, not a second ladder.
   # `cost` is a relative unit used only among capable, uncapped arms.
   #

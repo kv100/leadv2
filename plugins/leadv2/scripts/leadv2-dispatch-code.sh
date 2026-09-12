@@ -850,6 +850,17 @@ if [[ -f "${_ADMISSION_CLASS_SH}" ]]; then
   # shellcheck disable=SC1091
   source "${_ADMISSION_CLASS_SH}" || true
 fi
+# ARBITER-LEARNS-WHAT-WORK-COSTS-01 (founder order 2026-09-12): the WRITE half
+# of the observed-cost loop -- records what a dispatch actually spent (arm,
+# rounds, wall) at terminal state into the same events journal the arbiter
+# reads cost history from. Sourced here once; _dl_note is the single funnel
+# every terminal verdict passes through, so that is where it is called.
+_COST_ACTUALS_SH="${SCRIPT_DIR}/lib/leadv2-cost-actuals.sh"
+[[ -f "${_COST_ACTUALS_SH}" ]] || _COST_ACTUALS_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-cost-actuals.sh"
+if [[ -f "${_COST_ACTUALS_SH}" ]]; then
+  # shellcheck disable=SC1091
+  source "${_COST_ACTUALS_SH}" || true
+fi
 # BRAIN-CLASS-LIVE-01: class_escalated/class_floor_held journal vocabulary +
 # docs/handoff/<task>/brain.yaml, layered on top of the admission class map
 # above (does not change what class is computed, only makes the decision
@@ -2302,6 +2313,20 @@ _dl_note() {
   # TERMINAL_LEDGER flag below -- this is a second, cheaper reader surface
   # (spec §6/§7.6 "mirror for now"), not gated on the ledger's own on/off switch.
   _emit_event worker_terminal "$1" "" "" "$2:$3"
+  # ARBITER-LEARNS-WHAT-WORK-COSTS-01: the actual beside the estimate. The
+  # estimate was journalled pre-arm-selection (cost_estimate_recorded); this
+  # records what the dispatch really spent -- arm/rounds/wall derived from the
+  # same events journal, stamped with the admission class the arbiter buckets
+  # by -- so the next routing prices this (class,arm) from history, not from
+  # the matrix alone. Fail-open like every emit here; the lib skips on its own
+  # when no spawn ever ran (a pre-spawn refusal burned no arm work).
+  if command -v leadv2_cost_actual_record >/dev/null 2>&1; then
+    local _ca_line=""
+    _ca_line="$(leadv2_cost_actual_record "$(repo_slug)" "$1" "$2" "$3" \
+      "$(printf '%s' "${ADMISSION_CLASS:-${task_class:-standard}}" | tr '[:upper:]' '[:lower:]')" \
+      "${ADMISSION_WORK_KIND:-code}" "${_MS_MODEL:-unknown}" 2>/dev/null || true)"
+    [[ -n "${_ca_line}" ]] && emit decision "${_ca_line}"
+  fi
   [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || return 0
   # N7F-LANE-NAME: 7th positional is the display name, read from the DISPATCH_LANE_NAME
   # global (never from this fn's own args -- its 5-arg signature stays unchanged so its

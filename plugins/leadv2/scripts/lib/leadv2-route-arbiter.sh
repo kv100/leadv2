@@ -1619,9 +1619,91 @@ def headroom_weight(provider):
     _w=_headroom_ramp(un)
     if _w != 1.0: _headroom_priced[provider]=_w
     return _w
+# ARBITER-LEARNS-WHAT-WORK-COSTS-01 (founder order 2026-09-12, row
+# 4c06462a1a71): the READ half of the observed-cost loop. A cost estimate is
+# written BEFORE the arm is chosen (cost_estimate_recorded ...
+# phase=pre_arm_selection) and nothing ever recorded what the work actually
+# cost, so the matrix price was the whole answer: a task class that reliably
+# burns three rounds on a cheap arm kept being sent to the cheap arm, and one
+# that finishes first try kept being priced as if it might not. The loop:
+#   WRITE  dispatch terminal -> one kind=cost_actual row in the SAME events
+#          journal failure memory and the forecast already read
+#          (lib/leadv2-cost-actuals.sh, wired into both _dl_note funnels),
+#          carrying arm/model/rounds/wall stamped with the task's class --
+#          the journal the dispatcher already writes, never a second store.
+#   READ   here: expected rounds per (task class, arm). One task contributes
+#          its MAX recorded rounds (a task re-dispatched 3 times counts 3,
+#          not 1+2+3); class comes stamped on the row, folded to the same
+#          lowercase size_raw vocabulary the descriptor carries.
+#   RANK   ecost multiplies the matrix BASE by the observed mean -- cost
+#          becomes a PRIOR, history adjusts it. The additive floors stay
+#          UNSCALED (freepool +100, unknown-probe +50, complexity penalty):
+#          a cost adjustment can never dilute a refusal another line already
+#          decided, the same boundary the headroom gradient keeps.
+# No history -> factor exactly 1.0 -> the matrix price alone, byte-for-byte
+# today's behaviour, and the line SAYS so (cost_actuals=no_history) -- the
+# discipline failure_memory=no_history set. Rollback is one flag:
+# LEADV2_ARBITER_OBSERVED_COST=0 removes multiplier AND token. Protections
+# are untouched: the glm fail-open, the sonnet fail-closed and the
+# protected:false exclusions all run in the matrix/stage filters BEFORE this
+# ranking; this block only re-prices arms that already survived them.
+_oc_cfg=((data.get('router_v2') or {}).get('observed_cost') or {})
+try: OBS_MIN_ROWS=int(_oc_cfg.get('min_rows', 3))
+except (TypeError, ValueError): OBS_MIN_ROWS=3
+if OBS_MIN_ROWS < 1: OBS_MIN_ROWS=3
+OBS_ON=os.environ.get('LEADV2_ARBITER_OBSERVED_COST','1')!='0'
+def read_cost_actuals():
+    # -> ({(class,arm): [rounds per task]}, status). status is one of:
+    #   journal_unavailable -- the events journal could not be read: UNKNOWN,
+    #                          never "zero"; factor stays 1.0 and the line
+    #                          names it, so "clean record" and "could not
+    #                          look" stay distinguishable.
+    #   no_history          -- read fine, not one cost_actual row anywhere.
+    #   ok                  -- at least one (class,arm) bucket has rows.
+    evt=os.environ.get('ROUTE_ARBITER_EVENTS_JOURNAL') or ''
+    per_task={}
+    try:
+        with open(evt) as _f:
+            for _l in _f:
+                try: r=json.loads(_l)
+                except Exception: continue
+                if str(r.get('kind') or '')!='cost_actual': continue
+                _t=str(r.get('task') or ''); _a=str(r.get('arm') or '')
+                if not _t or not _a: continue
+                kv={}
+                for tok in str(r.get('detail') or '').split():
+                    if '=' in tok:
+                        k,v=tok.split('=',1); kv[k]=v
+                try: rounds=int(kv.get('rounds'))
+                except (TypeError, ValueError): continue
+                cls=str(kv.get('class') or '').strip().lower()
+                if not cls: continue
+                _cur=per_task.get(_t)
+                if _cur is None or rounds>_cur[2]: per_task[_t]=(_a,cls,rounds)
+    except Exception:
+        return {}, 'journal_unavailable'
+    out={}
+    for _a,_cls,_rounds in per_task.values():
+        out.setdefault((_cls,_a),[]).append(_rounds)
+    return out, ('ok' if out else 'no_history')
+_obs_actuals={}; _obs_status='off'
+if OBS_ON: _obs_actuals,_obs_status=read_cost_actuals()
+_obs_priced={}
+def _observed_rounds(c):
+    # Expected rounds for THIS task's class on THIS arm; 1.0 -- the matrix
+    # price IS the whole answer, today's exact behaviour -- when there is no
+    # history (below OBS_MIN_ROWS is no basis, the same rule the forecast's
+    # FORECAST_MIN_ROWS sets; one lucky row must not re-price an arm).
+    if not OBS_ON: return 1.0
+    _rows=_obs_actuals.get((size_raw,c.get('arm')))
+    if not _rows or len(_rows)<OBS_MIN_ROWS: return 1.0
+    _r=sum(_rows)/float(len(_rows))
+    _obs_priced['%s/%s'%(size_raw,c.get('arm'))]='n=%d,avg_rounds=%.2f'%(len(_rows),_r)
+    return _r
 def ecost(c):
     _w=headroom_weight(c.get('provider'))
     _base=float(c.get('cost',999))/(_w if _w > 0 else 1.0)
+    _base*=_observed_rounds(c)
     return _base + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + (UNKNOWN_PROBE_PENALTY if unk.get(c.get('provider')) else 0.0) + complexity_penalty(c)
 # ARBITER-SCORING-DESIGN-01 step 1: _cost_order/_fit_order/fit_differs are
 # ALWAYS computed, in every FIT_MODE, so the shadow comparison exists before
@@ -1892,6 +1974,24 @@ if FORECAST_ON:
     if _ws is not None: _forecast_tok+=' forecast_ws=%g'%_ws
     _forecast_tok+=' forecast_class=%s/%s'%(size,duration_class)
 _wait = (' wait_applied=%s' % ','.join(_waited)) if _waited else ''
+# ARBITER-LEARNS-WHAT-WORK-COSTS-01: the observed-cost provenance rides every
+# success line -- which (class,arm) buckets were priced from history and their
+# n/avg_rounds, `no_history` when the journal was read and held no cost_actual
+# rows (priced from the matrix alone, the founder's exact distinction),
+# `matrix_only` when history exists but no candidate arm had enough rows, and
+# `unavailable` when the journal could not be read (unknown, never zero).
+# Absent entirely when the kill switch is on -- off is today's byte-identical
+# line, which is what makes the switch a real rollback.
+_obs_tok=''
+if OBS_ON:
+    if _obs_status=='journal_unavailable':
+        _obs_tok=' cost_actuals=unavailable'
+    elif _obs_priced:
+        _obs_tok=' cost_actuals=%s' % ','.join('%s:%s'%(_k,_v) for _k,_v in sorted(_obs_priced.items()))
+    elif _obs_status=='no_history':
+        _obs_tok=' cost_actuals=no_history'
+    else:
+        _obs_tok=' cost_actuals=matrix_only'
 # FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01: name ANY gate refusal on the
 # decision line itself -- this line is what the dispatcher journals verbatim
 # (route_resolved ... util_glm=... tail), so the freepool verdict travels
@@ -1931,7 +2031,7 @@ _effort_cap=(' capped_from=%s' % _capped_from) if _capped_from else ''
 _cc_tok = ' caller_min_cap=%s caller_max_cost=%s' % (
     ('%.1f' % _min_capability if _min_capability is not None else 'none'),
     ('%.1f' % _max_cost if _max_cost is not None else 'none'))
-print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok,_cc_tok))
+print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok,_obs_tok,_cc_tok))
 PY
 }
 
