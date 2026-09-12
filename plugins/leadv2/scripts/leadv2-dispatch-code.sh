@@ -7937,7 +7937,8 @@ atomic_dispatch_reserve_confirm_opus() {  # <sig> <arm> <rule>
 #             never spent. A close failure is loud but never re-opens the
 #             lane: the row stays queued and the next dispatch re-probes.
 #   exit 8    premise REFUSED, row NOT closed: no_premise_probe |
-#             probe_cmd_unreadable | row_ambiguous | probe_not_runnable |
+#             probe_cmd_unreadable | acceptance_cmd_multiline | row_ambiguous |
+#             probe_not_runnable |
 #             probe_budget_exceeded | resolver_failed. The reason is always
 #             the LAST stderr line and every refusal names its remedy.
 #             Never a silent pass-through, never "assume alive by default".
@@ -7956,6 +7957,10 @@ atomic_dispatch_reserve_confirm_opus() {  # <sig> <arm> <rule>
 # pins finish in-flight lanes whose premise was judged at first dispatch. Budget: LEADV2_PREMISE_PROBE_BUDGET_SEC (default 120, minimum
 # 1, non-numeric falls back to the default); a probe killed at the deadline
 # is premise_unknown -- a class APART from green and red, also refused.
+# A row probe containing a literal newline is refused as
+# acceptance_cmd_multiline before the quoted command reaches the shell eval
+# below; keeping the existing eval path for one-line commands preserves their
+# quoting and execution behavior.
 # rc 125/126/127 = the probe could not run at all (cwd gone / not
 # executable / command not found) = premise_unknown, never a verdict.
 # Exit codes extend the ladder after the burn gate's 6. LEADV2_PREMISE_PROBE=0
@@ -7964,7 +7969,7 @@ atomic_dispatch_reserve_confirm_opus() {  # <sig> <arm> <rule>
 _premise_probe_gate() {
   local PREMISE_DEAD_RC=7 PREMISE_REFUSED_RC=8
   local _pp_status="none" _pp_sid="" _pp_probe_id="" _pp_needs="0" _pp_root="" _pp_cmd=""
-  local _pp_line _pp_first _pp_plan _pp_reason _pp_remedy
+  local _pp_line _pp_first _pp_plan _pp_reason _pp_remedy _pp_multiline="0"
   if [[ "${LEADV2_PREMISE_PROBE:-1}" != "1" ]]; then
     emit decision "premise_probe task=${sig8} verdict=skipped reason=gate_disabled"
     return 0
@@ -8035,7 +8040,12 @@ if founder and not founder.startswith("dispatch-"):
 # same wire convention leadv2-fanout.sh documents for its lane contract).
 print("\t".join((status, sid or "-", probe_id or "-", needs, root)))
 if cmd:
-    print("cmd=%s" % shlex.quote(cmd))
+    # A newline makes the newline-delimited shell wire format ambiguous. Mark
+    # it and refuse before the caller's eval can see a torn quoted command.
+    if "\\n" in cmd:
+        print("cmd_multiline=1")
+    else:
+        print("cmd=%s" % shlex.quote(cmd))
 PYEOF
   )" || _pp_plan=""
   if [[ -z "${_pp_plan}" ]]; then
@@ -8049,6 +8059,7 @@ PYEOF
       _pp_first="${_pp_line}"
     else
       case "${_pp_line}" in
+        cmd_multiline=1) _pp_multiline="1" ;;
         cmd=*) eval "_pp_cmd=${_pp_line#cmd=}" ;;  # shlex.quote'd by the resolver
       esac
     fi
@@ -8056,6 +8067,11 @@ PYEOF
   IFS=$'\t' read -r _pp_status _pp_sid _pp_probe_id _pp_needs _pp_root <<<"${_pp_first}"
   [[ "${_pp_sid}" == "-" ]] && _pp_sid=""
   [[ "${_pp_probe_id}" == "-" ]] && _pp_probe_id=""
+  if [[ "${_pp_multiline}" == "1" ]]; then
+    emit decision "premise_probe task=${sig8} row=${_pp_sid:-none} verdict=refused reason=acceptance_cmd_multiline"
+    log_err "premise refused: reason=acceptance_cmd_multiline task=${sig8} row=${_pp_sid:-none} -- acceptance_cmd contains a newline; make the row probe a single-line shell command or call a script file"
+    exit "${PREMISE_REFUSED_RC}"
+  fi
   # ── decision tree ──────────────────────────────────────────────────────
   if [[ "${_pp_status}" == "none" ]]; then
     # No yaml row claims this premise. Before falling back to the ad-hoc
