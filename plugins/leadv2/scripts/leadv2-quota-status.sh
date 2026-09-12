@@ -232,6 +232,102 @@ except Exception:
   fi
 fi
 
+# ── Per-identity accounts (QUOTA-REPORT-PER-ACCOUNT-01, row f56ac3e63723) ──
+# turn_events has NO per-account column (see provider-split header comment
+# above: the split is claude-vs-glm by `model`, not personal-vs-work) — this
+# DB physically cannot answer "how much did the personal account burn vs the
+# work account". 2026-09-12: the aggregate weekly line below printed 43%
+# "safe" while personal=0%/work=80% (work was the account actually
+# dispatching, confirmed independently by a provider rate_limit_event at the
+# same minute) -- a blend of a healthy and an exhausted account is wrong in
+# the only direction that matters. The correct per-account signal already
+# exists and is already authoritative: leadv2-claude-profile-select.sh's live
+# probe (`windows=` field, emitted by leadv2-claude-profile-pick.py) is the
+# SAME probe that routes dispatches across the two accounts -- reused here,
+# never a second measurement. Gated on the selector's OWN opt-in
+# (LEADV2_CLAUDE_MULTIPROFILE=1) so this script never forces a live network
+# probe a caller did not already ask for (keeps every hermetic test and any
+# single-account deployment byte-identical to before). Degrades honestly:
+# opt-out, no registry, or a probe failure all leave IDENTITY_SOURCE=unavailable,
+# never a fabricated identity or percentage.
+IDENTITY_SELECT="${LEADV2_QUOTA_STATUS_PROFILE_SELECT:-$(dirname "$0")/leadv2-claude-profile-select.sh}"
+IDENTITY_LINE=""
+if [[ -n "${LEADV2_QUOTA_STATUS_IDENTITY_LINE:-}" ]]; then
+  IDENTITY_LINE="$LEADV2_QUOTA_STATUS_IDENTITY_LINE"   # hermetic test seam -- injects a
+                                                        # profile-select-shaped line with no
+                                                        # subprocess/network call at all.
+elif [[ "${LEADV2_CLAUDE_MULTIPROFILE:-}" == "1" && -r "$IDENTITY_SELECT" ]]; then
+  IDENTITY_LINE="$(bash "$IDENTITY_SELECT" 2>/dev/null || true)"
+fi
+IDENTITY_WINDOWS="$(printf '%s' "$IDENTITY_LINE" | sed -n 's/.*[[:space:]]windows=\([^[:space:]]*\).*/\1/p')"
+
+# One python3 pass turns the `windows=label:window=pct,usable_now=u|...` field into
+# structured JSON (embedded verbatim in --json below) -- pure function of stdin, no
+# env/filesystem/network, so it never depends on which of the two callers above fed it.
+IDENTITY_PARSE="$(printf '%s' "$IDENTITY_WINDOWS" | python3 -c '
+import json, sys
+raw = sys.stdin.read().strip()
+items = []
+for part in (raw.split("|") if raw else []):
+    if ":" not in part:
+        continue
+    label, rest = part.split(":", 1)
+    window, _, rest2 = rest.partition("=")
+    fields = rest2.split(",") if rest2 else []
+    pct = None
+    if fields:
+        try:
+            pct = int(round(float(fields[0])))
+        except (TypeError, ValueError):
+            pct = None
+    usable = None
+    for f in fields[1:]:
+        if f.startswith("usable_now="):
+            try:
+                usable = float(f.split("=", 1)[1])
+            except (TypeError, ValueError):
+                usable = None
+    if pct is None:
+        status = "unknown"
+    elif pct >= 85:
+        status = "exhausted"
+    elif pct >= 60:
+        status = "warn"
+    else:
+        status = "safe"
+    items.append({"label": label, "window": window or "-", "pct": pct, "usable_now": usable, "status": status})
+worst = None
+for it in items:
+    if it["pct"] is None:
+        continue
+    if worst is None or it["pct"] > worst["pct"]:
+        worst = it
+print(json.dumps({"source": "live" if items else "unavailable", "count": len(items), "list": items, "worst": worst}))
+' 2>/dev/null || echo '{"source":"unavailable","count":0,"list":[],"worst":null}')"
+
+IFS=$'\t' read -r IDENTITY_SOURCE IDENTITY_COUNT WORST_LABEL WORST_WINDOW WORST_PCT WORST_USABLE WORST_STATUS <<<"$(
+  printf '%s' "$IDENTITY_PARSE" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+w = d.get("worst") or {}
+def s(v):
+    return "-" if v is None else str(v)
+print("%s\t%s\t%s\t%s\t%s\t%s\t%s" % (d.get("source","unavailable"), d.get("count",0),
+      s(w.get("label")), s(w.get("window")), s(w.get("pct")), s(w.get("usable_now")), s(w.get("status"))))
+' 2>/dev/null || printf 'unavailable\t0\t-\t-\t-\t-\t-\n')"
+
+IDENTITY_REPORT_LINES="$(printf '%s' "$IDENTITY_PARSE" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for it in d.get("list") or []:
+    pct = it.get("pct")
+    pct_s = "-" if pct is None else "%d%%" % pct
+    u = it.get("usable_now")
+    u_s = "-" if u is None else "%.3f" % u
+    print("  identity=%s %s=%s usable_now=%s status=%s  [provider-authoritative, per-account]"
+          % (it["label"], it.get("window") or "-", pct_s, u_s, it["status"]))
+' 2>/dev/null || true)"
+
 # 24h cache-hit is a Claude-Max subscription metric → claude% only.
 read -r C24_IN C24_CR <<EOF4
 $(sqlite3 -separator ' ' "$DB" "SELECT COALESCE(SUM(input),0), COALESCE(SUM(cr),0) FROM turn_events WHERE ts > datetime('now','-24 hours') AND model LIKE 'claude%';" 2>/dev/null || echo "0 0")
@@ -288,6 +384,28 @@ elif [[ "$PCT_WK" -ge 85 ]]; then
   STATUS="weekly_warn"; REC="downgrade_to_sonnet"
 fi
 
+# ── REPORT_STATUS / REPORT_REC — the reporting-surface safety word ────────
+# --check above is UNTOUCHED: it keeps gating on $STATUS/$REC exactly as
+# before (claude%-only aggregate + rate_limit_info override), so every
+# existing breaker test is unaffected regardless of whether multi-profile
+# identity data is available. REPORT_STATUS/REPORT_REC are the words shown
+# on --report/--json: the worst LIVE identity's status when per-account data
+# is available (the safety word belongs to the account that will actually
+# refuse the next dispatch), falling back to the same aggregate STATUS/REC
+# when it is not (single account / opt-out -- no blending risk exists, so
+# the aggregate IS the per-account truth in that case).
+REPORT_STATUS="$STATUS"
+REPORT_REC="$REC"
+if [[ "$IDENTITY_SOURCE" == "live" && "$WORST_LABEL" != "-" ]]; then
+  REPORT_STATUS="$WORST_STATUS"
+  case "$WORST_STATUS" in
+    exhausted) REPORT_REC="pause" ;;
+    warn)      REPORT_REC="downgrade_to_sonnet" ;;
+    safe)      REPORT_REC="proceed" ;;
+    *)         REPORT_REC="$REC" ;;
+  esac
+fi
+
 # Human-friendly token magnitude.
 hm() { awk -v n="$1" 'BEGIN{ if(n>=1000000000) printf "%.2fB", n/1000000000; else if(n>=1000000) printf "%.1fM", n/1000000; else if(n>=1000) printf "%.1fK", n/1000; else printf "%d", n }'; }
 
@@ -312,10 +430,18 @@ case "$MODE" in
     else
       glm_live_pct_json="null"
     fi
-    printf '{"window_5h":{"input":%d,"cc":%d,"cr":%d,"output":%d,"pct":%d,"cap":%d,"cap_basis":"%s"},"window_weekly":{"input":%d,"cc":%d,"cr":%d,"output":%d,"total":%d,"pct":%d,"cap":%d,"cap_basis":"%s","calibrated_at":"%s","window_basis":"%s","window_start":"%s","input_pct_legacy":%d,"glm_live_status":"%s","glm_live_pct":%s,"glm_live_reset":"%s"},"cache_hit_24h":%s,"status":"%s","recommendation":"%s","providers":{"anthropic":{"w5h":{"input":%d,"cc":%d,"cr":%d,"output":%d,"turns":%d},"weekly":{"input":%d,"cc":%d,"cr":%d,"output":%d,"total":%d,"turns":%d}},"glm":{"w5h":{"input":%d,"cc":%d,"cr":%d,"output":%d,"turns":%d},"weekly":{"input":%d,"cc":%d,"cr":%d,"output":%d,"total":%d,"turns":%d}},"codex":"unmeasured"},"rate_limit":%s}\n' \
+    # identities: per-account breakdown (QUOTA-REPORT-PER-ACCOUNT-01). "status"/
+    # "recommendation" below are now REPORT_STATUS/REPORT_REC — the worst LIVE
+    # identity when per-account data is available, the same aggregate word
+    # otherwise (see the REPORT_STATUS derivation above). status_source names
+    # which one is in the two fields, so a consumer can tell an identity-backed
+    # word from an aggregate one without re-deriving it.
+    status_source="aggregate"
+    [[ "$IDENTITY_SOURCE" == "live" && "$WORST_LABEL" != "-" ]] && status_source="identity:${WORST_LABEL}"
+    printf '{"window_5h":{"input":%d,"cc":%d,"cr":%d,"output":%d,"pct":%d,"cap":%d,"cap_basis":"%s"},"window_weekly":{"input":%d,"cc":%d,"cr":%d,"output":%d,"total":%d,"pct":%d,"cap":%d,"cap_basis":"%s","calibrated_at":"%s","window_basis":"%s","window_start":"%s","input_pct_legacy":%d,"glm_live_status":"%s","glm_live_pct":%s,"glm_live_reset":"%s"},"cache_hit_24h":%s,"status":"%s","recommendation":"%s","status_source":"%s","identities":%s,"aggregate":{"status":"%s","recommendation":"%s"},"providers":{"anthropic":{"w5h":{"input":%d,"cc":%d,"cr":%d,"output":%d,"turns":%d},"weekly":{"input":%d,"cc":%d,"cr":%d,"output":%d,"total":%d,"turns":%d}},"glm":{"w5h":{"input":%d,"cc":%d,"cr":%d,"output":%d,"turns":%d},"weekly":{"input":%d,"cc":%d,"cr":%d,"output":%d,"total":%d,"turns":%d}},"codex":"unmeasured"},"rate_limit":%s}\n' \
       "$C5_IN" "$C5_CC" "$C5_CR" "$C5_OUT" "$PCT_5H" "$MAX_5H_IN" "$RL_CAP_BASIS" \
       "$CW_IN" "$CW_CC" "$CW_CR" "$CW_OUT" "$WK_TOT" "$PCT_WK" "$MAX_WK_TOTAL" "$WK_CAP_BASIS" "$WK_CAL_AT" "$WK_WINDOW_BASIS" "$WK_START_DISP" "$PCT_WK_LEGACY" "$GLM_WK_STATUS" "$glm_live_pct_json" "$GLM_WK_RESET" \
-      "$CACHE_HIT_24" "$STATUS" "$REC" \
+      "$CACHE_HIT_24" "$REPORT_STATUS" "$REPORT_REC" "$status_source" "$IDENTITY_PARSE" "$STATUS" "$REC" \
       "$C5_IN" "$C5_CC" "$C5_CR" "$C5_OUT" "$C5_N" \
       "$CW_IN" "$CW_CC" "$CW_CR" "$CW_OUT" "$WK_TOT" "$CW_N" \
       "$G5_IN" "$G5_CC" "$G5_CR" "$G5_OUT" "$G5_N" \
@@ -328,8 +454,26 @@ case "$MODE" in
     else
       _wk_label="weekly(claude, total-token, calibrated $WK_CALIBRATED_AT)"
     fi
-    printf "Quota: 5h %d%% (%d / %d in, claude%% only, cap est.) | %s %d%% (window=%s) | cache-hit %s | %s\n" \
-      "$PCT_5H" "$C5_IN" "$MAX_5H_IN" "$_wk_label" "$PCT_WK" "$WK_WINDOW_BASIS" "$CACHE_HIT_24" "$STATUS"
+    # QUOTA-REPORT-PER-ACCOUNT-01: when live per-account data exists the FIRST
+    # line (what every `head -1` consumer sees) is the worst account's own
+    # status — the safety word belongs to the account that will refuse the
+    # next dispatch, never a blend of it with a healthy one. The aggregate
+    # line that follows is explicitly labelled as blended/not-a-safety-signal
+    # and carries no safe/warn/exhausted word. With no live identity data
+    # (opt-out, no registry, single account) there is no blending risk, so
+    # the aggregate IS the per-account truth and keeps its original,
+    # byte-identical line (unchanged — every existing consumer/test sees the
+    # exact same first line as before in this fallback path).
+    if [[ "$IDENTITY_SOURCE" == "live" && "$WORST_LABEL" != "-" ]]; then
+      printf "Quota: identity=%s %s=%s%% usable_now=%s status=%s  <- SAFETY SIGNAL, worst of %s accounts (never the blended aggregate below)\n" \
+        "$WORST_LABEL" "$WORST_WINDOW" "$WORST_PCT" "$WORST_USABLE" "$WORST_STATUS" "$IDENTITY_COUNT"
+      [[ -n "$IDENTITY_REPORT_LINES" ]] && printf '%s\n' "$IDENTITY_REPORT_LINES"
+      printf "  aggregate (blended across %s accounts, calibrated estimate, NOT a safety signal): 5h %d%% (%d / %d in, claude%% only, cap est.) | %s %d%% (window=%s) | cache-hit %s\n" \
+        "$IDENTITY_COUNT" "$PCT_5H" "$C5_IN" "$MAX_5H_IN" "$_wk_label" "$PCT_WK" "$WK_WINDOW_BASIS" "$CACHE_HIT_24"
+    else
+      printf "Quota: 5h %d%% (%d / %d in, claude%% only, cap est.) | %s %d%% (window=%s) | cache-hit %s | %s\n" \
+        "$PCT_5H" "$C5_IN" "$MAX_5H_IN" "$_wk_label" "$PCT_WK" "$WK_WINDOW_BASIS" "$CACHE_HIT_24" "$STATUS"
+    fi
     printf "  anthropic 5h: in %s  cc %s  cr %s  out %s  (%d turns)%s\n" \
       "$(hm "$C5_IN")" "$(hm "$C5_CC")" "$(hm "$C5_CR")" "$(hm "$C5_OUT")" "$C5_N" "$CACHE_NOTE"
     printf "  anthropic wk:  in %s  cc %s  cr %s  out %s  — total %s / %s cap  (input-only legacy %d%%; window=%s%s)\n" \
