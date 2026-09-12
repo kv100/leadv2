@@ -424,46 +424,6 @@ def main():
             f"- \u2026 +{hidden} more open tasks hidden (P0->P3->unranked sort; see docs/tasks.yaml)"
         )
 
-    # OPEN-THREADS-HYGIENE-01: open-threads.md is now open STATE only (a
-    # question awaiting an answer / a promised action not yet taken / a live
-    # background job), self-pruned via leadv2-thread-prune.sh \u2014 it no longer
-    # carries a hand-written, ever-growing role/status head block, so there
-    # is nothing "stable" left to split out with role_and_tail(). Freeze the
-    # (now-bounded) file as-is; role_and_tail's short-file path already
-    # returns it whole when there's nothing worth truncating. The supervisor
-    # role definition itself lives outside this file entirely (it's a real,
-    # rarely-edited file \u2014 it survives a compact by existing on disk, not by
-    # being re-injected into chat context every time) and is only pointed to
-    # here, never embedded.
-    ot_lines = read_file(os.path.join(leadv2_abs, "open-threads.md"))
-    # OT-SESSION-SCOPE-01: drop other sessions' tagged asks BEFORE diet/legacy
-    # capping so both paths inherit the scoped set. No session_id -> unchanged.
-    ot_lines, ot_hidden = _filter_by_session(ot_lines, session_id)
-    ot_section = []
-    if ot_lines:
-        threads_tail_n = int(os.environ.get("LEADV2_FREEZE_THREADS_TAIL", "40"))
-        ot_section = [
-            "## OPEN THREADS (docs/leadv2/open-threads.md; capped, not verbatim)",
-            "single-lead role definition (stable, not frozen here): "
-            + os.environ.get("CLAUDE_PLUGIN_ROOT", "${CLAUDE_PLUGIN_ROOT}")
-            + "/docs/single-lead-pulse.md",
-        ]
-        if ot_hidden:
-            ot_section.append(
-                f"({ot_hidden} thread(s) from other sessions hidden)"
-            )
-        if diet:
-            threads_cap = int(os.environ.get("LEADV2_FREEZE_THREADS_CAP", "30"))
-            ot_section += filter_threads_diet(ot_lines, today, tail_n=threads_tail_n, cap=threads_cap)
-        else:
-            role_lines, tail_lines, dropped = role_and_tail(ot_lines, tail_n=threads_tail_n)
-            ot_section += role_lines
-            if dropped:
-                ot_section.append(
-                    f"\u2026 {dropped} stale middle lines dropped (full history in docs/leadv2/open-threads.md) \u2026"
-                )
-            ot_section += tail_lines
-
     if diet:
         sd_max_rows = int(os.environ.get("LEADV2_FREEZE_SD_ROWS", "15"))
         sd_max_chars = int(os.environ.get("LEADV2_FREEZE_SD_CHARS", "200"))
@@ -477,7 +437,7 @@ def main():
 
     journal_task_id, journal_lines_full = latest_journal_tail(root, leadv2_dir)
 
-    fixed_lines = header + task_lines + ot_section + sd_section
+    fixed_lines = header + task_lines + sd_section
     # NEVER cut fixed_lines (task-id list is the one inviolable section).
     # Overflow is absorbed entirely by shrinking (or dropping) the journal tail.
     budget = CAP - len(fixed_lines) - 1  # -1 reserves the journal heading line

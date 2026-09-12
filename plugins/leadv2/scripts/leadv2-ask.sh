@@ -491,14 +491,6 @@ _journal_timeout() { # $1=text
     >/dev/null 2>&1 || true
 }
 
-_open_thread_timeout() { # $1=text
-  local threads
-  threads="$(PROJECT_ROOT="$LEGACY_PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-state-path.sh" open-threads.md 2>/dev/null || true)"
-  [[ -n "$threads" ]] || return 0
-  printf -- '- [ ] %s — ask-timeout: task %s qid %s %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TASK_ID" "$QID" "$1" >>"$threads" 2>/dev/null || true
-}
-
 # ── ASK-ARCHITECT-FALLBACK-01 (founder decision 2026-07-29): on expiry, an
 # architect decides instead of parking straight to a human. Same invocation
 # shape as leadv2-dispatch-code.sh's architect_prepass() (dispatch-code.sh:899-969):
@@ -615,7 +607,6 @@ ARCHITECT_RATIONALE=""
 if _architect_decide; then
   if _timeout_record timed_out "$ARCHITECT_CHOSEN" architect "$ARCHITECT_RATIONALE"; then
     _journal_timeout "ask-timeout qid=${QID} architect decided ${ARCHITECT_CHOSEN}: ${ARCHITECT_RATIONALE}"
-    _open_thread_timeout "timed out; architect decided ${ARCHITECT_CHOSEN} (${ARCHITECT_RATIONALE})"
     printf -- 'LEADV2_ASK_TIMEOUT_ARCHITECT qid=%s task_id=%s option=%s\n' "$QID" "$TASK_ID" "$ARCHITECT_CHOSEN" >&2
     printf -- '%s\n' "$ARCHITECT_CHOSEN"
     exit 0
@@ -626,7 +617,6 @@ fi
 if [[ -n "$DEFAULT_OPTION" ]]; then
   if _timeout_record timed_out "$DEFAULT_OPTION" timeout_default ""; then
     _journal_timeout "ask-timeout qid=${QID} default_option=${DEFAULT_OPTION}; proceeded on reversible default (architect unavailable)"
-    _open_thread_timeout "timed out; proceeded on default_option=${DEFAULT_OPTION} (architect unavailable, follow-up visible)"
     printf -- 'LEADV2_ASK_TIMEOUT_DEFAULT qid=%s task_id=%s default_option=%s\n' "$QID" "$TASK_ID" "$DEFAULT_OPTION" >&2
     printf -- '%s\n' "$DEFAULT_OPTION"
     exit 0
@@ -636,7 +626,6 @@ fi
 
 if _timeout_record timed_out_human_needed "" timeout_no_default ""; then
   _journal_timeout "ask-timeout qid=${QID} no default_option; architect unavailable; parked human-needed and released slot"
-  _open_thread_timeout "timed out with no default_option; architect unavailable; parked human-needed and released slot"
   if [[ -f "${SCRIPT_DIR}/leadv2-tasks-lib.sh" ]]; then
     # shellcheck source=leadv2-tasks-lib.sh
     PROJECT_ROOT="$LEGACY_PROJECT_ROOT" source "${SCRIPT_DIR}/leadv2-tasks-lib.sh"

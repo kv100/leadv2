@@ -24,7 +24,6 @@ CHILDREN=(
   "5:${DIR}/leadv2-supervisor-fanout-guard.sh"
   "5:${DIR}/guard-shared-git-destructive.py"
   "10:${DIR}/plugin-scripts-drift-guard.sh"
-  "5:${DIR}/open-threads-shrink-guard.sh"
   "10:${DIR}/leadv2-reflect-enforcer.sh"
 )
 

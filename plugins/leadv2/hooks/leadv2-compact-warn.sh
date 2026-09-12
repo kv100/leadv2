@@ -151,7 +151,7 @@ if [[ "$TIER" -gt "$FIRED" ]]; then
             ;;
         2)
             MARKER="[CONTEXT_TIER:AGGRESSIVE]"
-            INSTRUCTION="Context is over half full and cheap trimming will not close the gap. Summarize and close finished threads first: append journal lines for closed lanes, prune resolved rows from docs/leadv2/open-threads.md, and collapse each completed lane to one line. Then continue."
+            INSTRUCTION="Context is over half full and cheap trimming will not close the gap. Append journal lines for closed lanes and collapse each completed lane to one line. Then continue."
             ;;
         3)
             MARKER="[CONTEXT_TIER:EMERGENCY]"
