@@ -92,7 +92,7 @@ bash tests/run-all.sh --scope changed was run foreground with a 300-second
 outer bound and per-suite 90-second bound. It is red for the shown concurrent
 lock/timeouts and unrelated suites.
 
-## Syntax and diff
+## Syntax, deterministic gate, and diff
 
 \`\`\`text
 bash -n plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
@@ -102,8 +102,14 @@ bash -n plugins/leadv2/scripts/tests/test-forecast-cannot-exceed-its-own-window.
 Both commands exited 0. Final committed diff stat:
 
 \`\`\`text
-docs/handoff/dispatch-3fc974c6/report.md                    | 103
-plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh           |  32
-plugins/leadv2/scripts/tests/test-forecast-cannot-exceed-its-own-window.sh | 108
-docs/handoff/dispatch-3fc974c6/mutation-control/*.txt        |  24
+.../mutation-control/20260912T113656Z-69045.txt    |   8 ++
+.../mutation-control/20260912T113718Z-84416.txt    |   8 ++
+docs/handoff/dispatch-3fc974c6/report.md           | 109 +++++++++++++++++++++
+plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh |  32 ++++--
+.../test-forecast-cannot-exceed-its-own-window.sh  | 108 ++++++++++++++++++++
+5 files changed, 256 insertions(+), 9 deletions(-)
 \`\`\`
+
+The deterministic DoD gate also passed (RC=0): report not required by a
+machine brief, suite registration passed, and no runtime-state path was
+touched. Its persisted output is dod-gate.md.
