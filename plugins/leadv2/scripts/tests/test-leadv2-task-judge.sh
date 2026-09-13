@@ -531,23 +531,30 @@ test_syntax_check() {
   fi
 }
 
-test_t1_golden_missions_valid
-test_t2_disable_flag
-test_t3_lexicon_grep
-test_t4_forced_failure_fallback
-test_t5_garbage_output_fallback
-test_t6_timeout_fallback
-test_t7_cache_hit
-test_t8_light_skips_judge
-test_t9_missing_mission_file_errors
-test_t10_safety_floor_both_paths
-test_t11_cache_hit_self_heals
-test_t12_no_over_trigger
-test_t13_floor_never_downgrades
-test_t14_id_only_safety_regression
-test_t15_homograph_regression
-test_t16_glm_default_and_haiku_fallback
-test_syntax_check
+if [[ "${LEADV2_JUDGE_TEST_ONLY_ARM:-0}" == "1" ]]; then
+  # Mutation control needs to isolate T16's transport/provenance assertion;
+  # the normal suite always runs the full regression matrix below.
+  test_t16_glm_default_and_haiku_fallback
+  test_syntax_check
+else
+  test_t1_golden_missions_valid
+  test_t2_disable_flag
+  test_t3_lexicon_grep
+  test_t4_forced_failure_fallback
+  test_t5_garbage_output_fallback
+  test_t6_timeout_fallback
+  test_t7_cache_hit
+  test_t8_light_skips_judge
+  test_t9_missing_mission_file_errors
+  test_t10_safety_floor_both_paths
+  test_t11_cache_hit_self_heals
+  test_t12_no_over_trigger
+  test_t13_floor_never_downgrades
+  test_t14_id_only_safety_regression
+  test_t15_homograph_regression
+  test_t16_glm_default_and_haiku_fallback
+  test_syntax_check
+fi
 
 echo ""
 echo "=== Results: ${PASS} passed, ${FAIL} failed ==="
