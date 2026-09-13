@@ -129,3 +129,21 @@ bash: plugins/leadv2/tests/test-arbiter-prices-by-provider.sh: No such file or d
 ```
 
 This report does not restore or alter that off-limits price lane.
+
+### Changed-scope runner
+
+The committed selector lists the new self-registration:
+
+```text
+leadv2-task-judge:plugins/leadv2/scripts/tests/test-leadv2-task-judge.sh
+```
+
+The required changed-scope runner was run foreground with a 25-second bound;
+it reached the core offline runner but did not produce a verdict before the
+bound:
+
+```text
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/48b8297b4cc1/plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: delegating scope=changed to plugins/leadv2/scripts/tests/run-core-offline.sh
+CHANGED_SCOPE_RC=124
+```
