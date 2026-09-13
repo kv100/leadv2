@@ -64,6 +64,7 @@ import json
 import os
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -210,6 +211,74 @@ def read_snapshot():
         return None
 
 
+# ── PRICE-THE-ARM-PER-PROVIDER-01 (dispatch-f8880421) ────────────────────────
+# Anthropic already self-logs every poll to rate_limit_history
+# (~/.claude/burn/history.db, a DIFFERENT writer). glm and codex have no
+# equivalent: this daemon's snapshot.json is a single current-value file, not
+# a history, so leadv2-drain-weights.py --provider {glm,codex} has nothing to
+# fit against without one. provider_quota_history is that table -- append-only,
+# one row per (provider, window) per poll, storing USED percent (never
+# remaining_pct: this table answers "how much got spent", the same question
+# ecost()/provider_cost() ask, not "how much is left").
+_BURN_DB = os.path.expanduser(os.environ.get("LEADV2_BURN_DB", "~/.claude/burn/history.db"))
+
+
+def _iso_to_epoch(iso):
+    try:
+        return datetime.datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def _ensure_quota_history_table(conn):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS provider_quota_history ("
+        "captured_epoch REAL NOT NULL, provider TEXT NOT NULL, window TEXT NOT NULL, "
+        "used_pct REAL, reset_epoch REAL, source TEXT NOT NULL)")
+
+
+def _quota_history_rows(provider, payload):
+    now = time.time()
+    rows = []
+    if provider == "glm":
+        for name in ("five_hour", "weekly"):
+            w = payload.get(name) or {}
+            if isinstance(w, dict) and w.get("pct") is not None:
+                rows.append((now, "glm", name, w.get("pct"),
+                             _iso_to_epoch(w.get("reset_iso")), "leadv2-quota-daemon"))
+    elif provider == "codex":
+        for w in payload.get("windows") or []:
+            if isinstance(w, dict) and w.get("used_percent") is not None:
+                rows.append((now, "codex", w.get("kind") or "unknown", w.get("used_percent"),
+                             _iso_to_epoch(w.get("reset_iso")), "leadv2-quota-daemon"))
+    return rows
+
+
+def append_quota_history(provider, payload):
+    """Best-effort: a history-append failure must never affect quota serving
+    (same fail-open discipline as poll_source itself)."""
+    if provider not in ("glm", "codex"):
+        return
+    rows = _quota_history_rows(provider, payload)
+    if not rows:
+        return
+    try:
+        os.makedirs(os.path.dirname(_BURN_DB), exist_ok=True)
+        conn = sqlite3.connect(_BURN_DB, timeout=5)
+        try:
+            conn.execute("PRAGMA busy_timeout=3000")
+            _ensure_quota_history_table(conn)
+            conn.executemany(
+                "INSERT INTO provider_quota_history "
+                "(captured_epoch, provider, window, used_pct, reset_epoch, source) "
+                "VALUES (?,?,?,?,?,?)", rows)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        log("provider_quota_history append failed (%s): %s" % (provider, str(e)[:150]))
+
+
 def poll_source(key, spec):
     env = dict(os.environ)
     # Anti-recursion: the reader must not consult this daemon's own snapshot.
@@ -229,6 +298,7 @@ def poll_source(key, spec):
         STATE["updated_at"][key] = time.time()
         STATE["last_error"].pop(key, None)
     log("poll %s ok status=%s" % (key, payload.get("status", "?")))
+    append_quota_history(spec["provider"], payload)
     write_snapshot()
 
 

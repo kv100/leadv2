@@ -544,6 +544,61 @@ if d.get('max_cost') is not None and _max_cost is None:
     _fatal('caller_constraint_invalid', 'max_cost=%r is not numeric' % d.get('max_cost'))
 if d.get('min_capability') is not None and _min_capability is None:
     _fatal('caller_constraint_invalid', 'min_capability=%r is not numeric' % d.get('min_capability'))
+# PRICE-THE-ARM-PER-PROVIDER-01 (founder decision 2026-09-13, dispatch-f8880421):
+# price is keyed by PROVIDER, not by model/row -- per-model NNLS was collinear
+# by construction (quota is metered per provider). router_v2.cost is a dict
+# keyed by price_key(row): the arm name for 'glm-flash' (its ratio is measured
+# separately from glm-5.3), the provider name for every other row. Absent
+# entirely (the 15 legacy scratch-yaml test fixtures) -> LEGACY mode: read the
+# row's own `cost:` field, byte-identical to pre-PRICE-THE-ARM-PER-PROVIDER-01.
+# Present but the key is missing/null -> UNPRICED: median of the numeric
+# entries (1.0 if every entry is null) -- a declared unknown, never an
+# invented number, and never a refusal. A non-numeric/negative value is a
+# config error: _fatal('routing_yaml_invalid', ...) -> rc=2 (this file's one
+# PARSE-OR-REFUSE exit code, not the "rc 65" some design notes use), naming
+# the offending key.
+_router_cost_cfg=((data.get('router_v2') or {}).get('cost'))
+if _router_cost_cfg is not None and not isinstance(_router_cost_cfg, dict):
+    _fatal('routing_yaml_invalid', 'router_v2.cost must be a mapping, got %r' % type(_router_cost_cfg).__name__)
+_cost_unpriced_policy=str((data.get('router_v2') or {}).get('cost_unpriced_policy', 'matrix_median'))
+if _router_cost_cfg is not None and _cost_unpriced_policy != 'matrix_median':
+    _fatal('routing_yaml_invalid', 'router_v2.cost_unpriced_policy=%r unknown (expected matrix_median)' % _cost_unpriced_policy)
+_cost_numeric={}
+if _router_cost_cfg:
+    for _ck,_cvraw in _router_cost_cfg.items():
+        if _cvraw is None: continue
+        _cnv=num(_cvraw)
+        if _cnv is None or _cnv < 0:
+            _fatal('routing_yaml_invalid', 'router_v2.cost.%s=%r is not a non-negative number' % (_ck,_cvraw))
+        _cost_numeric[_ck]=_cnv
+def _cost_median(vals):
+    vs=sorted(vals)
+    n=len(vs)
+    if n==0: return 1.0
+    mid=n//2
+    return vs[mid] if n%2 else (vs[mid-1]+vs[mid])/2.0
+_COST_MEDIAN=_cost_median(list(_cost_numeric.values()))
+def _price_key(c):
+    return 'glm-flash' if c.get('arm')=='glm-flash' else c.get('provider')
+def provider_cost(c):
+    # Returns the numeric price only; see _cost_src(c) for its provenance
+    # token. LEGACY mode when the yaml carries no router_v2.cost block at
+    # all -- every existing scratch-yaml test fixture stays byte-identical.
+    if _router_cost_cfg is None:
+        _v=num(c.get('cost'))
+        return _v if _v is not None else 999.0
+    _key=_price_key(c)
+    _v=_cost_numeric.get(_key)
+    return _v if _v is not None else _COST_MEDIAN
+def _cost_src(c):
+    if _router_cost_cfg is None:
+        return '%s:legacy_row' % _price_key(c)
+    _key=_price_key(c)
+    if _key in _cost_numeric:
+        return '%s:measured' % _key
+    if not _cost_numeric:
+        return '%s:unpriced_all' % _key
+    return '%s:median' % _key
 def _constraint_ok(c):
     if _min_capability is not None:
         _v=c.get('capability')
@@ -551,7 +606,7 @@ def _constraint_ok(c):
         except (TypeError, ValueError): _capv=CAP_DEFAULT
         if _capv < _min_capability: return False
     if _max_cost is not None:
-        _cv=num(c.get('cost'))
+        _cv=provider_cost(c)
         if _cv is not None and _cv > _max_cost: return False
     return True
 # CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01 (founder, 2026-09-03): the arbiter
@@ -1519,7 +1574,7 @@ if not capable:
                 try: return float(_v) if _v is not None else CAP_DEFAULT
                 except (TypeError, ValueError): return CAP_DEFAULT
             _best_cap=max((_raw_cap(c) for c in _fit), default=0.0)
-            _min_cost=min((c.get('cost') for c in _fit if num(c.get('cost')) is not None), default=None)
+            _min_cost=min((provider_cost(c) for c in _fit), default=None)
             refusal_reason='no_cell_meets_caller_constraint'
             _record('refuse','none','none',refusal_reason)
             print('arm=refuse model=none tier=none reason=%s kind=%s min_capability=%s max_cost=%s best_capability=%.1f min_cost=%s chain= %s%s%s%s%s' % (
@@ -1805,7 +1860,7 @@ def _observed_rounds(c):
     return _r
 def ecost(c):
     _w=headroom_weight(c.get('provider'), c.get('arm'))
-    _base=float(c.get('cost',999))/(_w if _w > 0 else 1.0)
+    _base=provider_cost(c)/(_w if _w > 0 else 1.0)
     _base*=_observed_rounds(c)
     return _base + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + (UNKNOWN_PROBE_PENALTY if _raw_for(c.get('provider'), c.get('arm')).get('unknown') else 0.0) + complexity_penalty(c)
 # ARBITER-SCORING-DESIGN-01 step 1: _cost_order/_fit_order/fit_differs are
@@ -2135,7 +2190,12 @@ _effort_cap=(' capped_from=%s' % _capped_from) if _capped_from else ''
 _cc_tok = ' caller_min_cap=%s caller_max_cost=%s' % (
     ('%.1f' % _min_capability if _min_capability is not None else 'none'),
     ('%.1f' % _max_cost if _max_cost is not None else 'none'))
-print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok,_obs_tok,_cc_tok))
+# PRICE-THE-ARM-PER-PROVIDER-01: names the winning candidate's price
+# provenance -- <key>:measured|median|unpriced_all|legacy_row -- on every
+# success line, so a replay/audit can count exactly how many decisions rode
+# on a median guess instead of a real measurement.
+_cost_tok = ' cost_src=%s' % _cost_src(w)
+print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok,_obs_tok,_cc_tok,_cost_tok))
 PY
 }
 
