@@ -149,16 +149,31 @@ def _account_row(acct, epoch):
     service = acct.get("service") or ""
     account_key = suffix or service or "unknown"
     status = acct.get("status")
+    account_state = acct.get("account_state")
     five = acct.get("five_hour") or {}
     week = acct.get("seven_day") or {}
     five_iso = five.get("reset_iso")
     week_iso = week.get("reset_iso")
+    # ACCOUNT-TRUTH-ACTIVE-IS-NOT-THE-METERED-ONE-01: leadv2-quota-read.py's
+    # classifier already computes account_state="unmetered" for a 401 on a
+    # team/max account (a window the usage endpoint cannot serve, never a dead
+    # credential), but this row used to collapse every non-200 to
+    # "unauthenticated" — the verdict was computed upstream and then DROPPED
+    # here, which is exactly the "silently null" the row's own consumer could
+    # not distinguish from not-yet-probed. Persist the third state; pct stays
+    # NULL because no number exists.
+    if status == "ok":
+        state = "ok"
+    elif account_state == "unmetered":
+        state = "unmetered"
+    else:
+        state = "unauthenticated"
     return {
         "captured_epoch": epoch,
         "account_key": account_key,
         "account_label": acct.get("account_label"),
         "is_active": 1 if acct.get("active") else 0,
-        "state": "ok" if status == "ok" else "unauthenticated",
+        "state": state,
         "status": status,
         "overage_status": "normal" if status == "ok" else None,
         "five_hour_pct": five.get("pct"),
@@ -294,6 +309,20 @@ try:
 finally:
     conn.close()
 PYEOF
+
+  # QUOTA-TELEMETRY-CANNOT-PRICE-AN-ARM-01 (design M3): attribute burn
+  # turn_events rows to the account whose config dir holds the transcript —
+  # same DB the block above just wrote to, so attribution piggybacks on this
+  # probe's TRACKED invokers (leadv2-limits-refresh.sh, itself driven by
+  # leadv2-status-surface.sh / leadv2-codex-lockout.sh — no untracked burn
+  # trigger in the chain; R7 resolved 2026-09-13). Fail-open by contract:
+  # rc 2 (DB locked) / rc 3 (schema rebuilt) mean "skip this cycle", never
+  # "stop the probe" — one locked DB must not take quota telemetry down with
+  # it. Summary goes to stderr ONLY: stdout is the kv row callers parse.
+  ATTR="${LEADV2_TURN_ACCOUNT_ATTRIBUTE_PY:-${SCRIPT_DIR}/leadv2-turn-account-attribute.py}"
+  if [[ -f "$ATTR" ]]; then
+    python3 "$ATTR" --db "$BURN_DB" 1>&2 || true
+  fi
 fi
 
 printf '%s\n' "$KV_JSON"

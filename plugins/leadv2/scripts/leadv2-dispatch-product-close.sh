@@ -377,10 +377,16 @@ _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
     local _ca_cls=""
     _ca_cls="$(bash "${JOURNAL_BIN}" tail "dispatch-${TASK}" 100000 2>/dev/null \
       | grep -oE 'task_class=[A-Za-z]+' | head -1 | cut -d= -f2 | tr '[:upper:]' '[:lower:]')"
-    local _ca_line=""
+    local _ca_line="" _ca_tokens=""
+    # QUOTA-TELEMETRY-CANNOT-PRICE-AN-ARM-01: 8th positional — the lane's
+    # real token count from its own handoff dir (costs.yaml, else
+    # turn_events via sessions.map; `-` when neither exists). Never 0 (D5).
+    if command -v leadv2_lane_token_total >/dev/null 2>&1; then
+      _ca_tokens="$(leadv2_lane_token_total "${ROOT}" "${TASK}" 2>/dev/null || true)"
+    fi
     _ca_line="$(leadv2_cost_actual_record \
       "$(printf '%s' "${ROOT##*/}" | tr -cd 'A-Za-z0-9._-')" \
-      "${TASK}" "$1" "$2" "${_ca_cls:-unknown}" 2>/dev/null || true)"
+      "${TASK}" "$1" "$2" "${_ca_cls:-unknown}" "code" "unknown" "${_ca_tokens:--}" 2>/dev/null || true)"
     [[ -n "${_ca_line}" ]] && emit decision "${_ca_line}"
   fi
 }
