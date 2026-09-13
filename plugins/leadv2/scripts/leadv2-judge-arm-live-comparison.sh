@@ -274,7 +274,12 @@ for item, arm, first, second, consistent in self_pairs:
     lines.append(f"- `{item['id']}` / `{arm}`: {status}; run 1 = `{compact_verdict(first)}`, run 2 = `{compact_verdict(second)}`.")
 pair_total = len(self_pairs)
 pair_good = sum(bool(x[4]) for x in self_pairs)
-lines.append(f"- Complexity self-consistency: {pair_good}/{pair_total} requested arm/mission pairs.")
+consistency_by_arm = {}
+for arm in ("glm", "haiku"):
+    arm_pairs = [x for x in self_pairs if x[1] == arm]
+    consistency_by_arm[arm] = (sum(bool(x[4]) for x in arm_pairs), len(arm_pairs))
+    lines.append(f"- `{arm}` complexity self-consistency: {consistency_by_arm[arm][0]}/{consistency_by_arm[arm][1]} requested repeat pairs.")
+lines.append(f"- Combined complexity self-consistency: {pair_good}/{pair_total} requested arm/mission pairs.")
 
 lines += ["", "## Cross-arm agreement", ""]
 eligible = len(comparisons)
@@ -301,14 +306,19 @@ else:
 
 glm_failed, glm_attempted = failure_counts["glm"]
 haiku_failed, haiku_attempted = failure_counts["haiku"]
-if glm_failed or eligible < len(corpus) or pair_good < pair_total or class_disagreements:
-    decision = "Set the default to haiku: GLM has not demonstrated reliable equivalent complexity classification across this corpus."
-    default = "haiku"
-else:
-    decision = "Keep GLM as the default: it had zero measured failures, 100% comparable-pair coverage, full self-consistency, and zero material complexity disagreements."
+glm_consistent, glm_pairs = consistency_by_arm["glm"]
+haiku_consistent, haiku_pairs = consistency_by_arm["haiku"]
+if glm_failed < haiku_failed or (glm_failed == haiku_failed and glm_consistent > haiku_consistent and not class_disagreements):
     default = "glm"
+    decision = "Set the default to GLM: it had the lower failure count or stronger complexity self-consistency without a material complexity disagreement."
+elif haiku_failed < glm_failed or (haiku_failed == glm_failed and haiku_consistent > glm_consistent):
+    default = "haiku"
+    decision = "Keep the default at haiku: it had the lower failure count or stronger complexity self-consistency."
+else:
+    default = "haiku"
+    decision = "Retain the existing haiku default: reliability and complexity self-consistency tied, so this re-run supplies no evidence to switch arms."
 lines += ["", "## Decision", "", f"**Measured default: `{default}`.** {decision}", ""]
-lines.append(f"Evidence: GLM failure rate {glm_failed}/{glm_attempted}; Haiku failure rate {haiku_failed}/{haiku_attempted}; complexity disagreements {len(class_disagreements)}/{eligible}; self-consistency {pair_good}/{pair_total}.")
+lines.append(f"Evidence: GLM failure rate {glm_failed}/{glm_attempted}; Haiku failure rate {haiku_failed}/{haiku_attempted}; complexity disagreements {len(class_disagreements)}/{eligible}; GLM self-consistency {glm_consistent}/{glm_pairs}; Haiku self-consistency {haiku_consistent}/{haiku_pairs}.")
 lines.append("")
 lines.append("The fallback path is not counted as an arm success: a GLM request with `judge_arm=haiku_fallback` is a GLM transport failure, while the emitted fallback envelope remains preserved above for diagnosis.")
 report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

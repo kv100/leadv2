@@ -129,6 +129,52 @@ STUB
   printf '%s' "${bin}"
 }
 
+# Copies the real noisy GLM capture, replacing only its deliberately minimal
+# {"ok":true} answer with a schema-valid judge answer. The actual preamble,
+# non-ASCII warning, and valid-JSON warning objects remain the negative control.
+_stub_glm_real_noisy_capture() {
+  local dir="$1" counter_file="$2"
+  local fixture="${SCRIPT_DIR}/../../../../docs/handoff/JUDGE-GLM-PARSE/fixtures/noisy-glm-out.txt"
+  local bin="${dir}/glm-noisy"
+  cat > "${bin}" <<STUB
+#!/usr/bin/env bash
+echo x >> "${counter_file}"
+out=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --out) out="\$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+python3 - "${fixture}" "\$out" <<'PY'
+import json, pathlib, sys
+lines = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines()
+terminal = json.loads(lines[-1])
+terminal['result'] = json.dumps({
+    'complexity': 'standard', 'subsystems_touched': 3,
+    'needs_live_verification': True, 'risk_class': 'data',
+    'duration_class': 'medium', 'work_kind': 'build',
+}, separators=(',', ':'))
+lines[-1] = json.dumps(terminal, separators=(',', ':'))
+pathlib.Path(sys.argv[2]).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+PY
+STUB
+  chmod +x "${bin}"
+  printf '%s' "${bin}"
+}
+
+_stub_claude_empty() {
+  local dir="$1" counter_file="$2"
+  local bin="${dir}/claude-empty"
+  cat > "${bin}" <<STUB
+#!/usr/bin/env bash
+echo x >> "${counter_file}"
+printf 'transport had no body\n' >&2
+STUB
+  chmod +x "${bin}"
+  printf '%s' "${bin}"
+}
+
 # Stub whose LLM-path verdict is itself a pre-floor safety estimate
 # (risk_class=safety_publish_payments, complexity=trivial) — used by T10 to
 # prove the floor applies on the judge-validated path (_emit path 4), not
@@ -522,6 +568,49 @@ test_t16_haiku_default_and_glm_fallback() {
   rm -rf "${root}"
 }
 
+# ── T17: the exact noisy capture must select the LAST envelope, never the
+# first valid-JSON warning. Fallback causes are envelope-visible and distinct.
+test_t17_noisy_glm_parse_and_fallback_reasons() {
+  local root; root="$(_fixture_root)"
+  local counter="${root}/calls.txt"; : > "${counter}"
+  local m; m="$(_write_mission "${root}" "m" "Classify an ordinary task.")"
+  local glm_bin out arm src reason
+  glm_bin="$(_stub_glm_real_noisy_capture "${root}" "${counter}")"
+  out="$(LEADV2_JUDGE_ARM=glm LEADV2_JUDGE_GLM_BIN="${glm_bin}" LEADV2_JUDGE_CACHE_DIR="${root}/cache-noisy" bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
+  arm="$(_kv "${out}" judge_arm)"; src="$(_kv "${out}" estimate_source)"
+  if [[ "${arm}" == "glm" && "${src}" == "judge" ]]; then
+    pass "T17: real noisy GLM fixture -> judge_arm=glm (last envelope selected)"
+  else
+    fail "T17: expected noisy fixture to produce glm judge envelope, arm=${arm} src=${src} out=${out}"
+  fi
+
+  local fail_bin; fail_bin="$(_stub_claude_fail "${root}" "${counter}")"
+  out="$(LEADV2_JUDGE_ARM=haiku LEADV2_JUDGE_CLAUDE_BIN="${fail_bin}" LEADV2_JUDGE_CACHE_DIR="${root}/cache-rc" bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
+  reason="$(_kv "${out}" fallback_reason)"
+  [[ "${reason}" == transport_rc=1* ]] && pass "T17: nonzero transport -> ${reason}" \
+    || fail "T17: expected transport_rc=1, got ${reason}"
+
+  local empty_bin; empty_bin="$(_stub_claude_empty "${root}" "${counter}")"
+  out="$(ZAI_AUTH_TOKEN='secret-token' LEADV2_JUDGE_ARM=haiku LEADV2_JUDGE_CLAUDE_BIN="${empty_bin}" LEADV2_JUDGE_CACHE_DIR="${root}/cache-empty" bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
+  reason="$(_kv "${out}" fallback_reason)"
+  [[ "${reason}" == empty_output* && "${reason}" == *'transport had no body'* && "${reason}" != *'secret-token'* ]] \
+    && pass "T17: empty output and safe stderr tail -> ${reason}" \
+    || fail "T17: expected empty_output with safe stderr tail, got ${reason}"
+
+  local garbage_bin; garbage_bin="$(_stub_claude_garbage "${root}" "${counter}")"
+  out="$(LEADV2_JUDGE_ARM=haiku LEADV2_JUDGE_CLAUDE_BIN="${garbage_bin}" LEADV2_JUDGE_CACHE_DIR="${root}/cache-parse" bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
+  reason="$(_kv "${out}" fallback_reason)"
+  [[ "${reason}" == "parse_failed" ]] && pass "T17: no JSON -> parse_failed" \
+    || fail "T17: expected parse_failed, got ${reason}"
+
+  local hang_bin; hang_bin="$(_stub_claude_hang "${root}" "${counter}")"
+  out="$(LEADV2_JUDGE_ARM=haiku LEADV2_JUDGE_CLAUDE_BIN="${hang_bin}" LEADV2_JUDGE_TIMEOUT_SEC=1 LEADV2_JUDGE_CACHE_DIR="${root}/cache-timeout" bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
+  reason="$(_kv "${out}" fallback_reason)"
+  [[ "${reason}" == "timeout" ]] && pass "T17: timeout -> timeout" \
+    || fail "T17: expected timeout, got ${reason}"
+  rm -rf "${root}"
+}
+
 # ── syntax guard ─────────────────────────────────────────────────────────────
 test_syntax_check() {
   if bash -n "${JUDGE_SH}" 2>/dev/null; then
@@ -553,6 +642,7 @@ else
   test_t14_id_only_safety_regression
   test_t15_homograph_regression
   test_t16_haiku_default_and_glm_fallback
+  test_t17_noisy_glm_parse_and_fallback_reasons
   test_syntax_check
 fi
 

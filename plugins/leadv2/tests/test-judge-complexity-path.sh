@@ -6,7 +6,7 @@
 # load), and fall back SILENTLY, journaling a line indistinguishable from a
 # --class Light skip or a disable. This suite pins the fix:
 #   judge_path=      disable | light_skip | cache_hit | judge | judge_fail
-#   judge_fail_reason=  timeout | nonzero_rc | empty_output | envelope_parse
+#   judge_fail_reason=  timeout | transport_rc=<n> | empty_output | parse_failed
 #                      | schema_invalid | template_missing | prompt_build
 # plus the fd-3 plumbing that carries the reason out of the $( ) subshell
 # (a plain global set inside _invoke_judge dies with the subshell — the first
@@ -102,7 +102,7 @@ last_line_has() { grep -q -- "$1" <<<"$(tail -1 "$JOURNAL_LOG")"; }
 # ── 1. healthy invoke: judge_path=judge, basis=judge, stub called once ──────
 : > "$JOURNAL_LOG"
 line="$(run_judge ok "$STUBS/ok")"
-last_line_has 'judge_path=judge$' && ! last_line_has 'judge_fail_reason=' \
+last_line_has 'judge_path=judge ' && ! last_line_has 'judge_fail_reason=' \
   && pass "judge success -> judge_path=judge (no fail reason)" \
   || fail "judge success path token" "$line"
 grep -q '"estimate_source": "judge"' "$TMP/out-ok.json" && grep -q '"complexity_basis": "judge"' "$TMP/out-ok.json" \
@@ -118,7 +118,7 @@ env LEADV2_JUDGE_CLAUDE_BIN="$STUBS/rc1" LEADV2_JUDGE_JOURNAL_BIN="$TMP/journal-
   LEADV2_JUDGE_CACHE_DIR="$TMP/cache-ok" PROJECT_ROOT="$TMP" \
   bash "$JUDGE_BIN" --mission-file "$MISSION" --task-id t-okcached --class Heavy \
   > "$TMP/out-okcached.json" 2>/dev/null
-last_line_has 'judge_path=cache_hit$' && last_line_has 'estimate_source=judge' \
+last_line_has 'judge_path=cache_hit ' && last_line_has 'estimate_source=judge' \
   && pass "cache hit -> judge_path=cache_hit with judge estimate" \
   || fail "cache hit path token" "$(tail -1 "$JOURNAL_LOG")"
 [[ ! -f "$STUBS/rc1.called" ]] && pass "cache hit never calls the model" \
@@ -136,7 +136,7 @@ last_line_has 'judge_path=judge_fail ' && last_line_has 'judge_fail_reason=timeo
 # reproducing the exact production race -- the process is killed only after
 # its answer is already flushed to the pipe.
 line="$(run_judge timeout_with_answer "$STUBS/timeout_with_answer" KEY=LEADV2_JUDGE_TIMEOUT_SEC=1)"
-last_line_has 'judge_path=judge$' && ! last_line_has 'judge_fail_reason=' \
+last_line_has 'judge_path=judge ' && ! last_line_has 'judge_fail_reason=' \
   && pass "timeout-with-answer: non-empty body survives the kill -> judge_path=judge (fix)" \
   || fail "timeout-with-answer fix" "$line"
 grep -q '"estimate_source": "judge"' "$TMP/out-timeout_with_answer.json" \
@@ -160,11 +160,13 @@ p, dst = sys.argv[1], sys.argv[2]
 s = open(p).read()
 anchor = '''  if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
     if [[ -z "${raw}" ]]; then
-      _fail "timeout"
+      _fail "$(_transport_failure_reason "${rc}" "${raw}" "${transport_err}" "${glm_failure_reason}")"
+      rm -f "${transport_err}"
       return 1
     fi
   elif [[ ${rc} -ne 0 ]]; then
-    _fail "nonzero_rc"
+    _fail "$(_transport_failure_reason "${rc}" "${raw}" "${transport_err}" "${glm_failure_reason}")"
+    rm -f "${transport_err}"
     return 1
   fi'''
 n = s.count(anchor)
@@ -174,7 +176,7 @@ old_behavior = '''  if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
     _fail "MUTANT_DISCARD_ON_TIMEOUT"
     return 1
   fi
-  [[ ${rc} -eq 0 ]] || { _fail "nonzero_rc"; return 1; }'''
+  [[ ${rc} -eq 0 ]] || { _fail "transport_rc=${rc}"; return 1; }'''
 open(dst, 'w').write(s.replace(anchor, old_behavior))
 PY
 chmod +x "$MUTANT_TO"
@@ -196,14 +198,14 @@ else
 fi
 rm -f "$MUTANT_TO"
 line="$(run_judge rc1 "$STUBS/rc1")"
-last_line_has 'judge_fail_reason=nonzero_rc' && pass "rc!=0 -> nonzero_rc" \
-  || fail "nonzero_rc reason" "$line"
+last_line_has 'judge_fail_reason=transport_rc=1' && pass "rc!=0 -> transport_rc=1" \
+  || fail "transport_rc reason" "$line"
 line="$(run_judge empty "$STUBS/empty")"
 last_line_has 'judge_fail_reason=empty_output' && pass "empty -> empty_output" \
   || fail "empty_output reason" "$line"
 line="$(run_judge badenv "$STUBS/badenv")"
-last_line_has 'judge_fail_reason=envelope_parse' && pass "bad envelope -> envelope_parse" \
-  || fail "envelope_parse reason" "$line"
+last_line_has 'judge_fail_reason=parse_failed' && pass "bad envelope -> parse_failed" \
+  || fail "parse_failed reason" "$line"
 line="$(run_judge offschem "$STUBS/offschem")"
 last_line_has 'judge_path=judge_fail ' && last_line_has 'judge_fail_reason=schema_invalid' \
   && pass "off-schema answer -> schema_invalid (distinguish from envelope_parse)" \
@@ -218,13 +220,13 @@ grep -q '"estimate_source": "fallback"' "$TMP/out-offschem.json" \
 # must mean "called BY THIS case", not "called at least once ever")
 rm -f "$STUBS/rc1.called"
 line="$(run_judge disable "$STUBS/rc1" KEY=LEADV2_JUDGE_DISABLE=1)"
-last_line_has 'judge_path=disable$' && pass "disable -> judge_path=disable" \
+last_line_has 'judge_path=disable ' && pass "disable -> judge_path=disable" \
   || fail "disable path token" "$line"
 [[ ! -f "$STUBS/rc1.called" ]] && pass "disable never calls the model" \
   || fail "disable called the model"
 rm -f "$STUBS/rc1.called"
 line="$(run_judge light "$STUBS/rc1" --class Light)"
-last_line_has 'judge_path=light_skip$' && pass "Light -> judge_path=light_skip (R2 #3 intact)" \
+last_line_has 'judge_path=light_skip ' && pass "Light -> judge_path=light_skip (R2 #3 intact)" \
   || fail "light_skip path token" "$line"
 [[ ! -f "$STUBS/rc1.called" ]] && pass "Light skip never calls the model" \
   || fail "Light skip called the model"
