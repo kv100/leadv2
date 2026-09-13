@@ -77,7 +77,7 @@ rg -q 'leadv2-pulse-beat\.sh' "${TMP}/hooks.bad.json" || { printf 'FAIL: control
 if census_clean "${TMP}/hooks.bad.json" "${PLUGIN_ROOT}"; then
   printf 'FAIL: control-1 census stayed clean with a retired registration injected\n' >&2; exit 1
 fi
-printf 'RED: census failed on scratch manifest with retired hook injected\n'
+printf 'RED: census rejected the scratch manifest with a retired hook injected\n'
 ok 'only the anti-silence plugin hooks remain (baseline=84, anti-silence regs=2)'
 
 # Shared fixture: no phase, no process, no fresh worktree evidence.  Only the
@@ -150,7 +150,7 @@ printf '%s\n' 'retired command: leadv2-broad-status.sh' >"${TMP}/bad-surface/com
 if census_clean "${HOOKS}" "${TMP}/bad-surface"; then
   printf 'FAIL: control-4a census stayed clean with a retired name on a live surface\n' >&2; exit 1
 fi
-printf 'RED: census failed on scratch surface naming a deleted file\n'
+printf 'RED: census rejected the scratch surface naming a deleted file\n'
 cp "${HOOKS}" "${TMP}/hooks.deadref.json"
 anchor2='"hooks": {'
 [[ "$(grep -cF "${anchor2}" "${TMP}/hooks.deadref.json")" == "1" ]] || { printf 'FAIL: control-4b anchor missing in hooks.json\n' >&2; exit 1; }
