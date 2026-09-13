@@ -10,6 +10,7 @@ pass() { printf '[TEST] PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
 fail() { printf '[TEST] FAIL: %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/right-repo.XXXXXX")"
+TMP="$(cd "${TMP}" && pwd -P)"
 trap '[[ "${LEADV2_PC_TEST_KEEP_TMP:-0}" == 1 ]] || rm -rf "${TMP}"' EXIT
 ROOT="${TMP}/persona"
 CANONICAL="${TMP}/leadv2"
@@ -43,6 +44,8 @@ git -C "${ROOT}" worktree add -q -b worktree-case-project "${TMP}/project-lane" 
 printf 'project work\n' >> "${TMP}/project-lane/docs/declared.txt"
 git -C "${TMP}/project-lane" add . && git -C "${TMP}/project-lane" commit -qm project-work
 git -C "${ROOT}" worktree add -q -b worktree-case-negative "${TMP}/negative-lane" main
+git -C "${ROOT}" worktree add -q -b worktree-case-empty "${TMP}/empty-lane" main
+git -C "${CANONICAL}" worktree add -q -b lane-case-empty "${SIBLING_WT_DIR}/case-empty" main
 
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\n' "${JOURNAL}" > "${TMP}/journal.sh"
 chmod +x "${TMP}/journal.sh"
@@ -111,10 +114,24 @@ rc="${rc:-0}"
 MD="${ROOT}/docs/handoff/dispatch-case-negative/review-gate.md"
 if [[ "${rc}" == 5 ]] && grep -q '^reason: cross_repo_elsewhere$' "${MD}" \
    && grep -q '^dirty: 0$' "${MD}" \
-   && grep -q "repo=${CANONICAL}" "${JOURNAL}"; then
+   && grep -q "repo=${CANONICAL} branch=worktree-case-negative sibling=absent" "${JOURNAL}" \
+   && grep -q "repo=${ROOT}" "${MD}" \
+   && grep -q "repo=${CANONICAL}" "${MD}"; then
   pass 'negative control refuses shared-canonical-only resolution and surveys both repos'
 else
   fail "negative control was relaxed (rc=${rc}, output=$(cat "${TMP}/case-negative.out"), md=$(cat "${MD}" 2>/dev/null), journal=$(cat "${JOURNAL}" 2>/dev/null))"
+fi
+
+unset rc
+run_close case-empty "${TMP}/empty-lane" plugins/leadv2/scripts/probe.sh || rc=$?
+rc="${rc:-0}"
+MD="${ROOT}/docs/handoff/dispatch-case-empty/review-gate.md"
+if [[ "${rc}" == 5 ]] && grep -q '^reason: no_work$' "${MD}" \
+   && grep -q "counted: repo=${SIBLING_WT_DIR}/case-empty branch=lane-case-empty" "${MD}" \
+   && grep -q "repo=${SIBLING_WT_DIR}/case-empty branch=lane-case-empty" "${JOURNAL}"; then
+  pass 'empty sibling is surveyed as no_work with repo and branch'
+else
+  fail "empty sibling was not counted (rc=${rc}, output=$(cat "${TMP}/case-empty.out"), md=$(cat "${MD}" 2>/dev/null), journal=$(cat "${JOURNAL}" 2>/dev/null))"
 fi
 
 printf '[TEST] %d passed, %d failed\n' "${PASS}" "${FAIL}"
