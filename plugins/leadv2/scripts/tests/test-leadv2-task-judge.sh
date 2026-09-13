@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
 # tests/test-leadv2-task-judge.sh — ROUTER-T5 (smart-routing-v2 spec §3 L2, §8 T5).
+# run-all-triggers: leadv2-task-judge
 #
 # Drives the REAL shipped leadv2-task-judge.sh against a temp PROJECT_ROOT with
 # a stub `claude` binary (LEADV2_JUDGE_CLAUDE_BIN) so no real model call ever
