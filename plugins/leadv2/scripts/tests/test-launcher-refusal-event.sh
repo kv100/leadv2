@@ -53,6 +53,9 @@ TMPDIR="$(dirname "${stderr_artifact}")/dispatcher-tmp"
 mkdir -p "${TMPDIR}"
 WORK_ROOT="${PROJECT_ROOT}"
 LEADV2_BURN_GOVERNOR=0
+# This regression reaches the registry before a worker could launch; keep the
+# unrelated code-intel attach gate off so the real-refusal proof stays fast.
+LEADV2_WORKER_MCP=0
 spawn_worker fable 'real registry refusal probe' cafe0001 >/dev/null
 spawn_rc=$?
 [[ ${spawn_rc} -eq 2 ]] || exit 41
