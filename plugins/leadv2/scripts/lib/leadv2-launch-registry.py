@@ -265,6 +265,81 @@ def load_capability_matrix(routing_yaml=None):
     return _load_capability_matrix_fallback(path)
 
 
+# ── PRICE-THE-ARM-PER-PROVIDER-01 (dispatch-f8880421) ────────────────────────
+# capability_matrix rows no longer carry `cost:` -- this registry's own row
+# picker (lookup()'s cheapest-tier tie-break, e.g. codex luna/terra/sol) must
+# read the SAME router_v2.cost source the arbiter prices from, or its verdict
+# silently drifts from what the arbiter actually charged. Mirrors the
+# arbiter's price_key()/provider_cost() semantics exactly (see
+# lib/leadv2-route-arbiter.sh): glm-flash prices off its own arm key, every
+# other row off `provider`; a routing yaml with no router_v2.cost block at
+# all (legacy fixtures) falls back to the row's own `cost:` field.
+def _price_key(row):
+    return "glm-flash" if row.get("arm") == "glm-flash" else row.get("provider")
+
+
+def load_provider_cost(routing_yaml=None):
+    """-> (cost_dict_or_None, unpriced_policy). None means the yaml carries no
+    router_v2.cost block at all (LEGACY: provider_cost() reads row['cost'])."""
+    path = routing_yaml or os.environ.get("LEADV2_ROUTE_ARBITER_ROUTING_YAML", _DEFAULT_ROUTING_YAML)
+    try:
+        import yaml  # noqa: local import -- optional dependency, see fallback below
+        with open(path) as fh:
+            doc = yaml.safe_load(fh) or {}
+        router_v2 = doc.get("router_v2") or {}
+        if "cost" in router_v2:
+            return router_v2.get("cost") or {}, str(router_v2.get("cost_unpriced_policy", "matrix_median"))
+        return None, "matrix_median"
+    except Exception:
+        pass
+    return _load_provider_cost_fallback(path)
+
+
+def _load_provider_cost_fallback(path):
+    cost, found_block, in_cost = {}, False, False
+    with open(path) as fh:
+        for raw in fh:
+            stripped = raw.strip()
+            if in_cost:
+                if stripped and not stripped.startswith("#") and not raw.startswith("    "):
+                    in_cost = False
+                else:
+                    m = re.match(r"^([\w-]+):\s*([^\s#]+)", stripped)
+                    if m:
+                        k, v = m.group(1), m.group(2)
+                        cost[k] = None if v == "null" else (_num(v) if _num(v) is not None else v)
+                    continue
+            if re.match(r"^cost:\s*(#.*)?$", stripped):
+                in_cost = True
+                found_block = True
+    return (cost if found_block else None), "matrix_median"
+
+
+def _num(s):
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def provider_cost(row, cost_cfg):
+    """cost_cfg is load_provider_cost()'s first return value. Same fallback
+    ladder as the arbiter: LEGACY (cost_cfg is None) reads row['cost'];
+    otherwise an unpriced/missing key prices at the median of the numeric
+    entries (1.0 if every entry is null/absent -- never a refusal)."""
+    if cost_cfg is None:
+        v = _num(row.get("cost"))
+        return v if v is not None else 999.0
+    numeric = sorted(v for v in cost_cfg.values() if isinstance(v, (int, float)))
+    median = 1.0
+    if numeric:
+        n = len(numeric)
+        mid = n // 2
+        median = numeric[mid] if n % 2 else (numeric[mid - 1] + numeric[mid]) / 2.0
+    v = cost_cfg.get(_price_key(row))
+    return v if isinstance(v, (int, float)) else median
+
+
 # ── adapter argv builders (verified shapes only) ─────────────────────────────
 # claude-subsession.sh:124 accepts --model opus*|sonnet*|haiku*|fable*|claude*
 # and threads it straight through to the `claude` CLI (:595); :6251 already
@@ -404,7 +479,8 @@ def lookup(kind, role, arm, task_class, routing_yaml=None):
     size_matched = [r for r in candidates if size in (r.get("sizes") or [])]
     size_fallback = not size_matched
     pool = size_matched or candidates
-    row = min(pool, key=lambda r: r.get("cost", 0))
+    cost_cfg, _cost_policy = load_provider_cost(routing_yaml)
+    row = min(pool, key=lambda r: provider_cost(r, cost_cfg))
 
     provider = row.get("provider")
     builder = _FAMILY_BUILDERS.get(provider)

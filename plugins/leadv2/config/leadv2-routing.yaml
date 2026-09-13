@@ -158,8 +158,50 @@ router_v2:
   observed_cost:
     min_rows: 3
 
+  # PRICE-THE-ARM-PER-PROVIDER-01 (founder decision 2026-09-13, dispatch-f8880421):
+  # per-model NNLS pricing is off the table -- quota is metered per PROVIDER, so
+  # haiku/sonnet/opus/fable token columns are collinear against the one shared
+  # anthropic window (5h kept=104 R2=-0.32, 7d kept=66 R2=-0.73, max_abs_corr
+  # ~0.94, degenerate_pairs=5 -- leadv2-drain-weights.py, this repo, 2026-09-13).
+  # `cost` below is keyed by PROVIDER (price_key: arm 'glm-flash' prices off its
+  # own key since its ratio is measured separately; every other row prices off
+  # `provider`), fraction of that provider's OWN binding window consumed per
+  # 1,000,000 tokens. A `null` is a named, honest "not yet priced" -- never a
+  # guess -- and the arbiter falls back to the median of the numeric entries
+  # (cost_unpriced_policy), tokening every decision line `cost_src=<key>:<state>`
+  # so the replay/audit trail shows exactly how many decisions rode on a guess.
+  # capability_matrix rows below carry NO `cost:` field any more -- this block is
+  # the only price source when present; a routing yaml that omits this block
+  # entirely (the 15 legacy scratch-yaml test fixtures) falls back to the row's
+  # own `cost:` field, byte-identical to pre-PRICE-THE-ARM-PER-PROVIDER-01.
+  cost:
+    glm-flash: 0.33   # GLM-EFFICIENCY-01 (founder ruling q-bba84179, 2026-09-02): Z.AI credit-weight ratio, docs.z.ai/devpack/teamplan.md -- not re-derived here.
+    glm: 1.0          # unit; GLM-EFFICIENCY-01 baseline the glm-flash ratio is expressed against.
+    codex: null       # UNPRICED -- leadv2-drain-weights.py --provider codex, this repo, 2026-09-13: see docs/handoff/dispatch-f8880421/developer.full.md for run output/status.
+    anthropic: null   # UNPRICED -- leadv2-drain-weights.py --provider anthropic, this repo, 2026-09-13: see docs/handoff/dispatch-f8880421/developer.full.md for run output/status.
+    freepool: 1.0     # unchanged semantics: floor_applies adds +100 in ecost() regardless of this number (arbiter :1810).
+  # Currency: `cost` is "fraction of THIS provider's own binding window per
+  # Mtok" -- a GLM percent is not an Anthropic percent. The arbiter never
+  # normalises across providers by a conversion factor; it divides by
+  # headroom_weight(), itself a function of THAT provider's own remaining-
+  # window fraction (_headroom_ramp on usable_now) -- so `provider_cost /
+  # headroom_weight` is "how much of what's left this task eats, per unit of
+  # what's left", the same dimensionless quantity for every provider. It does
+  # NOT correct for the windows having different lengths (GLM 5h+weekly,
+  # Codex weekly-only under the current prolite plan, Claude 5h+weekly+
+  # Fable-scoped-weekly) -- that enters only through usable_now's own ramp. A
+  # dollar/hours-of-work currency is a different decision, not made here.
+  cost_unit: fraction_of_own_window_per_Mtok
+  # matrix_median is the ONLY implemented policy: an absent/null price is
+  # priced at the median of the numeric entries in `cost` above (1.0 if every
+  # entry is null) -- neutral, never invented, and named on the decision line
+  # so the replay/audit trail shows exactly how many picks rode on it.
+  cost_unpriced_policy: matrix_median
+
   # T17 route arbiter capability matrix. This is data, not a second ladder.
-  # `cost` is a relative unit used only among capable, uncapped arms.
+  # PRICE-THE-ARM-PER-PROVIDER-01: rows no longer carry `cost:` -- price comes
+  # from router_v2.cost above, keyed by price_key(row) (arm for glm-flash,
+  # provider otherwise). See that block for currency and fallback policy.
   #
   # T17 fix-round (C1): `kinds:` must carry the vocabulary real callers
   # actually pass, not just the abstract code|docs|review|plan|audit|safety
@@ -199,7 +241,7 @@ router_v2:
     #
     # Откат — один шаг: вернуть в этой строке protected: false, review: false и
     # исходный список kinds. Ледгер: SD-GLM-DOES-ANY-WORK-ROLLBACK-01.
-    - { arm: glm, provider: glm, model: glm-5.3, tier: standard, cost: 1, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [bulk, background], review: true, protected: true, capability: 4 }
+    - { arm: glm, provider: glm, model: glm-5.3, tier: standard, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [bulk, background], review: true, protected: true, capability: 4 }
     # GLM-53-FLASH-ARM-01 (founder order 2026-08-26): glm-5.3-flash, the CHEAP
     # glm-family arm. GLM-EFFICIENCY-01 (founder ruling on ask q-bba84179,
     # 2026-09-02, option b): cost corrected 0.4 -> 0.33 against Z.AI's measured
@@ -208,11 +250,11 @@ router_v2:
     # i.e. flash's advertised "3x the quota" means 3x the ALLOWANCE, not 3x the
     # cost. The old 0.4 was a legacy-plan figure; the direction (flash cheapest)
     # was always right. Flash stays preferred on trivial/light/standard.
-    # `cost: 0.33` is that credit-weight ratio expressed in the arbiter's only
-    # economic unit (relative cost among capable, uncapped arms) — a STATIC
-    # preference note, not a quota model: the arbiter scores provider-level
-    # utilization, not per-model consumption, so no per-arm quota math was
-    # added in this round. Good for mechanical edits, small fixes, doc rounds,
+    # That 0.33 now lives in router_v2.cost.glm-flash (PRICE-THE-ARM-PER-
+    # PROVIDER-01, 2026-09-13) -- this row carries no cost field of its own;
+    # price_key(row)='glm-flash' (not 'glm') is what makes the arbiter read
+    # this ratio instead of the shared glm provider price. Good for mechanical
+    # edits, small fixes, doc rounds,
     # test authoring. NOT for protected/safety/publish (protected: false here
     # plus `untrusted: true` on the ladder entry below), NOT review/audit/plan,
     # and sizes stop at standard — heavy/bulk stay on glm-5.3/codex/sonnet.
@@ -237,14 +279,14 @@ router_v2:
     # Откат — один шаг: вернуть в этой строке protected: false, review: false,
     # прежние kinds/sizes и `untrusted: true` в лестничную запись.
     # Ледгер: SD-GLM-FLASH-DOES-ANY-WORK-ROLLBACK-01.
-    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.33, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [cheap, mechanical], review: true, protected: true, capability: 2 }
+    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [cheap, mechanical], review: true, protected: true, capability: 2 }
     # recon (ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01, founder 2026-09-04):
     # recon is cheap, high-volume, READ-ONLY exploration — routing intent lives
     # here as rows, not in arbiter code branches. freepool (cost 1) is the
     # winner while its gate is healthy; haiku (cost 2) is the capable fallback
     # when the gate benches freepool. No glm/codex/sonnet/opus cell carries
     # recon — the doctrine is "the cheapest capable arm", exactly these two.
-    - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, cost: 1, kinds: [code, docs, recon, fanout-class-funnel, backlog-pump], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false, capability: 2 }
+    - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, kinds: [code, docs, recon, fanout-class-funnel, backlog-pump], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false, capability: 2 }
     # CODEX-TIERS-COLLAPSED-ONTO-ASTRA part B (2026-09-09): one row per real
     # tier. Part A taught the launcher the tier->model chain (codex-task.sh:1445:
     # top -> gpt-5.6-sol/high, standard -> gpt-5.6-terra/medium, volume ->
@@ -266,12 +308,12 @@ router_v2:
     # opus 9. Capabilities stay 3/4/4 and sizes stay unchanged on purpose:
     # heavy code must resolve terra at 4, never sol at 7 — sol is the
     # sizes:[heavy]-only adversarial/exhaustive arm.
-    - { arm: codex, provider: codex, model: gpt-5.6-luna, tier: volume, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true, capability: 3 }
-    - { arm: codex, provider: codex, model: gpt-5.6-terra, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true, capability: 4 }
-    - { arm: codex, provider: codex, model: gpt-5.6-sol, tier: top, cost: 7, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 4 }
-    - { arm: haiku, provider: claude, model: haiku, tier: standard, cost: 2, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true, capability: 2, pool_default: true } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
-    - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true, capability: 4 }
-    - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 4, pool_default: false }
+    - { arm: codex, provider: codex, model: gpt-5.6-luna, tier: volume, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true, capability: 3 }
+    - { arm: codex, provider: codex, model: gpt-5.6-terra, tier: standard, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true, capability: 4 }
+    - { arm: codex, provider: codex, model: gpt-5.6-sol, tier: top, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 4 }
+    - { arm: haiku, provider: claude, model: haiku, tier: standard, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true, capability: 2, pool_default: true } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
+    - { arm: sonnet, provider: claude, model: sonnet, tier: standard, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true, capability: 4 }
+    - { arm: opus, provider: claude, model: opus, tier: high, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 4, pool_default: false }
     # FABLE-RESTORE-01 (founder permission, 2026-09-06 open-threads.md, entry
     # [FABLE-RESTORE-01]): fable had ZERO capability_matrix cells since
     # FABLE-RETIRE-01 (2026-07-07), so the arbiter could never select it as a
@@ -286,7 +328,7 @@ router_v2:
     # (plan synthesis, judge, diagnose synth, learn proposal, PO audit, review
     # Heavy critic, architect prepass) — never `code`, fable is not a build arm.
     # Rollback: delete this row.
-    - { arm: fable, provider: claude, model: fable, tier: high, cost: 8, kinds: [plan, audit, review], sizes: [standard, heavy], tags: [architecture, adversarial], review: true, protected: true, capability: 4 }
+    - { arm: fable, provider: claude, model: fable, tier: high, kinds: [plan, audit, review], sizes: [standard, heavy], tags: [architecture, adversarial], review: true, protected: true, capability: 4 }
 
   # EFFORT-IS-NOT-WIRED-01: the second routing knob (docs/model-effort-matrix.md
   # -- model = hardness, effort = marginal value of extra thinking) resolved
