@@ -817,9 +817,6 @@ _session_prev=$(cat "$_SESSION_COUNTER_FILE" 2>/dev/null || echo 0)
 _session_close_count=$(( _session_prev + 1 ))
 printf -- '%d\n' "$_session_close_count" > "${_SESSION_COUNTER_FILE}.tmp" \
   && mv "${_SESSION_COUNTER_FILE}.tmp" "$_SESSION_COUNTER_FILE" || true
-if [[ "$_session_close_count" -ge 2 ]]; then
-  log_info "SESSION-HYGIENE: ${_session_close_count} closes this session — recommend starting a NEW session for the next task (journal layer makes resume free)"
-fi
 # ── end session-close advisory ────────────────────────────────────────────────
 
 log_info "Phase 8 close complete for ${TASK_ID} (YAML: ${YAML_PATH})"
