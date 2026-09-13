@@ -94,7 +94,7 @@ fi
 # evaluate at CLAUSE level (split sentences on [.!?\n;], then clauses on comma),
 # so the past+artifact clause and the forward-promise clause are judged
 # independently. The test assertion (case 10 fires) is ground truth.
-VERDICT="$(python3 - "$TRANSCRIPT" <<'PYEOF' 2>/dev/null || true
+VERDICT="$(python3 - "$TRANSCRIPT" "$SESSION_ID" <<'PYEOF' 2>/dev/null || true
 import sys, os, json, re   # os: T16 §6 tail-window fast path
 
 jsonl_path = sys.argv[1]
@@ -317,6 +317,62 @@ ACTION_TOOL_KIND = {
     'Agent': 'dispatch', 'Workflow': 'dispatch', 'SendMessage': 'dispatch',
 }
 
+# PROMISE-GUARD-MISSES-A-CLOSING-PROMISE-01: a write's TARGET decides whether
+# it is evidence that promised work began. Prefixes are derived from the
+# environment the hook already sees — never a hard-coded machine path. An
+# empty or "/" entry is DROPPED: an empty prefix makes startswith() true for
+# every path, which would judge every write scratch and fire the guard on
+# every write-kept promise. Derivation is textual only — no realpath(), no
+# stat(): a Stop hook that touches the filesystem can block on a dead mount,
+# and the target may already be gone by the time the hook runs. The /private
+# twin of every entry is added (and the stripped twin of every /private
+# entry) because both spellings are live on macOS: $TMPDIR is
+# /var/folders/.../T while the scratchpad paths it fronts resolve through
+# /private/var/folders/...
+def _scratch_prefixes():
+    out = set()
+    for raw in ('/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp',
+                os.environ.get('TMPDIR') or '', os.environ.get('TMP') or ''):
+        p = (raw or '').strip().rstrip('/')
+        if not p or p == '/':
+            continue
+        out.add(p)
+        out.add(p[len('/private'):] if p.startswith('/private/') else '/private' + p)
+    return sorted(x for x in out if x and x != '/')
+
+SCRATCH_PREFIXES = _scratch_prefixes()
+# argv[2] of this heredoc is the hook's SESSION_ID (the bash driver passes
+# it). A short or absent id keeps the session clause below inert — the bash
+# layer's `unknown` fallback is 7 chars, under the floor, so it can never
+# mark a path scratch by accident.
+SESSION_ID = sys.argv[2] if len(sys.argv) > 2 else ''
+
+WRITE_PATH_KEYS = ('file_path', 'notebook_path', 'path')
+
+def write_target(inp):
+    if not isinstance(inp, dict):
+        return ''
+    for k in WRITE_PATH_KEYS:
+        v = inp.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ''
+
+def is_durable_target(path):
+    """FAIL-OPEN: absent / empty / relative / unparseable -> DURABLE. Every
+    pre-existing promise-guard fixture emits Write/Edit with input {}, and
+    those suites must keep their suppressed_action verdicts."""
+    if not path:
+        return True
+    if not path.startswith('/'):
+        return True
+    for pre in SCRATCH_PREFIXES:
+        if path == pre or path.startswith(pre + '/'):
+            return False
+    if len(SESSION_ID) >= 16 and ('/' + SESSION_ID + '/') in path:
+        return False
+    return True
+
 def classify_action_kind(name, bash_cmd=None):
     """Returns the action kind ('test'|'commit'|'dispatch'|'write') or None."""
     if name.startswith('Task'):
@@ -401,6 +457,32 @@ PROMISE_KIND_PATTERNS = [
         r'|\b(?:по)?копаю(?:сь)?\b'
         r'|\bизучаю\b|\bизучу\b'
         r'|\bзаймусь\b|\bознакомлюсь\b', re.I | re.UNICODE)),
+    # PROMISE-GUARD-MISSES-A-CLOSING-PROMISE-01 (2026-09-13 escape): «Начинаю с
+    # пункта 1 прямо сейчас» was DETECTED («начинаю» is in COMMIT_RU_VERBS)
+    # and classified None, and None bound to any state-changing action — a
+    # scratch Write kept it. The start-family names an intention to BEGIN and
+    # carries no object, so it can never classify sharper than this. LAST on
+    # purpose, after every concrete kind: «Начинаю с мержа fix/…» keeps its
+    # `commit` classification and «стартую фоновый воркер» its `dispatch` one
+    # (both verified) — start is the residue, never the label that steals a
+    # concrete kind. («начинаю разбираться» also lands here on `start`: the
+    # infinitive «разбираться» never matched `diagnose` even before this
+    # entry — census note from the implementer, pinned by the closing-promise
+    # suite.)
+    #
+    # Anchoring is the TURN-IT-ON-01 discipline: \b both sides, verb-formed,
+    # 1sg only. The nouns «начало», «начальник», «начинание», «начинка»,
+    # «приступ», «стартап» share these stems and must never classify; the
+    # right-hand \b also rejects the 3pl («начинают», «приступают»,
+    # «стартуют») without needing the COMMIT_RU_VERBS lookahead, because
+    # these stems are only ever matched fully anchored. «берусь» stays in
+    # `write` — the move is not made.
+    ('start', re.compile(
+        r'\bнач(?:инаю|ну)\b'
+        r'|\bприступаю\b'
+        r'|\bприступлю\b'
+        r'|\bстартую\b'
+        r'|\bпринимаюсь\b', re.I | re.UNICODE)),
 ]
 
 def classify_promise_kind(clause):
@@ -433,6 +515,8 @@ has_action = False
 # matter how much work the turn did earlier.
 action_positions = []
 action_kinds_seen = set()   # PROMISE-GUARD-BIND-01: kinds of action, turn-wide
+durable_kinds_seen = set()  # PROMISE-GUARD-MISSES-A-CLOSING-PROMISE-01: kinds
+                            # of action whose state change hit a DURABLE target
 last_text_pos = -1
 block_pos = 0
 final_text_parts = []    # text blocks of the LAST assistant record
@@ -538,6 +622,14 @@ for rec in turn_records:
                 action_positions.append(block_pos)
                 # PROMISE-GUARD-BIND-01: remember WHAT KIND it was.
                 action_kinds_seen.add(action_kind)
+                # PROMISE-GUARD-MISSES-A-CLOSING-PROMISE-01: remember whether it
+                # was DURABLE. commit and dispatch are durable by construction
+                # (a git operation writes the repo, a spawn starts a real lane)
+                # and a Bash write is a real command; only a Write/Edit/
+                # NotebookEdit tool call carries a target that can be ephemeral.
+                if action_kind != 'write' or name == 'Bash' \
+                        or is_durable_target(write_target(inp)):
+                    durable_kinds_seen.add(action_kind)
         if btype == 'text' and (block.get('text') or '').strip():
             last_text_pos = block_pos
         block_pos += 1
@@ -629,8 +721,12 @@ primary_kind = commitment_kinds[0] if commitment_kinds else None
 # downstream (BLOCK_UNCLASSIFIED opt-in) is unchanged, so this hardening
 # widens evidence, not shouting.
 STATE_KINDS = {'write', 'commit', 'dispatch'}
-if primary_kind is None:
-    action_after_promise = bool(action_kinds_seen & STATE_KINDS)
+if primary_kind is None or primary_kind == 'start':
+    # PROMISE-GUARD-MISSES-A-CLOSING-PROMISE-01: an unknown- or start-kind
+    # promise names no object, so the only honest evidence it began is a state
+    # change on a DURABLE target. A scratch write and a repo write are no
+    # longer the same evidence.
+    action_after_promise = bool(durable_kinds_seen & STATE_KINDS)
 elif primary_kind == 'diagnose':
     action_after_promise = bool(action_kinds_seen & (STATE_KINDS | {'test'}))
 else:
@@ -643,6 +739,7 @@ print(json.dumps({
     'has_action_anywhere_in_turn': has_action,
     'primary_promise_kind': primary_kind,
     'action_kinds_seen': sorted(action_kinds_seen),
+    'durable_kinds_seen': sorted(durable_kinds_seen),
     'tools': turn_tools,
 }, ensure_ascii=False))
 PYEOF
@@ -665,6 +762,10 @@ print(_j.dumps(d.get("commitments", []) or [], ensure_ascii=False))
 print(d.get("primary_promise_kind") or "")
 print(",".join(d.get("action_kinds_seen", []) or []))
 print("yes" if d.get("has_action_anywhere_in_turn") else "no")
+# PROMISE-GUARD-MISSES-A-CLOSING-PROMISE-01: APPENDED as line 8, never
+# inserted — the bash driver reads the fields above positionally with
+# sed -n 'Np', so a shift would silently mislabel every journal row.
+print(",".join(d.get("durable_kinds_seen", []) or []))
 ' 2>/dev/null || true)"
 
 FINAL_FOUND="$(printf '%s' "$VF" | sed -n '1p')"
@@ -674,6 +775,15 @@ COMMITMENTS_JSON="$(printf '%s' "$VF" | sed -n '4p')"
 PRIMARY_KIND="$(printf '%s' "$VF" | sed -n '5p')"
 ACTION_KINDS_SEEN="$(printf '%s' "$VF" | sed -n '6p')"
 HAS_ACTION_ANYWHERE_IN_TURN="$(printf '%s' "$VF" | sed -n '7p')"
+DURABLE_KINDS_SEEN="$(printf '%s' "$VF" | sed -n '8p')"
+
+# PROMISE-GUARD-MISSES-A-CLOSING-PROMISE-01: the turn DID write files, but no
+# write landed on a durable target — the correction below names that, so the
+# lead sees WHY the scratch write did not count (rendered surface).
+SCRATCH_WRITE_ONLY="no"
+if [[ ",${ACTION_KINDS_SEEN}," == *",write,"* && ",${DURABLE_KINDS_SEEN}," != *",write,"* ]]; then
+  SCRATCH_WRITE_ONLY="yes"
+fi
 
 [[ "$FINAL_FOUND" == "yes" ]] || exit 0
 
@@ -758,6 +868,10 @@ row = {
     "n_commitments": int(sys.argv[8] or 0),
     "primary_promise_kind": (sys.argv[9] or None),
     "action_kinds_seen": (sys.argv[10].split(",") if sys.argv[10] else []),
+    # PROMISE-GUARD-MISSES-A-CLOSING-PROMISE-01: trailing argv, appended —
+    # makes the suppressed_action->fired flip for scratch-only turns
+    # measurable, the way action_kinds_seen already is.
+    "durable_kinds_seen": (sys.argv[13].split(",") if sys.argv[13] else []),
     "block_mode": sys.argv[11],
     "block_decision": sys.argv[12],
 }
@@ -765,7 +879,8 @@ path = os.path.expanduser("~/.claude/leadv2-promise-guard.jsonl")
 with open(path, "a", encoding="utf-8") as f:
     f.write(json.dumps(row, ensure_ascii=False) + "\n")
 ' "$TS" "$SESSION_ID" "$CWD" "$VERDICT_KIND" "$QUOTE" "$PATTERN" "$TOOLS_LIST" "${N_COMMIT:-0}" \
-  "$PRIMARY_KIND" "$ACTION_KINDS_SEEN" "${LEADV2_PROMISE_GUARD_BLOCK:-1}" "$BLOCK_DECISION" 2>/dev/null || true
+  "$PRIMARY_KIND" "$ACTION_KINDS_SEEN" "${LEADV2_PROMISE_GUARD_BLOCK:-1}" "$BLOCK_DECISION" \
+  "$DURABLE_KINDS_SEEN" 2>/dev/null || true
 
 # suppressed by an action tool -> silent
 [[ "$VERDICT_KIND" == "suppressed_action" ]] && exit 0
@@ -790,10 +905,11 @@ fi
 printf '1\n' > "$SENTINEL" 2>/dev/null || true
 
 # --- emit the correction (decision:block so the model gets one more turn) ---
-python3 - "$QUOTE" "$TOOLS_LIST" <<'PYEOF'
+python3 - "$QUOTE" "$TOOLS_LIST" "$SCRATCH_WRITE_ONLY" <<'PYEOF'
 import sys, json
 quote = sys.argv[1]
 tools_raw = sys.argv[2]
+scratch_only = (len(sys.argv) > 3 and sys.argv[3] == "yes")
 tools = ([t for t in tools_raw.split("|")] if tools_raw else [])
 tools_str = ", ".join(tools) if tools else "(none)"
 reason = (
@@ -804,6 +920,11 @@ reason = (
     "Either make the call now, or restate in past tense with the artifact "
     "(sha / path / probe output). A promise in chat is not work."
 )
+# PROMISE-GUARD-MISSES-A-CLOSING-PROMISE-01: name the scratch write — the
+# acceptance surface of this fix is rendered, not a return value.
+if scratch_only:
+    reason += ("\nThis turn's only file write went to a scratch path (session "
+               "scratchpad / tmp), which is not where the promised work lives.")
 print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
 PYEOF
 exit 0
