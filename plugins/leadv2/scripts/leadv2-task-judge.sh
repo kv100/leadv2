@@ -491,8 +491,6 @@ print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
   parsed="$(printf '%s' "${raw}" | python3 -c "
 import json, sys
 
-# EXTRACT-BEGIN (test-judge-parses-its-own-answer.sh mutates only between
-# EXTRACT-BEGIN/EXTRACT-END; never at top level)
 def balanced_objects(text):
     search_from = 0
     found = []
@@ -530,6 +528,8 @@ result_text = env.get('result', raw) if isinstance(env, dict) else raw
 if not isinstance(result_text, str):
     sys.exit(1)
 
+# EXTRACT-BEGIN (test-judge-parses-its-own-answer.sh mutates only the answer
+# extractor; terminal-envelope selection above remains production control flow)
 est = first_balanced_object(result_text)
 if est is None or not isinstance(est, dict):
     sys.exit(1)
