@@ -242,6 +242,7 @@ cmd_ensure() {
   if [[ -d "$lane_path" ]] && git -C "$ROOT" worktree list --porcelain 2>/dev/null | grep -q "^worktree $(phys "$lane_path")\$"; then
     # Reused worktrees need this too: every lane that predates
     # CODEX-WORKTREE-TRUST-01 exists on disk already and was never registered.
+    place_lane_env "$lane_path"
     codex_trust_worktree "$lane_path"
     printf '%s\n' "$lane_path"
     return 0
@@ -286,6 +287,7 @@ cmd_ensure() {
   if git -C "$ROOT" worktree add -b "$branch" "$lane_path" "$base" >>"$ERRF" 2>&1; then
     git -C "$lane_path" commit --allow-empty -m "lane ${task_id} anchor" >>"$ERRF" 2>&1 || true
     degrade_frozen_registry_copy "$lane_path"
+    place_lane_env "$lane_path"
     codex_trust_worktree "$lane_path"
     printf '%s\n' "$lane_path"
     return 0
@@ -293,12 +295,54 @@ cmd_ensure() {
   # Branch may already exist from a prior aborted run — attach the worktree to it.
   if git -C "$ROOT" worktree add "$lane_path" "$branch" >>"$ERRF" 2>&1; then
     degrade_frozen_registry_copy "$lane_path"
+    place_lane_env "$lane_path"
     codex_trust_worktree "$lane_path"
     printf '%s\n' "$lane_path"
     return 0
   fi
   log_error "ensure: git worktree add failed for task=$task_id base=$base (see $ERRF) — FALLING BACK to shared tree"
   fallback
+  return 0
+}
+
+# LANE-ENV-SYMLINK-01: lane worktrees need the owning checkout's secrets file
+# before a worker starts, but copying it would create secret sprawl and a regular
+# file in a repo that does not ignore .env would make every lane dirty. This helper
+# is intentionally fail-open: every refusal is recorded in ERRF and ensure still
+# returns the lane path.
+place_lane_env() { # <abs_worktree_path>; always rc0
+  local lane_path="${1:-}" source target source_abs target_abs
+  [[ -n "${lane_path}" ]] || return 0
+  source="${ROOT}/.env"
+  target="${lane_path}/.env"
+  if [[ ! -e "${source}" && ! -L "${source}" ]]; then
+    printf '[lane-worktree] place_lane_env skip task_path=%s reason=source_absent source=%s\n' "$lane_path" "$source" >>"$ERRF" 2>/dev/null || true
+    return 0
+  fi
+  source_abs="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${source}" 2>/dev/null || true)"
+  [[ -n "${source_abs}" ]] || source_abs="${source}"
+  if ! git -C "${lane_path}" check-ignore -q -- .env 2>/dev/null; then
+    printf '[lane-worktree] place_lane_env skip task_path=%s reason=target_not_ignored target=%s\n' "$lane_path" "$target" >>"$ERRF" 2>/dev/null || true
+    return 0
+  fi
+  if [[ -L "${target}" ]]; then
+    if [[ ! -e "${target}" ]]; then
+      rm -f "${target}" 2>/dev/null || true
+    else
+      target_abs="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${target}" 2>/dev/null || true)"
+      if [[ "${target_abs}" == "${source_abs}" ]]; then
+        return 0
+      fi
+      printf '[lane-worktree] place_lane_env skip task_path=%s reason=existing_symlink target=%s\n' "$lane_path" "$target" >>"$ERRF" 2>/dev/null || true
+      return 0
+    fi
+  elif [[ -e "${target}" ]]; then
+    printf '[lane-worktree] place_lane_env skip task_path=%s reason=existing_file target=%s\n' "$lane_path" "$target" >>"$ERRF" 2>/dev/null || true
+    return 0
+  fi
+  if ! ln -s "${source_abs}" "${target}" 2>/dev/null; then
+    printf '[lane-worktree] place_lane_env skip task_path=%s reason=symlink_failed source=%s target=%s\n' "$lane_path" "$source_abs" "$target" >>"$ERRF" 2>/dev/null || true
+  fi
   return 0
 }
 
