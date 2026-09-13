@@ -13,7 +13,7 @@
 #
 # One entry point:
 #   leadv2_cost_actual_record <repo-slug> <sig8> <terminal> <cause> \
-#       [class] [work_kind] [model] [tokens]
+#       [class] [work_kind] [model] [tokens] [estimate_task_id]
 #
 # What it does:
 #   1. Reads worker_spawned rows for <sig8> from the same events journal the
@@ -136,9 +136,10 @@ PY
   printf -- '%s' "${total:--}"
 }
 
-leadv2_cost_actual_record() { # <repo> <sig8> <terminal> <cause> [class] [kind] [model] [tokens]
+leadv2_cost_actual_record() { # <repo> <sig8> <terminal> <cause> [class] [kind] [model] [tokens] [estimate_task_id]
   local repo="${1:-}" sig8="${2:-}" terminal="${3:-}" cause="${4:-}"
   local cls="${5:-unknown}" wk="${6:-code}" model="${7:-unknown}" tokens="${8:--}"
+  local estimate_task_id="${9:-${sig8}}"
   [[ -n "$repo" && -n "$sig8" ]] || return 0
   # A non-numeric tokens value is an unknown, not a measurement (D5/R5):
   # reject to `-` before it can reach the journal or the arbiter's reader.
@@ -188,18 +189,18 @@ PY
   # One space/'='/',' inside a value would corrupt the k=v detail the reader
   # parses -- same sanitize pass model_select_telemetry applies to its cells.
   local cell
-  for cell in cls wk model terminal cause tokens; do
+  for cell in cls wk model terminal cause tokens estimate_task_id; do
     printf -v "$cell" '%s' "$(printf '%s' "${!cell}" | tr ' \t=,\r\n' '_')"
   done
 
   # Machine surface: the events journal (locked, rotated, test-guarded by the
   # emitter itself).
   bash "$evt_bin" emit --repo "$repo" --kind cost_actual --task "$sig8" --arm "$arm" \
-    --detail "class=${cls} kind=${wk} model=${model} rounds=${rounds} wall_s=${wall_s} terminal=${terminal} cause=${cause} tokens=${tokens}" \
+    --detail "class=${cls} kind=${wk} model=${model} rounds=${rounds} wall_s=${wall_s} terminal=${terminal} cause=${cause} tokens=${tokens} estimate_task_id=${estimate_task_id}" \
     >/dev/null 2>&1 || true
   # Human/decision surface: printed for the caller's `emit decision`, landing
   # beside cost_estimate_recorded in the same journal.
-  printf 'cost_actual_recorded task=%s arm=%s model=%s rounds=%s wall_s=%s terminal=%s cause=%s class=%s kind=%s tokens=%s' \
-    "$sig8" "$arm" "$model" "$rounds" "$wall_s" "$terminal" "$cause" "$cls" "$wk" "$tokens"
+  printf 'cost_actual_recorded task=%s arm=%s model=%s rounds=%s wall_s=%s terminal=%s cause=%s class=%s kind=%s tokens=%s estimate_task_id=%s' \
+    "$sig8" "$arm" "$model" "$rounds" "$wall_s" "$terminal" "$cause" "$cls" "$wk" "$tokens" "$estimate_task_id"
   return 0
 }
