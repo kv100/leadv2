@@ -62,11 +62,15 @@ leadv2_cost_actuals_event_bin() {
 #       turn_events' 48h retention). Pending .cost-pending.yaml markers are
 #       flushed first (same script, idempotent by session_id) so a terminal
 #       that fires before the daemon's sweep still sees them.
+#   (a2) CODEX-LANES-PRODUCE-NO-TOKEN-READING-01: a codex-armed lane never
+#       gets a costs.yaml (that's claude-subsession.sh's own artifact), so it
+#       joins arm-registered's `arm=codex handle=<jobId>` rows to the job's
+#       own threadId to its rollout file's cumulative token_usage_record.
 #   (b) SUM(input+output) over burn turn_events for the session ids in the
 #       lane's sessions.map — an inference, valid only inside the 48h window.
 #   (c) neither -> `-`. NEVER 0: 0 claims the lane was free, `-` claims we
 #       do not know — a false zero poisons the observed-cost loop with free
-#       lanes (lane decision D5).
+#       lanes (lane decision D5). Call leadv2_lane_token_reason for WHY.
 # Prints the integer, or `-`. rc 0 ALWAYS: telemetry must never gate a
 # terminal verdict (same licence as leadv2_cost_actual_record).
 leadv2_lane_token_total() { # <repo-root> <sig8>
@@ -95,6 +99,89 @@ with open(sys.argv[1]) as fh:
             tot += int(m.group(2))
             seen = True
 print(tot if seen else "")
+PY
+)"
+    [[ "$total" =~ ^[0-9]+$ && "$total" != "0" ]] || total=""
+  fi
+
+  # (a2) codex rollout — CODEX-LANES-PRODUCE-NO-TOKEN-READING-01: costs.yaml
+  # above is written ONLY by claude-subsession.sh, so a codex-armed lane has
+  # never had a token reading (measured 2026-09-14: 0/8 pure-codex dispatch
+  # dirs on leadv2+persona-engine ever got a costs.yaml; the handful of
+  # codex-bucketed sigs that DID have one turned out to be mixed-arm lanes
+  # where an earlier sonnet spawn left it, all-zero, before the sig
+  # re-dispatched to codex). codex-task.sh's own job record
+  # ($CODEX_GUARD_STATE_ROOT/<slug>/jobs/<jobId>.json) carries `threadId`,
+  # which is byte-identical to the trailing UUID in its own
+  # ~/.codex/sessions/**/rollout-*.jsonl filename (verified live: 6/6 sampled
+  # completed jobs matched exactly one rollout apiece) -- an EXACT join, no
+  # cwd/mtime heuristics like the dead-shape scanner above needs. Each
+  # rollout's LAST token_usage_record.thread_token_usage is already the
+  # cumulative total for that whole codex thread (input+output, confirmed
+  # against its own running sum). arm-registered (written by
+  # _dispatch_register_arm at every spawn) is the jobId source: one
+  # `arm=codex handle=<jobId>` line per codex spawn, so a sig re-dispatched N
+  # times on codex sums N distinct threads' totals, mirroring how (a) above
+  # sums N claude sessions.
+  if [[ -z "$total" && -f "$handoff/arm-registered" ]]; then
+    total="$(python3 - "$handoff/arm-registered" <<'PY' 2>/dev/null
+import glob, json, os, re, sys
+
+job_ids, seen = [], set()
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        parts = line.split()
+        if len(parts) < 2 or parts[0] != "arm=codex" or not parts[1].startswith("handle="):
+            continue
+        jid = parts[1][len("handle="):]
+        if jid and jid not in seen:
+            seen.add(jid)
+            job_ids.append(jid)
+if not job_ids:
+    sys.exit(0)
+
+state_root = os.path.expanduser(
+    os.environ.get("CODEX_GUARD_STATE_ROOT") or "~/.claude/plugins/data/codex-openai-codex/state"
+)
+sessions_root = os.path.join(os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex")), "sessions")
+
+tot, found_any = 0, False
+for jid in job_ids:
+    job_matches = glob.glob(os.path.join(state_root, "*", "jobs", jid + ".json"))
+    if not job_matches:
+        continue
+    try:
+        thread_id = json.load(open(job_matches[0])).get("threadId")
+    except Exception:
+        continue
+    if not thread_id or not re.match(r"^[0-9a-fA-F-]{10,64}$", thread_id):
+        continue
+    rollouts = glob.glob(os.path.join(sessions_root, "**", "rollout-*" + thread_id + ".jsonl"), recursive=True)
+    if len(rollouts) != 1:
+        continue  # 0 = rotated away/not written; >1 = ambiguous -- never guess
+    last = None
+    try:
+        with open(rollouts[0], errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if d.get("type") == "token_usage_record":
+                    last = d
+    except OSError:
+        continue
+    if last is None:
+        continue
+    usage = (last.get("payload") or {}).get("thread_token_usage") or {}
+    inp, outp = usage.get("input_tokens"), usage.get("output_tokens")
+    if isinstance(inp, int) and isinstance(outp, int):
+        tot += inp + outp
+        found_any = True
+print(tot if found_any else "")
 PY
 )"
     [[ "$total" =~ ^[0-9]+$ && "$total" != "0" ]] || total=""
@@ -134,6 +221,51 @@ PY
 
   # (c) unknown — a dash, never a fabricated zero.
   printf -- '%s' "${total:--}"
+}
+
+# leadv2_lane_token_reason <repo-root> <sig8> — WHY leadv2_lane_token_total
+# came back `-`, so "this arm has no telemetry seam at all" (a codex lane
+# with no arm-registered handle, no costs.yaml, no sessions.map — nothing
+# to even try) is distinguishable from "the seam exists but this particular
+# artifact came up empty". A presence check on the SAME three artifacts
+# leadv2_lane_token_total already reads, not a second value computation —
+# there is nothing here for a second reader to drift out of sync with.
+# Meaningful only when the caller already knows tokens == `-`; called on a
+# real total it still returns a string, just not one worth acting on.
+# Reasons: no_seam_for_arm | costs_yaml_absent | turn_events_empty | parse_failed.
+# rc 0 ALWAYS — same fail-open licence as leadv2_lane_token_total.
+leadv2_lane_token_reason() { # <repo-root> <sig8>
+  local root="${1:-}" sig8="${2:-}"
+  [[ -n "$root" && -n "$sig8" ]] || { printf 'no_seam_for_arm'; return 0; }
+  local handoff="$root/docs/handoff/dispatch-$sig8"
+  [[ -d "$handoff" ]] || { printf 'no_seam_for_arm'; return 0; }
+
+  local has_costs=0 has_codex_handle=0 has_sessions=0
+  [[ -f "$handoff/costs.yaml" ]] && has_costs=1
+  if [[ -f "$handoff/arm-registered" ]] && grep -q '^arm=codex handle=' "$handoff/arm-registered" 2>/dev/null; then
+    has_codex_handle=1
+  fi
+  [[ -f "$handoff/sessions.map" ]] && has_sessions=1
+
+  if [[ "$has_costs" == 0 && "$has_codex_handle" == 0 && "$has_sessions" == 0 ]]; then
+    printf 'no_seam_for_arm'; return 0
+  fi
+  if [[ "$has_costs" == 1 ]]; then
+    # costs.yaml IS there yet leadv2_lane_token_total still returned unknown:
+    # its regex found no numeric input_tokens/output_tokens rows in a file
+    # that exists — a shape mismatch, not a missing artifact.
+    printf 'parse_failed'; return 0
+  fi
+  if [[ "$has_codex_handle" == 1 ]]; then
+    # a codex spawn happened (arm-registered has the jobId) but no rollout
+    # total came out of it — job json missing, thread rotated out of
+    # ~/.codex/sessions, or an ambiguous >1-match glob. The seam exists; the
+    # artifact behind it does not (yet, or anymore).
+    printf 'costs_yaml_absent'; return 0
+  fi
+  # only sessions.map is present: the burn-db tier ran and found nothing
+  # (empty result, missing db, or the 48h retention window already expired).
+  printf 'turn_events_empty'
 }
 
 leadv2_cost_actual_record() { # <repo> <sig8> <terminal> <cause> [class] [kind] [model] [tokens] [estimate_task_id]

@@ -2386,6 +2386,16 @@ _dl_note() {
     _ca_line="$(leadv2_cost_actual_record "$(repo_slug)" "$1" "$2" "$3" \
       "$(printf '%s' "${ADMISSION_CLASS:-${task_class:-standard}}" | tr '[:upper:]' '[:lower:]')" \
       "${ADMISSION_WORK_KIND:-code}" "${_MS_MODEL:-unknown}" "${_ca_tokens:--}" "${5:-$1}" 2>/dev/null || true)"
+    # CODEX-LANES-PRODUCE-NO-TOKEN-READING-01: `tokens=-` alone can't tell an
+    # arm with no telemetry seam apart from a seam that came up empty --
+    # append the WHY as a trailing field, appended (not folded into
+    # leadv2_cost_actual_record's own k=v line) so the join-key contract
+    # tests that call it directly are untouched.
+    if [[ -n "${_ca_line}" && "${_ca_tokens:--}" == "-" ]] && command -v leadv2_lane_token_reason >/dev/null 2>&1; then
+      local _ca_reason
+      _ca_reason="$(leadv2_lane_token_reason "${PROJECT_ROOT:-}" "$1" 2>/dev/null || true)"
+      [[ -n "${_ca_reason}" ]] && _ca_line="${_ca_line} token_reason=${_ca_reason}"
+    fi
     [[ -n "${_ca_line}" ]] && emit decision "${_ca_line}"
   fi
   [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || return 0
