@@ -1722,6 +1722,41 @@ def headroom_weight(provider, arm=None):
     _w=_headroom_ramp(un)
     if _w != 1.0: _headroom_priced[_lbl]=_w
     return _w
+# ARBITER-DECISION-INPUTS-01 D1: quota that expires before it can be used is
+# different from ordinary headroom.  Score the *wasted* fraction of every
+# readable window, not the provider's binding window alone: a five-hour
+# session bucket can expire while a weekly bucket is the utilisation binding
+# constraint, and dispatch burns both.  For one window:
+#
+#   waste = remaining_fraction * clamp(1 - hours_to_reset / period, 0, 1)
+#
+# The maximum is the next real opportunity loss among the windows this arm
+# burns.  A reset that is absent, at/past zero (stale cache), or on an unknown
+# period has no trustworthy urgency and remains neutral.  This is deliberately
+# a ranking-only, bounded discount: 1.0 <= weight <= 2.0, therefore it can at
+# most halve an admitted arm's effective matrix cost.  Capability admission
+# and all exclusion cliffs happen before ecost(), so urgency cannot buy an
+# incapable arm.  LEADV2_ARBITER_RESET_URGENCY=0 is the one-flag rollback.
+_RESET_URGENCY_W_MIN=1.0; _RESET_URGENCY_W_MAX=2.0
+_RESET_URGENCY_ON=(os.environ.get('LEADV2_ARBITER_RESET_URGENCY','1')!='0')
+_reset_urgency_priced={}
+def reset_urgency_weight(provider, arm=None):
+    if not _RESET_URGENCY_ON: return _RESET_URGENCY_W_MIN
+    key=_hw_label(provider,arm)
+    best=0.0; best_name=None
+    for name,pct,window in (_allwin.get(key) or []):
+        h,period,_basis=window_reset(name,window)
+        if h is None or period is None or period<=0 or h<=0:
+            continue
+        remaining=max(0.0,min(1.0,(100.0-float(pct))/100.0))
+        proximity=max(0.0,min(1.0,1.0-(float(h)/float(period))))
+        waste=remaining*proximity
+        if waste>best:
+            best,best_name=waste,name
+    weight=_RESET_URGENCY_W_MIN+(_RESET_URGENCY_W_MAX-_RESET_URGENCY_W_MIN)*best
+    if best_name is not None and weight>_RESET_URGENCY_W_MIN:
+        _reset_urgency_priced[key]='%.3f[%s]'%(weight,best_name)
+    return weight
 # ARBITER-LEARNS-WHAT-WORK-COSTS-01 (founder order 2026-09-12, row
 # 4c06462a1a71): the READ half of the observed-cost loop. A cost estimate is
 # written BEFORE the arm is chosen (cost_estimate_recorded ...
@@ -1805,7 +1840,8 @@ def _observed_rounds(c):
     return _r
 def ecost(c):
     _w=headroom_weight(c.get('provider'), c.get('arm'))
-    _base=float(c.get('cost',999))/(_w if _w > 0 else 1.0)
+    _ru=reset_urgency_weight(c.get('provider'), c.get('arm'))
+    _base=float(c.get('cost',999))/((_w if _w > 0 else 1.0)*_ru)
     _base*=_observed_rounds(c)
     return _base + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + (UNKNOWN_PROBE_PENALTY if _raw_for(c.get('provider'), c.get('arm')).get('unknown') else 0.0) + complexity_penalty(c)
 # ARBITER-SCORING-DESIGN-01 step 1: _cost_order/_fit_order/fit_differs are
@@ -2096,6 +2132,7 @@ if OBS_ON:
         _obs_tok=' cost_actuals=no_history'
     else:
         _obs_tok=' cost_actuals=matrix_only'
+_urgency_tok=(' reset_urgency=%s' % ','.join('%s:%s'%(_k,_v) for _k,_v in sorted(_reset_urgency_priced.items()))) if _RESET_URGENCY_ON and _reset_urgency_priced else ''
 # FREEPOOL-DEAD-ARM-LOOKS-LIKE-A-BUSY-ARM-01: name ANY gate refusal on the
 # decision line itself -- this line is what the dispatcher journals verbatim
 # (route_resolved ... util_glm=... tail), so the freepool verdict travels
@@ -2135,7 +2172,7 @@ _effort_cap=(' capped_from=%s' % _capped_from) if _capped_from else ''
 _cc_tok = ' caller_min_cap=%s caller_max_cost=%s' % (
     ('%.1f' % _min_capability if _min_capability is not None else 'none'),
     ('%.1f' % _max_cost if _max_cost is not None else 'none'))
-print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok,_obs_tok,_cc_tok))
+print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok,_obs_tok,_urgency_tok,_cc_tok))
 PY
 }
 

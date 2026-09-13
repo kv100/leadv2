@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-reset-urgency.sh
+file=plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+anchor=s#weight=_RESET_URGENCY_W_MIN+(_RESET_URGENCY_W_MAX-_RESET_URGENCY_W_MIN)\*best#weight=_RESET_URGENCY_W_MIN#
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: (a) expected weekly urgency winner sonnet: arm=codex kind=code model=codex tier=standard effort=medium reason=cheapest_capable chain=codex,sonnet util_glm=99 util_codex=20 util_claude=60 util_freepool=100 reset_glm=5.00h_default_full_period reset_codex=140.00h_live reset_claude=2.00h_live reset_freepool=n/a headroom_w=1 headroom_unknown=no_usable_now claude_account_state=ok claude_probe_penalty=0 claude_priced_from=measured arm_excluded=sonnet:price_ratio arb_rev=a2b9835512f3 matrix_rev=64fadd868b6b floor_mode=bulk_only floor_mode_source=default test_only=0 complexity=unknown duration_class=unknown complexity_policy=none remaining=80.0 reset_in=140.00h reset_basis=live failure_memory=absent_key complexity_source=unknown conf=0.0 req_eff=3.0 fit_mode=off fit_pick=codex fit_differs=0 fit_bucket=codex:0,sonnet:0 cap_default=codex,sonnet caller_min_cap=none caller_max_cost=none
+diff_hash=25402523d1bbff71ca551175d0bb3d01152aba698b661c54839ac4ca70f19941
+lane_diff_hash=eb95acfe3725f6a6551a85fe2794c1ef8379fbaaab8e65b1b63acef12f81c099
