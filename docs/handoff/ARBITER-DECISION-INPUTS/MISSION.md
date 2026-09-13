@@ -176,3 +176,14 @@ Concretely, for every claim you make in the deliverable:
 - Any hardcoded arm exclusion. `feedback_never_hardcode_arm_exclusion`: quota, task and complexity
   decide, never a hand-kept list.
 - The judge's separation of concerns (§D4) — configure its arm, do not give it quota vocabulary.
+
+## Observed while dispatching THIS lane (2026-09-13, add to D3's census)
+
+The arbiter picked sonnet (`arm_resolved … reason=integration_critical_4subsystems`,
+`route_resolved by=arbiter … arbiter_pick=sonnet`) and the launcher then refused it:
+`refused: arm_not_capable_for_kind`. The lane fell back to codex and ran.
+
+That is a granularity gap of exactly the kind D3 is about: capability is checked for `--kind`
+AFTER the arm is chosen, not as part of choosing. Every such refusal is a wasted selection and a
+silent re-roll. Count how often it happens in the recorded decisions and decide whether `kind`
+belongs in the capability matrix the arbiter reads.
