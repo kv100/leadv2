@@ -285,6 +285,99 @@ with open(lock, 'a+') as lf:
     if reaped:
       rows[:] = [r for r in rows if not (r.get('recovered') and dead_age(r)>retention)]
       print('recovered_rows_reaped=%s' % ','.join(reaped), file=sys.stderr)
+    # THE-LANE-REGISTRY-ONLY-EVER-GROWS-01 (founder order 2026-09-13): a
+    # finished lane must LEAVE the registry. reconcile already tombstones
+    # dead rows (dead_at above) and reaps recovered rows, but a NORMAL
+    # row's tombstone lived forever -- the only other prune path is the
+    # retired supervisor's snapshot tombstone+prune, which nothing on the
+    # single-lead live path runs with writes enabled. The founder pulse's
+    # ghost count therefore only went up (3 -> 12 inside one session,
+    # measured 2026-09-13). This reaper removes a tombstoned row ONLY on
+    # evidence the lane's ending itself wrote -- the glm run dir's own
+    # meta.yaml status, a dispatch-ledger terminal record, or a closed
+    # backlog row -- never on a liveness observer's say-so (ps/pgrep,
+    # pidfiles and active.yaml itself have each lied here; journal growth
+    # plus meta.yaml have not) -- and NEVER while the lane journal is
+    # still growing. LEADV2_REAP_NORMAL_ROWS=0 is the single-flip rollback.
+    if os.environ.get('LEADV2_REAP_NORMAL_ROWS','1') != '0':
+      import glob as _glob, json as _json, time as _time
+      _now_epoch=_time.time()
+      def _reap_sig(row):
+        wt=str(row.get('worktree') or '')
+        if '/.claude/worktrees/' in wt:
+          return os.path.basename(wt.rstrip('/')) or str(row.get('task_id') or '')
+        t=str(row.get('task_id') or '')
+        return t[len('dispatch-'):] if t.startswith('dispatch-') else t
+      _glm_root=os.environ.get('LEADV2_REAP_GLM_RUNS_DIR','') or os.path.join(os.path.expanduser('~'),'.claude','cache','glm-runs')
+      try: _live_s=max(0,int(os.environ.get('LEADV2_REAP_LIVE_S','900') or 900))
+      except ValueError: _live_s=900
+      try: _grace_s=max(0,int(os.environ.get('LEADV2_REAP_GRACE_SEC','300') or 300))
+      except ValueError: _grace_s=300
+      def _glm_state(sig):
+        # -> (terminal, journal_fresh, running) from the NEWEST run dir the
+        # worker's own runner wrote. status complete|failed (or an exit_code
+        # file) is the ending's own record; a journal.jsonl touched inside
+        # the live window is a lane still writing, whatever status says;
+        # status running is the worker itself saying it is alive.
+        dirs=[d for d in _glob.glob(os.path.join(_glm_root,'*-'+sig+'-*')) if os.path.isdir(d)]
+        if not dirs: return (False, False, False)
+        newest=max(dirs, key=lambda d:(os.path.getmtime(d), d))
+        st=''
+        try:
+          for ln in open(os.path.join(newest,'meta.yaml'),encoding='utf-8',errors='replace'):
+            if ln.startswith('status:'): st=ln.split(':',1)[1].strip(); break
+        except OSError: pass
+        terminal=st in ('complete','failed') or os.path.exists(os.path.join(newest,'exit_code'))
+        fresh=False
+        for probe in (os.path.join(newest,'journal.jsonl'), newest):
+          try:
+            if _now_epoch-os.path.getmtime(probe)<=_live_s: fresh=True; break
+          except OSError: pass
+        return (terminal, fresh, st == 'running')
+      _ledger=os.environ.get('LEADV2_REAP_DISPATCH_LEDGER','') or os.path.join(os.path.dirname(path),'dispatch-ledger.jsonl')
+      _ledger_terminal=set()
+      try:
+        for ln in open(_ledger,encoding='utf-8',errors='replace'):
+          try: rec=_json.loads(ln)
+          except ValueError: continue
+          _sig=str(rec.get('task_sig') or '')
+          if _sig and rec.get('terminal'): _ledger_terminal.add(_sig)
+      except OSError: pass
+      # The open-backlog mirror (docs/tasks.yaml, projected from
+      # v_work_items_current) lists OPEN work items only: a closed row
+      # leaves it. A dispatched lane always comes from a backlog row, so
+      # for a non-recovered row "sig absent from a non-empty mirror" is the
+      # closed signal -- the one terminal leg that covers arms writing
+      # nothing else (codex lanes leave no glm run dir and, on a turn-cap
+      # death, no ledger entry either). An unreadable/empty mirror fails
+      # OPEN: absence of the file is never "everything is closed".
+      _tasks_yaml=os.environ.get('LEADV2_REAP_TASKS_YAML','') or os.path.join(root,'docs','tasks.yaml')
+      _open_ids=set()
+      try:
+        for ln in open(_tasks_yaml,encoding='utf-8',errors='replace'):
+          s=ln.strip()
+          if s.startswith('- id:'): _open_ids.add(s.split(':',1)[1].strip())
+      except OSError: pass
+      def _backlog_closed(sig):
+        return bool(_open_ids) and sig not in _open_ids
+      _drop_ids=set(); _drop_sigs=[]
+      for row in rows:
+        if row.get('recovered'): continue      # the recovered reaper above owns these
+        if dead_age(row)<_grace_s: continue    # -1 (no tombstone) or younger than grace
+        sig=_reap_sig(row)
+        terminal, fresh, running=_glm_state(sig)
+        if fresh:                              # journal growth is life -- never evict
+          continue
+        if running:                            # the worker's own run dir says running -- never evict
+          continue
+        if terminal or sig in _ledger_terminal or _backlog_closed(sig):
+          _drop_ids.add(id(row)); _drop_sigs.append(sig)
+      if _drop_ids:
+        # Row-identity, not sig-identity: e1fb1204 and dispatch-e1fb1204
+        # share a sig, and a live sibling row under the same sig (kept by
+        # the journal-fresh guard above) must survive its dead twin's reap.
+        rows[:]=[r for r in rows if id(r) not in _drop_ids]
+        print('finished_rows_reaped=%s' % ','.join(sorted(set(_drop_sigs))), file=sys.stderr)
     fixture_wt=os.environ.get('LEADV2_LANE_STATE_TEST_WORKTREES_FILE','')
     try:
       wt=open(fixture_wt, encoding='utf-8').read() if fixture_wt else subprocess.run(['git','-C',root,'worktree','list','--porcelain'], text=True, capture_output=True, timeout=5).stdout
@@ -403,6 +496,15 @@ with open(lock, 'a+') as lf:
     try: lp=int(row.get('lead_pid'))
     except (TypeError, ValueError): sys.exit(1)
     sys.exit(0 if proc_verdict(lp, row.get('lead_pid_birth')) != 'dead' else 1)
+  if op == 'reconcile':
+    # THE-LANE-REGISTRY-ONLY-EVER-GROWS-01: rendered_at must mean something.
+    # It used to be stamped only by render_index (a lazy, read-side render),
+    # so it trailed wall time by hours while dead rows accumulated -- an
+    # hour-stale timestamp presented as current. reconcile is the periodic
+    # sweep (SessionStart hook + every dispatch), so every sweep restamps
+    # it: the value now reads "registry last swept/mutated", and a stale
+    # value honestly names a sweep that did not run.
+    data.setdefault('meta', {})['rendered_at']=now()
   fd,tmp=tempfile.mkstemp(prefix='.active.yaml.', dir=os.path.dirname(path))
   with os.fdopen(fd,'w',encoding='utf-8') as f: yaml.safe_dump(data,f,default_flow_style=False,sort_keys=False)
   os.replace(tmp,path)
