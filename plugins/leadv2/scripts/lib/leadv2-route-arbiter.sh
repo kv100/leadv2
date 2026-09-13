@@ -1461,7 +1461,30 @@ def _record(arm, model, tier, reason):
                 with open(_jf_path,'w') as _new: _new.writelines(_lines[len(_lines)//2:])
             except Exception:
                 pass
-        _rec={'ts':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'ts_epoch':int(time.time()),
+        # The success line below has always carried inputs that this durable
+        # record dropped.  Snapshot them with the candidate pool so replay
+        # never has to infer a historical decision from its winner alone.
+        _candidate_set=[]
+        _effective_cost=globals().get('ecost')
+        for _candidate in globals().get('ok',[]):
+            _candidate_set.append({
+                'arm':_candidate.get('arm'), 'provider':_candidate.get('provider'),
+                'model':_candidate.get('model'), 'tier':_candidate.get('tier','standard'),
+                'capability':_candidate.get('capability', CAP_DEFAULT),
+                'fit_bucket':fit_bucket(_candidate),
+                'effective_cost':(_effective_cost(_candidate) if _effective_cost else None),
+            })
+        def _record_util(p):
+            if _uraw[p].get('account_state')=='unmetered': return 'unmetered'
+            if unk[p]: return 'unknown_capped'
+            if p=='freepool' and _uraw[p].get('status')=='down': return 'down'
+            return '%d' % u[p]
+        def _record_reset(p):
+            if _uraw[p].get('hours_to_reset') is None: return 'n/a'
+            return '%.2fh_%s' % (_uraw[p]['hours_to_reset'], _uraw[p]['reset_basis'])
+        _winner=globals().get('w')
+        _rec={'record_schema_version':2,
+              'ts':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'ts_epoch':int(time.time()),
               'role':role,'work_kind':kind,'subtype':str(d.get('subtype','')),
               'model_requested':str(d.get('model_requested','')),'arm':arm,'model':model,
               'tier':tier,'reason':reason,'task':str(d.get('task',''))[:200],
@@ -1470,6 +1493,17 @@ def _record(arm, model, tier, reason):
               'failure_banned':{a:failure_banned[a] for a in failure_dropped},
               'probe_outage':list(_probe_outage),
               'requested_arm':requested_arm,
+              'complexity':complexity, 'duration_class':duration_class,
+              'complexity_source':complexity_source, 'fit_mode':FIT_MODE,
+              'fit_prior':PRIOR, 'fit_slack':SLACK, 'req_eff':req_eff,
+              'util_glm':_record_util('glm'), 'util_codex':_record_util('codex'),
+              'util_claude':_record_util('claude'), 'util_freepool':_record_util('freepool'),
+              'reset_glm':_record_reset('glm'), 'reset_codex':_record_reset('codex'),
+              'reset_claude':_record_reset('claude'), 'reset_freepool':_record_reset('freepool'),
+              'fit_bucket':{c['arm']:c['fit_bucket'] for c in _candidate_set},
+              'reset_urgency':globals().get('_reset_urgency_priced',{}),
+              'cost_src':(_cost_src(_winner) if _winner is not None else None),
+              'candidate_set':_candidate_set,
               'arm_excluded':{a:'+'.join(sorted(_stages.get(a,[]),key=_STAGE_ORDER.index)) for a in sorted(_stages)}}
         with open(_jf_path,'a') as _jf: _jf.write(json.dumps(_rec)+'\n')
     except Exception:

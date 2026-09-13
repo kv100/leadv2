@@ -2345,7 +2345,7 @@ _dl_note() {
     fi
     _ca_line="$(leadv2_cost_actual_record "$(repo_slug)" "$1" "$2" "$3" \
       "$(printf '%s' "${ADMISSION_CLASS:-${task_class:-standard}}" | tr '[:upper:]' '[:lower:]')" \
-      "${ADMISSION_WORK_KIND:-code}" "${_MS_MODEL:-unknown}" "${_ca_tokens:--}" 2>/dev/null || true)"
+      "${ADMISSION_WORK_KIND:-code}" "${_MS_MODEL:-unknown}" "${_ca_tokens:--}" "${5:-$1}" 2>/dev/null || true)"
     [[ -n "${_ca_line}" ]] && emit decision "${_ca_line}"
   fi
   [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || return 0
@@ -3509,7 +3509,7 @@ _dispatch_record_cost_estimate() {  # <sig8> <founder-task-id> <complexity> <dur
   cost_bin="${LEADV2_COST_ESTIMATE_BIN:-${SCRIPT_DIR}/leadv2-cost-estimate.sh}"
   cost_task_id="${founder_id:-${sig8}}"
   if [[ -f "${cost_bin}" ]]; then
-    cost_out="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${cost_bin}" --task-id "${cost_task_id}" --main-model sonnet 2>/dev/null)"
+    cost_out="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${cost_bin}" --task-id "${cost_task_id}" --main-model sonnet --dispatch-sig8 "${sig8}" 2>/dev/null)"
     if [[ $? -eq 0 && -n "${cost_out}" ]]; then
       emit decision "cost_estimate_recorded task=${sig8} founder_task=${cost_task_id} complexity=${complexity:-unknown} duration_class=${duration_class:-unknown} phase=pre_arm_selection path=docs/handoff/${cost_task_id}/cost-estimate.yaml"
     else

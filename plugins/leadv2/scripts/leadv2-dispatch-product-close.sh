@@ -393,7 +393,7 @@ _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
     fi
     _ca_line="$(leadv2_cost_actual_record \
       "$(printf '%s' "${ROOT##*/}" | tr -cd 'A-Za-z0-9._-')" \
-      "${TASK}" "$1" "$2" "${_ca_cls:-unknown}" "code" "unknown" "${_ca_tokens:--}" 2>/dev/null || true)"
+      "${TASK}" "$1" "$2" "${_ca_cls:-unknown}" "code" "unknown" "${_ca_tokens:--}" "${FOUNDER_TASK_ID:-$TASK}" 2>/dev/null || true)"
     [[ -n "${_ca_line}" ]] && emit decision "${_ca_line}"
   fi
 }

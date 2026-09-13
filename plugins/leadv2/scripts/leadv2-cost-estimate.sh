@@ -4,6 +4,7 @@ set -euo pipefail
 #
 # Usage:
 #   leadv2-cost-estimate.sh --task-id <id> --main-model <opus|sonnet>
+#       [--dispatch-sig8 <sig8>]
 #
 # Reads:
 #   docs/LEAD_V2_STATE.md              — task classification
@@ -49,18 +50,20 @@ log_warn() { printf '[leadv2-cost-estimate] WARN: %s\n' "$*" >&2; }
 
 usage() {
   cat >&2 <<'EOF'
-Usage: leadv2-cost-estimate.sh --task-id <id> --main-model <opus|sonnet>
+Usage: leadv2-cost-estimate.sh --task-id <id> --main-model <opus|sonnet> [--dispatch-sig8 <sig8>]
 EOF
   exit 1
 }
 
 TASK_ID=""
 MAIN_MODEL=""
+DISPATCH_SIG8=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --task-id)    TASK_ID="$2";    shift 2 ;;
     --main-model) MAIN_MODEL="$2"; shift 2 ;;
+    --dispatch-sig8) DISPATCH_SIG8="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) log_warn "unknown arg: $1"; usage ;;
   esac
@@ -84,7 +87,7 @@ RATE_LIMIT_LINE="$(bash "${SCRIPT_DIR}/leadv2-quota-status.sh" --report 2>/dev/n
 
 python3 - \
   "$ROUTING_YAML" "$STATE_MD" "$PRIOR_ART_YAML" "$MAIN_MODEL_YAML" \
-  "$TASK_ID" "$MAIN_MODEL" "$OUTPUT_YAML" "$RATE_LIMIT_LINE" <<'PYEOF'
+  "$TASK_ID" "$MAIN_MODEL" "$OUTPUT_YAML" "$RATE_LIMIT_LINE" "$DISPATCH_SIG8" <<'PYEOF'
 import sys
 import os
 import math
@@ -97,7 +100,7 @@ except ImportError:
     sys.exit(1)
 
 routing_yaml_path, state_md_path, prior_art_path, main_model_yaml_path, \
-    task_id, main_model, output_yaml_path, rate_limit_line = sys.argv[1:]
+    task_id, main_model, output_yaml_path, rate_limit_line, dispatch_sig8 = sys.argv[1:]
 
 # ---------------------------------------------------------------------------
 # Pricing (USD per 1M tokens)
@@ -269,6 +272,7 @@ within_cap = cost_mean <= class_cap
 # ---------------------------------------------------------------------------
 estimate_block = {
     "task_id": task_id,
+    "dispatch_sig8": dispatch_sig8 or None,
     "classification": classification,
     "main_model": main_model,
     "expected_phases": expected_phases,
