@@ -448,6 +448,17 @@ def check(arm, model, routing_yaml=None):
     return "ok" if model in canonical else "refuse"
 
 
+def normalize_kind(kind, matrix_rows):
+    """Return the matrix vocabulary kind used by every launchability reader.
+
+    Out-of-vocabulary dispatch kinds are ordinary build work, matching the
+    arbiter's existing kind_unmapped fallback.  The matrix remains the single
+    vocabulary source; callers never maintain a parallel alias list.
+    """
+    known_kinds = {k for row in matrix_rows for k in (row.get("kinds") or [])}
+    return kind if kind in known_kinds else "code"
+
+
 def lookup(kind, role, arm, task_class, routing_yaml=None):
     """(kind, role, arm, task_class) -> descriptor dict.
 
@@ -459,6 +470,15 @@ def lookup(kind, role, arm, task_class, routing_yaml=None):
     substituted arm/model.
     """
     matrix_rows = load_capability_matrix(routing_yaml)
+    # CAPABILITY-GATES-DISAGREE-AND-THE-JOURNAL-CANNOT-SEE-IT-01: dispatch
+    # and the arbiter deliberately treat a kind outside the matrix vocabulary
+    # as ordinary build work (`code`).  Before this lived only in the
+    # dispatch-side launchability preflight: the same plugin dispatch could
+    # pass the arbiter, then reach this real launcher with raw kind=plugin and
+    # be refused as arm_not_capable_for_kind.  Make the launch registry own
+    # the normalization too, from the matrix it already reads; there is no
+    # second capability table and no arm-specific exception.
+    kind = normalize_kind(kind, matrix_rows)
     build_arms, plan_arms = _dispatchable_arm_sets()
 
     if kind == "code" and arm not in build_arms:

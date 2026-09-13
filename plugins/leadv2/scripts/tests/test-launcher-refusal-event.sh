@@ -2,7 +2,8 @@
 # CAPABILITY-GATES-DISAGREE-AND-THE-JOURNAL-CANNOT-SEE-IT-01:
 # A real launch-registry refusal (not a fabricated stderr fixture) must become
 # one joined durable event: sig8, refusing arm, exact reason, and the arm the
-# dispatcher falls through to.
+# dispatcher falls through to. Also proves plugin is normalized by the same
+# registry vocabulary the dispatcher preflight and arbiter use.
 # run-all-triggers: leadv2-dispatch-code leadv2-launch-registry
 
 set -uo pipefail
@@ -35,16 +36,25 @@ cd "${PROJECT_ROOT}"
 source "${dispatcher}"
 emit() { printf '%s\n' "$2" >> "${decisions}"; }
 
-# This is the production registry binary and production capability matrix. It
-# emits `refused: arm_not_capable_for_kind` for kind=plugin / arm=sonnet.
+# This is the production registry binary and production capability matrix.
+# The former disagreement shape now succeeds: raw kind=plugin is normalized
+# by the registry itself to the matrix vocabulary's code kind.
 python3 "${registry}" --kind plugin --role developer --arm sonnet --task-class standard \
+  >/dev/null 2>"${stderr_artifact}.plugin"
+plugin_rc=$?
+[[ ${plugin_rc} -eq 0 ]] || exit 40
+
+# This is a REAL registry refusal, not a fixture: fable is not a build arm.
+# It keeps the observability path exercised after the plugin/coercion defect
+# is removed from ordinary dispatches.
+python3 "${registry}" --kind code --role developer --arm fable --task-class standard \
   >/dev/null 2>"${stderr_artifact}"
 registry_rc=$?
 [[ ${registry_rc} -ne 0 ]] || exit 41
-grep -qx 'refused: arm_not_capable_for_kind' "${stderr_artifact}" || exit 42
+grep -qx 'refused: not_a_build_arm' "${stderr_artifact}" || exit 42
 
 # Drive the dispatcher's producer-seam capture and the next-candidate join.
-_capture_launcher_refusal "${stderr_artifact}" sonnet cafe0001
+_capture_launcher_refusal "${stderr_artifact}" fable cafe0001
 _emit_pending_launcher_refusal cafe0001 codex
 [[ ! -e "$(_launcher_refusal_file cafe0001)" ]] || exit 43
 SH
@@ -53,12 +63,12 @@ SH
 GREEN_DECISIONS="${TMP}/green.decisions"
 GREEN_STDERR="${TMP}/green.stderr"
 if run_real_refusal "${DISPATCH_BIN}" "${TMP}/events" "${GREEN_DECISIONS}" "${GREEN_STDERR}"; then
-  pass "real registry refusal reached dispatcher capture seam"
+  pass "plugin kind is normalized by the real launch registry; a separate real refusal reached dispatcher capture seam"
 else
   fail "real registry refusal did not reach dispatcher capture seam"
 fi
 
-if grep -qx 'launcher_refused task=cafe0001 arm=sonnet reason=arm_not_capable_for_kind fell_through_to=codex' "${GREEN_DECISIONS}"; then
+if grep -qx 'launcher_refused task=cafe0001 arm=fable reason=not_a_build_arm fell_through_to=codex' "${GREEN_DECISIONS}"; then
   pass "decision journal row joins sig8, arm, reason, and actual fallback"
 else
   fail "decision journal row missing or malformed" "$(cat "${GREEN_DECISIONS}" 2>/dev/null)"
@@ -72,8 +82,8 @@ assert len(rows) == 1, rows
 row = rows[0]
 assert row['kind'] == 'launcher_refused', row
 assert row['task'] == 'cafe0001', row
-assert row['arm'] == 'sonnet', row
-assert row['detail'] == 'reason=arm_not_capable_for_kind fell_through_to=codex', row
+assert row['arm'] == 'fable', row
+assert row['detail'] == 'reason=not_a_build_arm fell_through_to=codex', row
 PY
 then
   pass "durable event row carries exact launcher refusal and fallback"
@@ -100,7 +110,7 @@ MUT_DECISIONS="${TMP}/mutant.decisions"
 MUT_STDERR="${TMP}/mutant.stderr"
 MUT_EVENTS="${TMP}/mutant-events"
 if run_real_refusal "${MUTANT}" "${MUT_EVENTS}" "${MUT_DECISIONS}" "${MUT_STDERR}" \
-  && grep -qx 'launcher_refused task=cafe0001 arm=sonnet reason=arm_not_capable_for_kind fell_through_to=codex' "${MUT_DECISIONS}"; then
+  && grep -qx 'launcher_refused task=cafe0001 arm=fable reason=not_a_build_arm fell_through_to=codex' "${MUT_DECISIONS}"; then
   fail "RED control unexpectedly stayed green"
 else
   pass "RED control: mutating capture reason made the real-refusal assertion red"
