@@ -97,3 +97,43 @@ Only the FITTER was never converted. So the config asks a question the tool cann
 - Inventing a price for a provider that does not fit.
 - `reset_urgency`, the decision record schema, the launcher-refusal event, the judge parser.
 - `docs/tasks.yaml`, `docs/leadv2/open-threads.md` — lead-owned.
+
+## AMENDMENT (founder question, 2026-09-14): collapse the FREE PARAMETERS, not the resolution
+
+The founder pushed back on the premise: is per-provider actually better than per-model? The honest
+answer is NO — per-model is physically correct (an opus token drains the Anthropic bucket faster
+than a haiku token), and the per-model fit's own output shows plausible ratios:
+
+```text
+per 1M tokens:  haiku 5.9   sonnet 10.1   opus 14.5      (opus ~2.5x haiku)
+```
+
+Those ratios are believable but NOT trustworthy: `max_abs_corr=0.934` means the fit could have put
+almost any other combination with the same sum in their place. We observe only the SUM of the three
+— three unknowns, one equation.
+
+So collapsing to a provider buys estimability at the cost of resolution. There is a third option
+that keeps both, and we already use it elsewhere:
+
+**glm-flash's 0.33 was never fitted. It came from Z.AI's published credit-weight ratio**
+(`leadv2-routing.yaml:178`, founder ruling q-bba84179, 2026-09-02).
+
+Do the same for Anthropic:
+
+1. **Find whether relative per-model quota weights are published** for the Claude subscription
+   (docs, rate-limit pages, the CLI's own accounting — whatever is authoritative). Cite the source
+   with a URL or a file path, the way `:178` cites `docs.z.ai/devpack/teamplan.md`. If nothing
+   authoritative exists, say so explicitly — that is a finding, not a failure.
+2. **If the weights exist:** fit ONE free scale parameter per provider against
+   `sum(model_tokens x known_relative_weight)`. One unknown instead of three: the collinearity is
+   gone by construction, and per-model resolution is preserved. Report R2 and `max_abs_corr` for
+   this shape too, and compare all three shapes side by side: per-model (today), per-provider
+   (collapsed), and scale-times-known-weights (this one).
+3. **If they do not exist:** fall back to the plain per-provider collapse as originally briefed,
+   and record in the report that per-model resolution was LOST for lack of a published ratio — so
+   the next person knows it is a data gap, not a design choice.
+
+Same treatment for codex if its provider publishes anything comparable.
+
+Ordering note: try (1) FIRST. If a published ratio exists, the collapsed fit is the inferior
+fallback and should not be what lands.
