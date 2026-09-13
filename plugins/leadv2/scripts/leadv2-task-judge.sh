@@ -141,12 +141,14 @@ SIG8="$(python3 -c "import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.re
 
 # ── code-only fallback estimator (R2 mitigation #1) ─────────────────────────
 _fallback_estimate() {
+  local fallback_reason="${1:-unknown}"
   python3 -c "
 import json, re, sys
 
 mission_text = sys.argv[1]
 sig8 = sys.argv[2]
 class_hint = sys.argv[3] if len(sys.argv) > 3 else ''
+fallback_reason = sys.argv[4] if len(sys.argv) > 4 else 'unknown'
 text_lower = mission_text.lower()
 lines = mission_text.count(chr(10)) + 1
 
@@ -253,8 +255,11 @@ estimate = {
     'complexity_basis': basis,
     'flag_source': flag_source,
 }
+if fallback_reason:
+    # A fallback without a cause is observationally identical to a verdict.
+    estimate['fallback_reason'] = fallback_reason
 print(json.dumps(estimate, sort_keys=True))
-" "${MISSION_TEXT}" "${SIG8}" "${CLASS_HINT}"
+" "${MISSION_TEXT}" "${SIG8}" "${CLASS_HINT}" "${fallback_reason}"
 }
 
 # ── schema validation (shared: judge output, cache reads) ───────────────────
@@ -323,6 +328,45 @@ _fail() {  # <reason>
   { printf '%s' "$1" >&3; } 2>/dev/null || true
 }
 
+# Mirrors glm-coder.sh:redact_stream for the synchronous judge's retained
+# launcher stderr. Keep it bounded and single-line before returning it in an
+# envelope; diagnostic metadata is not a second transport log.
+_stderr_tail() { # <file> -> sanitized final 400 chars
+  python3 - "$1" <<'PY'
+import os, pathlib, re, sys
+try:
+    text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+except OSError:
+    text = ""
+token = os.environ.get("ZAI_AUTH_TOKEN", "")
+if token:
+    text = text.replace(token, "[REDACTED]")
+text = re.sub(r"\s+", " ", text).strip()
+print(text[-400:])
+PY
+}
+
+_transport_failure_reason() { # <rc> <raw> <stderr-file> [prior-glm-reason]
+  local rc="$1" raw="$2" stderr_file="$3" prior_glm="${4:-}" base tail
+  if [[ "${rc}" == "124" || "${rc}" == "137" ]]; then
+    base="timeout"
+  elif [[ "${rc}" != "0" ]]; then
+    base="transport_rc=${rc}"
+  elif [[ -z "${raw}" ]]; then
+    base="empty_output"
+  else
+    base="parse_failed"
+  fi
+  tail="$(_stderr_tail "${stderr_file}")"
+  if [[ -n "${tail}" ]]; then
+    base="${base};stderr_tail=${tail}"
+  fi
+  if [[ -n "${prior_glm}" ]]; then
+    base="${base};prior_glm=${prior_glm}"
+  fi
+  printf '%s' "${base}"
+}
+
 _invoke_judge() {
   [[ -f "${PROMPT_TMPL}" ]] || { _fail "template_missing"; printf -- '[leadv2-task-judge] prompt template missing: %s\n' "${PROMPT_TMPL}" >&2; return 1; }
 
@@ -340,7 +384,7 @@ print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
     timeout_cmd="timeout"
   fi
 
-  local raw="" rc=0 used_arm=""
+  local raw="" rc=0 used_arm="" transport_err="" glm_failure_reason=""
   # BEAT-LOOP-ORPHANS-01 fix-round 2: every headless `claude -p` spawn site
   # pins LEADV2_SUBSESSION_ROLE so hooks/lib/leadv2-hook-session-kind.sh can
   # classify the child as a worker without reading its transcript (grep-gated
@@ -351,33 +395,41 @@ print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
   if [[ "${JUDGE_ARM}" == "glm" ]]; then
     local glm_out
     glm_out="$(mktemp "${TMPDIR:-/tmp}/leadv2-judge-glm.XXXXXX")" || { _fail "glm_tempfile"; return 1; }
+    transport_err="$(mktemp "${TMPDIR:-/tmp}/leadv2-judge-stderr.XXXXXX")" || { rm -f "${glm_out}"; _fail "stderr_tempfile"; return 1; }
     # The transport selects an arm; the prompt itself remains arm-blind.
     # Disabling worker MCP closes a side channel from this classifier to
     # routing or quota data.
     if [[ -n "${timeout_cmd}" ]]; then
       LEADV2_WORKER_MCP=0 GLM_SKIP_QUOTA_GATE=1 GLM_TIMEOUT="${TIMEOUT_SEC}" GLM_MAX_TURNS=3 GLM_TURN_LIMIT=3 GLM_MODEL="${JUDGE_GLM_MODEL}" \
-        "${timeout_cmd}" "${TIMEOUT_SEC}" bash "${JUDGE_GLM_BIN}" run "${prompt}" --out "${glm_out}" --cwd "${PROJECT_ROOT}" >/dev/null 2>/dev/null || rc=$?
+        "${timeout_cmd}" "${TIMEOUT_SEC}" bash "${JUDGE_GLM_BIN}" run "${prompt}" --out "${glm_out}" --cwd "${PROJECT_ROOT}" >/dev/null 2>"${transport_err}" || rc=$?
     else
       LEADV2_WORKER_MCP=0 GLM_SKIP_QUOTA_GATE=1 GLM_TIMEOUT="${TIMEOUT_SEC}" GLM_MAX_TURNS=3 GLM_TURN_LIMIT=3 GLM_MODEL="${JUDGE_GLM_MODEL}" \
-        bash "${JUDGE_GLM_BIN}" run "${prompt}" --out "${glm_out}" --cwd "${PROJECT_ROOT}" >/dev/null 2>/dev/null || rc=$?
+        bash "${JUDGE_GLM_BIN}" run "${prompt}" --out "${glm_out}" --cwd "${PROJECT_ROOT}" >/dev/null 2>"${transport_err}" || rc=$?
     fi
     raw="$(cat "${glm_out}" 2>/dev/null)"; rm -f "${glm_out}"
     if [[ ${rc} -eq 0 && -n "${raw}" ]]; then
       used_arm="glm"
+      rm -f "${transport_err}"
     else
+      # Preserve the GLM stderr only when the bounded Haiku fallback also
+      # fails; success is still honestly marked haiku_fallback below.
+      glm_failure_reason="$(_transport_failure_reason "${rc}" "${raw}" "${transport_err}")"
+      rm -f "${transport_err}"
       raw=""; rc=0
+      transport_err="$(mktemp "${TMPDIR:-/tmp}/leadv2-judge-stderr.XXXXXX")" || { _fail "stderr_tempfile"; return 1; }
       if [[ -n "${timeout_cmd}" ]]; then
-        raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${timeout_cmd}" "${TIMEOUT_SEC}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
+        raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${timeout_cmd}" "${TIMEOUT_SEC}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>"${transport_err}")" || rc=$?
       else
-        raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
+        raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>"${transport_err}")" || rc=$?
       fi
       used_arm="haiku_fallback"
     fi
   elif [[ "${JUDGE_ARM}" == "haiku" ]]; then
+    transport_err="$(mktemp "${TMPDIR:-/tmp}/leadv2-judge-stderr.XXXXXX")" || { _fail "stderr_tempfile"; return 1; }
     if [[ -n "${timeout_cmd}" ]]; then
-      raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${timeout_cmd}" "${TIMEOUT_SEC}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
+      raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${timeout_cmd}" "${TIMEOUT_SEC}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>"${transport_err}")" || rc=$?
     else
-      raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
+      raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>"${transport_err}")" || rc=$?
     fi
     used_arm="haiku"
   else
@@ -395,14 +447,17 @@ print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
   # schema_invalid) rather than silently miscounted as "timeout".
   if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
     if [[ -z "${raw}" ]]; then
-      _fail "timeout"
+      _fail "$(_transport_failure_reason "${rc}" "${raw}" "${transport_err}" "${glm_failure_reason}")"
+      rm -f "${transport_err}"
       return 1
     fi
   elif [[ ${rc} -ne 0 ]]; then
-    _fail "nonzero_rc"
+    _fail "$(_transport_failure_reason "${rc}" "${raw}" "${transport_err}" "${glm_failure_reason}")"
+    rm -f "${transport_err}"
     return 1
   fi
-  [[ -n "${raw}" ]] || { _fail "empty_output"; return 1; }
+  [[ -n "${raw}" ]] || { _fail "$(_transport_failure_reason "${rc}" "${raw}" "${transport_err}" "${glm_failure_reason}")"; rm -f "${transport_err}"; return 1; }
+  rm -f "${transport_err}"
   { printf '%s' "${used_arm}" >&4; } 2>/dev/null || true
 
   # `claude -p --output-format json` wraps the assistant's answer in an
@@ -436,56 +491,44 @@ print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
   parsed="$(printf '%s' "${raw}" | python3 -c "
 import json, sys
 
-raw = sys.stdin.read()
-try:
-    env = json.loads(raw)
-except Exception:
-    # glm-coder writes the model's body straight to --out.  The balanced JSON
-    # parser below is still the one schema boundary for both transports.
-    result_text = raw
-else:
-    if isinstance(env, dict) and env.get('is_error'):
-        sys.exit(1)
-    result_text = env.get('result', raw) if isinstance(env, dict) else raw
-if not isinstance(result_text, str): sys.exit(1)
-
 # EXTRACT-BEGIN (test-judge-parses-its-own-answer.sh mutates only between
 # EXTRACT-BEGIN/EXTRACT-END; never at top level)
-def first_balanced_object(text):
-    n = len(text)
+def balanced_objects(text):
     search_from = 0
+    found = []
+    decoder = json.JSONDecoder()
     while True:
         start = text.find('{', search_from)
         if start == -1:
-            return None
-        depth = 0
-        in_str = False
-        esc = False
-        j = start
-        while j < n:
-            c = text[j]
-            if in_str:
-                if esc:
-                    esc = False
-                elif c == '\\\\':
-                    esc = True
-                elif c == '\"':
-                    in_str = False
-            else:
-                if c == '\"':
-                    in_str = True
-                elif c == '{':
-                    depth += 1
-                elif c == '}':
-                    depth -= 1
-                    if depth == 0:
-                        candidate = text[start:j + 1]
-                        try:
-                            return json.loads(candidate)
-                        except Exception:
-                            break
-            j += 1
-        search_from = start + 1
+            return found
+        try:
+            candidate, end = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            search_from = start + 1
+            continue
+        found.append(candidate)
+        # Advancing past the whole decoded object prevents nested content in a
+        # terminal envelope (including its string-valued result) from
+        # masquerading as a later transport envelope.
+        search_from = start + end
+
+def first_balanced_object(text):
+    objects = balanced_objects(text)
+    return objects[0] if objects else None
+
+raw = sys.stdin.read()
+# glm-coder's synchronous --out can contain CLI preamble lines. Some warning
+# lines are themselves valid JSON, so the LAST complete object is the only
+# trustworthy terminal envelope; the first object may be an unrelated warning.
+envelopes = balanced_objects(raw)
+if not envelopes:
+    sys.exit(1)
+env = envelopes[-1]
+if isinstance(env, dict) and env.get('is_error'):
+    sys.exit(1)
+result_text = env.get('result', raw) if isinstance(env, dict) else raw
+if not isinstance(result_text, str):
+    sys.exit(1)
 
 est = first_balanced_object(result_text)
 if est is None or not isinstance(est, dict):
@@ -503,8 +546,8 @@ est['flag_source'] = 'judge'
 # the wrapper's knowledge, like estimate_source, never the model's.
 est['complexity_basis'] = 'judge'
 print(json.dumps(est))
-" "${SIG8}" "${used_arm:-unknown}")" || { _fail "envelope_parse"; return 1; }
-  [[ -n "${parsed}" ]] || { _fail "envelope_parse"; return 1; }
+" "${SIG8}" "${used_arm:-unknown}")" || { _fail "parse_failed"; return 1; }
+  [[ -n "${parsed}" ]] || { _fail "parse_failed"; return 1; }
   printf '%s\n' "${parsed}"
 }
 
@@ -629,12 +672,12 @@ _emit() {
 
 # ── 1. explicit disable — never touches the model, never touches cache ─────
 if [[ "${LEADV2_JUDGE_DISABLE:-0}" == "1" ]]; then
-  _emit "$(_fallback_estimate)" "false" "disable"
+  _emit "$(_fallback_estimate "disabled")" "false" "disable"
 fi
 
 # ── 2. classifier-Light skip (R2 mitigation #3) ─────────────────────────────
 if [[ "${CLASS_HINT}" == "Light" ]]; then
-  _emit "$(_fallback_estimate)" "false" "light_skip"
+  _emit "$(_fallback_estimate "light_skip")" "false" "light_skip"
 fi
 
 # ── 3. cache hit (R2 mitigation #2) ─────────────────────────────────────────
@@ -678,4 +721,4 @@ fi
 # disable/Light/cache branches all _emit'd and exited above, so the path
 # token here is judge_fail, never a bare "fallback" — a fallback journal
 # line that cannot say which path produced it was exactly the defect.
-_emit "$(_fallback_estimate)" "false" "judge_fail"
+_emit "$(_fallback_estimate "${JUDGE_FAIL_REASON:-unknown}")" "false" "judge_fail"
