@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-one-status-mechanism.sh
+file=plugins/leadv2/scripts/anti-silence-pulse.sh
+anchor=s|print(f"{stamp} live=0 — тишина")|print(f"{stamp} live=0")|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: quiet tick emitted nothing: [ПУЛЬС 00:00Z] live=0
+diff_hash=14ac912b30e75cd5c380d0495e6dc56c3f29db45b53550edcaa4d30c5c981d36
+lane_diff_hash=8237f58b76721cb49c238458d02f9112c87607338fb5145b0e3f0efb9dbee369

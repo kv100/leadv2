@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-one-status-mechanism.sh
+file=plugins/leadv2/scripts/anti-silence-pulse.sh
+anchor=s|strong_age, strong_tag = _gsv\[0\], "glm"|strong_age, strong_tag = None, None  # mc-2|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: growing journal not reported alive: [ПУЛЬС 00:00Z] live=0 — тишина
+diff_hash=bc86f54809134a88ace963f032d804a6fe9ed845ba85d461ce5b9ce25b0f4d0d
+lane_diff_hash=8237f58b76721cb49c238458d02f9112c87607338fb5145b0e3f0efb9dbee369

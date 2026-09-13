@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-one-status-mechanism.sh
+file=plugins/leadv2/hooks/hooks.json
+anchor=s|"hooks": {|"hooks": { "SessionStart": [ {"hooks": [{"command":"leadv2-pulse-beat.sh"}]} ],|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: retired entry point named on a live surface
+diff_hash=0cf7ebeaf602c75bc5d722a71abc1fc1f9052b61cdaad7afcc5dc9a5d642f86a
+lane_diff_hash=8237f58b76721cb49c238458d02f9112c87607338fb5145b0e3f0efb9dbee369

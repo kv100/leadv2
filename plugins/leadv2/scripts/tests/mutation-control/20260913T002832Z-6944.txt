@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-one-status-mechanism.sh
+file=plugins/leadv2/hooks/hooks.json
+anchor=s|/hooks/leadv2-worktree-enforce.sh|/hooks/leadv2-vanished-mc.sh|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: unresolvable hook registrations
+diff_hash=36d2bab615c70f275ead5a47558012c0e6498ce9d5626a9a2919dcb7a253a85a
+lane_diff_hash=8237f58b76721cb49c238458d02f9112c87607338fb5145b0e3f0efb9dbee369
