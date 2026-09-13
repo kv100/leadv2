@@ -32,7 +32,7 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-LIB="${SCRIPTS_DIR}/lib/leadv2-lane-state.sh"
+LIB="${LEADV2_LANE_STATE_LIB_OVERRIDE:-${SCRIPTS_DIR}/lib/leadv2-lane-state.sh}"
 PULSE_SH="${SCRIPTS_DIR}/anti-silence-pulse.sh"
 
 PASS=0; FAIL=0; ERRORS=()
@@ -83,6 +83,49 @@ d.setdefault('sessions', []).append({
 })
 yaml.safe_dump(d, open(f, 'w'), sort_keys=False)
 PYROW
+}
+
+# add_row_shaped <file> <tid> <pid|none> <dead_at_seconds|none> <backend>
+#   <log_path> [recovered] [updated_age_s]
+# Round-2 (THE-LANE-REGISTRY-ONLY-EVER-GROWS-01 R2): the shape that OCCURS —
+# a pid that is genuinely alive (this suite's own $$), its real pid_start_time
+# (so proc_verdict says 'live'), pid_role lead_durable, proc_kind interactive,
+# backend terminal, no glm run dir, dead_at null. Round-1's add_row used a
+# dead pid with pid_birth '', which proc_verdict reads as 'unknown', never
+# exercising the live-lead-owned row.
+add_row_shaped() {
+  local f="$1" tid="$2" pid="$3" dead="$4" backend="$5" logp="$6" rec="${7:-false}" upd="${8:-3600}"
+  # worktree basename is the BARE sig (dispatch-code.sh names the worktree
+  # <sig8> while the row's task_id is dispatch-<sig8>) — _reap_sig reads it.
+  local wt="$REPO/.claude/worktrees/${tid#dispatch-}"
+  python3 - "$f" "$tid" "$pid" "$dead" "$wt" "$backend" "$logp" "$rec" "$upd" "$pid" <<'PYROW2'
+import sys, datetime, subprocess, yaml
+f, tid, pid, dead, wt, backend, logp, rec, upd, pidarg = sys.argv[1:11]
+def iso(offset_s):
+    t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=offset_s)
+    return t.strftime('%Y-%m-%dT%H:%M:%SZ')
+birth = ''
+if pidarg != 'none':
+    try:
+        birth = ' '.join(subprocess.run(['ps','-o','lstart=','-p',pidarg], text=True, capture_output=True, timeout=2).stdout.split())
+    except Exception:
+        birth = ''
+d = yaml.safe_load(open(f)) or {}
+d.setdefault('sessions', []).append({
+    'task_id': tid,
+    'session_id': 's-test', 'lead_session_id': 's-test',
+    'worktree': wt, 'phase': 'build', 'class': 'Standard',
+    'pid': None if pid == 'none' else int(pid),
+    'pid_start_time': birth, 'pid_birth': birth,
+    'pid_role': 'lead_durable', 'proc_kind': 'interactive',
+    'backend': backend, 'log_path': logp,
+    'started_at': iso(7200), 'first_seen_at': iso(7200),
+    'updated_at': iso(int(upd)),
+    'dead_at': None if dead == 'none' else iso(int(dead)),
+    'recovered': rec == 'true', 'lane_events': [],
+})
+yaml.safe_dump(d, open(f, 'w'), sort_keys=False)
+PYROW2
 }
 
 # mk_glm <sig> <status> <journal_age_s> -- a run dir the worker's runner wrote
@@ -146,6 +189,9 @@ TASKS
 # run dir (the codex-arm shape) while staying terminal-positive.
 printf '{"ts":"2026-09-13T00:00:00Z","task_sig":"dddd4444dddd","terminal":"done","cause":"closed"}\n' > "$LEDGER"
 printf '{"ts":"2026-09-13T00:00:00Z","task_sig":"aaaa1111aaaa","terminal":"done","cause":"closed"}\n' >> "$LEDGER"
+# round-2: a NON-terminal sig->founder mapping record, so an 8-hex dispatch sig
+# can be resolved to its founder id without itself being terminal evidence.
+printf '{"ts":"2026-09-13T00:00:00Z","task_sig":"ab12cd35","founder_task_id":"999944449999","cause":"registered"}\n' >> "$LEDGER"
 
 # dead-but-not-tombstoned-yet pids: 4000001+ never exist on this host
 DEAD_PID=4000001
@@ -290,6 +336,103 @@ else
   fail "P4: unexpected pulse output: $(printf '%s' "$POST_OUT" | head -2)"
 fi
 
+# ═══ Round-2 pins: the lead-owned row for CLOSED work (separate registries —
+# the shared-world census pin above asserts exactly its own 5 keepers).
+# Precedence under test: positive work evidence > backlog closure > liveness
+# of any pid. A live lead_durable pid proves the LEAD process is alive, not
+# the lane; it must not pin a row whose backlog row is closed.
+R2_STATE="$SB/r2"; mkdir -p "$R2_STATE"
+R2_YAML="$R2_STATE/active.yaml"
+
+# P3d: lead-owned (live pid $$, backend terminal, no glm dir, no tombstone),
+# backlog row CLOSED -> row must leave. Round-1 lib kept it forever (RED there).
+write_registry "$R2_YAML"
+add_row_shaped "$R2_YAML" 999911119999 $$ none terminal "docs/handoff/dispatch-xxxx/developer.stream.jsonl"
+run_reap "$LIB" "$R2_STATE" || true
+if [[ "$(has_row 999911119999 "$R2_YAML")" == 0 ]]; then
+  pass "P3d: live lead-owned pid does not pin a closed-backlog row"
+else
+  fail "P3d: lead-owned closed-backlog row survived (ghost forever)"
+fi
+
+# P3e: same shape, backlog row OPEN -> in-flight armless lane survives.
+write_registry "$R2_YAML"
+add_row_shaped "$R2_YAML" ffff6666ffff $$ none terminal "docs/handoff/dispatch-xxxx/developer.stream.jsonl"
+run_reap "$LIB" "$R2_STATE" || true
+if [[ "$(has_row ffff6666ffff "$R2_YAML")" == 1 ]]; then
+  pass "P3e: lead-owned row with OPEN backlog row stays (live lane never evicted)"
+else
+  fail "P3e: open-backlog lead-owned lane dropped"
+fi
+
+# P3f: lead-owned closed shape BUT glm journal growing -> stays (positive
+# evidence outranks backlog closure).
+write_registry "$R2_YAML"
+add_row_shaped "$R2_YAML" 999922229999 $$ none terminal "docs/handoff/dispatch-xxxx/developer.stream.jsonl"
+mk_glm 999922229999 complete 0
+run_reap "$LIB" "$R2_STATE" || true
+if [[ "$(has_row 999922229999 "$R2_YAML")" == 1 ]]; then
+  pass "P3f: growing journal outranks a closed backlog row (row stays)"
+else
+  fail "P3f: fresh-journal lead-owned lane evicted"
+fi
+
+# P3g: 8-hex dispatch sig, live pid, no glm, NOT in the ledger sig->founder
+# map -> the backlog leg must ABSTAIN (an 8-hex sig is never in the 12-hex
+# mirror; treating absence as closed would evict every live codex/claude lane).
+write_registry "$R2_YAML"
+add_row_shaped "$R2_YAML" dispatch-ab12cd34 $$ none terminal "docs/handoff/dispatch-ab12cd34/developer.stream.jsonl"
+run_reap "$LIB" "$R2_STATE" || true
+if [[ "$(has_row dispatch-ab12cd34 "$R2_YAML")" == 1 ]]; then
+  pass "P3g: unresolved 8-hex sig abstains — live dispatch-<sig8> lane stays"
+else
+  fail "P3g: live 8-hex dispatch lane evicted (namespace guard missing)"
+fi
+
+# P3h: 8-hex sig RESOLVABLE via a non-terminal ledger record to a CLOSED
+# founder id -> row leaves (the resolved form of the backlog leg).
+write_registry "$R2_YAML"
+add_row_shaped "$R2_YAML" dispatch-ab12cd35 $$ none terminal "docs/handoff/dispatch-ab12cd35/developer.stream.jsonl"
+run_reap "$LIB" "$R2_STATE" || true
+if [[ "$(has_row dispatch-ab12cd35 "$R2_YAML")" == 0 ]]; then
+  pass "P3h: 8-hex sig resolved to a closed founder id -> row gone"
+else
+  fail "P3h: ledger-resolvable closed lane survived"
+fi
+
+# P5: recovered_unowned, pidless, ALREADY tombstoned >grace, backlog closed ->
+# drops THIS pass (round-1 kept it until the 86400s retention; 577cc2d2b7d4
+# is exactly this shape on the live tree).
+write_registry "$R2_YAML"
+add_row_shaped "$R2_YAML" 999933339999 none 3600 terminal "docs/handoff/dispatch-kkkk/developer.stream.jsonl" true 3600
+run_reap "$LIB" "$R2_STATE" || true
+if [[ "$(has_row 999933339999 "$R2_YAML")" == 0 ]]; then
+  pass "P5: tombstoned recovered row with closed backlog drops this pass"
+else
+  fail "P5: tombstoned recovered closed row waits for the 86400s retention"
+fi
+
+# P5b: recovered, tombstoned, backlog OPEN -> stays (retention owns visibility).
+write_registry "$R2_YAML"
+add_row_shaped "$R2_YAML" ffff6666ffff none 3600 terminal "docs/handoff/dispatch-ffff/developer.stream.jsonl" true 3600
+run_reap "$LIB" "$R2_STATE" || true
+if [[ "$(has_row ffff6666ffff "$R2_YAML")" == 1 ]]; then
+  pass "P5b: tombstoned recovered row with OPEN backlog stays"
+else
+  fail "P5b: open-backlog recovered row dropped"
+fi
+
+# P7: lead-owned closed shape touched 30s ago (updated_at, no tombstone) ->
+# grace window applies to last touch, not only to tombstones: stays this pass.
+write_registry "$R2_YAML"
+add_row_shaped "$R2_YAML" 999944449999 $$ none terminal "docs/handoff/dispatch-jjjj/developer.stream.jsonl" false 30
+run_reap "$LIB" "$R2_STATE" || true
+if [[ "$(has_row 999944449999 "$R2_YAML")" == 1 ]]; then
+  pass "P7: row updated inside the grace window is not judged this pass"
+else
+  fail "P7: freshly-updated lead-owned row reaped without grace"
+fi
+
 # ═══ Negative controls: mutated scratch copies, each run and shown RED ════
 mutate_lib() { # <anchor> <replacement> -> mutated copy at $SB/mutlib/
   local anchor="$1" replacement="$2"
@@ -344,8 +487,9 @@ else
 fi
 
 # MUTATION-C: backlog-closed leg disabled -> pin 3 goes RED
+# (round-2: anchor updated to the namespace-safe founder form of the line)
 mutate_lib \
-  "return bool(_open_ids) and sig not in _open_ids" \
+  "return bool(_open_ids) and founder is not None and founder not in _open_ids" \
   "return False  # MUTATION-C"
 C_STATE="$SB/mut-c"; mkdir -p "$C_STATE"
 C_YAML="$C_STATE/active.yaml"; write_registry "$C_YAML"
@@ -384,6 +528,72 @@ if [[ "$(n_sessions "$D_YAML")" == 0 ]] && ! printf '%s' "$D_OUT2" | grep -q 'п
   pass "NC-D GREEN: clean lib reaps the same row and the ghost count drops to 0"
 else
   fail "NC-D GREEN: clean lib left the ghost standing ($(n_sessions "$D_YAML") rows; out: $(printf '%s' "$D_OUT2" | tail -1))"
+fi
+
+# MUTATION-E: round-2 precondition reverted to tombstone-only dating -> P3d
+# goes RED (the lead-owned closed row with dead_at null is never judged).
+mutate_lib \
+  "age = dead_age(row) if row.get('dead_at') else updated_age(row)" \
+  "age = dead_age(row)  # MUTATION-E"
+E_STATE="$SB/mut-e"; mkdir -p "$E_STATE"
+E_YAML="$E_STATE/active.yaml"; write_registry "$E_YAML"
+add_row_shaped "$E_YAML" 999911119999 $$ none terminal "docs/handoff/dispatch-xxxx/developer.stream.jsonl"
+run_reap "$SB/mutlib/lib/leadv2-lane-state.sh" "$E_STATE" || true
+if [[ "$(has_row 999911119999 "$E_YAML")" == 1 ]]; then
+  pass "NC-E RED: mutant kept the live-pid closed-backlog row (anchor proves P3d)"
+else
+  fail "NC-E: mutant still green — control proves nothing"
+fi
+run_reap "$LIB" "$E_STATE" || true
+if [[ "$(has_row 999911119999 "$E_YAML")" == 0 ]]; then
+  pass "NC-E GREEN: clean lib drops the same lead-owned fixture"
+else
+  fail "NC-E GREEN: clean lib kept the lead-owned closed row"
+fi
+
+# MUTATION-F: namespace guard removed from the backlog leg -> P3g goes RED
+# (every unresolved 8-hex dispatch lane reads as closed and is evicted).
+mutate_lib \
+  "and founder is not None and founder not in _open_ids" \
+  "and founder not in _open_ids  # MUTATION-F"
+F_STATE="$SB/mut-f"; mkdir -p "$F_STATE"
+F_YAML="$F_STATE/active.yaml"; write_registry "$F_YAML"
+add_row_shaped "$F_YAML" dispatch-ab12cd34 $$ none terminal "docs/handoff/dispatch-ab12cd34/developer.stream.jsonl"
+run_reap "$SB/mutlib/lib/leadv2-lane-state.sh" "$F_STATE" || true
+if [[ "$(has_row dispatch-ab12cd34 "$F_YAML")" == 0 ]]; then
+  pass "NC-F RED: mutant evicted the unresolved 8-hex live lane (anchor proves P3g)"
+else
+  fail "NC-F: mutant still green — control proves nothing"
+fi
+# fresh fixture for GREEN: the RED mutant already consumed the row above
+write_registry "$F_YAML"
+add_row_shaped "$F_YAML" dispatch-ab12cd34 $$ none terminal "docs/handoff/dispatch-ab12cd34/developer.stream.jsonl"
+run_reap "$LIB" "$F_STATE" || true
+if [[ "$(has_row dispatch-ab12cd34 "$F_YAML")" == 1 ]]; then
+  pass "NC-F GREEN: clean lib keeps the same 8-hex lane"
+else
+  fail "NC-F GREEN: clean lib evicted the unresolved 8-hex lane"
+fi
+
+# MUTATION-G: recovered skip restored to blanket -> P5 goes RED (the
+# tombstoned recovered row waits for the 86400s retention again).
+mutate_lib \
+  "if row.get('recovered') and not row.get('dead_at'): continue" \
+  "if row.get('recovered'): continue  # MUTATION-G"
+G_STATE="$SB/mut-g"; mkdir -p "$G_STATE"
+G_YAML="$G_STATE/active.yaml"; write_registry "$G_YAML"
+add_row_shaped "$G_YAML" 999933339999 none 3600 terminal "docs/handoff/dispatch-kkkk/developer.stream.jsonl" true 3600
+run_reap "$SB/mutlib/lib/leadv2-lane-state.sh" "$G_STATE" || true
+if [[ "$(has_row 999933339999 "$G_YAML")" == 1 ]]; then
+  pass "NC-G RED: mutant kept the tombstoned recovered closed row (anchor proves P5)"
+else
+  fail "NC-G: mutant still green — control proves nothing"
+fi
+run_reap "$LIB" "$G_STATE" || true
+if [[ "$(has_row 999933339999 "$G_YAML")" == 0 ]]; then
+  pass "NC-G GREEN: clean lib drops it this pass"
+else
+  fail "NC-G GREEN: clean lib kept the recovered closed row"
 fi
 
 printf '[TEST] %s: %d passed, %d failed\n' "test-lane-registry-drops-finished-lanes" "$PASS" "$FAIL"

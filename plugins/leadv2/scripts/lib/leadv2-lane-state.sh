@@ -278,6 +278,17 @@ with open(lock, 'a+') as lf:
             ts=datetime.datetime.strptime(dead,'%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)
         except ValueError: return -1
         return (datetime.datetime.now(datetime.timezone.utc)-ts).total_seconds()
+    def updated_age(row):
+        # R2: a row judged WITHOUT a tombstone is dated by its last touch
+        # instead (registration, transition, hand-tombstone all stamp
+        # updated_at). A row with no/unparsable updated_at cannot be "just
+        # written", so it reads as old -- never as fresh.
+        ts_=row.get('updated_at')
+        if not ts_: return float('inf')
+        try:
+            ts=datetime.datetime.strptime(str(ts_),'%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)
+        except ValueError: return float('inf')
+        return (datetime.datetime.now(datetime.timezone.utc)-ts).total_seconds()
     try: retention=int(os.environ.get('LEADV2_RECOVERED_UNOWNED_RETENTION_SEC','86400') or 86400)
     except ValueError: retention=86400
     if retention < 0: retention=86400
@@ -335,13 +346,15 @@ with open(lock, 'a+') as lf:
           except OSError: pass
         return (terminal, fresh, st == 'running')
       _ledger=os.environ.get('LEADV2_REAP_DISPATCH_LEDGER','') or os.path.join(os.path.dirname(path),'dispatch-ledger.jsonl')
-      _ledger_terminal=set()
+      _ledger_terminal=set(); _sig_to_founder={}
       try:
         for ln in open(_ledger,encoding='utf-8',errors='replace'):
           try: rec=_json.loads(ln)
           except ValueError: continue
           _sig=str(rec.get('task_sig') or '')
           if _sig and rec.get('terminal'): _ledger_terminal.add(_sig)
+          _fid=str(rec.get('founder_task_id') or '')
+          if _sig and _fid: _sig_to_founder[_sig]=_fid
       except OSError: pass
       # The open-backlog mirror (docs/tasks.yaml, projected from
       # v_work_items_current) lists OPEN work items only: a closed row
@@ -359,11 +372,27 @@ with open(lock, 'a+') as lf:
           if s.startswith('- id:'): _open_ids.add(s.split(':',1)[1].strip())
       except OSError: pass
       def _backlog_closed(sig):
-        return bool(_open_ids) and sig not in _open_ids
+        # R2 namespace guard: the mirror carries 12-hex founder ids only, so a
+        # bare 8-hex dispatch sig would read as "closed" for EVERY open row.
+        # Resolve an 8-hex sig through the ledger's task_sig->founder_task_id
+        # records; an unresolved sig makes the leg ABSTAIN (a false-keep on a
+        # live codex/claude lane beats a false-evict).
+        import re as _re
+        founder = sig if _re.fullmatch(r'[0-9a-f]{12}', sig) else _sig_to_founder.get(sig)
+        return bool(_open_ids) and founder is not None and founder not in _open_ids
       _drop_ids=set(); _drop_sigs=[]
       for row in rows:
-        if row.get('recovered'): continue      # the recovered reaper above owns these
-        if dead_age(row)<_grace_s: continue    # -1 (no tombstone) or younger than grace
+        # R2: a recovered row with no tombstone is still owned by the TTL/
+        # expiry path above; a TOMBSTONED recovered row falls through to the
+        # same three terminal legs as any other row.
+        if row.get('recovered') and not row.get('dead_at'): continue
+        # R2: the grace window is measured from the row's last touch -- its
+        # tombstone when it has one, else updated_at. A no-tombstone row no
+        # longer escapes judgement forever just because a lead-durable pid
+        # keeps alive() true: a pid proves a PROCESS, and for lead_durable
+        # that process is the lead, not the lane.
+        age = dead_age(row) if row.get('dead_at') else updated_age(row)
+        if age < _grace_s: continue    # -1 (unparsable tombstone) or touched inside the window
         sig=_reap_sig(row)
         terminal, fresh, running=_glm_state(sig)
         if fresh:                              # journal growth is life -- never evict
