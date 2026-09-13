@@ -168,6 +168,13 @@ else
   # Unknown guard state is unsafe at close: it must fail closed, never allow
   # the later terminal funnel to call a dirty lane clean.
   lv2_lane_dirty() { return 0; }
+  # CRITIC-ROUND2 (2026-09-13): the guard lib also defines _lv2_phys, which this
+  # script calls on the cross-repo paths below. Without a fallback here an
+  # undefined function under `set -u` returns empty from BOTH sides of the
+  # comparison, so a foreign lane root compares EQUAL to ours and the cross-repo
+  # check fails OPEN -- the exact defect this lane exists to close. The helper is
+  # pure bash and depends on nothing in the guard lib, so defining it here is safe.
+  _lv2_phys() { ( cd -P "$1" 2>/dev/null && pwd -P ); }
   printf '[leadv2-dispatch-product-close] ERROR: lane guard unavailable local=%s canonical=%s; treating lane as dirty\n' \
     "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh" "${_LANE_GUARD_SH}" >&2
 fi
