@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-launcher-refusal-event.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s|reason="${raw}"|reason="unclassified"|
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[leadv2-dispatch-code] ERROR: spawn(fable) full launcher stderr preserved at /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/launcher-refusal-event.wZc75J/dispatcher-tmp/leadv2-dispatch-spawn-cafe0001.stderr.log
+diff_hash=03c09cc2cfa4b30dad1ba55a12cb0baaabe45e0c959db0924e90678ecaaad12d
+lane_diff_hash=cc8900187587c878bc85bd96020dbcc32065fb8f6f0a77429f1ee8f474c73447
+porcelain_clean=yes
+restored=yes
