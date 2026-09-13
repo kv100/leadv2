@@ -101,11 +101,12 @@ fi
 
 # Negative control: mutate the capture body's reason assignment in a scratch
 # copy. The real registry still refuses, but the exact-reason assertion must
-# go red. This proves the suite observes the implementation rather than merely
-# a fixture shaped like its expected event.
-MUTANT="${TMP}/leadv2-dispatch-code.mutant.sh"
-cp "${DISPATCH_BIN}" "${MUTANT}"
-python3 - "${MUTANT}" <<'PY'
+# go red. A leadv2-mutation-control.sh invocation owns this same mutation and
+# sets the skip seam so it does not recursively run its own red control.
+if [[ "${LEADV2_LAUNCHER_REFUSAL_EXTERNAL_MUTATION:-0}" != "1" ]]; then
+  MUTANT="${TMP}/leadv2-dispatch-code.mutant.sh"
+  cp "${DISPATCH_BIN}" "${MUTANT}"
+  python3 - "${MUTANT}" <<'PY'
 import sys
 path = sys.argv[1]
 text = open(path, encoding='utf-8').read()
@@ -114,14 +115,17 @@ if text.count(old) != 1:
     raise SystemExit('mutation anchor count != 1')
 open(path, 'w', encoding='utf-8').write(text.replace(old, '    reason="unclassified"\n'))
 PY
-MUT_DECISIONS="${TMP}/mutant.decisions"
-MUT_STDERR="${TMP}/mutant.stderr"
-MUT_EVENTS="${TMP}/mutant-events"
-if run_real_refusal "${MUTANT}" "${MUT_EVENTS}" "${MUT_DECISIONS}" "${MUT_STDERR}" \
-  && grep -qx 'launcher_refused task=cafe0001 arm=fable reason=not_a_build_arm fell_through_to=codex' "${MUT_DECISIONS}"; then
-  fail "RED control unexpectedly stayed green"
+  MUT_DECISIONS="${TMP}/mutant.decisions"
+  MUT_STDERR="${TMP}/mutant.stderr"
+  MUT_EVENTS="${TMP}/mutant-events"
+  if run_real_refusal "${MUTANT}" "${MUT_EVENTS}" "${MUT_DECISIONS}" "${MUT_STDERR}" \
+    && grep -qx 'launcher_refused task=cafe0001 arm=fable reason=not_a_build_arm fell_through_to=codex' "${MUT_DECISIONS}"; then
+    fail "RED control unexpectedly stayed green"
+  else
+    pass "RED control: mutating capture reason made the real-refusal assertion red"
+  fi
 else
-  pass "RED control: mutating capture reason made the real-refusal assertion red"
+  pass "RED control delegated to leadv2-mutation-control.sh"
 fi
 
 printf '\nlauncher-refusal-event: PASS=%d FAIL=%d\n' "${PASS}" "${FAIL}"
