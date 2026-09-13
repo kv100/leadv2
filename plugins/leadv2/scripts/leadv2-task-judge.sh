@@ -3,8 +3,9 @@
 #
 # WHAT THIS IS
 #   Estimates how hard a TASK is — never which arm/model/provider should run
-#   it, never what quota is left. One cheap `claude -p --model haiku` call per
-#   dispatch, mission text in, schema-validated TaskEstimate JSON out.
+#   it, never what quota is left. One cheap arm-blind model call per dispatch,
+#   mission text in, schema-validated TaskEstimate JSON out. GLM is preferred;
+#   Haiku is the bounded transport fallback.
 #
 # THE INVARIANT (do not weaken)
 #   The prompt template (leadv2-task-judge-prompt.tmpl, next to this script)
@@ -42,7 +43,10 @@
 #
 # Env:
 #   LEADV2_JUDGE_DISABLE       1 = never call the model; estimate_source=fallback always
-#   LEADV2_JUDGE_MODEL         override model id (default: haiku)
+#   LEADV2_JUDGE_ARM           glm (default) or haiku
+#   LEADV2_JUDGE_GLM_BIN       override glm-coder.sh (tests/integration)
+#   LEADV2_JUDGE_GLM_MODEL     override GLM model id (default: glm-5.3)
+#   LEADV2_JUDGE_MODEL         override Haiku model id (default: haiku)
 #   LEADV2_JUDGE_TIMEOUT_SEC   override judge call timeout in seconds (default: 45)
 #   LEADV2_JUDGE_CLAUDE_BIN    override the `claude` binary (tests)
 #   LEADV2_JUDGE_CACHE_DIR     override cache directory (tests)
@@ -58,6 +62,9 @@ PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(git
 JOURNAL_BIN="${LEADV2_JUDGE_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 CLAUDE_BIN="${LEADV2_JUDGE_CLAUDE_BIN:-claude}"
 JUDGE_MODEL="${LEADV2_JUDGE_MODEL:-haiku}"
+JUDGE_ARM="${LEADV2_JUDGE_ARM:-glm}"
+JUDGE_GLM_BIN="${LEADV2_JUDGE_GLM_BIN:-${SCRIPT_DIR}/glm-coder.sh}"
+JUDGE_GLM_MODEL="${LEADV2_JUDGE_GLM_MODEL:-glm-5.3}"
 # SHARED-TREE-PERMISSION-09 (2026-09-07): 45 was set before any live-shaped
 # measurement existed. 8 real invokes (5 at a 45s budget, 3 at 120s) measured
 # 36.36-46.89s wall-clock -- the CALL ITSELF takes this long regardless of
@@ -333,7 +340,7 @@ print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
     timeout_cmd="timeout"
   fi
 
-  local raw="" rc=0
+  local raw="" rc=0 used_arm=""
   # BEAT-LOOP-ORPHANS-01 fix-round 2: every headless `claude -p` spawn site
   # pins LEADV2_SUBSESSION_ROLE so hooks/lib/leadv2-hook-session-kind.sh can
   # classify the child as a worker without reading its transcript (grep-gated
@@ -341,10 +348,40 @@ print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
   # `< /dev/null` (JUDGE-REVIVAL-01, Part 0 E5): claude -p waits 3s for piped
   # stdin before proceeding — an unconditional 3s out of the 45s timeout
   # budget on every call, for stdin this script never sends.
-  if [[ -n "${timeout_cmd}" ]]; then
-    raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${timeout_cmd}" "${TIMEOUT_SEC}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
+  if [[ "${JUDGE_ARM}" == "glm" ]]; then
+    local glm_out
+    glm_out="$(mktemp "${TMPDIR:-/tmp}/leadv2-judge-glm.XXXXXX")" || { _fail "glm_tempfile"; return 1; }
+    # The transport selects an arm; the prompt itself remains arm-blind.
+    # Disabling worker MCP closes a side channel from this classifier to
+    # routing or quota data.
+    if [[ -n "${timeout_cmd}" ]]; then
+      LEADV2_WORKER_MCP=0 GLM_SKIP_QUOTA_GATE=1 GLM_TIMEOUT="${TIMEOUT_SEC}" GLM_MAX_TURNS=3 GLM_TURN_LIMIT=3 GLM_MODEL="${JUDGE_GLM_MODEL}" \
+        "${timeout_cmd}" "${TIMEOUT_SEC}" bash "${JUDGE_GLM_BIN}" run "${prompt}" --out "${glm_out}" --cwd "${PROJECT_ROOT}" >/dev/null 2>/dev/null || rc=$?
+    else
+      LEADV2_WORKER_MCP=0 GLM_SKIP_QUOTA_GATE=1 GLM_TIMEOUT="${TIMEOUT_SEC}" GLM_MAX_TURNS=3 GLM_TURN_LIMIT=3 GLM_MODEL="${JUDGE_GLM_MODEL}" \
+        bash "${JUDGE_GLM_BIN}" run "${prompt}" --out "${glm_out}" --cwd "${PROJECT_ROOT}" >/dev/null 2>/dev/null || rc=$?
+    fi
+    raw="$(cat "${glm_out}" 2>/dev/null)"; rm -f "${glm_out}"
+    if [[ ${rc} -eq 0 && -n "${raw}" ]]; then
+      used_arm="glm"
+    else
+      raw=""; rc=0
+      if [[ -n "${timeout_cmd}" ]]; then
+        raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${timeout_cmd}" "${TIMEOUT_SEC}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
+      else
+        raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
+      fi
+      used_arm="haiku_fallback"
+    fi
+  elif [[ "${JUDGE_ARM}" == "haiku" ]]; then
+    if [[ -n "${timeout_cmd}" ]]; then
+      raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${timeout_cmd}" "${TIMEOUT_SEC}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
+    else
+      raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
+    fi
+    used_arm="haiku"
   else
-    raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json < /dev/null 2>/dev/null)" || rc=$?
+    _fail "unknown_arm"; return 1
   fi
   # GNU timeout exits 124 on TERM-timeout, 137 after a -k KILL. Both used to
   # be an unconditional _fail "timeout" — SHARED-TREE-PERMISSION-09
@@ -366,6 +403,7 @@ print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
     return 1
   fi
   [[ -n "${raw}" ]] || { _fail "empty_output"; return 1; }
+  { printf '%s' "${used_arm}" >&4; } 2>/dev/null || true
 
   # `claude -p --output-format json` wraps the assistant's answer in an
   # envelope under `.result`; the model may still fence it in ```json, or
@@ -402,12 +440,14 @@ raw = sys.stdin.read()
 try:
     env = json.loads(raw)
 except Exception:
-    sys.exit(1)
-if env.get('is_error'):
-    sys.exit(1)
-result_text = env.get('result', '')
-if not isinstance(result_text, str):
-    sys.exit(1)
+    # glm-coder writes the model's body straight to --out.  The balanced JSON
+    # parser below is still the one schema boundary for both transports.
+    result_text = raw
+else:
+    if isinstance(env, dict) and env.get('is_error'):
+        sys.exit(1)
+    result_text = env.get('result', raw) if isinstance(env, dict) else raw
+if not isinstance(result_text, str): sys.exit(1)
 
 # EXTRACT-BEGIN (test-judge-parses-its-own-answer.sh mutates only between
 # EXTRACT-BEGIN/EXTRACT-END; never at top level)
@@ -454,6 +494,7 @@ if est is None or not isinstance(est, dict):
 est['estimate_v'] = 1
 est['estimate_id'] = sys.argv[1]
 est['estimate_source'] = 'judge'
+est['judge_arm'] = sys.argv[2]
 # The judge path's risk_class comes from the LLM call itself, not the id/
 # title resolver in _fallback_estimate -- flag_source='judge' says so
 # honestly rather than borrowing a value from a resolver that never ran.
@@ -462,7 +503,7 @@ est['flag_source'] = 'judge'
 # the wrapper's knowledge, like estimate_source, never the model's.
 est['complexity_basis'] = 'judge'
 print(json.dumps(est))
-" "${SIG8}")" || { _fail "envelope_parse"; return 1; }
+" "${SIG8}" "${used_arm:-unknown}")" || { _fail "envelope_parse"; return 1; }
   [[ -n "${parsed}" ]] || { _fail "envelope_parse"; return 1; }
   printf '%s\n' "${parsed}"
 }
@@ -497,7 +538,9 @@ _journal() {
   # envelope_parse | schema_invalid. Before this token existed, a judge call
   # that timed out and a --class Light skip journaled identically, and the
   # live "0 judge decisions" census could not say which it was looking at.
-  local path_suffix=" judge_path=${path}"
+  local judge_arm
+  judge_arm="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('judge_arm','unknown'))" <<<"${estimate_json}" 2>/dev/null)"
+  local path_suffix=" judge_path=${path} judge_arm=${judge_arm:-unknown}"
   if [[ "${path}" == "judge_fail" ]]; then
     path_suffix="${path_suffix} judge_fail_reason=${JUDGE_FAIL_REASON:-unknown}"
   fi
@@ -608,9 +651,11 @@ fi
 # fd 3 carries the fail reason out of the $( ) subshell (JUDGE-REVIVAL-01;
 # see _fail above). On success the file stays empty -> reason empty.
 _judge_reason_file="$(mktemp "${TMPDIR:-/tmp}/leadv2-judge-reason.XXXXXX")"
-judge_raw="$(_invoke_judge 3>"${_judge_reason_file}")"
+_judge_arm_file="$(mktemp "${TMPDIR:-/tmp}/leadv2-judge-arm.XXXXXX")"
+judge_raw="$(_invoke_judge 3>"${_judge_reason_file}" 4>"${_judge_arm_file}")"
 JUDGE_FAIL_REASON="$(cat "${_judge_reason_file}" 2>/dev/null)"
-rm -f "${_judge_reason_file}"
+JUDGE_ARM_USED="$(cat "${_judge_arm_file}" 2>/dev/null)"
+rm -f "${_judge_reason_file}" "${_judge_arm_file}"
 if [[ -n "${judge_raw}" ]]; then
   judge_valid="$(_validate_estimate <<<"${judge_raw}")"
   if [[ -n "${judge_valid}" ]]; then
