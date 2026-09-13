@@ -74,6 +74,37 @@ else
   fail "project lane did not pass (rc=${rc}, output=$(cat "${TMP}/case-project.out"), journal=$(cat "${JOURNAL}" 2>/dev/null))"
 fi
 
+# A local diff must not make an unresolved/shared declared path disappear from
+# review. The shared canonical file is deliberately dirty here; the close gate
+# must refuse partial_diff instead of reviewing only the persona bytes.
+printf 'canonical work\n' >> "${CANONICAL}/plugins/leadv2/scripts/probe.sh"
+unset rc
+run_close case-mixed "${TMP}/project-lane" docs/declared.txt,plugins/leadv2/scripts/probe.sh || rc=$?
+rc="${rc:-0}"
+MD="${ROOT}/docs/handoff/dispatch-case-mixed/review-gate.md"
+if [[ "${rc}" == 5 ]] && grep -q '^reason: partial_diff$' "${MD}"; then
+  pass 'local bytes plus shared-canonical bytes refuse partial_diff'
+else
+  fail "mixed local/shared writes escaped review (rc=${rc}, output=$(cat "${TMP}/case-mixed.out"), md=$(cat "${MD}" 2>/dev/null))"
+fi
+
+# A branch on the dispatching ROOT is not this lane's branch. Its unrelated
+# commit must remain visible in the survey but cannot become git_truth_commits.
+git -C "${ROOT}" checkout -qb foreign-feature
+printf 'foreign\n' > "${ROOT}/foreign.txt"
+git -C "${ROOT}" add foreign.txt && git -C "${ROOT}" commit -qm foreign-work
+unset rc
+run_close case-foreign "${ROOT}" docs/declared.txt || rc=$?
+rc="${rc:-0}"
+MD="${ROOT}/docs/handoff/dispatch-case-foreign/review-gate.md"
+if [[ "${rc}" == 5 ]] && grep -q '^reason: no_work$' "${MD}" \
+   && grep -q 'branch=foreign-feature commits=1' "${MD}" \
+   && ! grep -q '^reason: git_truth_commits$' "${MD}"; then
+  pass 'foreign ROOT branch is surveyed but cannot become lane git truth'
+else
+  fail "foreign ROOT commit was credited to the lane (rc=${rc}, output=$(cat "${TMP}/case-foreign.out"), md=$(cat "${MD}" 2>/dev/null))"
+fi
+
 unset rc
 run_close case-negative "${TMP}/negative-lane" plugins/leadv2/scripts/probe.sh || rc=$?
 rc="${rc:-0}"

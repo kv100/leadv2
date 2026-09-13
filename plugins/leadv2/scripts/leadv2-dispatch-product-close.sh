@@ -1731,10 +1731,14 @@ pc_await_worker_exit() {
 # commit-truth probe and use it from both the silent-arm anchor fast path and the
 # cross-repository git-truth survey; those two answers must not diverge.
 _pc_commit_is_anchor() { # <root> <sha> -> rc0 iff subject is lane * anchor and diff is empty
-  local root="$1" sha="$2" subject diffstat
+  local root="$1" sha="$2" subject diffstat parent
   subject="$(git -C "${root}" log -1 --format=%s "${sha}" 2>/dev/null || true)"
   [[ "${subject}" == "lane "*" anchor" ]] || return 1
-  diffstat="$(git -C "${root}" diff --stat "${sha}^" "${sha}" 2>/dev/null || true)"
+  # A parentless root commit cannot be an empty birth anchor: without a parent,
+  # `git diff sha^ sha` fails closed to an empty string and would hide real work.
+  parent="$(git -C "${root}" rev-parse "${sha}^" 2>/dev/null || true)"
+  [[ -n "${parent}" ]] || return 1
+  diffstat="$(git -C "${root}" diff --stat "${parent}" "${sha}" 2>/dev/null || true)"
   [[ -z "${diffstat}" ]]
 }
 
@@ -1899,7 +1903,8 @@ _pc_resolve_write() { # <normalised-write> -> <toplevel>\t<relative>\t<shared>, 
 }
 
 _pc_git_truth_across_repos() { # reads candidate arrays; sets _PC_GIT_TRUTH_* and survey
-  local i root branch default commits filtered sha first staged staged_n commit_n clause
+  local i root branch default origin_default commits filtered sha first staged staged_n commit_n clause lane_branch eligible
+  lane_branch="worktree-${FOUNDER_TASK_ID:-${TASK}}"
   _PC_GIT_TRUTH_KIND="none"
   _PC_GIT_TRUTH_BRANCH="absent"
   _PC_GIT_TRUTH_REPO=""
@@ -1925,6 +1930,12 @@ _pc_git_truth_across_repos() { # reads candidate arrays; sets _PC_GIT_TRUTH_* an
       if [[ -z "${default}" ]] && git -C "${root}" show-ref --verify --quiet refs/heads/master; then
         default="master"
       fi
+      if [[ -z "${default}" ]]; then
+        origin_default="$(git -C "${root}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+        origin_default="${origin_default#origin/}"
+        [[ -n "${origin_default}" ]] && git -C "${root}" show-ref --verify --quiet "refs/heads/${origin_default}" \
+          && default="${origin_default}"
+      fi
       if [[ -n "${default}" ]]; then
         commits="$(git -C "${root}" log --format=%H "refs/heads/${default}..refs/heads/${branch}" 2>/dev/null || true)"
       fi
@@ -1943,14 +1954,30 @@ _pc_git_truth_across_repos() { # reads candidate arrays; sets _PC_GIT_TRUTH_* an
     clause="repo=${root} branch=${branch} commits=${commit_n} staged=${staged_n}"
     [[ -n "${_PC_GIT_TRUTH_SURVEY}" ]] && _PC_GIT_TRUTH_SURVEY+='; '
     _PC_GIT_TRUTH_SURVEY+="${clause}"
-    if [[ "${_PC_GIT_TRUTH_KIND}" != "commits" && ${commit_n} -gt 0 ]]; then
+    eligible=0
+    # Candidate 0 is the explicitly resolved lane worktree, even when a test or
+    # hand-created lane uses a branch name other than the conventional one. The
+    # parent ROOT is only a diagnostic candidate; a sibling candidate is eligible
+    # only when it has the lane branch the resolver was asked to locate.
+    if [[ "${i}" == "0" && "$(_lv2_phys "${root}")" != "$(_lv2_phys "${ROOT}")" ]]; then
+      eligible=1
+    elif [[ "${_PC_CAND_SHARED[$i]}" != "1" && "${branch}" == "${lane_branch}" ]]; then
+      eligible=1
+    fi
+    # Only the named lane branch in a lane-isolated candidate can decide this
+    # lane's truth. ROOT may be a founder branch, and the canonical checkout is
+    # shared by concurrent sessions; both remain in the survey for diagnosis but
+    # must never donate foreign commits or staged files to this verdict.
+    if [[ "${eligible}" == "1" \
+          && "${_PC_GIT_TRUTH_KIND}" != "commits" && ${commit_n} -gt 0 ]]; then
       _PC_GIT_TRUTH_KIND="commits"
       _PC_GIT_TRUTH_REPO="${root}"
       _PC_GIT_TRUTH_BRANCH="${branch}"
       _PC_GIT_TRUTH_COMMITS="${filtered}"
       _PC_GIT_TRUTH_FIRST_SHA="${first}"
     fi
-    if [[ "${_PC_GIT_TRUTH_KIND}" == "none" && ${staged_n} -gt 0 ]]; then
+    if [[ "${eligible}" == "1" \
+          && "${_PC_GIT_TRUTH_KIND}" == "none" && ${staged_n} -gt 0 ]]; then
       _PC_GIT_TRUTH_KIND="staged"
       _PC_GIT_TRUTH_REPO="${root}"
       _PC_GIT_TRUTH_BRANCH="${branch}"
@@ -3045,6 +3072,9 @@ if [[ -n "${WRITES_CSV}" ]]; then
       if [[ ${_zero_repos} -gt 0 && ${_nonzero_repos} -gt 0 ]]; then
         blocked_reason="partial_diff"
       fi
+      if [[ ${_pc_resolved_shared_n:-0} -gt 0 && ${_nonzero_repos} -gt 0 ]]; then
+        blocked_reason="partial_diff"
+      fi
     else
       # CROSS_REPO_DIFF=0 remains a single-repo mode, but it uses the same
       # path mapping. A multi-repo declaration is never silently reduced to
@@ -3247,6 +3277,11 @@ if [[ "${_pc_kind}" == "report" ]]; then
   blocked_reason=""
   emit decision "report_gate task=${TASK} status=located bytes=${_pc_report_bytes} declared=${_pc_report_rel} deliverable=${_pc_report_deliverable}"
 fi
+# Diff-scoping can refuse a mixed local/shared set before entering the dirty
+# evidence partition below. Keep artifact and ledger emission nounset-safe for
+# that deliberate partial_diff verdict as well as for empty-diff paths.
+_pc_dirty_evidence="${_pc_dirty_evidence:-}"
+_pc_dirty_n="${_pc_dirty_n:-0}"
 # T8C-FOREIGN-REPO-LANDING-01: an empty-diff/dirty-but-undeclared verdict here would be
 # a false no_work/unscoped_lane_work for a lane whose mission legitimately targets a
 # repo OTHER than its own PE worktree (the shared leadv2 plugin repo is the live case --
