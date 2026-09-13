@@ -43,7 +43,7 @@
 #
 # Env:
 #   LEADV2_JUDGE_DISABLE       1 = never call the model; estimate_source=fallback always
-#   LEADV2_JUDGE_ARM           glm (default) or haiku
+#   LEADV2_JUDGE_ARM           haiku (default) or glm
 #   LEADV2_JUDGE_GLM_BIN       override glm-coder.sh (tests/integration)
 #   LEADV2_JUDGE_GLM_MODEL     override GLM model id (default: glm-5.3)
 #   LEADV2_JUDGE_MODEL         override Haiku model id (default: haiku)
@@ -62,7 +62,7 @@ PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(git
 JOURNAL_BIN="${LEADV2_JUDGE_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 CLAUDE_BIN="${LEADV2_JUDGE_CLAUDE_BIN:-claude}"
 JUDGE_MODEL="${LEADV2_JUDGE_MODEL:-haiku}"
-JUDGE_ARM="${LEADV2_JUDGE_ARM:-glm}"
+JUDGE_ARM="${LEADV2_JUDGE_ARM:-haiku}"
 JUDGE_GLM_BIN="${LEADV2_JUDGE_GLM_BIN:-${SCRIPT_DIR}/glm-coder.sh}"
 JUDGE_GLM_MODEL="${LEADV2_JUDGE_GLM_MODEL:-glm-5.3}"
 # SHARED-TREE-PERMISSION-09 (2026-09-07): 45 was set before any live-shaped

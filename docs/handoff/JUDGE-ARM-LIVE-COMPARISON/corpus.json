@@ -1,0 +1,72 @@
+[
+  {
+    "id": "docs_single_deliverable",
+    "mission": "docs/handoff/LEAD-BURN-MECHANISM-01/MISSION-astra.md",
+    "rationale": "Docs-only, one-file proposal with no code write; the deliberately trivial end of the corpus.",
+    "expected_complexity": "trivial",
+    "self_consistency": true
+  },
+  {
+    "id": "policy_amendment",
+    "mission": "docs/handoff/dispatch-b22dc98b/MISSION-AMENDMENT.md",
+    "rationale": "Short policy amendment that changes a default while fencing a prior design.",
+    "expected_complexity": "simple",
+    "self_consistency": true
+  },
+  {
+    "id": "shared_quota_gauge",
+    "mission": "docs/handoff/QUOTA-GAUGE-COUNTS-GLM-AS-ANTHROPIC-01/MISSION.md",
+    "rationale": "Shared production quota accounting with canonical-copy and sync constraints.",
+    "expected_complexity": "standard",
+    "self_consistency": false
+  },
+  {
+    "id": "safety_guard",
+    "mission": "docs/handoff/ee0eaf69f3e8/MISSION.md",
+    "rationale": "Safety/protected guard path with real escape reproduction and mutation controls.",
+    "expected_complexity": "complex",
+    "self_consistency": false
+  },
+  {
+    "id": "telemetry_foundation",
+    "mission": "docs/handoff/ac8a48dc2939/MISSION.md",
+    "rationale": "Multi-subsystem account-truth and quota-telemetry foundation work.",
+    "expected_complexity": "complex",
+    "self_consistency": false
+  },
+  {
+    "id": "provider_pricing",
+    "mission": "docs/handoff/cc4557feef48/MISSION.md",
+    "rationale": "Measured provider-pricing decision with routing and quota evidence dependencies.",
+    "expected_complexity": "complex",
+    "self_consistency": false
+  },
+  {
+    "id": "arbiter_inputs",
+    "mission": "docs/handoff/48b8297b4cc1/MISSION.md",
+    "rationale": "Strategic arbiter-input work spanning decision scoring and protected constraints.",
+    "expected_complexity": "complex",
+    "self_consistency": false
+  },
+  {
+    "id": "decision_record",
+    "mission": "docs/handoff/ARBITER-DECISION-RECORD/MISSION.md",
+    "rationale": "Cross-cutting observability needed to replay routing decisions honestly.",
+    "expected_complexity": "standard",
+    "self_consistency": false
+  },
+  {
+    "id": "close_gate_repair",
+    "mission": "docs/handoff/83577d79c310/MISSION-R2.md",
+    "rationale": "Focused regression repair where prior work died before proving its own suite.",
+    "expected_complexity": "standard",
+    "self_consistency": true
+  },
+  {
+    "id": "judge_measurement",
+    "mission": "docs/handoff/9d368a385d9d/MISSION.md",
+    "rationale": "This multi-transport measurement lane itself, including the default-arm decision.",
+    "expected_complexity": "standard",
+    "self_consistency": false
+  }
+]
