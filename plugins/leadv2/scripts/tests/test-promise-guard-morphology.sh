@@ -329,7 +329,18 @@ case_r4b_neg_pochinka()    { _expect "$1" "починка была вчера" S
 case_r4b_neg_razbor()      { _expect "$1" "Сделаю разбор причины" SILENT; }
 case_r4b_neg_kesh()        { _expect "$1" "Запущу обновление кэша" SILENT; }
 case_r4b_neg_reestr()      { _expect "$1" "Сейчас сделаю обновление реестра" SILENT; }
-case_r4b_neg_nachnu()      { _expect "$1" "Начну с разбора причины" SILENT; }
+# PROMISE-GUARD-MISSES-A-CLOSING-PROMISE-01 (2026-09-13): re-pinned SILENT->FIRED,
+# same as case_r4b_neg_prichina above was re-pinned by UNKNOWN-KIND-01. The SILENT
+# pin encoded the OLD defect: «начну» classified None, unclassified promises stayed
+# log-only, so a text-only turn ending on «Начну с разбора причины» passed — the
+# verbatim family of the 2026-09-13 escape («Начинаю с пункта 1 прямо сейчас»).
+# The `start` kind carries «начну» now, so the sentence-level verdict is FIRED —
+# classified this time. The noun-guard property this case was written for still
+# holds and is still proven by its neighbours: «разбор» classifies nothing
+# (r4b-neg-razbor-prichiny stays SILENT below), and the row-level proof that THIS
+# sentence lands on kind=start — not on a stolen write/diagnose label — lives in
+# test-promise-guard-closing-promise.sh (TP1/TP2 row assertions).
+case_r4b_neg_nachnu()      { _expect "$1" "Начну с разбора причины" FIRED; }
 case_r4b_pos_chinyu()      { _expect "$1" "чиню конфиг" FIRED; }
 case_r4b_pos_pochinyu()    { _expect "$1" "починю конфиг" FIRED; }
 case_r4b_pos_obnovlyu()    { _expect "$1" "сейчас обновлю yaml" FIRED; }
