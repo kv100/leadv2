@@ -51,10 +51,98 @@ leadv2_cost_actuals_event_bin() {
   printf '%s' "${LEADV2_COST_ACTUAL_EVENT_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../leadv2-event.sh}"
 }
 
+# leadv2_lane_token_total <repo-root> <sig8> — the lane's REAL token total.
+#
+# QUOTA-TELEMETRY-CANNOT-PRICE-AN-ARM-01: cost_actual_recorded.tokens was `-`
+# in 100% of live rows (48/48, 2026-09-13) because neither caller computed
+# it. The counts already exist in two places — this just joins them, cheapest
+# and most direct first:
+#   (a) the lane's costs.yaml — leadv2-cost-flush.sh's own extraction of the
+#       workers' stream-json usage (a DIRECT observation, immune to
+#       turn_events' 48h retention). Pending .cost-pending.yaml markers are
+#       flushed first (same script, idempotent by session_id) so a terminal
+#       that fires before the daemon's sweep still sees them.
+#   (b) SUM(input+output) over burn turn_events for the session ids in the
+#       lane's sessions.map — an inference, valid only inside the 48h window.
+#   (c) neither -> `-`. NEVER 0: 0 claims the lane was free, `-` claims we
+#       do not know — a false zero poisons the observed-cost loop with free
+#       lanes (lane decision D5).
+# Prints the integer, or `-`. rc 0 ALWAYS: telemetry must never gate a
+# terminal verdict (same licence as leadv2_cost_actual_record).
+leadv2_lane_token_total() { # <repo-root> <sig8>
+  local root="${1:-}" sig8="${2:-}" total=""
+  [[ -n "$root" && -n "$sig8" ]] || { printf -- '-'; return 0; }
+  local handoff="$root/docs/handoff/dispatch-$sig8"
+
+  # (a) costs.yaml, flushing any still-pending markers through the EXISTING
+  # extraction (never a second parser).
+  local flush="${LEADV2_COST_FLUSH_SH:-}"
+  [[ -n "$flush" ]] || flush="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../leadv2-cost-flush.sh"
+  if [[ -d "$handoff" && -f "$flush" ]]; then
+    PROJECT_ROOT="$root" bash "$flush" "$handoff" >/dev/null 2>&1 || true
+  fi
+  if [[ -f "$handoff/costs.yaml" ]]; then
+    total="$(python3 - "$handoff/costs.yaml" <<'PY' 2>/dev/null
+import re, sys
+# Flat reader on purpose: costs.yaml rows are printed by ONE writer
+# (leadv2-cost-flush.sh) in ONE shape, and PyYAML is a user-only install on
+# this fleet — a lib sourced by every dispatch must not depend on it.
+tot, seen = 0, False
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        m = re.match(r"\s*(input_tokens|output_tokens):\s*([0-9]+)\s*$", line)
+        if m:
+            tot += int(m.group(2))
+            seen = True
+print(tot if seen else "")
+PY
+)"
+    [[ "$total" =~ ^[0-9]+$ && "$total" != "0" ]] || total=""
+  fi
+
+  # (b) turn_events over the lane's session ids (sessions.map col 3).
+  if [[ -z "$total" && -f "$handoff/sessions.map" ]]; then
+    total="$(python3 - "$handoff/sessions.map" <<'PY' 2>/dev/null
+import os, re, sqlite3, sys
+sids = []
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) >= 3 and re.match(r"^[0-9a-f-]{36}$", parts[2]):
+            sids.append(parts[2])
+if not sids:
+    raise SystemExit(0)
+db = os.path.expanduser(os.environ.get("LEADV2_BURN_DB", "~/.claude/burn/history.db"))
+if not os.path.exists(db):
+    raise SystemExit(0)
+conn = sqlite3.connect(db, timeout=2)
+try:
+    conn.execute("PRAGMA busy_timeout=2000")
+    q = ",".join("?" * len(sids))
+    row = conn.execute(
+        "SELECT COALESCE(SUM(input + output), 0) FROM turn_events "
+        "WHERE session_id IN (%s)" % q, sids).fetchone()
+    tot = int(row[0]) if row else 0
+    if tot > 0:
+        print(tot)
+finally:
+    conn.close()
+PY
+)"
+    [[ "$total" =~ ^[0-9]+$ && "$total" != "0" ]] || total=""
+  fi
+
+  # (c) unknown — a dash, never a fabricated zero.
+  printf -- '%s' "${total:--}"
+}
+
 leadv2_cost_actual_record() { # <repo> <sig8> <terminal> <cause> [class] [kind] [model] [tokens]
   local repo="${1:-}" sig8="${2:-}" terminal="${3:-}" cause="${4:-}"
   local cls="${5:-unknown}" wk="${6:-code}" model="${7:-unknown}" tokens="${8:--}"
   [[ -n "$repo" && -n "$sig8" ]] || return 0
+  # A non-numeric tokens value is an unknown, not a measurement (D5/R5):
+  # reject to `-` before it can reach the journal or the arbiter's reader.
+  [[ "$tokens" =~ ^[0-9]+$ ]] || tokens="-"
   local evt_bin journal
   evt_bin="$(leadv2_cost_actuals_event_bin)"
   [[ -f "$evt_bin" ]] || return 0

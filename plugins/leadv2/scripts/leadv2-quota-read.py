@@ -45,7 +45,7 @@ Env overrides:
              for this many seconds instead of refreshing (rotating) every read
   LEADV2_QUOTA_GLM_MODELS ("glm-5.3 glm-5.3-flash")  -- per-model attribution keys
 """
-import datetime, json, os, subprocess, sys, tempfile, time, urllib.request, urllib.error
+import datetime, hashlib, json, os, subprocess, sys, tempfile, time, urllib.request, urllib.error
 
 UTC = datetime.timezone.utc
 
@@ -829,6 +829,31 @@ def account_label(service, suffix, subscription_type, tier, active_pin):
     return str(suffix or "unknown")
 
 
+def account_key_for_config_dir(config_dir):
+    """sha256_8 of the realpath-expanded config dir — the account key.
+
+    ACCOUNT-TRUTH-ACTIVE-IS-NOT-THE-METERED-ONE-01: a multi-profile keychain
+    entry carries the hash of the config dir it serves as its service-name
+    suffix (`Claude Code-credentials-<8hex>`), so the SAME derivation applied
+    to the RUNNING session's CLAUDE_CONFIG_DIR names the account that is
+    actually paying for this session.  Verified live 2026-09-13 against
+    rate_limit_history: ~/.claude -> eb6c5b97 and ~/.claude-work -> 5a3c2328,
+    the only two account keys with parsed percentages; the bare service's key
+    ("default") has 124/124 snapshots unauthenticated and has never metered.
+
+    Normalisation is part of the contract, not a nicety: expanduser+realpath
+    so the tilde form (whose RAW string hashes to 37e4f761 — matches nothing)
+    and a trailing-slash form (raw: 6f2ddd33) both land on the same key as
+    the spelled-out path.  Pure and total — no keychain, no network, no
+    state.  Empty/whitespace input returns "" (an empty CLAUDE_CONFIG_DIR is
+    "absent", never a hash of "" or of the cwd).
+    """
+    if not (config_dir or "").strip():
+        return ""
+    expanded = os.path.realpath(os.path.expanduser(config_dir)).rstrip("/")
+    return hashlib.sha256(expanded.encode()).hexdigest()[:8]
+
+
 def resolve_active_account(accounts, active_pin):
     """Mark exactly one account as active and expose how it was resolved.
 
@@ -836,16 +861,56 @@ def resolve_active_account(accounts, active_pin):
     Claude Code operation the unsuffixed credential service is that session's
     service.  If neither is available, the config pin is used visibly rather
     than silently guessing from the most-used account.
+
+    ACCOUNT-TRUTH-ACTIVE-IS-NOT-THE-METERED-ONE-01 adds one rung between the
+    explicit operator override and the bare-service pick: the session's own
+    config dir, hashed the same way the multi-profile keychain suffixes are
+    (account_key_for_config_dir), matched against each account's
+    entry_suffix.  Ladder, strongest statement first:
+      1. explicit operator env (LEADV2_ANTHROPIC_ACTIVE_SERVICE /
+         CLAUDE_CODE_CREDENTIALS_SERVICE)                    -> session_credential
+      2. CLAUDE_CONFIG_DIR derivation matches an entry_suffix -> config_dir
+         (absent env derives the ~/.claude default -> config_dir_default;
+         a matched but nonexistent dir -> config_dir_missing, still auditable)
+      3. unsuffixed bare service                              -> session_credential
+      4. config pin                                           -> pinned_unresolved
+      5. accounts[0]                                          -> pinned_unresolved
+    A derived key matching no entry falls through to 3-5 unchanged — the
+    derivation never invents an account.
     """
     forced = os.environ.get("LEADV2_ANTHROPIC_FORCE_UNRESOLVED") == "1"
     requested = os.environ.get("LEADV2_ANTHROPIC_ACTIVE_SERVICE") or \
         os.environ.get("CLAUDE_CODE_CREDENTIALS_SERVICE")
+    # "Mark exactly one" must hold for ANY input: demote every stored flag
+    # first, so a caller handing in accounts that already carry an `active`
+    # flag from storage (the account-truth negative-control fixture is
+    # exactly this shape) gets the resolver's verdict, not a stale snapshot
+    # of an older resolution riding alongside it.
+    for a in accounts:
+        a["active"] = False
     if not forced:
         if requested:
             selected = next((a for a in accounts if a.get("service") == requested), None)
             if selected:
                 selected["active"] = True
                 return "session_credential"
+        # acct-truth-mut-1 marker: the config-dir rung lives in this branch —
+        # a negative control that disables it must fall through to the bare
+        # service below, never to a top-level bypass.
+        raw_cfg = os.environ.get("CLAUDE_CONFIG_DIR") or ""
+        cfg_from_default = not raw_cfg.strip()
+        if cfg_from_default:
+            raw_cfg = "~/.claude"
+        cfg_key = account_key_for_config_dir(raw_cfg)
+        if cfg_key:
+            selected = next((a for a in accounts if a.get("entry_suffix") == cfg_key), None)
+            if selected:
+                selected["active"] = True
+                if cfg_from_default:
+                    return "config_dir_default"
+                if not os.path.isdir(os.path.expanduser(raw_cfg)):
+                    return "config_dir_missing"
+                return "config_dir"
         selected = next((a for a in accounts if a.get("service") == "Claude Code-credentials"), None)
         if selected:
             selected["active"] = True
@@ -983,6 +1048,13 @@ def read_anthropic(credential_file=None):
     return {"provider": "anthropic", "status": "ok", "accounts": accounts,
             "active_account": active.get("account_label") if active else active_pin,
             "account_resolution": resolution,
+            # ACCOUNT-TRUTH-ACTIVE-IS-NOT-THE-METERED-ONE-01: the key the
+            # session's config dir derives to, ALWAYS recorded — including
+            # when it matched nothing and the ladder fell through, so an
+            # auditor can see which account was claimed vs which one the
+            # session actually runs under.
+            "account_config_dir_key": account_key_for_config_dir(
+                os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude") or None,
             # This is intentionally pipe-friendly for the router's future journal event.
             "account_resolution_journal": "account=%s" % resolution,
             "binding_window": active.get("binding_window") if active else None,
