@@ -67,6 +67,11 @@ _live_guard() {
 }
 
 # ── fixture env (idiom: test-phase-precondition-bootstrap.sh:40-50)
+# Hermetic vs lane envs: a dispatched lane exports PROJECT_ROOT=<real repo>;
+# phase-record fail-closes (rc 4, root conflict) when it inherits that next to
+# this suite's per-call LEADV2_PROJECT_ROOT=<scratch>. Drop it — every call
+# below names its scratch root explicitly.
+unset PROJECT_ROOT
 export LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/.cache"
 export LEADV2_JOURNAL_BIN="${TMP_ROOT}/journal.sh"
 JOURNAL_LOG="${TMP_ROOT}/journal.log"
