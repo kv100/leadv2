@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-arbiter-decision-record-inputs.sh
+file=plugins/leadv2/scripts/leadv2-arbiter-replay.py
+anchor=s/record_schema_version") != 2/record_schema_version") == 2/
+baseline_rc=0
+mutated_rc=2
+red_line=PASS: schema-v2 record contains winner inputs, both candidates, and exclusion reasons
+diff_hash=083e0fc33d37518e16d1d6971a557a2a4f34b5056c456d4c507a6a850ec64bed
+lane_diff_hash=af69a219a339326d23228d17341258672cce463f2d564c5963c876c8ccb38a64
