@@ -108,6 +108,9 @@ printf 'test: 1a phase8-close refuses a partial ladder (classify,build)\n'
   BIN1A="${TMP_ROOT}/bin1a"; mkdir -p "${BIN1A}"
   cp "${P8}" "${BIN1A}/leadv2-phase8-close.sh"
   cp "${PHASE_RECORD}" "${BIN1A}/leadv2-phase-record.sh"
+  # phase-record sources lib/ helpers from its own dir — copy them or the
+  # ladder assert fails for the wrong reason (missing lib, not missing rungs).
+  cp -R "${LIVE_DIR}/lib" "${BIN1A}/lib"
   cp "${LEADV2_JOURNAL_BIN}" "${BIN1A}/leadv2-journal.sh"
   printf '#!/usr/bin/env bash\nexit 0\n' > "${BIN1A}/leadv2-render-close.sh"
   chmod +x "${BIN1A}/leadv2-render-close.sh" "${BIN1A}/leadv2-journal.sh"
@@ -346,11 +349,21 @@ printf 'test: 5 bootstrap-admit sentinel separates admission from completion\n'
 printf 'test: NC1 mutant phase-record without runner-token refusal reddens case 2\n'
 {
   if grep -q 'runner_token_missing' "${PHASE_RECORD}" 2>/dev/null; then
-    MUT="${TMP_ROOT}/mut-phase-record.sh"
-    sed -e '/reason=runner_token_missing/d' -e '/_verify_runner_token/d' "${PHASE_RECORD}" > "${MUT}"
-    chmod +x "${MUT}"
+    # mutation: switch OFF the runner-owned gate's own condition (INSIDE the
+    # record body — the && continuation of the `if`, syntax preserved), never
+    # a top-level insert. The mutant lives in its own scratch bin WITH lib/,
+    # because phase-record sources lib/ helpers from its own directory.
+    BINNC1="${TMP_ROOT}/binnc1"; mkdir -p "${BINNC1}"
+    cp -R "${LIVE_DIR}/lib" "${BINNC1}/lib"
+    sed 's/^     && \[\[ "$status" == "done" \]\]; then$/     \&\& false; then # NC1 MUTATION/' \
+      "${PHASE_RECORD}" > "${BINNC1}/leadv2-phase-record.sh"
+    chmod +x "${BINNC1}/leadv2-phase-record.sh"
+    MUT="${BINNC1}/leadv2-phase-record.sh"
+    if ! grep -q 'NC1 MUTATION' "${MUT}"; then
+      fail "NC1: mutation pattern not found in the copy — control not exercised"
+    fi
     SIGNC1="nc1abcd1"
-  REPONC1="${TMP_ROOT}/reponc1"
+    REPONC1="${TMP_ROOT}/reponc1"
     mk_dispatch_dir "$REPONC1" "$SIGNC1"
     mkdir -p "$(phases_d "$REPONC1" "$SIGNC1")"
     printf 'diff content\n' > "${REPONC1}/docs/handoff/dispatch-${SIGNC1}/review.diff"
@@ -386,6 +399,7 @@ printf 'test: NC1 mutant phase-record without runner-token refusal reddens case 
       BINNC2="${TMP_ROOT}/binnc2"; mkdir -p "${BINNC2}"
       cp "${MUTP8}" "${BINNC2}/leadv2-phase8-close.sh"
       cp "${PHASE_RECORD}" "${BINNC2}/leadv2-phase-record.sh"
+      cp -R "${LIVE_DIR}/lib" "${BINNC2}/lib"
       cp "${LEADV2_JOURNAL_BIN}" "${BINNC2}/leadv2-journal.sh"
       printf '#!/usr/bin/env bash\nexit 0\n' > "${BINNC2}/leadv2-render-close.sh"
       chmod +x "${BINNC2}"/*

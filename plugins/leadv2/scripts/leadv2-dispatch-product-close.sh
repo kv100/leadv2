@@ -84,6 +84,67 @@ if [[ -f "${_REPORT_DELIVERABLE_SH}" ]] && source "${_REPORT_DELIVERABLE_SH}" \
     && { _pc_kind="report"; _pc_report_rel="${_pc_rd#*$'\x1f'}"; }
 fi
 DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
+# THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: the phase store this gate writes
+# its rungs into (env seam so suites can drive a mutant binary).
+PHASE_RECORD="${LEADV2_PHASE_RECORD_BIN:-${SCRIPT_DIR}/leadv2-phase-record.sh}"
+
+# Record a RUNNER-OWNED rung (review/test/live_verify) as done with a minted
+# runner token — the only admissible evidence for those phases. Captures rc
+# instead of swallowing it: a refused record is a loud failure, never a
+# `2>/dev/null || true` (that is how eight lanes shipped `classify+build` only).
+_pc_record_rung() { # <phase> <artifact-rel> <owner-tag> [extra record args...] -> rc
+  local phase="$1" artifact="$2" owner_tag="$3"
+  shift 3
+  [[ -x "${PHASE_RECORD}" ]] || return 0
+  local tok rc
+  tok="$(LEADV2_PROJECT_ROOT="${ROOT}" LEADV2_DISPATCH_CACHE_DIR="${LEADV2_DISPATCH_CACHE_DIR:-}" \
+    bash "${PHASE_RECORD}" mint-runner-token "${TASK}" "${phase}" --artifact "${artifact}" \
+    --runner "leadv2-dispatch-product-close.sh:${owner_tag}" 2>/dev/null)" || tok=""
+  if [[ -z "${tok}" ]]; then
+    emit decision "phase_record_failed task=${TASK} phase=${phase} rc=runner_token_mint_failed"
+    return 1
+  fi
+  LEADV2_PROJECT_ROOT="${ROOT}" bash "${PHASE_RECORD}" record "${TASK}" "${phase}" --status done \
+    --artifact "${artifact}" \
+    --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):${owner_tag}" \
+    --runner-token "${tok}" "$@" 2>/dev/null
+  rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    emit decision "phase_record_failed task=${TASK} phase=${phase} rc=${rc}"
+  fi
+  return ${rc}
+}
+
+# live_verify rung: execute the lane's declared acceptance probe (persisted by
+# dispatch-code beside the lane mission) verbatim and record the outcome. No
+# declared probe → n/a with the reason on the record (n/a is legal and satisfies
+# the ladder — nothing was promised, nothing was skipped silently).
+_pc_run_live_verify() {
+  [[ -x "${PHASE_RECORD}" ]] || return 0
+  local _lv_out="${HANDOFF}/live-verify.out"
+  local _lv_cmd_f="${LEADV2_DISPATCH_LANE_ACCEPTANCE_CMD:-${HANDOFF}/lane-acceptance-cmd}"
+  if [[ ! -s "${_lv_cmd_f}" ]]; then
+    LEADV2_PROJECT_ROOT="${ROOT}" bash "${PHASE_RECORD}" record "${TASK}" live_verify --status n/a \
+      --reason "no_acceptance_block" --task-id "${FOUNDER_TASK_ID}" \
+      --owner "$(basename "$0"):live_verify" 2>/dev/null \
+      || emit decision "phase_record_failed task=${TASK} phase=live_verify rc=n/a_record"
+    return 0
+  fi
+  local _lv_rc=0
+  { ( cd "${ROOT}" 2>/dev/null && bash -c "$(cat "${_lv_cmd_f}")" ); printf 'probe_rc: %s\n' "$?"; } > "${_lv_out}" 2>&1
+  _lv_rc="$(sed -nE 's/^probe_rc: ([0-9]+)$/\1/p' "${_lv_out}" | tail -1)"
+  [[ "${_lv_rc}" =~ ^[0-9]+$ ]] || _lv_rc=1
+  if [[ "${_lv_rc}" -eq 0 ]]; then
+    _pc_record_rung live_verify "docs/handoff/dispatch-${TASK}/live-verify.out" "live_verify" || {
+      _stamp_review_terminal blocked; return 1; }
+  else
+    emit decision "live_verify task=${TASK} status=fail rc=${_lv_rc} out=docs/handoff/dispatch-${TASK}/live-verify.out"
+    _dl_note dead live_verify_fail "rc=${_lv_rc}"
+    _stamp_review_terminal blocked
+    return 1
+  fi
+  return 0
+}
 # T-o (SUPERVISOR-AUDIT-01): this script owns the e2e/review half of a product task's
 # lifecycle, so ITS exit paths are where that task's real terminal state (landed/parked/
 # refused/dead) becomes known -- dispatch-code.sh deliberately does NOT write one for a
@@ -3451,10 +3512,25 @@ elif [[ "${LEADV2_BUILDER_SELFCHECK:-1}" != 0 ]] && command -v lv2_selfcheck_run
   emit decision "selfcheck task=${TASK} status=$([[ ${_selfcheck_rc} -eq 2 ]] && printf degraded || printf green) ${_selfcheck_fields}"
 fi
 
+# THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: the build rung is recorded DONE by
+# this gate once the lane diff is captured (build proof = artifact integrity +
+# non-empty lane diff, verified by the phase store itself). Previously only the
+# dispatcher's `build: running` stamp ever existed — every closed lane showed a
+# ladder that stopped at running.
+if [[ -x "${PHASE_RECORD}" ]]; then
+  LEADV2_PROJECT_ROOT="${ROOT}" bash "${PHASE_RECORD}" record "${TASK}" build --status done \
+    --artifact "docs/handoff/dispatch-${TASK}/review.diff" \
+    --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):diff_capture" >/dev/null 2>&1
+  _build_rec_rc=$?
+  if [[ ${_build_rec_rc} -ne 0 ]]; then
+    emit decision "phase_record_failed task=${TASK} phase=build rc=${_build_rec_rc}"
+  fi
+fi
+
 _stamp_active_phase "${FOUNDER_TASK_ID}" "e2e"
 # PHASES-ARE-THE-ONLY-PATH-01: record e2e phase as running.
-[[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
-  bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" e2e --status running \
+[[ -x "${PHASE_RECORD}" ]] && \
+  bash "${PHASE_RECORD}" record "${TASK}" e2e --status running \
     --handle "dispatch-${TASK}-e2e" \
     --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):e2e_gate" 2>/dev/null || true
 # C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): validate the e2e root BEFORE running any
@@ -3643,10 +3719,25 @@ else
   fi
 fi
 
+# THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: the test rung. The e2e gate that
+# just ran IS this lane's test execution (it runs the repo's run-all selection
+# against the lane's changed scope) — record it from the run's own log. The
+# foreign-failure path also writes e2e-gate-passed.flag scoped to lane_writes,
+# so it counts: the lane's own writes passed. When the e2e gate is disabled for
+# this lane's class (Trivial/Light) the builder selfcheck log is the test
+# evidence that actually ran on this path.
+if [[ "${E2E_ON}" == 1 ]]; then
+  if [[ -s "${HANDOFF}/e2e-gate-passed.flag" ]]; then
+    _pc_record_rung test "docs/handoff/dispatch-${TASK}/e2e-gate.log" "e2e_gate" || true
+  fi
+elif [[ -s "${HANDOFF}/selfcheck.md" ]]; then
+  _pc_record_rung test "docs/handoff/dispatch-${TASK}/selfcheck.md" "selfcheck" || true
+fi
+
 _stamp_active_phase "${FOUNDER_TASK_ID}" "review"
 # PHASES-ARE-THE-ONLY-PATH-01: record review phase as running.
-[[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
-  bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" review --status running \
+[[ -x "${PHASE_RECORD}" ]] && \
+  bash "${PHASE_RECORD}" record "${TASK}" review --status running \
     --handle "dispatch-${TASK}-review" \
     --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true
 
@@ -3728,10 +3819,32 @@ if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" && "${_pc_kind:-diff}" != "report" ]];
     0)
       _dl_note landed review_verdict_pass "engine=1"
       _stamp_review_terminal pass
-      [[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
-        bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" review --status done \
-          --artifact "docs/handoff/dispatch-${TASK}/review-gate.md" \
-          --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true
+      # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: the engine path used to stop
+      # at review-gate.md — it never wrote the code-review ledger row the phase
+      # store's review verification reads, so `record review done` was silently
+      # swallowed and the rung could never exist on this path. Write the ledger
+      # row exactly as the inline body does (duplicate rc 2 = already recorded),
+      # then record the rung with a minted runner token, rc captured not eaten.
+      _eng_diff_hash="$(shasum -a 256 "${diff_file}" 2>/dev/null | awk '{print $1}')"
+      _eng_verdict="PASS"; grep -q '^status: pass' "${HANDOFF}/review-gate.md" 2>/dev/null || _eng_verdict="PASS_WITH_NITS"
+      _eng_reviewer="$(sed -nE 's/^reviewer:[[:space:]]*//p' "${HANDOFF}/review-gate.md" 2>/dev/null | head -1)"
+      [[ -n "${_eng_reviewer}" ]] || _eng_reviewer="codex:standard"
+      _eng_rec_rc=0
+      bash "${DISPATCH_BIN}" record-review --diff-hash "${_eng_diff_hash}" --verdict "${_eng_verdict}" \
+        --reviewer "${_eng_reviewer}" --run-id "dispatch-${TASK}" >/dev/null 2>&1 || _eng_rec_rc=$?
+      if [[ ${_eng_rec_rc} -eq 2 ]]; then
+        emit decision "review_gate task=${TASK} status=dedup diff=${_eng_diff_hash:0:8} engine=1"
+      elif [[ ${_eng_rec_rc} -ne 0 ]]; then
+        emit decision "phase_record_failed task=${TASK} phase=review rc=ledger_${_eng_rec_rc} engine=1"
+      fi
+      if ! _pc_record_rung review "docs/handoff/dispatch-${TASK}/review-gate.md" "review_gate"; then
+        _stamp_review_terminal blocked
+      fi
+      unset _eng_diff_hash _eng_verdict _eng_reviewer _eng_rec_rc
+      # live_verify rung walks on this path too (n/a when no acceptance probe
+      # was declared) — a review-only engine pass never leaves the lane half-
+      # laddered.
+      _pc_run_live_verify || true
       ;;
     7) _dl_note dead review_verdict_fail "engine=1"; _stamp_review_terminal fail ;;
     8) _dl_note dead review_roundcap "engine=1 rc=${_engine_rc}"; _stamp_review_terminal blocked ;;
@@ -4281,8 +4394,11 @@ else
   fi
 fi
 _stamp_review_terminal pass
-# PHASES-ARE-THE-ONLY-PATH-01: record review phase as done (verdict PASS).
-[[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
-  bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" review --status done \
-    --artifact "docs/handoff/dispatch-${TASK}/review-gate.md" \
-    --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true
+# PHASES-ARE-THE-ONLY-PATH-01 / THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01:
+# record the review rung done with a minted runner token — rc captured, never
+# swallowed (the ledger row itself was already written by record-review above).
+if ! _pc_record_rung review "docs/handoff/dispatch-${TASK}/review-gate.md" "review_gate"; then
+  _stamp_review_terminal blocked
+fi
+# The live_verify rung completes the post-build ladder on this path too.
+_pc_run_live_verify || true

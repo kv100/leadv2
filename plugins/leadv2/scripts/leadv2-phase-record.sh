@@ -126,6 +126,14 @@
 #                   PHASE-PREFIX-AT-RECORD-01 (row f37fadb8f474): the guard
 #                   admitting a lane at dispatch was never the thing that made
 #                   plan/gate1 happen — the ONE writer of phases.d is.
+# exit 7 (record) = review/test/live_verify are runner-owned rungs
+#                   (THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01): a `done`
+#                   record without a valid --runner-token (minted by
+#                   `mint-runner-token` for THIS sig8+phase+artifact sha) is
+#                   refused. Nothing is written.
+# exit 8 (record) = a malformed manual override (--manual-override requires
+#                   --actor, --reason, LEADV2_PHASE_MANUAL_OVERRIDE=1, and is
+#                   NEVER allowed for review). Nothing is written.
 #
 #   leadv2-phase-record.sh assert <sig8> --class <canonical phase-record class>
 #       [--waiver <phase>=<reason>]...
@@ -887,6 +895,19 @@ _record_prefix_check() {  # <sig8> <phase> <cls> <task-id-for-journal> -> 0/6
     *) return 0 ;;
   esac
   [[ -n "$cls" ]] || return 0
+  # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: admission ≠ completion. A
+  # bootstrap-admitted lane (the dispatcher wrote .bootstrap-admit at its
+  # one-shot dispatch-time grace) may stamp `build` — without this the class
+  # seed that the classify stamp now carries on EVERY lane would refuse every
+  # fresh Standard/Heavy lane at the build stamp, which is exactly the loophole
+  # that made the lead hand-write plan/gate1 for eight plugin lanes. Only
+  # `build` is admitted here; test/review/live_verify/close keep the strict
+  # check below, and cmd_assert never reads the sentinel — a bootstrap-admitted
+  # lane still cannot CLOSE without its ladder.
+  if [[ "$phase" == "build" && -e "$(_phases_d "$sig8")/.bootstrap-admit" ]]; then
+    _emit "${tid}" "phase_bootstrap_admitted" "phase=build class=${cls}" || _EMIT_MISS=$((_EMIT_MISS+1))
+    return 0
+  fi
   local missing=() kind pname rest csv
   while IFS=' ' read -r kind pname rest; do
     [[ "$kind" == "MANDATORY" ]] || continue
@@ -906,6 +927,7 @@ _record_prefix_check() {  # <sig8> <phase> <cls> <task-id-for-journal> -> 0/6
 
 cmd_record() {
   local sig8="" phase="" artifact="" status="done" handle="" reason="" task_id="" owner="" commit="" class_arg=""
+  local runner_token="" manual_override=0 actor=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --artifact) artifact="$2"; shift 2 ;;
@@ -916,6 +938,11 @@ cmd_record() {
       --owner)    owner="$2"; shift 2 ;;
       --commit)   commit="$2"; shift 2 ;;
       --class)    class_arg="$2"; shift 2 ;;
+      # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: review/test/live_verify are
+      # runner-owned rungs -- a shell may not mark them done on its own word.
+      --runner-token)   runner_token="$2"; shift 2 ;;
+      --manual-override) manual_override=1; shift ;;
+      --actor)          actor="$2"; shift 2 ;;
       --*)  _log_err "record: unknown flag: $1"; exit 4 ;;
       *)
         if [[ -z "$sig8" ]]; then sig8="$1"
@@ -1097,6 +1124,41 @@ cmd_record() {
     fi
   fi
 
+  # ── THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01 ───────────────────────────────
+  # review / test / live_verify are RUNNER-OWNED rungs. A `done` record for one
+  # of them exists only from the runner that produced the artifact, proven by a
+  # runner token minted by `mint-runner-token` (bound to sig8+phase+artifact
+  # sha). A hand-written record is refused (rc 7). The one sanctioned escape is
+  # the explicit, audited manual override (rc 8 on any malformed attempt, and
+  # NEVER available for review — a worker reviewing its own diff is not a
+  # review). This check sits AFTER the artifact-integrity refusal above (a
+  # dead-on-arrival artifact is decided earlier, same rc as before this change)
+  # and BEFORE any file is written.
+  local _manual_actor=""
+  if [[ "$phase" == "review" || "$phase" == "test" || "$phase" == "live_verify" ]] \
+     && [[ "$status" == "done" ]]; then
+    if [[ "${manual_override}" == "1" ]]; then
+      if [[ "$phase" == "review" || -z "${actor}" || -z "${reason}" || "${LEADV2_PHASE_MANUAL_OVERRIDE:-}" != "1" ]]; then
+        _log_err "record: manual override refused for phase '${phase}' — requires ALL of --manual-override --actor <name> --reason <text> plus LEADV2_PHASE_MANUAL_OVERRIDE=1 in the environment, and is never allowed for review"
+        _emit "${task_id:-$sig8}" "phase_manual_override_refused" "task=${task_id:-$sig8} phase=${phase} actor=${actor:-<none>}" || _EMIT_MISS=$((_EMIT_MISS+1))
+        exit 8
+      fi
+      _proof="attested-manual"
+      _manual_actor="${actor}"
+    else
+      if [[ -z "${runner_token}" ]]; then
+        _log_err "record: phase '${phase}' for ${sig8} is runner-owned — a hand-written 'done' record is refused; pass --runner-token from ${PHASE_RECORD_BIN:-$0} mint-runner-token (manual escape: --manual-override --actor --reason + LEADV2_PHASE_MANUAL_OVERRIDE=1, never for review)"
+        _emit "${task_id:-$sig8}" "phase_record_refused" "task=${task_id:-$sig8} phase=${phase} reason=runner_token_missing" || _EMIT_MISS=$((_EMIT_MISS+1))
+        exit 7
+      fi
+      if ! _verify_runner_token "$sig8" "$phase" "$sha" "$runner_token"; then
+        _log_err "record: runner token for phase '${phase}' (${sig8}) does not match a minted line (sig8+phase+artifact_sha+token)"
+        _emit "${task_id:-$sig8}" "phase_record_refused" "task=${task_id:-$sig8} phase=${phase} reason=runner_token_mismatch" || _EMIT_MISS=$((_EMIT_MISS+1))
+        exit 7
+      fi
+    fi
+  fi
+
   # Atomic write: mktemp in same dir + mv -f
   local tmp_file
   tmp_file="$(mktemp "${phases_d}/.${phase}.XXXXXX")" || { _log_err "record: mktemp failed"; exit 4; }
@@ -1119,6 +1181,9 @@ cmd_record() {
     # unprovable `done` never reaches this point — it refused. Running/n/a/waived
     # phases get an empty proof: it does not apply to them.
     printf 'proof: %s\n' "$_proof"
+    # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: an audited manual override
+    # names the actor on the face of the record, never in a journal alone.
+    [[ -n "${_manual_actor}" ]] && printf 'actor: %s\n' "$_manual_actor"
     [[ -n "$commit" ]] && printf 'commit: %s\n' "$commit"
   } > "$tmp_file"
 
@@ -1487,8 +1552,87 @@ cmd_is_bootstrap() {
   done
 }
 
+# ── runner-token provenance (THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01) ──────
+# Append-only sidecar recording that a RUNNER produced a rung's artifact:
+#   ${CACHE_BASE}/phase-runner-provenance/<repo-slug>.tokens
+#   one line per minted token: <sig8> <phase> <artifact_sha256> <token> <runner> <iso>
+# A `record <phase> --status done` for review/test/live_verify must carry a
+# --runner-token whose line matches sig8+phase+artifact_sha exactly. Same
+# residual forgery surface as the review provenance dir (same Unix user can
+# append) — the token proves "a runner minted this", not founder authority.
+_runner_tokens_file() {
+  printf '%s/phase-runner-provenance/%s.tokens' "${CACHE_BASE}" "$(_repo_slug)"
+}
+
+_verify_runner_token() { # <sig8> <phase> <artifact_sha> <token> -> 0 match
+  local sig8="$1" phase="$2" artifact_sha="$3" token="$4"
+  local tf
+  tf="$(_runner_tokens_file)"
+  [[ -f "$tf" ]] || return 1
+  [[ -n "${artifact_sha}" ]] || return 1
+  # exact-field match: the first four columns must equal the query — a token
+  # minted for a different artifact revision (sha moved) does not verify.
+  grep -qE "^${sig8} ${phase} ${artifact_sha} ${token} " "$tf" 2>/dev/null
+}
+
+cmd_mint_runner_token() { # <sig8> <phase> --artifact <path> --runner <script:function>
+  local sig8="" phase="" artifact="" runner=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --artifact) artifact="$2"; shift 2 ;;
+      --runner)   runner="$2"; shift 2 ;;
+      --*)  _log_err "mint-runner-token: unknown flag: $1"; exit 4 ;;
+      *)
+        if [[ -z "$sig8" ]]; then sig8="$1"
+        elif [[ -z "$phase" ]]; then phase="$1"
+        else _log_err "mint-runner-token: unexpected positional: $1"; exit 4; fi
+        shift ;;
+    esac
+  done
+  [[ -n "$sig8" ]] || { _log_err "mint-runner-token: <sig8> required"; exit 4; }
+  [[ -n "$phase" ]] || { _log_err "mint-runner-token: <phase> required"; exit 4; }
+  case "$phase" in
+    review|test|live_verify) ;;
+    *) _log_err "mint-runner-token: phase must be review|test|live_verify (got '$phase') — plan/gate1/classify/build are not runner-owned"; exit 4 ;;
+  esac
+  [[ -n "$artifact" ]] || { _log_err "mint-runner-token: --artifact required"; exit 4; }
+  [[ -n "$runner" ]] || runner="$(basename "$0")"
+
+  local resolved=""
+  if [[ -f "${PROJECT_ROOT}/${artifact}" ]]; then resolved="${PROJECT_ROOT}/${artifact}"
+  elif [[ -f "$artifact" ]]; then resolved="$artifact"
+  else _log_err "mint-runner-token: artifact not found: ${artifact}"; exit 4; fi
+  local sha token tf dir lockf
+  sha="$(_sha256 "$resolved")"
+  [[ -n "$sha" ]] || { _log_err "mint-runner-token: cannot hash ${resolved}"; exit 4; }
+  token="$(head -c 32 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+  [[ -n "$token" ]] || { _log_err "mint-runner-token: entropy source unavailable"; exit 4; }
+  tf="$(_runner_tokens_file)"
+  dir="$(dirname "$tf")"
+  mkdir -p "$dir" 2>/dev/null || { _log_err "mint-runner-token: mkdir failed: $dir"; exit 4; }
+
+  local _lock_sh="${SCRIPT_DIR}/leadv2-portable-lock.sh"
+  if [[ -f "${_lock_sh}" ]]; then
+    # shellcheck source=leadv2-portable-lock.sh
+    source "${_lock_sh}"
+  fi
+  lockf="${dir}/.tokens.lock"
+  if declare -F lv2_lock_wait >/dev/null 2>&1; then
+    (
+      lv2_lock_wait "${lockf}" 10 || exit 3
+      printf '%s %s %s %s %s %s\n' "$sig8" "$phase" "$sha" "$token" "$runner" "$(_now_iso)" >> "$tf"
+      exit 0
+    ) 9>"${lockf}" || { _log_err "mint-runner-token: locked append failed"; exit 4; }
+  else
+    printf '%s %s %s %s %s %s\n' "$sig8" "$phase" "$sha" "$token" "$runner" "$(_now_iso)" >> "$tf" || { _log_err "mint-runner-token: append failed"; exit 4; }
+  fi
+  _emit "${sig8}" "runner_token_minted" "task=${sig8} phase=${phase} runner=${runner}" || _EMIT_MISS=$((_EMIT_MISS+1))
+  printf '%s\n' "$token"
+  return 0
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
-[[ $# -eq 0 ]] && { _log_err "usage: $0 <record|assert|show|plan-for|is-bootstrap> ..."; exit 4; }
+[[ $# -eq 0 ]] && { _log_err "usage: $0 <record|assert|show|plan-for|is-bootstrap|mint-runner-token> ..."; exit 4; }
 cmd="$1"; shift
 case "$cmd" in
   record)   cmd_record "$@" ;;
@@ -1496,6 +1640,7 @@ case "$cmd" in
   show)     cmd_show "$@" ;;
   plan-for) cmd_plan_for "$@" ;;
   is-bootstrap) cmd_is_bootstrap "$@" ;;
-  -h|--help) _log "usage: $0 <record|assert|show|plan-for|is-bootstrap> ..."; exit 0 ;;
+  mint-runner-token) cmd_mint_runner_token "$@" ;;
+  -h|--help) _log "usage: $0 <record|assert|show|plan-for|is-bootstrap|mint-runner-token> ..."; exit 0 ;;
   *)        _log_err "unknown command: $cmd"; exit 4 ;;
 esac

@@ -592,8 +592,15 @@ _g5_setup_review() {
   mkdir -p "${G5_REPO}/docs/handoff/dispatch-${sig8}"
   printf 'diff content for %s\n' "$sig8" > "${G5_REPO}/docs/handoff/dispatch-${sig8}/review.diff"
   mkdir -p "${G5_REPO}/docs/handoff/dispatch-${sig8}/phases.d"
+  # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: review is runner-owned — mint a
+  # runner token for this sig8+phase+artifact sha or the record is refused (rc 7).
+  G5_TOK="$(LEADV2_PROJECT_ROOT="${G5_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G5_CACHE}" \
+    bash "$PHASE_RECORD" mint-runner-token "$sig8" review \
+    --artifact "docs/handoff/dispatch-${sig8}/review.diff" \
+    --runner test:fixture 2>/dev/null)"
   bash "$PHASE_RECORD" record "$sig8" review --status done \
     --artifact "docs/handoff/dispatch-${sig8}/review.diff" \
+    --runner-token "$G5_TOK" \
     --owner test >/dev/null 2>&1
 }
 
@@ -639,8 +646,13 @@ mkdir -p "${G6A_REPO}"
 G6A_SIG8="g6bee01"
 mkdir -p "${G6A_REPO}/docs/handoff/dispatch-${G6A_SIG8}/phases.d"
 printf 'original content\n' > "${G6A_REPO}/test-artifact.txt"
-LEADV2_PROJECT_ROOT="${G6A_REPO}" bash "$PHASE_RECORD" record "$G6A_SIG8" test --status done \
-  --artifact "test-artifact.txt" --owner test >/dev/null 2>&1
+G6A_CACHE="${G6A_SANDBOX}/cache"
+G6A_TOK="$(LEADV2_PROJECT_ROOT="${G6A_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G6A_CACHE}" \
+  bash "$PHASE_RECORD" mint-runner-token "$G6A_SIG8" test \
+  --artifact "test-artifact.txt" --runner test:fixture 2>/dev/null)"
+LEADV2_PROJECT_ROOT="${G6A_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G6A_CACHE}" \
+  bash "$PHASE_RECORD" record "$G6A_SIG8" test --status done \
+  --artifact "test-artifact.txt" --runner-token "$G6A_TOK" --owner test >/dev/null 2>&1
 printf 'GARBAGE OVERWRITE\n' > "${G6A_REPO}/test-artifact.txt"
 G6A_OUT="$(cd "${G6A_REPO}" && LEADV2_PROJECT_ROOT="${G6A_REPO}" bash "$PHASE_RECORD" assert "$G6A_SIG8" --class Standard 2>/dev/null)"
 if printf '%s' "$G6A_OUT" | grep -q 'missing=.*test'; then
@@ -730,10 +742,15 @@ _g7_setup_review() {
   local sig8="$1"
   mkdir -p "${G7_REPO}/docs/handoff/dispatch-${sig8}/phases.d"
   printf 'diff content for %s\n' "$sig8" > "${G7_REPO}/docs/handoff/dispatch-${sig8}/review.diff"
+  G7_TOK="$(LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+    LEADV2_JOURNAL_BIN="${G7_JOURNAL}" \
+    bash "$PHASE_RECORD" mint-runner-token "$sig8" review \
+    --artifact "docs/handoff/dispatch-${sig8}/review.diff" --runner test:fixture 2>/dev/null)"
   LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
     LEADV2_JOURNAL_BIN="${G7_JOURNAL}" \
     bash "$PHASE_RECORD" record "$sig8" review --status done \
-      --artifact "docs/handoff/dispatch-${sig8}/review.diff" --owner test >/dev/null 2>&1
+      --artifact "docs/handoff/dispatch-${sig8}/review.diff" \
+      --runner-token "$G7_TOK" --owner test >/dev/null 2>&1
 }
 
 # G7a: correctly-hashed row, reviewer="self-forged", sidecar matches → review in missing
@@ -865,10 +882,15 @@ G7E_SLUG="$(basename "${G7E_REPO}" | tr -cd 'A-Za-z0-9._-')"
 G7E_SIG8="g7dee05"
 mkdir -p "${G7E_REPO}/docs/handoff/dispatch-${G7E_SIG8}/phases.d"
 printf 'diff content for %s\n' "$G7E_SIG8" > "${G7E_REPO}/docs/handoff/dispatch-${G7E_SIG8}/review.diff"
+G7E_TOK="$(LEADV2_PROJECT_ROOT="${G7E_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7E_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" \
+  bash "$PHASE_RECORD" mint-runner-token "$G7E_SIG8" review \
+  --artifact "docs/handoff/dispatch-${G7E_SIG8}/review.diff" --runner test:fixture 2>/dev/null)"
 LEADV2_PROJECT_ROOT="${G7E_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7E_CACHE}" \
   LEADV2_JOURNAL_BIN="${G7_JOURNAL}" \
   bash "$PHASE_RECORD" record "$G7E_SIG8" review --status done \
-  --artifact "docs/handoff/dispatch-${G7E_SIG8}/review.diff" --owner test >/dev/null 2>&1
+  --artifact "docs/handoff/dispatch-${G7E_SIG8}/review.diff" \
+  --runner-token "$G7E_TOK" --owner test >/dev/null 2>&1
 G7E_HASH="$(shasum -a 256 "${G7E_REPO}/docs/handoff/dispatch-${G7E_SIG8}/review.diff" | awk '{print $1}')"
 mkdir -p "$G7E_LEDGER_DIR"
 printf '{"diff_hash":"%s","verdict":"PASS","reviewer":"glm","run_id":"r5","repo":"%s","ts":"2026-01-01T00:00:00Z"}\n' \
@@ -898,10 +920,15 @@ G7F_SLUG="$(basename "${G7F_REPO}" | tr -cd 'A-Za-z0-9._-')"
 G7F_SIG8="g7def06"
 mkdir -p "${G7F_REPO}/docs/handoff/dispatch-${G7F_SIG8}/phases.d"
 printf 'diff content for %s\n' "$G7F_SIG8" > "${G7F_REPO}/docs/handoff/dispatch-${G7F_SIG8}/review.diff"
+G7F_TOK="$(LEADV2_PROJECT_ROOT="${G7F_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7F_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" \
+  bash "$PHASE_RECORD" mint-runner-token "$G7F_SIG8" review \
+  --artifact "docs/handoff/dispatch-${G7F_SIG8}/review.diff" --runner test:fixture 2>/dev/null)"
 LEADV2_PROJECT_ROOT="${G7F_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7F_CACHE}" \
   LEADV2_JOURNAL_BIN="${G7_JOURNAL}" \
   bash "$PHASE_RECORD" record "$G7F_SIG8" review --status done \
-  --artifact "docs/handoff/dispatch-${G7F_SIG8}/review.diff" --owner test >/dev/null 2>&1
+  --artifact "docs/handoff/dispatch-${G7F_SIG8}/review.diff" \
+  --runner-token "$G7F_TOK" --owner test >/dev/null 2>&1
 G7F_HASH="$(shasum -a 256 "${G7F_REPO}/docs/handoff/dispatch-${G7F_SIG8}/review.diff" | awk '{print $1}')"
 mkdir -p "$G7F_LEDGER_DIR"
 printf 'this is not json\n' > "${G7F_LEDGER_DIR}/${G7F_SLUG}.jsonl"
@@ -1094,13 +1121,21 @@ printf '{"diff_hash":"%s","verdict":"PASS","reviewer":"codex:standard"}\n' "$G10
 printf 'test artifact\n' > "${G10_REPO}/test-out.txt"
 
 # Record review WITH valid proof infrastructure → should be verified
+G10_RTOK="$(LEADV2_PROJECT_ROOT="${G10_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G10_CACHE}" \
+  bash "$PHASE_RECORD" mint-runner-token "$G10_SIG8" review \
+  --artifact "docs/handoff/dispatch-${G10_SIG8}/review.diff" --runner test:fixture 2>/dev/null)"
 LEADV2_PROJECT_ROOT="${G10_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G10_CACHE}" \
   bash "$PHASE_RECORD" record "$G10_SIG8" review --status done \
-  --artifact "docs/handoff/dispatch-${G10_SIG8}/review.diff" --owner test >/dev/null 2>&1
+  --artifact "docs/handoff/dispatch-${G10_SIG8}/review.diff" \
+  --runner-token "$G10_RTOK" --owner test >/dev/null 2>&1
 
 # Record test → should be self-attested
-LEADV2_PROJECT_ROOT="${G10_REPO}" bash "$PHASE_RECORD" record "$G10_SIG8" test --status done \
-  --artifact "test-out.txt" --owner test >/dev/null 2>&1
+G10_TTOK="$(LEADV2_PROJECT_ROOT="${G10_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G10_CACHE}" \
+  bash "$PHASE_RECORD" mint-runner-token "$G10_SIG8" test \
+  --artifact "test-out.txt" --runner test:fixture 2>/dev/null)"
+LEADV2_PROJECT_ROOT="${G10_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G10_CACHE}" \
+  bash "$PHASE_RECORD" record "$G10_SIG8" test --status done \
+  --artifact "test-out.txt" --runner-token "$G10_TTOK" --owner test >/dev/null 2>&1
 
 # PHASE-GATE-NAMES-EVERYTHING-AT-ONCE-01: a DIRECTORY artifact no longer
 # produces an unverified row — that record refuses, because "this file does not

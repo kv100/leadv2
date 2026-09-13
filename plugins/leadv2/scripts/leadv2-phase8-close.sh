@@ -297,6 +297,38 @@ fi
 # PHASES-ARE-THE-ONLY-PATH-01: record close phase as done.
 # The phase8-passed.flag was just written by leadv2-phase8-assert.sh above.
 _close_sig8="${TASK_ID#dispatch-}"
+# THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: `close` is the last rung of the
+# ladder, and it may only be recorded after the SAME ladder the dispatcher
+# declared is proven in the one phase store. phase8-assert above checks this
+# round's own artifacts; this assert checks the LANE's phase records — a lane
+# whose review never ran (rc 7 all_arms_unavailable, a killed close gate, a
+# class that skipped the product close) cannot reach close, it fails loudly
+# with the missing rungs named. Class comes from the store's own classify
+# record (the seed dispatch-code stamps); a lane with no class recorded is
+# checked as Standard (the conservative default — it can only over-require,
+# never under-require).
+_close_phase_record="${LEADV2_PHASE_RECORD_BIN:-${SCRIPTS_DIR}/leadv2-phase-record.sh}"
+if [[ -x "${_close_phase_record}" ]]; then
+  _close_class="$( { grep -h '^class:' "${PROJECT_ROOT}/docs/handoff/dispatch-${_close_sig8}/phases.d/classify.yaml" 2>/dev/null || true; } | tail -1 | awk '{print $2}')"
+  case "${_close_class}" in
+    Trivial|Light|Standard|Heavy|Strategic|Bulk) ;;
+    *) _close_class="Standard" ;;
+  esac
+  _close_assert_rc=0
+  _close_assert_out="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${_close_phase_record}" assert "${_close_sig8}" --class "${_close_class}" 2>&1)" || _close_assert_rc=$?
+  if [[ ${_close_assert_rc} -ne 0 ]]; then
+    log_error "Ladder assert refused close for ${_close_sig8} (class ${_close_class}): ${_close_assert_out}"
+    # journal the refusal through the same emit path the phase store uses
+    if [[ -x "${SCRIPTS_DIR}/leadv2-journal.sh" ]]; then
+      # (tr, not ${var//$'\n'/ }: /bin/bash 3.2 cannot parse ANSI-C quoting
+      # inside a parameter expansion — the whole script must stay 3.2-clean)
+      LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${SCRIPTS_DIR}/leadv2-journal.sh" append "${TASK_ID}" note \
+        "close_refused task=${_close_sig8} $(printf '%s' "${_close_assert_out}" | tr '\n' ' ')" >/dev/null 2>&1 || true
+    fi
+    exit 3
+  fi
+fi
+unset _close_class _close_assert_out _close_assert_rc _close_phase_record
 _close_flag="${LEADV2_HANDOFF_DIR}/${TASK_ID}/phase8-passed.flag"
 [[ -x "${SCRIPTS_DIR}/leadv2-phase-record.sh" ]] && \
   bash "${SCRIPTS_DIR}/leadv2-phase-record.sh" record "${_close_sig8}" close --status done \

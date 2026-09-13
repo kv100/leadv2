@@ -5329,7 +5329,20 @@ _phase_precondition_guard() {
       [[ "${assert_out}" == *admitted=bootstrap* ]] \
         && _boot_csv="$(printf '%s\n' "${assert_out}" | sed -n 's/.*admitted=bootstrap would_be_missing=//p' | head -1)"
       if [[ -n "${_boot_csv}" ]]; then
+        # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: this is the FIRST
+        # admission surface a fresh lane hits (assert itself admits a
+        # classify-only store as bootstrap) — persist the one-shot sentinel
+        # here too, exactly as the mode=1 grace below does, or the build
+        # stamp's own prefix check (no grace of its own) refuses every fresh
+        # Standard/Heavy lane one step later. Read for `build` records only,
+        # never by cmd_assert — admission still never completes a ladder.
+        local _pp_phases_d0="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/phases.d"
+        mkdir -p "${_pp_phases_d0}" 2>/dev/null || true
+        printf '%s %s\n' "${sig8}" "$(date -u +%FT%TZ)" \
+          > "${_pp_phases_d0}/.bootstrap-admit" 2>/dev/null || true
+        unset _pp_phases_d0
         emit decision "phase_precondition_bootstrap task=${sig8} class=${cls} would_be_missing=${_boot_csv} mode=${mode} scope=${scope}"
+        emit decision "phase_bootstrap_admitted task=${sig8} class=${cls}"
       else
         emit decision "phase_precondition_pass task=${sig8} class=${cls} mode=${mode} scope=${scope}"
       fi
@@ -5429,7 +5442,18 @@ except Exception:
               fi
             fi
             if [[ -z "${_pp_grace_blocked}" ]]; then
+              # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: persist the
+              # admission as a one-shot sentinel beside the phase records, so
+              # the build stamp's own prefix check (leadv2-phase-record.sh
+              # _record_prefix_check — no bootstrap grace of its own) can admit
+              # a BOOTSTRAP lane without opening a standing bypass. Written
+              # once, here, by the dispatcher only; read for `build` records
+              # and by nothing else (never by cmd_assert).
+              mkdir -p "${_pp_phases_d}" 2>/dev/null || true
+              printf '%s %s\n' "${sig8}" "$(date -u +%FT%TZ)" \
+                > "${_pp_phases_d}/.bootstrap-admit" 2>/dev/null || true
               emit decision "phase_precondition_bootstrap_admit task=${sig8} class=${cls} missing=${missing_csv} mode=1"
+              emit decision "phase_bootstrap_admitted task=${sig8} class=${cls}"
               return 0
             fi
             # grace expired: fall through to the refusal + remedies below
@@ -6424,12 +6448,16 @@ spawn_worker() {
   return ${rc}
 }
 
-spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id> <lane_mission_path> [<lane_deliverable_decl>]
+spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id> <lane_mission_path> [<lane_deliverable_decl>] [<e2e_override>]
   # N7F-LANE-NAME: forwards DISPATCH_LANE_NAME as close_bin's 8th positional (not a 7th
   # param on this fn -- read from the global, same pattern as _dl_note above) so the
   # display name survives the worker->close-phase handoff for act two.
   local sig8="$1" author="$2" handle="$3" reviewer_arms="${4:-}" lane_writes_csv="${5:-}"
   local founder_task_id="${6:-}" lane_mission_path="${7:-}" lane_deliverable_decl="${8:-}"
+  # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: optional per-lane E2E override —
+  # a Trivial/Light non-product lane owes no e2e rung (class table prices it '-'),
+  # while review stays armed for every class.
+  local e2e_on="${9:-${E2E_GATE}}"
   [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]] || return 0
   local close_bin="${LEADV2_DISPATCH_PRODUCT_CLOSE_BIN:-${SCRIPT_DIR}/leadv2-dispatch-product-close.sh}"
   if [[ ! -f "${close_bin}" ]]; then
@@ -6454,7 +6482,7 @@ spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligibl
     LEADV2_DISPATCH_REVIEW_ROUNDS="${GATE_DEPTH_REVIEW_ROUNDS:-}" \
     LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" LEADV2_WRITE_ROOT="${WORK_ROOT}" \
     LEADV2_LANE_START_SHA="${LANE_START_SHA:-}" \
-    "${BASH:-bash}" "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" "${DISPATCH_LANE_NAME:-}" \
+    "${BASH:-bash}" "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${e2e_on}" "${REVIEW_GATE}" "${founder_task_id}" "${DISPATCH_LANE_NAME:-}" \
       >/dev/null 2>&1 &
   local _pc_pid=$!
   # wave2 round2 finding 3: stamp the close-owner record with the REAL os pid of the
@@ -9182,13 +9210,16 @@ PY
   # non-canonical value is left unstamped rather than guessed (the check then
   # fails open for that lane, exactly as before this row).
   local _classify_class=""
-  if [[ "${product_class}" != "product" ]]; then
-    local _cc
-    _cc="$(_lv2_class_canonical "${task_class}")"
-    case "${_cc}" in
-      Trivial|Light|Standard|Heavy|Strategic|Bulk) _classify_class="${_cc}" ;;
-    esac
-  fi
+  # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: stamp the class on BOTH branches
+  # (product and non-product). The class seed is what phase-record's prefix check
+  # AND phase8-close's ladder assert read back; a product lane stamped without a
+  # class failed open on both. Non-canonical values are still left unstamped
+  # rather than guessed.
+  local _cc
+  _cc="$(_lv2_class_canonical "${task_class}")"
+  case "${_cc}" in
+    Trivial|Light|Standard|Heavy|Strategic|Bulk) _classify_class="${_cc}" ;;
+  esac
   if [[ -n "${_classify_class}" ]]; then
     bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
       --class "${_classify_class}" \
@@ -10140,27 +10171,48 @@ ${mission}"
       # from the close gate's silent-arm probe) can launch the next candidate on the
       # SAME mission without re-deriving it from router state that may have moved on.
       local _lane_mission_path=""
-      if [[ "${product_class}" == "product" ]]; then
-        _lane_mission_path="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-mission.md"
-        mkdir -p "$(dirname "${_lane_mission_path}")" 2>/dev/null
-        printf '%s' "${mission}" > "${_lane_mission_path}" 2>/dev/null || _lane_mission_path=""
-        # codex r4 finding 4: persist the VALIDATED declaration (CLI/row wins over the
-        # mission line) beside the mission, so advance-arm recovery re-threads the exact
-        # value -- not a re-derivation that silently drops a --lane-deliverable override.
-        if [[ -n "${LANE_DELIVERABLE_DECL:-}" ]]; then
-          printf '%s' "${LANE_DELIVERABLE_DECL}" > "${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-deliverable" 2>/dev/null || true
-        fi
+      # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: the lane mission is persisted
+      # for EVERY spawned lane (was product-only) — the close gate now runs for
+      # non-product lanes too and advance-arm recovery needs the same mission text.
+      _lane_mission_path="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-mission.md"
+      mkdir -p "$(dirname "${_lane_mission_path}")" 2>/dev/null
+      printf '%s' "${mission}" > "${_lane_mission_path}" 2>/dev/null || _lane_mission_path=""
+      # codex r4 finding 4: persist the VALIDATED declaration (CLI/row wins over the
+      # mission line) beside the mission, so advance-arm recovery re-threads the exact
+      # value -- not a re-derivation that silently drops a --lane-deliverable override.
+      if [[ -n "${LANE_DELIVERABLE_DECL:-}" ]]; then
+        printf '%s' "${LANE_DELIVERABLE_DECL}" > "${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-deliverable" 2>/dev/null || true
       fi
-      if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}" "${_lane_mission_path}" "${LANE_DELIVERABLE_DECL:-}"; then
+      # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: persist the row's acceptance
+      # probe beside the mission so the close gate's live_verify rung executes the
+      # EXACT command the founder row declared — never a re-derivation.
+      if [[ -n "${lane_acceptance_cmd:-}" ]]; then
+        printf '%s' "${lane_acceptance_cmd}" > "${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-acceptance-cmd" 2>/dev/null || true
+      fi
+      # E2E_ON for the close gate is derived from the lane's class exactly as
+      # phase-record's _phase_class_level table prices the e2e rung: Trivial and
+      # Light lanes owe no e2e ('-'), everything else is C or M — run it.
+      local _lane_e2e_on="${E2E_GATE}"
+      case "$(_lv2_class_canonical "${task_class:-}")" in
+        Trivial|Light) _lane_e2e_on=0 ;;
+      esac
+      if ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}" "${_lane_mission_path}" "${LANE_DELIVERABLE_DECL:-}" "${_lane_e2e_on}"; then
         # The worker is already live; make the failed postflight launch visible rather than
         # pretending close evidence will arrive.  Do not kill the independently-owned worker.
         log_err "product close gate could not be launched for task=${sig8}"
-      elif [[ -n "${LANE_DELIVERABLE_DECL:-}" ]]; then
-        # REPORT-ONLY-GATE-01 (codex r2 finding 1, RECOVER-WAVE1-TEN-01 union): non-product
-        # classes never run the product close gate, so a report declaration there is NOT
-        # enforced — surface that loudly instead of letting a declared report lane pass
-        # unjudged in silence.
-        emit decision "lane_deliverable task=${sig8} status=unenforced reason=non_product_class decl=${LANE_DELIVERABLE_DECL}"
+        emit decision "close_gate_launch_failed task=${sig8} product_class=${product_class}"
+        if [[ -n "${LANE_DELIVERABLE_DECL:-}" ]]; then
+          emit decision "lane_deliverable task=${sig8} status=unenforced reason=close_gate_launch_failed decl=${LANE_DELIVERABLE_DECL}"
+        fi
+      else
+        # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: the close gate (e2e + review
+        # + phase records) is armed for BOTH product and non-product lanes — a
+        # plugin-kind lane no longer lands unreviewed by structural exemption.
+        # (spawn_product_close no-ops when BOTH kill switches are off — only claim
+        # "armed" when at least one gate is actually live.)
+        if [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]]; then
+          emit decision "close_gate_armed task=${sig8} product_class=${product_class} e2e=${_lane_e2e_on} review=${REVIEW_GATE}"
+        fi
       fi
       # V3-GLM-LADDER-01 Lever 3: attempted[] (not LAST_ARM_OUTCOME) is the durable
       # record of what was refused earlier in the loop -- by the time sonnet lands here,
