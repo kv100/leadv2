@@ -44,17 +44,22 @@ python3 "${registry}" --kind plugin --role developer --arm sonnet --task-class s
 plugin_rc=$?
 [[ ${plugin_rc} -eq 0 ]] || exit 40
 
-# This is a REAL registry refusal, not a fixture: fable is not a build arm.
-# It keeps the observability path exercised after the plugin/coercion defect
-# is removed from ordinary dispatches.
-python3 "${registry}" --kind code --role developer --arm fable --task-class standard \
-  >/dev/null 2>"${stderr_artifact}"
-registry_rc=$?
-[[ ${registry_rc} -ne 0 ]] || exit 41
-grep -qx 'refused: not_a_build_arm' "${stderr_artifact}" || exit 42
+# This is a REAL dispatcher launch attempt, not a fixture. fable is not a
+# build arm, so _spawn_worker_body invokes the production registry, receives
+# its `refused: not_a_build_arm` stderr, and spawn_worker captures it before
+# it removes the temporary stderr file. Keep every transient artifact inside
+# this suite's disposable directory.
+TMPDIR="$(dirname "${stderr_artifact}")/dispatcher-tmp"
+mkdir -p "${TMPDIR}"
+WORK_ROOT="${PROJECT_ROOT}"
+LEADV2_BURN_GOVERNOR=0
+spawn_worker fable 'real registry refusal probe' cafe0001 >/dev/null
+spawn_rc=$?
+[[ ${spawn_rc} -eq 2 ]] || exit 41
+grep -qx 'refused: not_a_build_arm' "${TMPDIR}/leadv2-dispatch-spawn-cafe0001.stderr.log" || exit 42
 
-# Drive the dispatcher's producer-seam capture and the next-candidate join.
-_capture_launcher_refusal "${stderr_artifact}" fable cafe0001
+# The next candidate is where the captured producer-seam refusal becomes its
+# joined decision/event row.
 _emit_pending_launcher_refusal cafe0001 codex
 [[ ! -e "$(_launcher_refusal_file cafe0001)" ]] || exit 43
 SH
