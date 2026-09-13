@@ -100,6 +100,27 @@ PASS: (i GREEN) unmutated arbiter restores the founder-case Claude pick
 SUMMARY: pass=10 fail=0
 ```
 
+### Mutation-control artifact
+
+`docs/handoff/ARBITER-DECISION-INPUTS/mutation-control/20260913T190655Z-live-57587.txt`
+is the live, restored negative control. It replaces the source-body fallback
+assignment `used_arm="haiku_fallback"` with `used_arm="glm"`; the judge suite
+then exits 1. Raw artifact:
+
+```text
+suite=plugins/leadv2/scripts/tests/test-leadv2-task-judge.sh
+file=plugins/leadv2/scripts/leadv2-task-judge.sh
+anchor=s/used_arm="haiku_fallback"/used_arm="glm"/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] PASS: T9: missing --mission-file -> exit 2 (usage error, not fallback)
+diff_hash=e964e8917fefe21aed44e6f4c398d8c8d789c33769837112a1ca52a5276b58c7
+lane_diff_hash=2e07e129cd79142c16d2dca8f14e8b55c39fb3d4ffdd2f1e3aae397887e1b101
+porcelain_clean=yes
+restored=yes
+```
+
 The required provider-price suite is absent from this pinned checkout. Its
 required invocation is currently red before it can test behavior:
 
