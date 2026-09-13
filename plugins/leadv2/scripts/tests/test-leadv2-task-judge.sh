@@ -27,7 +27,7 @@ PASS=0
 FAIL=0
 ERRORS=()
 # Existing unit cases exercise the stable Haiku transport explicitly. T16
-# separately proves production's GLM default and its Haiku fallback.
+# separately proves production's Haiku default and GLM's bounded fallback.
 export LEADV2_JUDGE_ARM=haiku
 
 log()  { printf -- '[TEST] %s\n' "$*"; }
@@ -496,10 +496,10 @@ when a provider that already publishes a reset date changes format.")"
   rm -rf "${root}"
 }
 
-# ── T16: GLM is the production default; a failed GLM call gets one Haiku
-# fallback before the deterministic estimator. The prompt remains unchanged,
-# while output provenance makes both routes auditable.
-test_t16_glm_default_and_haiku_fallback() {
+# ── T16: Haiku is the production default; an explicitly requested failed GLM
+# call gets one Haiku fallback before the deterministic estimator. The prompt
+# remains unchanged, while output provenance makes both routes auditable.
+test_t16_haiku_default_and_glm_fallback() {
   local root; root="$(_fixture_root)"
   local glm_calls="${root}/glm-calls.txt" haiku_calls="${root}/haiku-calls.txt"
   : > "${glm_calls}"; : > "${haiku_calls}"
@@ -509,10 +509,10 @@ test_t16_glm_default_and_haiku_fallback() {
   m="$(_write_mission "${root}" "m" "Classify this ordinary build task.")"
   out="$(env -u LEADV2_JUDGE_ARM LEADV2_JUDGE_GLM_BIN="${glm_bin}" LEADV2_JUDGE_CLAUDE_BIN="${haiku_bin}" LEADV2_JUDGE_CACHE_DIR="${root}/cache-glm" bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
   arm="$(_kv "${out}" judge_arm)"
-  if [[ "${arm}" == "glm" && "$(wc -l < "${glm_calls}" | tr -d ' ')" == "1" && "$(wc -l < "${haiku_calls}" | tr -d ' ')" == "0" ]]; then
-    pass "T16: default arm=glm; valid GLM answer does not spend Haiku"
+  if [[ "${arm}" == "haiku" && "$(wc -l < "${glm_calls}" | tr -d ' ')" == "0" && "$(wc -l < "${haiku_calls}" | tr -d ' ')" == "1" ]]; then
+    pass "T16: default arm=haiku; valid Haiku answer does not invoke GLM"
   else
-    fail "T16: expected GLM default only, arm=${arm} glm=$(wc -l < "${glm_calls}") haiku=$(wc -l < "${haiku_calls}")"
+    fail "T16: expected Haiku default only, arm=${arm} glm=$(wc -l < "${glm_calls}") haiku=$(wc -l < "${haiku_calls}")"
   fi
   local glm_fail; glm_fail="$(_stub_glm_fail "${root}" "${glm_calls}")"
   out="$(LEADV2_JUDGE_ARM=glm LEADV2_JUDGE_GLM_BIN="${glm_fail}" LEADV2_JUDGE_CLAUDE_BIN="${haiku_bin}" LEADV2_JUDGE_CACHE_DIR="${root}/cache-fallback" bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
@@ -534,7 +534,7 @@ test_syntax_check() {
 if [[ "${LEADV2_JUDGE_TEST_ONLY_ARM:-0}" == "1" ]]; then
   # Mutation control needs to isolate T16's transport/provenance assertion;
   # the normal suite always runs the full regression matrix below.
-  test_t16_glm_default_and_haiku_fallback
+  test_t16_haiku_default_and_glm_fallback
   test_syntax_check
 else
   test_t1_golden_missions_valid
@@ -552,7 +552,7 @@ else
   test_t13_floor_never_downgrades
   test_t14_id_only_safety_regression
   test_t15_homograph_regression
-  test_t16_glm_default_and_haiku_fallback
+  test_t16_haiku_default_and_glm_fallback
   test_syntax_check
 fi
 
