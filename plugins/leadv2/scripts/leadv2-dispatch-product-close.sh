@@ -168,6 +168,13 @@ else
   # Unknown guard state is unsafe at close: it must fail closed, never allow
   # the later terminal funnel to call a dirty lane clean.
   lv2_lane_dirty() { return 0; }
+  # CRITIC-ROUND2 (2026-09-13): the guard lib also defines _lv2_phys, which this
+  # script calls on the cross-repo paths below. Without a fallback here an
+  # undefined function under `set -u` returns empty from BOTH sides of the
+  # comparison, so a foreign lane root compares EQUAL to ours and the cross-repo
+  # check fails OPEN -- the exact defect this lane exists to close. The helper is
+  # pure bash and depends on nothing in the guard lib, so defining it here is safe.
+  _lv2_phys() { ( cd -P "$1" 2>/dev/null && pwd -P ); }
   printf '[leadv2-dispatch-product-close] ERROR: lane guard unavailable local=%s canonical=%s; treating lane as dirty\n' \
     "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh" "${_LANE_GUARD_SH}" >&2
 fi
@@ -377,10 +384,16 @@ _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
     local _ca_cls=""
     _ca_cls="$(bash "${JOURNAL_BIN}" tail "dispatch-${TASK}" 100000 2>/dev/null \
       | grep -oE 'task_class=[A-Za-z]+' | head -1 | cut -d= -f2 | tr '[:upper:]' '[:lower:]')"
-    local _ca_line=""
+    local _ca_line="" _ca_tokens=""
+    # QUOTA-TELEMETRY-CANNOT-PRICE-AN-ARM-01: 8th positional — the lane's
+    # real token count from its own handoff dir (costs.yaml, else
+    # turn_events via sessions.map; `-` when neither exists). Never 0 (D5).
+    if command -v leadv2_lane_token_total >/dev/null 2>&1; then
+      _ca_tokens="$(leadv2_lane_token_total "${ROOT}" "${TASK}" 2>/dev/null || true)"
+    fi
     _ca_line="$(leadv2_cost_actual_record \
       "$(printf '%s' "${ROOT##*/}" | tr -cd 'A-Za-z0-9._-')" \
-      "${TASK}" "$1" "$2" "${_ca_cls:-unknown}" 2>/dev/null || true)"
+      "${TASK}" "$1" "$2" "${_ca_cls:-unknown}" "code" "unknown" "${_ca_tokens:--}" 2>/dev/null || true)"
     [[ -n "${_ca_line}" ]] && emit decision "${_ca_line}"
   fi
 }
@@ -570,7 +583,7 @@ emit() { # type text
 # Keyed by FOUNDER_TASK_ID (fanout's active.yaml row id), never TASK (the internal sig8) --
 # guarded against empty/unset so leadv2_active_update_phase's "${1:?...}" can never abort
 # this script under `set -u` when no founder id was threaded through (e.g. a bare re-run).
-_ACTIVE_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
+_ACTIVE_REGISTRY_SH="${LEADV2_ACTIVE_REGISTRY_SH:-${SCRIPT_DIR}/leadv2-active-registry.sh}"
 [[ -f "${_ACTIVE_REGISTRY_SH}" ]] || _ACTIVE_REGISTRY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh"
 [[ -f "${_ACTIVE_REGISTRY_SH}" ]] && source "${_ACTIVE_REGISTRY_SH}"
 # SILENT-DEATH-01 (SUPERVISOR-AUDIT-01, 2026-07-30): leadv2-active-registry.sh's own
@@ -1727,6 +1740,21 @@ pc_await_worker_exit() {
 # out of scope; a future edit to base resolution must be applied to BOTH this function and
 # _pc_diff_base or they will drift.
 #
+# A lane birth commit is bookkeeping, not lane work. Keep this predicate next to the
+# commit-truth probe and use it from both the silent-arm anchor fast path and the
+# cross-repository git-truth survey; those two answers must not diverge.
+_pc_commit_is_anchor() { # <root> <sha> -> rc0 iff subject is lane * anchor and diff is empty
+  local root="$1" sha="$2" subject diffstat parent
+  subject="$(git -C "${root}" log -1 --format=%s "${sha}" 2>/dev/null || true)"
+  [[ "${subject}" == "lane "*" anchor" ]] || return 1
+  # A parentless root commit cannot be an empty birth anchor: without a parent,
+  # `git diff sha^ sha` fails closed to an empty string and would hide real work.
+  parent="$(git -C "${root}" rev-parse "${sha}^" 2>/dev/null || true)"
+  [[ -n "${parent}" ]] || return 1
+  diffstat="$(git -C "${root}" diff --stat "${parent}" "${sha}" 2>/dev/null || true)"
+  [[ -z "${diffstat}" ]]
+}
+
 # round-2 fix: "0" is indistinguishable from "could not resolve a base at all" (unresolvable
 # LEADV2_LANE_START_SHA, missing cache file, no local main) -- a lossy channel that let a
 # lane which genuinely committed work read as arm_produced_nothing. Widen the channel:
@@ -1798,13 +1826,10 @@ _pc_lane_commits_ahead() {  # <root> -> stdout "N" | "unknown"; always rc0
       # whose sole parent is the parent repo's HEAD provably has zero
       # commits of its own beyond the birth bookkeeping.
       if [[ -n "${head_wt}" && "${head_wt}" != "${head_parent}" ]]; then
-        local anchor_parent anchor_subject anchor_diffstat
+        local anchor_parent
         anchor_parent="$(git -C "${root}" rev-parse "HEAD^" 2>/dev/null || true)"
-        anchor_subject="$(git -C "${root}" log -1 --format=%s HEAD 2>/dev/null || true)"
-        anchor_diffstat="$(git -C "${root}" diff --stat "HEAD^" HEAD 2>/dev/null || true)"
         if [[ -n "${anchor_parent}" && "${anchor_parent}" == "${head_parent}" ]] \
-           && [[ "${anchor_subject}" == "lane "*" anchor" ]] \
-           && [[ -z "${anchor_diffstat}" ]]; then
+           && _pc_commit_is_anchor "${root}" HEAD; then
           printf '0'; return 0
         fi
       fi
@@ -1814,53 +1839,226 @@ _pc_lane_commits_ahead() {  # <root> -> stdout "N" | "unknown"; always rc0
 }
 
 # CLOSER-MUST-LAND-FROM-GIT-TRUTH-NOT-A-REPORT-FILE-01: a missing handoff
-# artifact is not evidence that a lane did no work.  This deliberately asks
-# the lane worktree's branch and index directly, immediately before the sole
-# empty-diff -> no_work transition below.  The normal scoped diff remains the
-# review body; this is only a guard against destroying the distinction between
-# "nothing exists" and "work exists but could not be scoped".
-_pc_git_truth_before_no_work() { # <lane-root>; sets _PC_GIT_TRUTH_*
-  local root="$1" branch default commits staged first
+# artifact is not evidence that a lane did no work. The survey deliberately asks
+# every candidate repository immediately before the sole empty-diff -> no_work
+# transition. The normal scoped diff remains the review body; this is only a guard
+# against destroying the distinction between "nothing exists" and "work exists in
+# the repository the declared path actually names".
+_pc_candidate_abs() { # <path> -> physical absolute path, or empty
+  local p="$1"
+  [[ -d "${p}" ]] || return 0
+  (cd "${p}" 2>/dev/null && pwd -P) 2>/dev/null || true
+}
+
+_pc_candidate_roots() {
+  _PC_CAND_ROOT=()
+  _PC_CAND_SHARED=()
+  _PC_CAND_KIND=()
+  local canonical raw canonical_abs lane_id sibling candidate physical seen
+  canonical="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}"
+  if [[ "${canonical}" == /* ]]; then
+    canonical_abs="$(_pc_candidate_abs "${canonical}")"
+  else
+    canonical_abs="$(_pc_candidate_abs "${ROOT}/${canonical}")"
+  fi
+  lane_id="${FOUNDER_TASK_ID:-${TASK}}"
+
+  _pc_add_candidate() { # <path> <shared 0|1> <kind>
+    local path="$1" shared="$2" kind="$3" root existing idx
+    root="$(_pc_candidate_abs "${path}")"
+    [[ -n "${root}" ]] || return 0
+    git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+    for existing in "${_PC_CAND_ROOT[@]:-}"; do
+      [[ "$(_pc_candidate_abs "${existing}")" == "${root}" ]] && return 0
+    done
+    idx=${#_PC_CAND_ROOT[@]}
+    _PC_CAND_ROOT[${idx}]="${root}"
+    _PC_CAND_SHARED[${idx}]="${shared}"
+    _PC_CAND_KIND[${idx}]="${kind}"
+  }
+
+  _pc_add_candidate "${diff_root:-}" 0 lane
+  [[ "$(_pc_candidate_abs "${ROOT:-}")" != "${_PC_CAND_ROOT[0]:-}" ]] && _pc_add_candidate "${ROOT:-}" 0 root
+  if [[ -n "${canonical_abs}" && -f "${SCRIPT_DIR}/leadv2-lane-worktree.sh" ]]; then
+    sibling="$(LEADV2_PROJECT_ROOT="${canonical_abs}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${lane_id}" 2>/dev/null || true)"
+    _pc_add_candidate "${sibling}" 0 sibling
+  fi
+  _pc_add_candidate "${canonical_abs}" 1 shared
+}
+
+_pc_resolve_write() { # <normalised-write> -> <toplevel>\t<relative>\t<shared>, rc1 unresolved
+  local write="$1" candidate root real_abs repo rel shared present
+  for candidate in "${_PC_CAND_ROOT[@]:-}"; do
+    root="$(_pc_candidate_abs "${candidate}")"
+    [[ -n "${root}" ]] || continue
+    real_abs="$(_pc_realpath "${root}/${write}")"
+    case "${real_abs}" in
+      "${root}"|"${root}"/*) ;;
+      *) return 1 ;; # A declared path escaped this candidate; never guess another repo.
+    esac
+    present=0
+    [[ -e "${root}/${write}" || -d "${root}/${write}" ]] && present=1
+    if git -C "${root}" ls-files --error-unmatch -- "${write}" >/dev/null 2>&1; then
+      present=1
+    fi
+    [[ ${present} -eq 1 ]] || continue
+    repo="$(git -C "${root}" rev-parse --show-toplevel 2>/dev/null || true)"
+    [[ -n "${repo}" ]] || continue
+    repo="$(_pc_candidate_abs "${repo}")"
+    rel="${real_abs#"${repo}"/}"
+    shared="${_PC_CAND_SHARED[${#_PC_CAND_ROOT[@]}-1]:-0}"
+    local i
+    for i in "${!_PC_CAND_ROOT[@]}"; do
+      [[ "$(_pc_candidate_abs "${_PC_CAND_ROOT[$i]}")" == "${root}" ]] && shared="${_PC_CAND_SHARED[$i]}"
+    done
+    printf '%s\t%s\t%s' "${repo}" "${rel}" "${shared}"
+    return 0
+  done
+  return 1
+}
+
+_pc_git_truth_across_repos() { # reads candidate arrays; sets _PC_GIT_TRUTH_* and survey
+  local i root branch default origin_default commits filtered sha first staged staged_n commit_n clause lane_branch eligible
+  lane_branch="worktree-${FOUNDER_TASK_ID:-${TASK}}"
+  _PC_GIT_TRUTH_LANE_BRANCH="${lane_branch}"
+  _PC_GIT_TRUTH_COUNTED_REPO=""
+  _PC_GIT_TRUTH_COUNTED_BRANCH="absent"
+  _PC_GIT_TRUTH_SIBLING=""
   _PC_GIT_TRUTH_KIND="none"
   _PC_GIT_TRUTH_BRANCH="absent"
+  _PC_GIT_TRUTH_REPO=""
   _PC_GIT_TRUTH_COMMITS=""
   _PC_GIT_TRUTH_FIRST_SHA=""
   _PC_GIT_TRUTH_STAGED=""
-  [[ -n "${root}" && -d "${root}" ]] || return 0
-  git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-
-  branch="$(git -C "${root}" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-  [[ -n "${branch}" ]] && _PC_GIT_TRUTH_BRANCH="${branch}"
-  # The index is independent evidence: git log cannot see staged work.
-  staged="$(git -C "${root}" diff --cached --name-only 2>/dev/null || true)"
-  _PC_GIT_TRUTH_STAGED="${staged}"
-
-  if [[ -n "${branch}" ]] && git -C "${root}" show-ref --verify --quiet "refs/heads/${branch}"; then
-    default="$(git -C "${root}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)"
-    [[ -n "${default}" ]] || default="$(git -C "${root}" symbolic-ref --quiet --short HEAD 2>/dev/null | sed 's/.*//' || true)"
-    # Local main is the authoritative default for the close gate; origin may be
-    # frozen.  Do not manufacture a second landing/write-set policy here.
-    if git -C "${root}" show-ref --verify --quiet refs/heads/main; then
-      default="main"
-    elif git -C "${root}" show-ref --verify --quiet refs/heads/master; then
-      default="master"
-    fi
-    if [[ -n "${default}" ]] && git -C "${root}" show-ref --verify --quiet "refs/heads/${default}"; then
-      commits="$(git -C "${root}" log --format=%H "refs/heads/${default}..refs/heads/${branch}" 2>/dev/null || true)"
-      if [[ -n "${commits}" ]]; then
-        first="$(printf '%s\n' "${commits}" | head -1)"
-        _PC_GIT_TRUTH_KIND="commits"
-        _PC_GIT_TRUTH_COMMITS="$(printf '%s' "${commits}" | tr '\n' ',')"
-        _PC_GIT_TRUTH_COMMITS="${_PC_GIT_TRUTH_COMMITS%,}"
-        _PC_GIT_TRUTH_FIRST_SHA="${first}"
-        return 0
+  _PC_GIT_TRUTH_SURVEY=""
+  for i in "${!_PC_CAND_ROOT[@]}"; do
+    root="${_PC_CAND_ROOT[$i]}"
+    branch="$(git -C "${root}" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    [[ -n "${branch}" ]] || branch="absent"
+    staged="$(git -C "${root}" diff --cached --name-only 2>/dev/null || true)"
+    # The shared canonical checkout is concurrently edited by other sessions.
+    # Its index is observed for the survey only; it can never be evidence that
+    # this lane produced staged work, just as it can never contribute diff bytes.
+    [[ "${_PC_CAND_SHARED[$i]}" == "1" ]] && staged=""
+    staged_n=0
+    [[ -n "${staged}" ]] && staged_n="$(printf '%s\n' "${staged}" | grep -c . || true)"
+    commits=""
+    if [[ "${branch}" != "absent" ]]; then
+      default=""
+      git -C "${root}" show-ref --verify --quiet refs/heads/main && default="main"
+      if [[ -z "${default}" ]] && git -C "${root}" show-ref --verify --quiet refs/heads/master; then
+        default="master"
+      fi
+      if [[ -z "${default}" ]]; then
+        origin_default="$(git -C "${root}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+        origin_default="${origin_default#origin/}"
+        [[ -n "${origin_default}" ]] && git -C "${root}" show-ref --verify --quiet "refs/heads/${origin_default}" \
+          && default="${origin_default}"
+      fi
+      if [[ -n "${default}" ]]; then
+        commits="$(git -C "${root}" log --format=%H "refs/heads/${default}..refs/heads/${branch}" 2>/dev/null || true)"
       fi
     fi
+    filtered=""
+    commit_n=0
+    first=""
+    while IFS= read -r sha; do
+      [[ -n "${sha}" ]] || continue
+      _pc_commit_is_anchor "${root}" "${sha}" && continue
+      [[ -n "${first}" ]] || first="${sha}"
+      [[ -n "${filtered}" ]] && filtered+=","
+      filtered+="${sha}"
+      commit_n=$((commit_n + 1))
+    done <<< "${commits}"
+    clause="repo=${root} branch=${branch} commits=${commit_n} staged=${staged_n}"
+    [[ -n "${_PC_GIT_TRUTH_SURVEY}" ]] && _PC_GIT_TRUTH_SURVEY+='; '
+    _PC_GIT_TRUTH_SURVEY+="${clause}"
+    eligible=0
+    # The sibling was located by lane id (path identity), so its branch name is
+    # per-repo convention and must not be re-derived from the lane id.
+    if [[ "${_PC_CAND_KIND[$i]:-}" == "lane" && "$(_lv2_phys "${root}")" != "$(_lv2_phys "${ROOT}")" ]]; then
+      eligible=1
+    elif [[ "${_PC_CAND_KIND[$i]:-}" == "sibling" ]]; then
+      eligible=1
+    fi
+    [[ "${_PC_CAND_KIND[$i]:-}" == "sibling" ]] && _PC_GIT_TRUTH_SIBLING="${root}"
+    if [[ "${eligible}" == "1" && -z "${_PC_GIT_TRUTH_COUNTED_REPO}" ]]; then
+      _PC_GIT_TRUTH_COUNTED_REPO="${root}"
+      _PC_GIT_TRUTH_COUNTED_BRANCH="${branch}"
+    fi
+    # Only lane-isolated candidates can decide this lane's truth. ROOT may be a
+    # founder branch, and the canonical checkout is shared by concurrent
+    # sessions; both remain in the survey for diagnosis but must never donate
+    # foreign commits or staged files to this verdict.
+    if [[ "${eligible}" == "1" \
+          && "${_PC_GIT_TRUTH_KIND}" != "commits" && ${commit_n} -gt 0 ]]; then
+      _PC_GIT_TRUTH_KIND="commits"
+      _PC_GIT_TRUTH_REPO="${root}"
+      _PC_GIT_TRUTH_BRANCH="${branch}"
+      _PC_GIT_TRUTH_COUNTED_REPO="${root}"
+      _PC_GIT_TRUTH_COUNTED_BRANCH="${branch}"
+      _PC_GIT_TRUTH_COMMITS="${filtered}"
+      _PC_GIT_TRUTH_FIRST_SHA="${first}"
+    fi
+    if [[ "${eligible}" == "1" \
+          && "${_PC_GIT_TRUTH_KIND}" == "none" && ${staged_n} -gt 0 ]]; then
+      _PC_GIT_TRUTH_KIND="staged"
+      _PC_GIT_TRUTH_REPO="${root}"
+      _PC_GIT_TRUTH_BRANCH="${branch}"
+      _PC_GIT_TRUTH_COUNTED_REPO="${root}"
+      _PC_GIT_TRUTH_COUNTED_BRANCH="${branch}"
+      _PC_GIT_TRUTH_STAGED="${staged}"
+    fi
+  done
+  if [[ "${_PC_GIT_TRUTH_KIND}" == "none" && -n "${_PC_GIT_TRUTH_SIBLING}" ]]; then
+    for i in "${!_PC_CAND_ROOT[@]}"; do
+      [[ "${_PC_CAND_KIND[$i]:-}" == "sibling" ]] || continue
+      _PC_GIT_TRUTH_COUNTED_REPO="${_PC_CAND_ROOT[$i]}"
+      _PC_GIT_TRUTH_COUNTED_BRANCH="$(git -C "${_PC_CAND_ROOT[$i]}" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+      [[ -n "${_PC_GIT_TRUTH_COUNTED_BRANCH}" ]] || _PC_GIT_TRUTH_COUNTED_BRANCH="absent"
+      break
+    done
   fi
-  if [[ -n "${staged}" ]]; then
-    _PC_GIT_TRUTH_KIND="staged"
-    return 0
-  fi
+  return 0
+}
+
+_pc_scope_map_writes() { # maps normalized writes once for both cross-repo flag arms
+  repo_order=()
+  repo_of=()
+  rel_of=()
+  shared_of=()
+  _pc_unresolved_writes=()
+  _pc_unresolved_n=0
+  _pc_resolved_shared_n=0
+  _PC_RESOLVED_SHARED_REPO=""
+  _PC_RESOLUTION_REPO=""
+  local i resolution r rel shared
+  for i in "${!writes[@]}"; do
+    resolution="$(_pc_resolve_write "${writes[$i]}" || true)"
+    if [[ -z "${resolution}" ]]; then
+      _pc_unresolved_writes+=("${writes[$i]}")
+      _pc_unresolved_n=$((_pc_unresolved_n + 1))
+      repo_of[$i]=""
+      rel_of[$i]=""
+      shared_of[$i]=""
+      continue
+    fi
+    IFS=$'\t' read -r r rel shared <<< "${resolution}"
+    repo_of[$i]="${r}"
+    rel_of[$i]="${rel}"
+    shared_of[$i]="${shared}"
+    [[ -n "${_PC_RESOLUTION_REPO}" ]] || _PC_RESOLUTION_REPO="${r}"
+    if [[ "${shared}" == "1" ]]; then
+      _pc_resolved_shared_n=$((_pc_resolved_shared_n + 1))
+      _PC_RESOLVED_SHARED_REPO="${r}"
+      continue
+    fi
+    local seen=0 q
+    for q in "${repo_order[@]:-}"; do
+      [[ "${q}" == "${r}" ]] && { seen=1; break; }
+    done
+    (( seen )) || repo_order+=("${r}")
+  done
 }
 
 # GATE-FALSE-SILENT-01: a worker whose process is still alive is never silent, whatever
@@ -2864,41 +3062,17 @@ if [[ -n "${WRITES_CSV}" ]]; then
     [[ -n "${w}" ]] && writes+=("${w}")
   done
   if [[ ${#writes[@]} -gt 0 ]]; then
+    # Build the path->repo map regardless of CROSS_REPO_DIFF. The flag controls
+    # whether multiple mapped repos may contribute bytes; it must not turn sibling
+    # resolution off and recreate the single-repo mis-scoping defect.
+    _pc_candidate_roots
+    _pc_scope_map_writes
     if [[ "${CROSS_REPO_DIFF}" == "1" ]]; then
       # M8/M9 (LANDING-BLOCKER-R2): no associative arrays -- `declare -A` hard-errors under
       # bash 3.2, and dispatch-code.sh resolves `bash` from PATH, which can be /bin/bash
       # 3.2 without homebrew on PATH -- and no space-joined path strings (word-splits any
       # path containing a space). Two parallel INDEXED arrays instead; both constructs are
       # bash-3.2-safe.
-      repo_order=()
-      repo_of=()
-      rel_of=()
-      _pc_unresolved_writes=()
-      _pc_unresolved_n=0
-      for i in "${!writes[@]}"; do
-        real_abs="$(_pc_realpath "${diff_root}/${writes[$i]}")"
-        r="$(git -C "$(dirname "${real_abs}")" rev-parse --show-toplevel 2>/dev/null || true)"
-        if [[ -z "${r}" ]]; then
-          # REVIEW-GATE-INFRA-01 D-A(iv): a declared path that resolves outside any git
-          # work tree used to collapse silently onto diff_root (r="${diff_root}"),
-          # attributing it -- and its inevitable 0 bytes -- to diff_root's own group.
-          # That drags a legitimately cross-repo lane toward a false empty verdict for
-          # a repo the path was never really in scope for. Record it instead of
-          # grouping it; the classifier below treats "resolved repos all had bytes, OR
-          # a write never resolved at all" as cross_repo_elsewhere, not a scope
-          # violation.
-          _pc_unresolved_writes+=("${writes[$i]}")
-          _pc_unresolved_n=$((_pc_unresolved_n + 1))
-          repo_of[$i]=""
-          rel_of[$i]=""
-          continue
-        fi
-        repo_of[$i]="${r}"
-        rel_of[$i]="${real_abs#"${r}"/}"
-        _seen=0
-        for q in "${repo_order[@]:-}"; do [[ "${q}" == "${r}" ]] && { _seen=1; break; }; done
-        (( _seen )) || repo_order+=("${r}")
-      done
       _pc_lane_repo="$(git -C "${diff_root}" rev-parse --show-toplevel 2>/dev/null || true)"
       for repo in "${repo_order[@]}"; do
         [[ -n "${_pc_lane_repo}" && "${repo}" != "${_pc_lane_repo}" ]] && PC_STOP_GATE_FOREIGN_REPOS+=("${repo}")
@@ -2921,7 +3095,7 @@ if [[ -n "${WRITES_CSV}" ]]; then
         repo_diff="$(_pc_repo_diff "${repo}" "${paths[@]}")"
         n=${#repo_diff}
         _pc_base_used="$(_pc_last_diff_base)"
-        emit decision "review_diff task=${TASK} repo=$(basename "${repo}") bytes=${n} base=${_pc_base_used}"
+        emit decision "review_diff task=${TASK} repo=$(basename "${repo}") bytes=${n} base=${_pc_base_used} root=${repo}"
         printf '%s %s\n' "$(basename "${repo}")" "${n}" >> "${repos_file}"
         if [[ -z "${repo_diff}" ]]; then
           _zero_repos=$((_zero_repos + 1))
@@ -2933,8 +3107,23 @@ if [[ -n "${WRITES_CSV}" ]]; then
       if [[ ${_zero_repos} -gt 0 && ${_nonzero_repos} -gt 0 ]]; then
         blocked_reason="partial_diff"
       fi
+      if [[ ${_pc_resolved_shared_n:-0} -gt 0 && ${_nonzero_repos} -gt 0 ]]; then
+        blocked_reason="partial_diff"
+      fi
     else
-      repo_diff="$(_pc_repo_diff "${diff_root}" "${writes[@]}")"
+      # CROSS_REPO_DIFF=0 remains a single-repo mode, but it uses the same
+      # path mapping. A multi-repo declaration is never silently reduced to
+      # whichever dispatching repo happened to be the current root.
+      _pc_lane_repo="${repo_order[0]:-}"
+      if [[ ${#repo_order[@]} -gt 1 ]]; then
+        blocked_reason="partial_diff"
+      fi
+      paths=()
+      for i in "${!writes[@]}"; do
+        [[ "${repo_of[$i]}" == "${_pc_lane_repo}" && "${shared_of[$i]}" == "0" ]] && paths+=("${rel_of[$i]}")
+      done
+      repo_diff=""
+      [[ -n "${_pc_lane_repo}" ]] && repo_diff="$(_pc_repo_diff "${_pc_lane_repo}" "${paths[@]}")"
       # M7: trailing newline when non-empty, like the multi-repo branch above
       # -- the widened drift diff below is APPENDED to this file, and without
       # a separator its "diff --git a/... b/..." header fuses onto this
@@ -2947,7 +3136,11 @@ if [[ -n "${WRITES_CSV}" ]]; then
       else
         : > "${diff_file}"
       fi
+      if [[ -n "${repo_diff}" && ( ${_pc_unresolved_n:-0} -gt 0 || ${_pc_resolved_shared_n:-0} -gt 0 ) ]]; then
+        blocked_reason="partial_diff"
+      fi
       _pc_base_used="$(_pc_last_diff_base)"
+      [[ -n "${_pc_lane_repo}" ]] && emit decision "review_diff task=${TASK} repo=$(basename "${_pc_lane_repo}") bytes=${#repo_diff} base=${_pc_base_used} root=${_pc_lane_repo}"
       # LANE-WRITESET-REGISTRY-01 D5/D6: commit-time drift check, single-repo
       # path only (CROSS_REPO_DIFF is a known gap, see developer.full.md).
       # Undeclared writes are non-fatal by default (WARN+WIDEN, D5) -- the
@@ -2958,7 +3151,8 @@ if [[ -n "${WRITES_CSV}" ]]; then
       # fix-round-1 H2/H3: _pc_git_diff_names (not bare `git diff --name-only`)
       # so an untracked NEW file is visible (H2) and tracked docs/leadv2 or
       # docs/handoff writes never register as drift (H3).
-      _ws_actual_files="$(_pc_git_diff_names "${diff_root}" "${_pc_base_used}" || true)"
+      _ws_actual_files=""
+      [[ -n "${_pc_lane_repo}" ]] && _ws_actual_files="$(_pc_git_diff_names "${_pc_lane_repo}" "${_pc_base_used}" || true)"
       _ws_drift_paths=()
       if [[ -n "${_ws_actual_files}" ]]; then
         while IFS= read -r _ws_f; do
@@ -2983,7 +3177,7 @@ if [[ -n "${WRITES_CSV}" ]]; then
       if [[ ${#_ws_drift_paths[@]} -gt 0 ]]; then
         _ws_drift_csv="$(IFS=,; printf '%s' "${_ws_drift_paths[*]}")"
         emit decision "writeset_drift task=${TASK} undeclared=${_ws_drift_csv}"
-        _ws_widen_diff="$(_pc_git_diff "${diff_root}" "${_pc_base_used}" "${_ws_drift_paths[@]}")"
+        _ws_widen_diff="$(_pc_git_diff "${_pc_lane_repo}" "${_pc_base_used}" "${_ws_drift_paths[@]}")"
         [[ -n "${_ws_widen_diff}" ]] && printf '%s\n' "${_ws_widen_diff}" >> "${diff_file}"
         if declare -F leadv2_active_check_writes_conflict >/dev/null 2>&1; then
           _ws_drift_rc=0
@@ -3118,6 +3312,11 @@ if [[ "${_pc_kind}" == "report" ]]; then
   blocked_reason=""
   emit decision "report_gate task=${TASK} status=located bytes=${_pc_report_bytes} declared=${_pc_report_rel} deliverable=${_pc_report_deliverable}"
 fi
+# Diff-scoping can refuse a mixed local/shared set before entering the dirty
+# evidence partition below. Keep artifact and ledger emission nounset-safe for
+# that deliberate partial_diff verdict as well as for empty-diff paths.
+_pc_dirty_evidence="${_pc_dirty_evidence:-}"
+_pc_dirty_n="${_pc_dirty_n:-0}"
 # T8C-FOREIGN-REPO-LANDING-01: an empty-diff/dirty-but-undeclared verdict here would be
 # a false no_work/unscoped_lane_work for a lane whose mission legitimately targets a
 # repo OTHER than its own PE worktree (the shared leadv2 plugin repo is the live case --
@@ -3242,33 +3441,43 @@ if [[ -n "${blocked_reason}" ]]; then
       if [[ ${_pc_undeclared_n} -gt 0 ]]; then
         _pc_terminal="refused"; _pc_cause="unscoped_lane_work"; _pc_rg_reason="unscoped_lane_work"
         _pc_offending="$(_pc_join_capped "${_pc_undeclared[@]}")"
-      elif [[ "${CROSS_REPO_DIFF:-}" == "1" && ${_pc_unresolved_n:-0} -gt 0 ]]; then
+      elif [[ ${_pc_unresolved_n:-0} -gt 0 || ${_pc_resolved_shared_n:-0} -gt 0 ]]; then
         # F7: this branch only runs when blocked_reason==unscopable_diff, i.e. diff_file
         # is totally empty — a repo in _nonzero_repos would have contributed bytes there,
         # so ${_nonzero_repos:-0} -gt 0 can never be true here; dropped as dead.
         # F5: a dirty lane never stamps terminal=no_work — the terminal is `refused`
         # (retryable, same class); the diagnosis lives in `cause`/`reason` only.
         _pc_terminal="refused"; _pc_cause="cross_repo_elsewhere"; _pc_rg_reason="cross_repo_elsewhere"
+        _pc_git_truth_across_repos
+        _pc_dirty_evidence="cross_repo_elsewhere repo=${_PC_RESOLVED_SHARED_REPO:-${_PC_RESOLUTION_REPO:-<unresolved>}} unresolved=${_pc_unresolved_n:-0} shared=${_pc_resolved_shared_n:-0}"
+        _pc_dirty_evidence+=" branch=${_PC_GIT_TRUTH_LANE_BRANCH} sibling=${_PC_GIT_TRUTH_SIBLING:-absent}"
       else
         _pc_terminal="refused"; _pc_cause="declared_no_bytes"; _pc_rg_reason="declared_no_bytes"
       fi
     else
+      if [[ ${_pc_unresolved_n:-0} -gt 0 || ${_pc_resolved_shared_n:-0} -gt 0 ]]; then
+        _pc_terminal="refused"; _pc_cause="cross_repo_elsewhere"; _pc_rg_reason="cross_repo_elsewhere"
+        _pc_git_truth_across_repos
+        _pc_dirty_evidence="cross_repo_elsewhere repo=${_PC_RESOLVED_SHARED_REPO:-${_PC_RESOLUTION_REPO:-<unresolved>}} unresolved=${_pc_unresolved_n:-0} shared=${_pc_resolved_shared_n:-0}"
+        _pc_dirty_evidence+=" branch=${_PC_GIT_TRUTH_LANE_BRANCH} sibling=${_PC_GIT_TRUTH_SIBLING:-absent}"
+      else
       # A report can be absent after a worker dies, but its branch or index can
       # still contain recoverable work.  Consult git before the irreversible
       # no_work label; commits become a refused/scoping verdict, staged work a
       # refused/recoverable verdict.  `leadv2-land.sh` remains the sole landing
       # path (merged-tree + land_in_write_set); this close gate only preserves
       # the work for that path instead of inventing a second merge policy.
-      _pc_git_truth_before_no_work "${diff_root}"
+      _pc_candidate_roots
+      _pc_git_truth_across_repos
       case "${_PC_GIT_TRUTH_KIND}" in
         commits)
           _pc_terminal="refused"; _pc_cause="git_truth_commits"; _pc_rg_reason="git_truth_commits"
-          _pc_dirty_evidence="git_truth=commits branch=${_PC_GIT_TRUTH_BRANCH} commits=${_PC_GIT_TRUTH_COMMITS}"
+          _pc_dirty_evidence="git_truth=commits repo=${_PC_GIT_TRUTH_REPO} branch=${_PC_GIT_TRUTH_BRANCH} commits=${_PC_GIT_TRUTH_COMMITS}"
           _pc_terminal_commit="${_PC_GIT_TRUTH_FIRST_SHA}"
           ;;
         staged)
           _pc_terminal="refused"; _pc_cause="git_truth_staged"; _pc_rg_reason="git_truth_staged"
-          _pc_dirty_evidence="git_truth=staged branch=${_PC_GIT_TRUTH_BRANCH} staged=$(printf '%s' "${_PC_GIT_TRUTH_STAGED}" | tr '\n' ',')"
+          _pc_dirty_evidence="git_truth=staged repo=${_PC_GIT_TRUTH_REPO} branch=${_PC_GIT_TRUTH_BRANCH} staged=$(printf '%s' "${_PC_GIT_TRUTH_STAGED}" | tr '\n' ',')"
           ;;
         *)
           _pc_terminal="no_work"; _pc_cause="empty_diff"; _pc_rg_reason="no_work"
@@ -3277,6 +3486,7 @@ if [[ -n "${blocked_reason}" ]]; then
           fi
           ;;
       esac
+      fi
     fi
   fi
   # review-gate.md reason mirrors the ledger word so the on-disk artifact and the
@@ -3305,6 +3515,8 @@ if [[ -n "${blocked_reason}" ]]; then
       [[ -n "${_pc_declared_list:-}" ]] && printf 'declared_writes: %s\n' "${_pc_declared_list}"
       [[ -n "${_pc_offending:-}" ]] && printf 'offending: %s\n' "${_pc_offending}"
       [[ "${_pc_dirty_evidence:-}" == git_truth=* ]] && printf 'git_truth: %s\n' "${_pc_dirty_evidence}"
+      [[ -n "${_PC_GIT_TRUTH_SURVEY:-}" ]] && printf 'git_truth_survey: %s\n' "${_PC_GIT_TRUTH_SURVEY}"
+      [[ -n "${_PC_GIT_TRUTH_COUNTED_REPO:-}" ]] && printf 'counted: repo=%s branch=%s\n' "${_PC_GIT_TRUTH_COUNTED_REPO}" "${_PC_GIT_TRUTH_COUNTED_BRANCH:-absent}"
       [[ -n "${_PC_LANE_RESOLVED_TOP:-}" ]] && printf 'resolved_toplevel: %s\nexpected_lane_root: %s\n' "${_PC_LANE_RESOLVED_TOP}" "${_lane_root}"
       [[ -n "${_PC_LANE_PRODUCED:-}" ]] && printf 'produced: %s\n' "${_PC_LANE_PRODUCED}"
       [[ -n "${_PC_UNDIFFABLE_CSV:-}" ]] && printf 'undiffable: %s\n' "${_PC_UNDIFFABLE_CSV}"
@@ -3314,12 +3526,30 @@ if [[ -n "${blocked_reason}" ]]; then
       printf 'status: blocked\nreason: %s\n' "${_pc_rg_reason}"
       [[ -n "${_pc_wr}" ]] && printf 'worker_reason: %s\n' "${_pc_wr}"
       printf 'kind: %s\nbase: %s\n' "${_pc_kind}" "${_pc_base_used:-HEAD}"
+      [[ -n "${_PC_GIT_TRUTH_SURVEY:-}" ]] && printf 'git_truth_survey: %s\n' "${_PC_GIT_TRUTH_SURVEY}"
+      [[ -n "${_PC_GIT_TRUTH_COUNTED_REPO:-}" ]] && printf 'counted: repo=%s branch=%s\n' "${_PC_GIT_TRUTH_COUNTED_REPO}" "${_PC_GIT_TRUTH_COUNTED_BRANCH:-absent}"
       [[ -n "${_PC_UNDIFFABLE_CSV:-}" ]] && printf 'undiffable: %s\n' "${_PC_UNDIFFABLE_CSV}"
     } > "${HANDOFF}/review-gate.md"
   fi
   _pc_offending_evt=""
   [[ -n "${_pc_offending:-}" ]] && _pc_offending_evt=" offending=${_pc_offending}"
-  emit decision "review_gate task=${TASK} status=blocked reason=${_pc_rg_reason} terminal=${_pc_terminal} cause=${_pc_cause}${_pc_offending_evt}"
+  if [[ "${_pc_cause}" == "cross_repo_elsewhere" ]]; then
+    _pc_journal_repo="${_PC_RESOLVED_SHARED_REPO:-${_PC_RESOLUTION_REPO:-}}"
+  else
+    _pc_journal_repo="${_PC_GIT_TRUTH_REPO:-${_PC_GIT_TRUTH_COUNTED_REPO:-${_PC_RESOLUTION_REPO:-}}}"
+  fi
+  [[ -n "${_pc_journal_repo}" ]] || _pc_journal_repo="<unresolved>"
+  if [[ "${_pc_cause}" == "cross_repo_elsewhere" ]]; then
+    _pc_journal_branch="${_PC_GIT_TRUTH_LANE_BRANCH:-absent}"
+    _pc_journal_sibling=" sibling=${_PC_GIT_TRUTH_SIBLING:-absent}"
+  elif [[ -n "${_PC_GIT_TRUTH_REPO:-}" ]]; then
+    _pc_journal_branch="${_PC_GIT_TRUTH_BRANCH:-absent}"
+    _pc_journal_sibling=""
+  else
+    _pc_journal_branch="${_PC_GIT_TRUTH_COUNTED_BRANCH:-absent}"
+    _pc_journal_sibling=""
+  fi
+  emit decision "review_gate task=${TASK} status=blocked reason=${_pc_rg_reason} terminal=${_pc_terminal} cause=${_pc_cause} repo=${_pc_journal_repo} branch=${_pc_journal_branch}${_pc_journal_sibling}${_pc_offending_evt}"
   _dl_note "${_pc_terminal}" "${_pc_cause}" "${_pc_dirty_evidence}${_pc_offending_evt}" "${_pc_terminal_commit:-}"
   _stamp_review_terminal blocked
   exit 5

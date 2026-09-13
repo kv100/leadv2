@@ -23,11 +23,24 @@ mention Codex (m3-market corp ban).
 
 ## Hook behavior
 
-`leadv2-routing-guard.sh` (PreToolUse:Agent):
-- Fires on `subagent_type ∈ {architect, critic, security-auditor}` AND `model == sonnet`
-- Emits advisory to stderr — NEVER blocks (always exits 0)
-- Reads `codex-policy.yaml` from repo root to tailor the message
-- Safe for all repos; no-op when model is opus or role is developer/devops/etc.
+`leadv2-routing-guard.sh` (PreToolUse:Agent), lead path (no `agent_type`):
+- Write-capable roles — the same set the nested path denies (`developer`,
+  `frontend-developer`, `postgres-pro`, `devops-engineer`, `architect`,
+  `product-owner`) — are REFUSED (exit 2): a direct Agent spawn skips
+  complexity estimation, the balancer, the arbiter and the phase ladder.
+  The refusal names `leadv2-dispatch-code.sh` as the remedy. Read-only roles
+  (`Explore`, `general-purpose`, `recon`) stay allowed.
+  Loud escape hatch: `LEADV2_LEAD_WRITE_SPAWN_ALLOW=1` (+ optional
+  `LEADV2_LEAD_WRITE_SPAWN_WHY`) allows the spawn, announces itself on
+  stderr, and journals the use to `docs/leadv2/lead-write-spawn-overrides.log`.
+- For `subagent_type ∈ {critic, security-auditor}` (and `architect` only via
+  the escape hatch) AND `model == sonnet`: emits advisory to stderr — never
+  blocks (exits 0). Reads `codex-policy.yaml` from repo root to tailor the
+  message. No-op when model is opus.
+
+Nested path (caller has `agent_type`): unchanged — write-capable roles are
+denied (`route.subrun.write_role_denied`), depth cap and per-task count
+enforced per `nested-spawn-policy.yaml`.
 
 ## Legitimate sonnet uses for these roles
 

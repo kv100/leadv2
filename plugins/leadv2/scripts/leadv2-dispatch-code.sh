@@ -2335,10 +2335,17 @@ _dl_note() {
   # the matrix alone. Fail-open like every emit here; the lib skips on its own
   # when no spawn ever ran (a pre-spawn refusal burned no arm work).
   if command -v leadv2_cost_actual_record >/dev/null 2>&1; then
-    local _ca_line=""
+    local _ca_line="" _ca_tokens=""
+    # QUOTA-TELEMETRY-CANNOT-PRICE-AN-ARM-01: 8th positional — the lane's
+    # real token count (costs.yaml / turn_events, see
+    # leadv2_lane_token_total), `-` when neither source has it. Never 0: a
+    # zero would price the lane as free and poison the observed-cost loop.
+    if command -v leadv2_lane_token_total >/dev/null 2>&1; then
+      _ca_tokens="$(leadv2_lane_token_total "${PROJECT_ROOT:-}" "$1" 2>/dev/null || true)"
+    fi
     _ca_line="$(leadv2_cost_actual_record "$(repo_slug)" "$1" "$2" "$3" \
       "$(printf '%s' "${ADMISSION_CLASS:-${task_class:-standard}}" | tr '[:upper:]' '[:lower:]')" \
-      "${ADMISSION_WORK_KIND:-code}" "${_MS_MODEL:-unknown}" 2>/dev/null || true)"
+      "${ADMISSION_WORK_KIND:-code}" "${_MS_MODEL:-unknown}" "${_ca_tokens:--}" 2>/dev/null || true)"
     [[ -n "${_ca_line}" ]] && emit decision "${_ca_line}"
   fi
   [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || return 0
