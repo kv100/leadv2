@@ -322,13 +322,14 @@ expect_silent_row "N10 «Начинаю с мержа» keeps commit kind" \
   "T:Начинаю с мержа fix/abc || B:git merge --no-ff fix/abc" \
   suppressed_action commit '["commit"]'
 
-# --- N11. a start promise kept ONLY by a Bash write to scratch is still
-# suppressed by design (Bash writes are durable; shell parsing is out of
-# scope — the design's §5(b) residual, pinned here so a future change is a
-# deliberate re-verdict, not a silent drift).
-expect_silent_row "N11 start + Bash scratch write stays suppressed (documented residual)" \
+# --- N11'. round 2 (BLOCKING 1): a start promise kept ONLY by a Bash write to
+# scratch now FIRES -- `name == 'Bash'` used to exempt every Bash write from
+# the durability check, which reopened the exact scratch-write escape one
+# tool over. This inverts the old "documented residual" (round 1 pinned this
+# as suppressed; that was the defect's second life, not a residual).
+expect_fires_row "N11 start + Bash scratch write now FIRES (round 2 fix)" \
   "T:Начинаю с пункта 1 || B:echo notes > /tmp/leadv2-pg-notes.md" \
-  suppressed_action start '["write"]'
+  start "[]"
 
 # --- N12 (second-model review, codex 2026-09-13): the None branch must ALSO
 # bind to durable evidence — every durability case above is start-kind, so a
@@ -344,6 +345,152 @@ expect_fires_row "N12 None-kind + scratch write binds to durable (opt-in block)"
   "T:Сейчас доведу до ума || W:${ROOT_A%/}/${SID}/scratchpad/notes.md" \
   "" "[]" "LEADV2_PROMISE_GUARD_BLOCK_UNCLASSIFIED=1"
 unset SID
+
+# =============================================================================
+# ROUND 2 (PROMISE-GUARD-MISSES-A-CLOSING-PROMISE-01 r2): BLOCKING 1 (Bash
+# write targets) and BLOCKING 2 (negation, engine-wide).
+# =============================================================================
+
+# --- TP3. BLOCKING 1 reproduction: literal $TMPDIR reaches the hook verbatim
+# (single-quoted spec -- the TEST SHELL must not expand it, only the hook's
+# own textual expansion from its inherited environ may).
+expect_fires_row 'TP3 start + Bash redirect into literal $TMPDIR fires' \
+  'T:Начинаю с пункта 1 || B:echo x > "$TMPDIR/scratch"' \
+  start "[]"
+
+# --- TP3b. same shape with the already-expanded $TMPDIR spelling.
+expect_fires_row "TP3b start + Bash redirect into expanded \$TMPDIR fires" \
+  "T:Начинаю с пункта 1 || B:echo x > ${ROOT_A%/}/scratch" \
+  start "[]"
+
+# --- TP4. BSD `sed -i ''`: the empty backup-suffix token is NOT dropped by
+# shlex (verified against the real shlex module while building this fix) --
+# a naive "skip flags, keep the rest" pass would misread the sed SCRIPT
+# itself as the target and fail-open it durable. This pins the correct parse.
+expect_fires_row "TP4 start + Bash sed -i '' scratch target fires" \
+  "T:Начинаю с пункта 1 || B:sed -i '' 's/a/b/' ${ROOT_A%/}/thing" \
+  start "[]"
+
+# --- TP5. an unresolvable target (command substitution) is conservative: NOT
+# durable, block reason names the "could not resolve" shape explicitly.
+SID="closing-tp5-$$-${RANDOM}-h8"
+export SID
+out_tp5="$(_run_hook "T:Начинаю с пункта 1 || B:echo x > \$(mktemp)")"
+unset SID
+if printf '%s' "${out_tp5}" | grep -q '"decision": "block"' \
+    && printf '%s' "${out_tp5}" | grep -qi 'could not resolve'; then
+  ok "TP5 unresolvable Bash write target fires, reason names it"
+else
+  bad "TP5 unresolvable Bash write target (got: ${out_tp5:-<silent>})"
+fi
+
+# --- TP6. double negative IS a commitment («не могу не начать»); no action
+# in the turn at all, so it must fire.
+expect_fires_row "TP6 double negative «не могу не начать» fires" \
+  "T:Не могу не начать с первого пункта." \
+  start "[]"
+
+# --- N13. absolute, non-scratch Bash write via a redirection: silent, built
+# from $PWD at runtime -- never a literal machine path. Expanded by THIS
+# shell before it ever reaches the hook (the hook only textually expands
+# TMPDIR/TMP/HOME, not PWD -- an already-concrete path is the correct probe
+# for "does an absolute non-scratch target stay durable").
+expect_silent_row "N13 start + Bash write to absolute repo path stays silent" \
+  "T:Начинаю с пункта 1 || B:tee -a ${PWD}/out.log" \
+  suppressed_action start '["write"]'
+
+# --- N14. the `cd` + relative-target residual neither round 1 nor the critic
+# named: the target's cwd is unknown, so it is unresolved, not silently
+# fail-open durable.
+SID="closing-n14-$$-${RANDOM}-i9"
+export SID
+out_n14="$(_run_hook "T:Начинаю с пункта 1 || B:cd /tmp && echo x > notes")"
+unset SID
+if printf '%s' "${out_n14}" | grep -q '"decision": "block"' \
+    && printf '%s' "${out_n14}" | grep -qi 'could not resolve'; then
+  ok "N14 cd + relative Bash write target is unresolved, fires"
+else
+  bad "N14 cd + relative Bash write target (got: ${out_n14:-<silent>})"
+fi
+
+# --- N15..N18. BLOCKING 2: a negated commitment verb is not a commitment,
+# engine-wide (not just for `start`) -- fully silent, no journal row at all.
+expect_fully_silent "N15 «Не начинаю..., пока не закрою» stays silent" \
+  "T:Не начинаю новую линию, пока не закрою эту — работаю по плану."
+expect_fully_silent "N16 «Не буду коммитить» stays silent" \
+  "T:Не буду коммитить это сегодня."
+expect_fully_silent "N17 «Не закоммичу пока» stays silent (pre-existing engine-wide gap)" \
+  "T:Не закоммичу пока — тесты ещё красные."
+expect_fully_silent "N18 English «I won't start...» stays silent" \
+  "T:I won't start the second item until this one lands."
+
+# --- M3. NEGATIVE CONTROL: disarm NEG_VERB_RE (never matches) in a scratch
+# COPY of the real hook -- N15's spec must START firing.
+MUTANT3="${WORK}/leadv2-promise-guard.mutant3.sh"
+python3 - "${HOOK}" "${MUTANT3}" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+# Replace the PATTERN string, not the "re.compile(" call -- inserting an
+# extra positional string ahead of the real pattern turns one arg into
+# three, which raises TypeError at import time and crashes the whole
+# embedded interpreter (measured: every case in the suite reads as
+# "stayed silent", not a real disarm). Keep it a one-string, two-arg call.
+needle = (
+    "    r'\\b(?:не|ни)\\s+(?:(?:пока|ещё|еще|уже|же|сразу|сейчас|точно)"
+    "\\s+)?([а-яё]{3,})\\b',\n"
+)
+if needle not in text:
+    sys.exit(3)  # anchor text moved -- refuse to fabricate a mutant
+open(dst, "w").write(text.replace(
+    needle, "    r'(?!x)x(unused)',\n", 1))
+PY
+if [[ $? -ne 0 ]]; then
+  bad "M3 negative control: mutation anchor not found in ${HOOK} -- cannot prove the control"
+else
+  chmod +x "${MUTANT3}"
+  bash -n "${MUTANT3}" 2>&1 || bad "M3 negative control: mutant fails bash -n"
+  HOOK_OVERRIDE="${MUTANT3}"
+  out_m3="$(_run_hook "T:Не начинаю новую линию, пока не закрою эту — работаю по плану.")"; rc_m3=$?
+  unset HOOK_OVERRIDE
+  if [[ ${rc_m3} -eq 2 ]]; then
+    bad "M3 negative control: mutant could-not-run (rc=2)"
+  elif printf '%s' "${out_m3}" | grep -q '"decision": "block"'; then
+    ok "M3 negative control: negation veto mutant reddens (N15 fires when disarmed)"
+  else
+    bad "M3 negative control: mutant stayed silent -- control is disarmed (out='${out_m3:-<silent>}')"
+  fi
+fi
+
+# --- M4. NEGATIVE CONTROL: force bash_write_targets to always report a
+# durable absolute target -- TP3's spec must go SILENT (durability lost).
+MUTANT4="${WORK}/leadv2-promise-guard.mutant4.sh"
+python3 - "${HOOK}" "${MUTANT4}" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+needle = "def bash_write_targets(cmd):\n"
+if needle not in text:
+    sys.exit(3)  # anchor text moved -- refuse to fabricate a mutant
+open(dst, "w").write(text.replace(
+    needle, "def bash_write_targets(cmd):\n    return (['/repo/x'], True)\n", 1))
+PY
+if [[ $? -ne 0 ]]; then
+  bad "M4 negative control: mutation anchor not found in ${HOOK} -- cannot prove the control"
+else
+  chmod +x "${MUTANT4}"
+  bash -n "${MUTANT4}" 2>&1 || bad "M4 negative control: mutant fails bash -n"
+  HOOK_OVERRIDE="${MUTANT4}"
+  out_m4="$(_run_hook 'T:Начинаю с пункта 1 || B:echo x > "$TMPDIR/scratch"')"; rc_m4=$?
+  unset HOOK_OVERRIDE
+  if [[ ${rc_m4} -eq 2 ]]; then
+    bad "M4 negative control: mutant could-not-run (rc=2)"
+  elif [[ -z "${out_m4}" ]]; then
+    ok "M4 negative control: extraction mutant reddens (TP3 goes silent when durability is faked)"
+  else
+    bad "M4 negative control: mutant still fires -- control is disarmed (out='${out_m4}')"
+  fi
+fi
 
 # --- M1. NEGATIVE CONTROL: mutate is_durable_target INSIDE the function body
 # (scratch hit returns True instead of False) in a scratch COPY of the real
