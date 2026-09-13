@@ -676,6 +676,46 @@ _emit_event() {
   bash "${EVENT_BIN}" emit --repo "$(repo_slug)" --kind "${kind}" --task "${task}" \
     --arm "${arm}" --handle "${handle}" --detail "${detail}" >/dev/null 2>&1 || true
 }
+# CAPABILITY-GATES-DISAGREE-AND-THE-JOURNAL-CANNOT-SEE-IT-01: the launcher
+# already has the exact refusal text at its stderr seam.  Do NOT rediscover it
+# later from the preserved $TMPDIR artifact: that would make the artifact a
+# second source of truth and loses the join to the next arm selected here.
+# Instead, retain one tiny per-dispatch handoff until the candidate loop knows
+# the arm it really fell through to, then append one decision/event row.
+_launcher_refusal_file() {  # <sig8> -> private, short-lived handoff path
+  printf '%s/leadv2-launcher-refusal-%s.%s.tsv' "${TMPDIR:-/tmp}" "$1" "$$"
+}
+
+_capture_launcher_refusal() {  # <stderr-file> <arm> <sig8>
+  local errf="$1" arm="$2" sig8="$3" raw reason f
+  # `refused:` is the launch-registry's explicit admission contract.  A
+  # malformed/unknown payload is still evidence of a refusal, never a dropped
+  # line: classify only its reason as unclassified.
+  grep -q '^refused:' "${errf}" 2>/dev/null || return 0
+  raw="$(sed -n 's/^refused:[[:space:]]*//p' "${errf}" 2>/dev/null | head -1)"
+  if [[ "${raw}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    reason="${raw}"
+  else
+    reason="unclassified"
+  fi
+  f="$(_launcher_refusal_file "${sig8}")"
+  printf '%s\t%s\n' "${arm}" "${reason}" > "${f}" 2>/dev/null || true
+}
+
+_emit_pending_launcher_refusal() {  # <sig8> <actual fallback arm|none>
+  local sig8="$1" fell_through_to="$2" f row arm reason
+  f="$(_launcher_refusal_file "${sig8}")"
+  [[ -s "${f}" ]] || return 0
+  IFS=$'\t' read -r arm reason < "${f}" || true
+  rm -f "${f}"
+  [[ -n "${arm}" ]] || return 0
+  [[ -n "${reason}" ]] || reason="unclassified"
+  # The decision journal and Tier-0 event stream carry the same join keys:
+  # task/sig8, refusing arm, exact-or-unclassified launcher reason, and the
+  # arm this candidate loop actually selected next.
+  emit decision "launcher_refused task=${sig8} arm=${arm} reason=${reason} fell_through_to=${fell_through_to}"
+  _emit_event launcher_refused "${sig8}" "${arm}" "" "reason=${reason} fell_through_to=${fell_through_to}"
+}
 # T-o (SUPERVISOR-AUDIT-01): the terminal-state ledger CLI. ALWAYS invoked as a subprocess
 # (`bash "${LEDGER_BIN}" ...`) -- never `source`d. leadv2-dispatch-ledger.sh's own doc
 # header explains why: sourcing it collided with this script's own fd-9 flock (dispatch_
@@ -2804,8 +2844,7 @@ r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
 kind, task_class = sys.argv[2:]
 matrix = r.load_capability_matrix()
 arms = {row['arm'] for row in matrix}
-known_kinds = {k for row in matrix for k in (row.get('kinds') or [])}
-query_kind = kind if kind in known_kinds else 'code'
+query_kind = r.normalize_kind(kind, matrix)
 if query_kind != kind:
     print('kind_mapped=%s->%s' % (kind, query_kind))
 legacy = r._dispatchable_arm_sets()[0] & {'glm', 'glm-flash', 'freepool'}
@@ -6418,6 +6457,10 @@ _worker_env_asserts() {  # <arm> <sig8>
 
 spawn_worker() {
   local errf rc
+  # A prior candidate's refusal is consumed by the candidate loop before it
+  # reaches this next spawn.  Clear defensively here too so a stale temp file
+  # can never be joined to an unrelated later attempt in this dispatcher.
+  rm -f "$(_launcher_refusal_file "$3")"
   LAST_ARM_OUTCOME="$1_failed_launcher"
   # Last common admission door: cmd_resolve, advance-arm, and future callers
   # cannot start a model process after a hard burn verdict.
@@ -6432,6 +6475,10 @@ spawn_worker() {
     log_err "spawn($1): could not create stderr tempfile"; return 1
   }
   _spawn_worker_body "$1" "$2" "$3" "${errf}"; rc=$?
+  # Capture at the producer seam, before errf is copied/removed.  The caller
+  # emits only after it knows the actual fall-through arm; this is not an
+  # after-the-fact scan of the preserved diagnostic artifact.
+  [[ ${rc} -ne 0 ]] && _capture_launcher_refusal "${errf}" "$1" "$3"
   # REVIEW FIX (critic High, 2026-07-25): the inline log message is capped, so on FAILURE
   # keep the launcher's FULL stderr on disk instead of discarding everything past the tail.
   # The old `2>&1` bug at least preserved all of it in ${out}; this fix pass exists because a
@@ -10074,6 +10121,10 @@ exit is treated as an incident."
   while true; do
   _reenter=0
   for candidate in "${candidate_arms[@]}"; do
+    # A launcher refusal was captured at its stderr seam.  This is the first
+    # point at which the dispatcher knows the arm it ACTUALLY falls through
+    # to (including a re-arbitrated chain), so record the joined event here.
+    _emit_pending_launcher_refusal "${sig8}" "${candidate}"
     # FP-06 fix-round (H1): the telemetry row must name the arm/model that
     # ACTUALLY executes -- the same identity the confirmed spawn journals.
     # The arbiter's model= string is authoritative only for its own pick
@@ -10475,6 +10526,9 @@ ${mission}"
 
   local attempted_csv
   attempted_csv="$(IFS=,; printf '%s' "${attempted[*]}")"
+  # The final refused candidate has no following loop iteration.  Its event
+  # remains countable and says so explicitly instead of being silently lost.
+  _emit_pending_launcher_refusal "${sig8}" none
   emit decision "dispatch_rolled_back reason=all_arms_unavailable task=${sig8} attempts=${attempted_csv}"
   _model_select_telemetry fail all_arms_unavailable "${candidate}"
   log_err "all eligible dispatch arms declined or failed for task=${sig8}: ${attempted_csv}"
@@ -10703,6 +10757,7 @@ cmd_advance_arm() {
   local spawn_out src candidate candidate_handle handle="" attempted_csv=""
   for candidate in "${candidate_arms[@]}"; do
     [[ -n "${candidate}" ]] || continue
+    _emit_pending_launcher_refusal "${sig8}" "${candidate}"
     spawn_out="$(spawn_worker "${candidate}" "${mission}" "${sig8}")"; src=$?
     if [[ ${src} -eq 0 ]]; then
       candidate_handle="$(printf '%s\n' "${spawn_out}" | sed -n 's/.*handle=\(.*\)$/\1/p' | tail -1)"
@@ -10725,6 +10780,7 @@ cmd_advance_arm() {
     [[ -n "${attempted_csv}" ]] && attempted_csv="${attempted_csv},${candidate}" || attempted_csv="${candidate}"
   done
   if [[ -z "${handle}" ]]; then
+    _emit_pending_launcher_refusal "${sig8}" none
     emit decision "arm_advance_exhausted task=${sig8} attempts=${attempted_csv:-none}"
     exit 4
   fi
