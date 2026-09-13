@@ -25,6 +25,9 @@ PROMPT_TMPL="${SCRIPT_DIR}/../leadv2-task-judge-prompt.tmpl"
 PASS=0
 FAIL=0
 ERRORS=()
+# Existing unit cases exercise the stable Haiku transport explicitly. T16
+# separately proves production's GLM default and its Haiku fallback.
+export LEADV2_JUDGE_ARM=haiku
 
 log()  { printf -- '[TEST] %s\n' "$*"; }
 pass() { PASS=$((PASS + 1)); log "PASS: $1"; }
@@ -92,6 +95,34 @@ _stub_claude_hang() {
 #!/usr/bin/env bash
 echo x >> "${counter_file}"
 sleep 30
+STUB
+  chmod +x "${bin}"
+  printf '%s' "${bin}"
+}
+
+_stub_glm_ok() {
+  local dir="$1" counter_file="$2"
+  local bin="${dir}/glm"
+  cat > "${bin}" <<STUB
+#!/usr/bin/env bash
+echo x >> "${counter_file}"
+out=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in --out) out="\$2"; shift 2;; *) shift;; esac
+done
+printf '%s\\n' '{"complexity":"standard","subsystems_touched":3,"needs_live_verification":true,"risk_class":"data","duration_class":"medium","work_kind":"build"}' > "\$out"
+STUB
+  chmod +x "${bin}"
+  printf '%s' "${bin}"
+}
+
+_stub_glm_fail() {
+  local dir="$1" counter_file="$2"
+  local bin="${dir}/glm-fail"
+  cat > "${bin}" <<STUB
+#!/usr/bin/env bash
+echo x >> "${counter_file}"
+exit 1
 STUB
   chmod +x "${bin}"
   printf '%s' "${bin}"
@@ -464,6 +495,32 @@ when a provider that already publishes a reset date changes format.")"
   rm -rf "${root}"
 }
 
+# ── T16: GLM is the production default; a failed GLM call gets one Haiku
+# fallback before the deterministic estimator. The prompt remains unchanged,
+# while output provenance makes both routes auditable.
+test_t16_glm_default_and_haiku_fallback() {
+  local root; root="$(_fixture_root)"
+  local glm_calls="${root}/glm-calls.txt" haiku_calls="${root}/haiku-calls.txt"
+  : > "${glm_calls}"; : > "${haiku_calls}"
+  local glm_bin haiku_bin m out arm
+  glm_bin="$(_stub_glm_ok "${root}" "${glm_calls}")"
+  haiku_bin="$(_stub_claude_ok "${root}" "${haiku_calls}")"
+  m="$(_write_mission "${root}" "m" "Classify this ordinary build task.")"
+  out="$(env -u LEADV2_JUDGE_ARM LEADV2_JUDGE_GLM_BIN="${glm_bin}" LEADV2_JUDGE_CLAUDE_BIN="${haiku_bin}" LEADV2_JUDGE_CACHE_DIR="${root}/cache-glm" bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
+  arm="$(_kv "${out}" judge_arm)"
+  if [[ "${arm}" == "glm" && "$(wc -l < "${glm_calls}" | tr -d ' ')" == "1" && "$(wc -l < "${haiku_calls}" | tr -d ' ')" == "0" ]]; then
+    pass "T16: default arm=glm; valid GLM answer does not spend Haiku"
+  else
+    fail "T16: expected GLM default only, arm=${arm} glm=$(wc -l < "${glm_calls}") haiku=$(wc -l < "${haiku_calls}")"
+  fi
+  local glm_fail; glm_fail="$(_stub_glm_fail "${root}" "${glm_calls}")"
+  out="$(LEADV2_JUDGE_ARM=glm LEADV2_JUDGE_GLM_BIN="${glm_fail}" LEADV2_JUDGE_CLAUDE_BIN="${haiku_bin}" LEADV2_JUDGE_CACHE_DIR="${root}/cache-fallback" bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
+  arm="$(_kv "${out}" judge_arm)"
+  [[ "${arm}" == "haiku_fallback" ]] && pass "T16: failed GLM -> Haiku fallback" \
+    || fail "T16: expected haiku_fallback after GLM failure, got ${arm}"
+  rm -rf "${root}"
+}
+
 # ── syntax guard ─────────────────────────────────────────────────────────────
 test_syntax_check() {
   if bash -n "${JUDGE_SH}" 2>/dev/null; then
@@ -488,6 +545,7 @@ test_t12_no_over_trigger
 test_t13_floor_never_downgrades
 test_t14_id_only_safety_regression
 test_t15_homograph_regression
+test_t16_glm_default_and_haiku_fallback
 test_syntax_check
 
 echo ""
