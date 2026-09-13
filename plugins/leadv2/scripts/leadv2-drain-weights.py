@@ -35,7 +35,21 @@ Method, and its known limits (reported, never hidden):
     number this file cannot defend.
 
 Usage: leadv2-drain-weights.py [--window 5h|7d] [--db PATH] [--account KEY]
+                                [--group model|provider]
   --account defaults to the derived live key (sha256_8(realpath(CLAUDE_CONFIG_DIR))).
+  --group provider (default, FIT-THE-PRICE-PER-PROVIDER-01) collapses
+    turn_events.model into the SAME buckets router_v2.cost prices by:
+    claude-haiku/opus/sonnet -> anthropic, glm-5.3 -> glm, glm-5.3-flash
+    stays its own bucket (it has its own measured credit ratio,
+    GLM-EFFICIENCY-01), any other model name -> itself (so an unrecognised
+    model still gets a column instead of silently vanishing). --group model
+    is the pre-PRICE-THE-PER-PROVIDER-01 behaviour (one column per raw model
+    name), kept only to reproduce the before/after collinearity comparison.
+  A model literally named "<synthetic>" is always dropped before either
+  grouping: every observed row carries input=output=0 (verified against
+  ~/.claude/burn/history.db, 2026-09-14), so it is a zero-token placeholder
+  that can never carry fit signal -- keeping it as a column would only add
+  report noise, never a defensible weight.
 
 Output: one k=v line (kept= r2= weights= ...), then short human diagnostics.
 """
@@ -59,6 +73,28 @@ RETENTION_LIMIT_H = 48
 RETENTION_SOURCE = "~/.claude/burn/lib.py:8 TURN_EVENTS_RETENTION_HOURS"
 
 PCT_COL = {"5h": "five_hour_pct", "7d": "seven_day_pct"}
+
+SYNTHETIC_MODEL = "<synthetic>"
+
+# FIT-THE-PRICE-PER-PROVIDER-01: order matters -- glm-5.3-flash must be
+# checked before the glm-5.3 prefix, or it would fold into the "glm" bucket
+# it is deliberately kept out of (its own measured credit ratio).
+_PROVIDER_PREFIXES = (
+    ("glm-5.3-flash", "glm-flash"),
+    ("glm-5.3", "glm"),
+    ("claude-haiku", "anthropic"),
+    ("claude-opus", "anthropic"),
+    ("claude-sonnet", "anthropic"),
+    ("codex", "codex"),
+)
+
+
+def _provider_for_model(model):
+    m = model.lower()
+    for prefix, provider in _PROVIDER_PREFIXES:
+        if m.startswith(prefix):
+            return provider
+    return model
 
 
 def _ts_to_epoch(ts):
@@ -145,7 +181,7 @@ def _pearson(a, b):
 
 
 def main(argv):
-    window, db, account = "5h", None, None
+    window, db, account, group = "5h", None, None, "provider"
     args = argv[1:]
     i = 0
     while i < len(args):
@@ -158,12 +194,18 @@ def main(argv):
         elif args[i] == "--account" and i + 1 < len(args):
             account = args[i + 1]
             i += 2
+        elif args[i] == "--group" and i + 1 < len(args):
+            group = args[i + 1]
+            i += 2
         else:
             print("usage: leadv2-drain-weights.py [--window 5h|7d] [--db PATH] "
-                  "[--account KEY]", file=sys.stderr)
+                  "[--account KEY] [--group model|provider]", file=sys.stderr)
             return 2
     if window not in PCT_COL:
         print("window must be 5h or 7d", file=sys.stderr)
+        return 2
+    if group not in ("model", "provider"):
+        print("--group must be model or provider", file=sys.stderr)
         return 2
     if not account:
         account = account_key_for_config_dir(
@@ -215,6 +257,7 @@ def main(argv):
     events.sort()
 
     intervals, dropped_reset, dropped_idle, fable_excluded = [], 0, 0, 0
+    synthetic_dropped = 0
     event_epochs = [e for e, _m, _t in events]
     for (e0, p0), (e1, p1) in zip(snaps_clean, snaps_clean[1:]):
         delta = p1 - p0
@@ -225,6 +268,9 @@ def main(argv):
         span = events[lo:hi]
         by_model = {}
         for _e, model, tok in span:
+            if model == SYNTHETIC_MODEL:
+                synthetic_dropped += 1
+                continue
             by_model[model] = by_model.get(model, 0) + tok
         if delta < 0:
             dropped_reset += 1
@@ -236,13 +282,21 @@ def main(argv):
         if delta == 0 and tokens == 0:
             dropped_idle += 1
             continue
-        intervals.append((delta, by_model))
+        if group == "provider":
+            by_group = {}
+            for m, tok in by_model.items():
+                g = _provider_for_model(m)
+                by_group[g] = by_group.get(g, 0) + tok
+        else:
+            by_group = by_model
+        intervals.append((delta, by_group))
 
     kept = len(intervals)
-    base = ("window=%s account=%s kept=%d threshold=%d "
-            "dropped_reset=%d dropped_idle=%d fable_intervals_excluded=%d"
-            % (window, account, kept, MIN_INTERVALS, dropped_reset,
-               dropped_idle, fable_excluded))
+    base = ("window=%s account=%s group=%s kept=%d threshold=%d "
+            "dropped_reset=%d dropped_idle=%d fable_intervals_excluded=%d "
+            "synthetic_rows_dropped=%d"
+            % (window, account, group, kept, MIN_INTERVALS, dropped_reset,
+               dropped_idle, fable_excluded, synthetic_dropped))
     snapshots_note = "snapshots=%d" % len(snaps_clean)
     if kept < MIN_INTERVALS:
         if window == "7d":
