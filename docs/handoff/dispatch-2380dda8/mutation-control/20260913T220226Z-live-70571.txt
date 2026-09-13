@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-launcher-refusal-event.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s|reason="${raw}"|reason="unclassified"|
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: decision journal row missing or malformed -- launcher_refused task=cafe0001 arm=fable reason=unclassified fell_through_to=codex
+diff_hash=03c09cc2cfa4b30dad1ba55a12cb0baaabe45e0c959db0924e90678ecaaad12d
+lane_diff_hash=3ae834d26ef818a50daaece1df14aa1435e8068f52dc1cc2c64726f4d525eaf7
+porcelain_clean=yes
+restored=yes
