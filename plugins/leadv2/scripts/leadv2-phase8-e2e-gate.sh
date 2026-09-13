@@ -438,10 +438,19 @@ if [[ ( -n "${FOREIGN_CSV}" || -n "${PRE_EXISTING_CSV}" ) && -z "${OWN_CSV}" && 
 fi
 
 printf 'e2e_gate task=%s verdict=fail elapsed_s=%s budget_s=%s\n' "${TASK_ID}" "${_p8_elapsed_s}" "${E2E_TIMEOUT_S}" >> "$LOG"
+# item 2: name the failing suites in the terminal line itself.
+_p8_failing_suites_csv="${OWN_CSV}"
+if [[ -z "${_p8_failing_suites_csv}" ]]; then
+  _p8_failing_suites_csv="$(awk '
+    /^  Failures \(blocking\):$/ { infail=1; next }
+    infail && /^    - / { sub(/^    - /, ""); printf "%s,", $0; next }
+    { infail=0 }
+  ' "$LOG" 2>/dev/null | sed 's/,$//')"
+fi
 if [[ -z "${WRITES_CSV}" ]]; then
-  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=fail rc=${rc} scope=whole_tree_fallback elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}"
+  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=fail rc=${rc} scope=whole_tree_fallback failing_suites=${_p8_failing_suites_csv} elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}"
 else
-  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=fail rc=${rc} elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}"
+  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=fail rc=${rc} failing_suites=${_p8_failing_suites_csv} elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}"
 fi
 echo "leadv2-phase8-e2e-gate: FAIL (tests/run-all.sh --scope changed exit ${rc}; elapsed_s=${_p8_elapsed_s} budget_s=${E2E_TIMEOUT_S}) — see ${LOG}" >&2
 tail -40 "$LOG" >&2 || true

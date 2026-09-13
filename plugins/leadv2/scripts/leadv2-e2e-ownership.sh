@@ -73,6 +73,20 @@ fi
 if [[ -z "${WRITES_CSV}" ]]; then
   # Caller resolves the whole_tree_fallback branch itself when WRITES_CSV is
   # empty; if we're reached anyway, fail-closed to own so nothing regresses.
+  #
+  # THE-E2E-RUNG-CALLS-PRE-EXISTING-RED-A-REGRESSION-01 (investigated
+  # 2026-09-14, dispatch-ba6b0bf8): tried extending the pre_existing-at-
+  # merge-base check to run here too (writes=() falls through instead of
+  # returning), on the theory that a whole_tree_fallback lane dying on a
+  # suite that predates it (0a148de1, e33f2050) is exactly this fail-closed
+  # branch's fault. Reverted: it changed classification on
+  # test-e2e-gate-lane-root.sh case (f) (own/undecidable -> pre_existing on
+  # a fixture that expects the harness_unparsed path) and made
+  # test-e2e-foreign-failure.sh exceed a 120s budget (the merge-base rerun
+  # roughly doubles ownership-script wall time per failing suite, now paid
+  # by every empty-WRITES_CSV scenario too). The mechanism needs its own
+  # dedicated fixture pass before it can replace this fail-closed default --
+  # left as a follow-up (see docs/handoff/dispatch-ba6b0bf8/developer.full.md).
   _emit "$(_join "${F[@]}")" "" "" "unknown"
   exit 0
 fi

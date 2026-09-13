@@ -14,7 +14,7 @@
 # that reason: under CI or any Homebrew-shell dev machine, `bash` on PATH is
 # 5.x, and the bug would be invisible to a test that used it.
 # Guard against mktemp -t without XXX in template
-# run-all-triggers: mktemp-guard leadv2-status-surface.5s leadv2-broad-status leadv2-status-surface
+# run-all-triggers: mktemp-guard leadv2-status-surface.5s leadv2-status-surface
 #
 # SUITE-SELECTION-COVERS-140-OF-390-01: this suite carried no trigger
 # marker and matched no name convention, so `run-all.sh --scope changed`
@@ -40,7 +40,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/.." && pwd)"
 RENDERER="${ROOT}/plugins/leadv2/scripts/leadv2-status-surface.sh"
 WRAPPER="${ROOT}/plugins/leadv2/scripts/leadv2-status-surface.5s.sh"
-BROAD_STATUS="${ROOT}/plugins/leadv2/scripts/leadv2-broad-status.sh"
 # SWIFTBAR-FAST-NAMES-01: the widget now reads an async cache by default and
 # only calls the renderer from a detached refresher. The cache path can't
 # produce a synchronous title from a one-shot invocation, so this suite
@@ -89,12 +88,16 @@ else
   bad "wrapper syntax error under bash 3.2: ${_out}"
 fi
 
-echo "== T2b: /bin/bash -n on the broad-status composer =="
-if _out="$(/bin/bash -n "$BROAD_STATUS" 2>&1)" && [[ -z "$_out" ]]; then
-  ok "broad-status composer parses clean under bash 3.2"
-else
-  bad "broad-status composer syntax error under bash 3.2: ${_out}"
-fi
+# T2b (bash -n on leadv2-broad-status.sh, the founder-status chat-beat
+# composer) removed 2026-09-14 -- ONE-STATUS-MECHANISM-01 (founder order
+# 2026-09-12, commit 487fe9214) deleted that file outright: the single-lead
+# beat / broad-status chain was retired in favour of one canonical mechanism,
+# plugins/leadv2/scripts/anti-silence-pulse.sh. That successor is plugin-
+# owned background tooling, never launched by SwiftBar under a minimal PATH,
+# so it carries none of this suite's bash-3.2-at-/bin/bash risk (T1/T2 above
+# cover the two files SwiftBar actually execs) -- there is no equivalent
+# check to port forward, only a stale reference to a file that no longer
+# exists to delete.
 
 echo "== T3: env -i minimal PATH (the actual SwiftBar launch shape) renders lanes =="
 # This is environment-dependent: it needs live lanes to prove a real row

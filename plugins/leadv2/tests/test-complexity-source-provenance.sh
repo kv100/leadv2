@@ -36,6 +36,16 @@ SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/../scripts" && pwd)"
 JUDGE_BIN="${SCRIPTS_ROOT}/leadv2-task-judge.sh"
 DISPATCH_BIN="${SCRIPTS_ROOT}/leadv2-dispatch-code.sh"
 ROUTING="${SCRIPTS_ROOT}/../config/leadv2-routing.yaml"
+# shellcheck source=../scripts/lib/leadv2-builder-selfcheck.sh
+source "${SCRIPTS_ROOT}/lib/leadv2-builder-selfcheck.sh"
+# THE-E2E-RUNG-CALLS-PRE-EXISTING-RED-A-REGRESSION-01: a --task-class light
+# estimate the judge marks complex triggers a REAL class_escalated ->
+# ADMISSION_ROUTE=phases path (unrelated to this suite's floor/provenance
+# assertions) that this synthetic --no-spawn harness cannot service and that
+# hangs rather than fails fast. Bound every dispatch call with the repo's own
+# portable timeout helper so a hang here degrades to one failed case, never a
+# suite (and by extension tests/run-all.sh) that never returns.
+RUN_DISPATCH_TIMEOUT_S="${CXPROV_DISPATCH_TIMEOUT_S:-60}"
 
 PASS=0; FAIL=0
 pass() { printf 'PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
@@ -176,6 +186,7 @@ est() { # <id> <source> <complexity> <basis> -> estimate JSON
 
 run_dispatch() { # <bin> <repo> <suffix> -> dispatch stdout on stdout
   local bin="$1" repo="$2" suffix="$3"; shift 3
+  local rd_log="$TMP/rd-$suffix.log"
   (cd "$repo" && LEADV2_STATE_ROOT="$TMP/state-root-$suffix" \
     LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" \
     LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" \
@@ -189,8 +200,14 @@ run_dispatch() { # <bin> <repo> <suffix> -> dispatch stdout on stdout
     LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
     LEADV2_TASK_JUDGE_BIN="$TMP/task-judge.sh" \
     LEADV2_DISPATCH_SUBSESSION_BIN="$TMP/worker.sh" \
-    bash "$bin" "cx-source suite $suffix ${TMP}" \
-      --kind code --no-spawn --writes src/x.py "$@" 2>&1)
+    LEADV2_PREMISE_OVERRIDE_REASON="synthetic fixture repo has no docs/tasks.yaml backlog (ARBITER-SCORING-DESIGN-01 provenance harness)" \
+    _lv2_selfcheck_timeout_run "${RUN_DISPATCH_TIMEOUT_S}" "${rd_log}" -- \
+      bash "$bin" "cx-source suite $suffix ${TMP}" \
+      --kind code --no-spawn --no-probe-yet --writes src/x.py "$@")
+  local rd_rc=$?
+  cat "${rd_log}" 2>/dev/null
+  [[ ${rd_rc} -eq 124 ]] && printf '\n[cx-source-harness] run_dispatch TIMED OUT after %ss (suite=%s) -- treated as environment/harness limitation, not a provenance assertion failure\n' "${RUN_DISPATCH_TIMEOUT_S}" "$suffix" >&2
+  return 0
 }
 
 b_case() { # <suffix> <estimate> <expected-source> <expected-conf> [args...] -> greps the journal
