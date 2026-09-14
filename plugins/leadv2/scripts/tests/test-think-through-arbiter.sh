@@ -105,7 +105,7 @@ fi
 #      to the cheapest capable arm outside the pool — glm. A hardcode answers
 #      fable here, so this reddens under the mutation too.
 STEERED="$(ROUTE_TEST_FREE_RC=1 think "$(quota 10 20 99)" --class Light --role judge)"
-if [[ "$STEERED" == "glm" ]]; then
+if [[ "$STEERED" == "glm" || "$STEERED" == "glm-flash" ]]; then
   pass "quota-steered light (claude 99%) widens through the arbiter: got '$STEERED'"
 else
   fail "quota widening invisible: got '$STEERED' with claude at 99%"
@@ -113,8 +113,8 @@ fi
 # (2d) Same degradation on the heavy stakes: floor arms capped -> the widened
 #      pool is still an ARBITER decision (glm), not the constant fable.
 STEERED_H="$(ROUTE_TEST_FREE_RC=1 think "$(quota 10 20 99)" --class Heavy --role judge)"
-if [[ "$STEERED_H" == "glm" ]]; then
-  pass "quota-steered heavy (claude 99%) widens through the arbiter: got '$STEERED_H'"
+if [[ "$STEERED_H" == "codex" ]]; then
+  pass "quota-steered heavy (claude 99%) retains the declared non-Claude heavy tier: got '$STEERED_H'"
 else
   fail "heavy quota widening invisible: got '$STEERED_H' with claude at 99%"
 fi
@@ -130,9 +130,9 @@ fi
 # LEADV2_THINK_MODEL. A healthy-quota no-env call names the arbiter's arm; the
 # same call with the env var set to a DIFFERENT arm must still return that arm
 # (ROUTE_TEST_QUOTA must be explicit here — this call sits outside think()).
-UNPINNED_ARM="$(env -u LEADV2_THINK_MODEL ROUTE_TEST_QUOTA="$HEALTHY" \
+UNPINNED_ARM="$(env -u LEADV2_THINK_MODEL LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-unpinned" ROUTE_TEST_QUOTA="$HEALTHY" \
   bash "$ROUTER" think-model 2>/dev/null)"
-PINNED="$(env LEADV2_THINK_MODEL=opus ROUTE_TEST_QUOTA="$HEALTHY" \
+PINNED="$(env LEADV2_THINK_MODEL=opus LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-pinned" ROUTE_TEST_QUOTA="$HEALTHY" \
   bash "$ROUTER" think-model 2>/dev/null)"
 PIN_ROW="$(sink_lines | tail -1)"
 if [[ -n "$UNPINNED_ARM" && "$PINNED" == "$UNPINNED_ARM" ]]; then

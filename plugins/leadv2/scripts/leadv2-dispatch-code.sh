@@ -500,25 +500,10 @@ LEDGER_REPO_ROOT="$(cd "${WORK_ROOT}" 2>/dev/null && cd "$(dirname "$(git rev-pa
 _DISPATCH_WORKER_LIVE=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-"$0"}")" 2>/dev/null && pwd)"
 
-# FABLE-THINK-TIER-01 R6: the think-model kill-switch channel for spawned
-# sessions. The four THINK workflows (diverge/learn/diagnose/po-feedback-loop)
-# read process.env.LEADV2_THINK_MODEL — the JS sandbox cannot consult
-# model-capability.yaml, so the yaml `unavailable: true` fallback only reaches
-# them if the dispatching process exports the resolver's answer. The resolver
-# itself now applies the yaml kill switch BEFORE the env default, so an
-# install-time settings.json pin can never resurrect a dead model. Resolver
-# failure leaves the var unset and the workflow falls back to its documented
-# default. R6: this block must stay AFTER the SCRIPT_DIR assignment above —
-# it calls "${SCRIPT_DIR}/lib/leadv2-think-model.sh" and the script runs set -u.
-_lv2_think="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
-[[ -n "$_lv2_think" ]] && export LEADV2_THINK_MODEL="$_lv2_think"
-# FABLE-THINK-TIER-01: the architect prepass is a THINKING role (design, not
-# typing) — its default arm resolves through leadv2-router.sh's think_model()
-# (fable, opus fallback) rather than a hardcoded opus literal. A caller that
-# sets LEADV2_DISPATCH_ARCHITECT_MODEL explicitly still wins outright.
-_LEADV2_ARCHITECT_THINK_DEFAULT="$(bash "${SCRIPT_DIR}/leadv2-router.sh" think-model 2>/dev/null || true)"
-[[ -n "${_LEADV2_ARCHITECT_THINK_DEFAULT}" ]] || _LEADV2_ARCHITECT_THINK_DEFAULT="opus"
-readonly _LEADV2_ARCHITECT_THINK_DEFAULT
+# THINK-CLASS-PLUMBING-01: this cannot resolve at process startup.  The real
+# task class is established by _admission_classify inside cmd_resolve, so an
+# eager query here was necessarily classless and wrote a default-class census
+# row.  Resolve and export the child-workflow fallback only after admission.
 if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${SCRIPT_DIR}/lib/leadv2-trace.sh"
 else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
 # CLOSE-GATE-BYPASSABLE-BY-ENV-01 L3 (defence in depth): the real scrub point
@@ -6112,7 +6097,11 @@ _release_registered_lane() {  # <reg_id> <sig8> <where> -- owner-verified, idemp
 }
 
 architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled, 1 failed
-  local raw="$1" sig8="$2" writes="$3" f mfile out rc count
+  local raw="$1" sig8="$2" writes="$3" f mfile out rc count architect_model
+  # The default was resolved after admission in cmd_resolve, with this task's
+  # class and id.  An explicit operator override remains the only precedence
+  # over that arbiter verdict.
+  architect_model="${LEADV2_DISPATCH_ARCHITECT_MODEL:-${LEADV2_THINK_MODEL:-fable}}"
   ARCHITECT_PREPASS_REASON=""
   ARCHITECT_FALLBACK_ARM_USED=""
   # ARCHITECT-PREPASS-PARKS-THE-TASK-01: harvest the mission text's own
@@ -6237,7 +6226,7 @@ If code discovery contradicts the mission's framing, say so plainly and design a
   # macOS has no portable `timeout`. Python waits for the launcher only; a
   # timed-out advisory prepass is deliberately allowed to finish or be reaped
   # independently while this dispatch immediately continues with the raw task.
-  out="$(PROJECT_ROOT="${PROJECT_ROOT}" python3 - "${ARCHITECT_PREPASS_TIMEOUT_SEC}" "${ARCHITECT_BIN}" "${LEADV2_DISPATCH_ARCHITECT_MODEL:-${_LEADV2_ARCHITECT_THINK_DEFAULT}}" "dispatch-${sig8}-${ARCHITECT_LANE_SUFFIX}" "${mfile}" <<'PY' 2>&1
+  out="$(PROJECT_ROOT="${PROJECT_ROOT}" python3 - "${ARCHITECT_PREPASS_TIMEOUT_SEC}" "${ARCHITECT_BIN}" "${architect_model}" "dispatch-${sig8}-${ARCHITECT_LANE_SUFFIX}" "${mfile}" <<'PY' 2>&1
 import os, signal, subprocess, sys
 timeout, binary, model, task_id, mission_file = sys.argv[1:]
 proc = None
@@ -6342,9 +6331,9 @@ PY
     # timeout) retries the same prompt through another configured arm's own
     # launcher before this attempt is declared failed. The fallback design is
     # validated exactly like a Claude design by the shared guards below (§3).
-    case "${LEADV2_DISPATCH_ARCHITECT_MODEL:-${_LEADV2_ARCHITECT_THINK_DEFAULT}}" in
+    case "${architect_model}" in
       opus|sonnet|haiku|fable|claude*) _pp_failed_prov="anthropic" ;;
-      *) _pp_failed_prov="$(_arm_provider "${LEADV2_DISPATCH_ARCHITECT_MODEL:-${_LEADV2_ARCHITECT_THINK_DEFAULT}}")" ;;
+      *) _pp_failed_prov="$(_arm_provider "${architect_model}")" ;;
     esac
     if [[ "${ARCHITECT_FALLBACK}" == "1" ]] \
        && [[ "${_pp_cls}" == "authentication_failed" || "${_pp_cls}" == "rate_limited" || "${_pp_cls}" == "quota_exceeded" ]] \
@@ -9038,6 +9027,10 @@ cmd_resolve() {
   # refuses class>=Standard without same-task pre-build phase records.
   _admission_classify "${mission}" "${sig}" "${sig8}" "${task_class}" "${task_class_flagged:-0}"
   task_class="${ADMISSION_CLASS}"
+  export LEADV2_TASK_CLASS="${task_class}" LEADV2_THINK_TASK_ID="${sig8}"
+  local _lv2_think
+  _lv2_think="$(LEADV2_THINK_ROLE=architect-prepass bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
+  [[ -n "${_lv2_think}" ]] && export LEADV2_THINK_MODEL="${_lv2_think}"
   # SAFETY-PIN-SECOND-DOOR-01: the judge's risk_class=safety_publish_payments
   # previously only escalated ADMISSION_CLASS to Heavy (leadv2-admission-class.sh)
   # -- it never reached the `safety` signal below, so a task the judge flagged

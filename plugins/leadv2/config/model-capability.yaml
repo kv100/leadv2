@@ -308,9 +308,15 @@ glm-flash:
 # doctrine ban: no arm is forbidden (GLM-DOES-EVERYTHING-01, dd9ce9ec —
 # glm's plan/audit/review cells stay in the matrix).
 #
-# Liveness: if EVERY pooled arm is kill-switched (`unavailable: true`
-# above) or quota-capped, think_model drops the constraint and lets the
-# arbiter pick among all capable arms — a think role never dead-ends on an
+# THINK-CLASS-PLUMBING-01: task class maps to a matrix `think_tier`, not a
+# resolver branch or a capability renumber.  The capability matrix owns which
+# provider/model tiers can do each kind at each size and think tier. A bare
+# query remains heavy for compatibility; a real dispatch supplies
+# LEADV2_TASK_CLASS.
+#
+# Liveness: if EVERY eligible arm is kill-switched (`unavailable: true`
+# above) or quota-capped, think_model drops the class constraint and lets the
+# arbiter pick among all capable rows — a think role never dead-ends on an
 # over-narrow pool, and the cheap hand stays reachable as that widened
 # fallback.
 think_stakes:
@@ -319,10 +325,10 @@ think_stakes:
                           # heavy tier, architect prepass) is a high-stakes
                           # consumer, so the default is the heavy posture.
   classes:
-    light:     { size: standard, complexity: trivial, arms: [sonnet, fable, opus] }
-    standard:  { size: standard, complexity: standard, arms: [sonnet, fable, opus] }
-    heavy:     { size: heavy,    complexity: complex, tier_floor: high, provider: claude }
-    strategic: { size: heavy,    complexity: complex, tier_floor: high, provider: claude }
+    light:     { size: standard, complexity: trivial, think_tier: light, arms: [sonnet, fable, opus] }
+    standard:  { size: standard, complexity: standard, think_tier: standard, arms: [sonnet, fable, opus] }
+    heavy:     { size: heavy,    complexity: complex, think_tier: heavy }
+    strategic: { size: heavy,    complexity: complex, think_tier: strategic }
 
 kimi:
   underlying_model: kimi-k3

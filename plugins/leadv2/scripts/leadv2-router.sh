@@ -347,13 +347,19 @@ except ImportError:
     kill, default_class, classes = _subset_cap(sys.argv[1])
     cells = _subset_matrix(sys.argv[2])
     if classes is None or cells is None:
-        sys.exit(0)
+        sys.exit(10)  # think_config_unreadable
+    stakes = {'classes': classes}  # normalize the subset-loader shape below
 except Exception:
-    sys.exit(0)
+    sys.exit(10)      # think_config_unreadable
+if not isinstance(stakes, dict) or not isinstance(classes, dict) or not classes:
+    sys.exit(11)      # think_stakes_missing
 cls = (sys.argv[4] or default_class or 'heavy').lower()
 row = classes.get(cls) or {}
+if not row:
+    sys.exit(12)      # think_class_row_missing
 size = str(row.get('size', 'standard')).lower()
 complexity = str(row.get('complexity', 'standard')).lower()
+think_tier = str(row.get('think_tier', '')).lower()
 tier_floor = str(row.get('tier_floor', 'none')).lower()
 provider_floor = str(row.get('provider', '')).lower()
 def _norm_list(v):
@@ -376,6 +382,7 @@ def _norm_cells(raw):
         out.append({'arm': str(c.get('arm', '')).lower(),
                     'kinds': [str(x).lower() for x in (kinds or [])],
                     'sizes': [str(x).lower() for x in (sizes or [])],
+                    'think_tiers': [str(x).lower() for x in (_flow_list(c.get('think_tiers')) if isinstance(c.get('think_tiers'), str) else (c.get('think_tiers') or []))],
                     'tier': str(c.get('tier', 'standard')).lower(),
                     'provider': str(c.get('provider', '')).lower()})
     return out
@@ -399,6 +406,8 @@ def pool(strict):
     for c in cells:
         if kind not in c['kinds'] or size not in c['sizes']:
             continue
+        if strict and think_tier and think_tier not in c['think_tiers']:
+            continue
         if strict and not _strict_ok(c):
             continue
         if c['arm'] and c['arm'] not in kill:
@@ -411,16 +420,23 @@ else:
     # first, then the widened one, kill-switch filter kept in both.
     arms = pool(True) or pool(False)
 if not arms:
-    sys.exit(0)          # no matrix cell for this kind/size at all -> fail open
+    sys.exit(13)          # think_matrix_cell_missing
 desc = {'kind': kind, 'size': size, 'complexity': complexity,
         'complexity_source': 'judge', 'arm_pool': arms,
         'subtype': 'think:' + str(sys.argv[5]), 'task': str(sys.argv[6])}
 print(json.dumps(desc))
 PY
   }
-  desc="$(_think_build_desc)" || desc=""
+  local desc_rc=0
+  desc="$(_think_build_desc)" || desc_rc=$?
   if [[ -z "$desc" ]]; then
-    printf '|stakes_or_data_missing\n'
+    case "$desc_rc" in
+      10) printf '|think_config_unreadable\n' ;;
+      11) printf '|think_stakes_missing\n' ;;
+      12) printf '|think_class_row_missing\n' ;;
+      13) printf '|think_matrix_cell_missing\n' ;;
+      *)  printf '|think_descriptor_empty\n' ;;
+    esac
     return 0
   fi
   local out rc arm arb_reason arb_effort _err="${TMPDIR:-/tmp}/leadv2-think-arb-err.tmp"
@@ -502,8 +518,14 @@ if [[ "${1:-}" == "think-model" ]]; then
   # keeps its historical meaning (the high-stakes default posture from
   # think_stakes.default_class), so every existing `$(... think-model)`
   # capture is byte-compatible.
-  THINK_ROLE="default"
-  THINK_CLASS=""
+  # THINK-CLASS-PLUMBING-01: direct callers and the shared wrapper both carry
+  # the admission result in LEADV2_TASK_CLASS.  This query mode used to reset
+  # THINK_CLASS to empty unconditionally, so every bare think call silently
+  # became the configured default class even when the launcher had already
+  # classified the task.  Explicit CLI context still wins, preserving the
+  # resolver's use as a diagnostic tool.
+  THINK_ROLE="${LEADV2_THINK_ROLE:-default}"
+  THINK_CLASS="${LEADV2_THINK_CLASS:-${LEADV2_TASK_CLASS:-}}"
   THINK_TASK_ID="${LEADV2_THINK_TASK_ID:-${LEADV2_TASK_ID:-}}"
   shift
   while [[ $# -gt 0 ]]; do
