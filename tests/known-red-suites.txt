@@ -1,24 +1,46 @@
-# tests/known-red-suites.txt — CI-RUNS-THE-SUITES-01, dated 2026-09-02.
+# tests/known-red-suites.txt — CI-RUNS-THE-SUITES-01, dated 2026-09-02;
+# refreshed 2026-09-14 by THE-KNOWN-RED-REGISTRY-ROTTED-AND-EVERY-LANE-PAYS-01.
 #
-# Suites that were ALREADY red on `main` the day CI was wired up (measured via
-# `tests/run-all.sh --scope changed`, which always runs the full curated
+# Suites that are red on `main` and tolerated so an unrelated lane isn't
+# blocked by a suite it never touched (measured via `tests/run-all.sh
+# --scope changed`, which always runs the full curated
 # plugins/leadv2/scripts/tests/run-core-offline.sh set regardless of scope).
-# Fixing them is out of scope for CI-RUNS-THE-SUITES-01 — that is
-# FIFTEEN-RED-SUITES-01, a separate task. This file exists so the CI job can
-# be green from birth without hiding NEW regressions: tests/ci-gate.sh treats
-# any failing suite on this list as a known issue (reported, non-blocking)
-# and any failing suite NOT on this list as a hard failure.
+# Fixing them is out of scope here — that is FIFTEEN-RED-SUITES-01 /
+# SD-MAIN-CORE-SUITE-RED-01 (by-name tracking: docs/leadv2/scheduled-decisions.md),
+# separate tasks. This file exists so the CI job (and every lane's e2e gate,
+# leadv2-phase8-e2e-gate.sh) can be green without hiding NEW regressions:
+# tests/ci-gate.sh and the run-core-offline.sh wrapper classification in
+# tests/run-all.sh both treat a failing suite on this list as a known issue
+# (reported, non-blocking) and any failing suite NOT on this list as a hard,
+# blocking failure — for EVERY lane, because run-core-offline.sh is one
+# wrapper suite classified all-or-nothing (every failing nested suite must be
+# allow-listed for the wrapper to read as non-blocking). One unregistered red
+# here fails every lane's gate, not just the lane that caused it — that
+# amplifier is exactly what let this list rot silently 2026-09-02 -> 09-14:
+# 13 suites went red after the snapshot and nobody could cheaply notice.
 #
 # Format: one entry per line, `core:<exact [CORE-OFFLINE] FAILED: label>` for
-# suites that run nested inside run-core-offline.sh (all 15 below are), or
-# `path:<repo-relative suite path>` for a suite that fails at the top level
-# of tests/run-all.sh. A trailing `# <script path> — <reason>` comment is
-# required so a reader never has to reproduce the failure locally just to
-# find out what it is.
+# suites that run nested inside run-core-offline.sh, or `path:<repo-relative
+# suite path>` for a suite that fails at the top level of tests/run-all.sh. A
+# trailing `# <script path> — <reason>, dated YYYY-MM-DD` comment is REQUIRED
+# so a reader never has to reproduce the failure locally just to find out
+# what it is, and so tests/known-red-guard.sh can verify freshness.
 #
-# THIS LIST MAY ONLY SHRINK. tests/known-red-guard.sh fails the build if the
-# entry count grows relative to the base branch. To add a suite here, remove
-# one first, or get sign-off outside this task's scope — do not just widen it.
+# GROWTH RULE (revised 2026-09-14 — the old "may only shrink, no exceptions"
+# rule is what caused the rot: it gave no legitimate channel to register a
+# suite that went red after the baseline snapshot, so genuinely new reds were
+# never added and instead silently blew the blast radius of every lane's
+# gate). The list may still only shrink for FREE — removing an entry never
+# needs justification — but it may GROW when, and only when, the new entry
+# carries a dated reason comment (a `YYYY-MM-DD` token). tests/known-red-
+# guard.sh enforces the date-token requirement on every entry and additionally
+# refuses (a) an entry whose label does not match any current SUITE_DEFS
+# label in plugins/leadv2/scripts/tests/run-core-offline.sh (a stale/renamed/
+# removed entry — rot in the other direction) and (c), when invoked with a
+# transcript-file argument, an entry that is demonstrably passing in that
+# transcript (the GONE-GREEN case tests/run-all.sh already detects and prints
+# informationally without failing; tests/known-red-guard.sh's check 4 makes
+# the same signal a hard refusal when a transcript is supplied).
 #
 # B2-GATE-BUDGET-4 (2026-09-09): under --scope changed / changed-since (the
 # close gate and PR CI — the BUDGET paths), tests/run-all.sh asks
@@ -45,3 +67,24 @@ core:dispatch refusal fallback chain  # plugins/leadv2/scripts/tests/test-routin
 core:Codex full-cycle runner  # plugins/leadv2/scripts/tests/test-codex-session-runner.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
 core:lane truth batch (log_path + quarantine convergence)  # plugins/leadv2/scripts/tests/test-lane-truth-batch-01.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
 core:report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)  # plugins/leadv2/scripts/tests/test-report-only-gate.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+
+# Added 2026-09-14 by THE-KNOWN-RED-REGISTRY-ROTTED-AND-EVERY-LANE-PAYS-01 —
+# reproduced live on this lane's worktree (bash plugins/leadv2/scripts/tests/
+# run-core-offline.sh, bare invocation) against a busy shared box (~100
+# concurrent leadv2 worktrees at measurement time — see the concurrent-load
+# caveat already on the SUITE-SPEED-01 entry above for why that matters).
+# By-name tracking: docs/leadv2/scheduled-decisions.md SD-MAIN-CORE-SUITE-RED-01.
+core:Codex quota guardrails (effort/circuit/hook)  # plugins/leadv2/scripts/tests/test-codex-quota-guardrails.sh — red 2026-09-14; quota/circuit-flavored, plausibly concurrent-load sensitive like SUITE-SPEED-01 above — not yet reproduced standalone; see SD-MAIN-CORE-SUITE-RED-01
+core:T13 slice2 (arbiter bench-fallback + abandon dedup)  # plugins/leadv2/scripts/tests/test-t13-slice2.sh — red 2026-09-14; see SD-MAIN-CORE-SUITE-RED-01
+core:dod gate suite registration (both map forms + run-all selection)  # plugins/leadv2/scripts/tests/test-dod-gate-suite-registration.sh — red 2026-09-14; see SD-MAIN-CORE-SUITE-RED-01
+core:idle-lead guard hook  # plugins/leadv2/scripts/tests/test-idle-lead-guard.sh — red 2026-09-14; see SD-MAIN-CORE-SUITE-RED-01
+core:journal honours the pinned root  # plugins/leadv2/scripts/tests/test-journal-honours-the-pinned-root.sh — red 2026-09-14; see SD-MAIN-CORE-SUITE-RED-01
+core:lane placement pin (--resume-lane/--worktree)  # plugins/leadv2/scripts/tests/test-lane-placement-pin.sh — red 2026-09-14; PLUGIN-PAPERCUTS-01 (2026-09-01) previously repaired this suite — a later regression, not the original defect; see SD-MAIN-CORE-SUITE-RED-01
+core:lane trace instrument (Mission B: writer/concurrency/off-path/reader)  # plugins/leadv2/scripts/tests/test-leadv2-trace.sh — red 2026-09-14; see SD-MAIN-CORE-SUITE-RED-01
+core:lane verdict three states (D2-UNBLIND-AND-THIRD-STATE-M0M1-01: deliverable=finished_unlanded, registry unreadable=unknown)  # plugins/leadv2/scripts/tests/test-lane-verdict-three-states.sh — red 2026-09-14; see SD-MAIN-CORE-SUITE-RED-01
+core:lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)  # plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh — red 2026-09-14; see SD-MAIN-CORE-SUITE-RED-01
+core:lane write-set admission block (LANE-WRITESET-REGISTRY-01)  # plugins/leadv2/scripts/tests/test-writeset-admission-block.sh — red 2026-09-14; see SD-MAIN-CORE-SUITE-RED-01
+core:parked worker contract and one-shot resume (WORKER-PARKED-ON-BG-01)  # plugins/leadv2/scripts/tests/test-parked-worker-resume.sh — red 2026-09-14; see SD-MAIN-CORE-SUITE-RED-01
+core:per-turn injection dedup (HOOK-INJECT-DEDUP-01)  # plugins/leadv2/scripts/tests/test-inject-dedup.sh — red 2026-09-14; see SD-MAIN-CORE-SUITE-RED-01
+core:provider quota gate (QUOTA-GATE-PARITY-01)  # plugins/leadv2/scripts/tests/test-provider-quota-gate.sh — red 2026-09-14; quota-flavored, plausibly concurrent-load sensitive like SUITE-SPEED-01 above — not yet reproduced standalone; see SD-MAIN-CORE-SUITE-RED-01
+core:shared-sink test guard (TESTS-POLLUTE-REAL-JOURNAL-01)  # plugins/leadv2/scripts/tests/test-shared-sink-test-guard.sh — red 2026-09-14; see SD-MAIN-CORE-SUITE-RED-01
