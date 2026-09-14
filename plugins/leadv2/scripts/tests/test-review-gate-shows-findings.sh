@@ -18,6 +18,12 @@
 # do-not-merge report still exits 0 with status: pass).
 #
 # Run: bash scripts/tests/test-review-gate-shows-findings.sh
+#
+# CODEX-REVIEWS-LOSE-THEIR-FINDINGS-TEXT-01: this suite pre-dates the DoD
+# gate's registration requirement (item c) — it carried no
+# '# run-all-triggers:' header, so a --scope changed run touching the
+# renderer or either gate writer never selected it. Declared here so it does.
+# run-all-triggers: leadv2-review-findings leadv2-review-findings.sh leadv2-dispatch-product-close leadv2-dispatch-product-close.sh leadv2-review-run leadv2-review-run.sh
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -148,6 +154,61 @@ R8="${SUITE_TMP}/r8.md"
 out="$("${FINDINGS_SH}" --report "$R8" 2>/dev/null)"
 n="$(grep -c '^- \[Medium\]' <<<"$out")"
 [[ "$n" -eq 5 ]] && has_line "$out" 'omitted: medium=2' && pass "A8: Mediums capped at 5, remainder in omitted:" || fail "A8: rendered=${n} out=${out}"
+
+# ─── CODEX-REVIEWS-LOSE-THEIR-FINDINGS-TEXT-01 ─────────────────────────────────
+# A9/A10/A11 pin the three fixture shapes the acceptance criteria require: a
+# ### High sections report (A1, above), a flat bracket-bullet list report
+# (A9 -- the dispatch-199f5d8e shape that used to degrade to parse_failed even
+# though every title was sitting in the file), and a deliberately malformed
+# report (A10) that must still fail extraction with a reason distinguishable
+# from both a missing file (A4) and an empty one (A11). This is the negative
+# control: a parser that swallows the malformed fixture into a clean-looking
+# "findings: none" is worse than the original bug.
+
+# A9: flat "- [sev] Title (path:lines)" bullets, no FINDING: prefix and no ##
+# heading anywhere -- the exact incident report shape from dispatch-199f5d8e.
+R9="${SUITE_TMP}/r9.md"
+{
+  printf 'REVIEW_VERDICT: FAIL\nREVIEW_FINDINGS: critical=0 high=2 medium=0 low=0\n\n'
+  printf '%s\n' '- [high] Migration requires unavailable cluster-role privilege (engine/db/migrations/0001_add_role.sql:7-19)'
+  printf '%s\n' '- [high] Changed-scope CI silently omits the migration acceptance test (tests/v5/migration_test.py:1)'
+} > "$R9"
+out="$("${FINDINGS_SH}" --report "$R9" --report-path docs/handoff/dispatch-t9/review-codex.md 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && pass "A9: rc 0" || fail "A9: rc ${rc}"
+has_line "$out" 'findings_source: bracket_lines' && pass "A9: findings_source=bracket_lines (!= none)" || fail "A9: findings_source wrong: ${out}"
+has_line "$out" '- [High] engine/db/migrations/0001_add_role.sql:7-19 — Migration requires unavailable cluster-role privilege' && \
+  pass "A9: first title rendered with its path:line anchor" || fail "A9: first finding missing: ${out}"
+has_line "$out" '- [High] tests/v5/migration_test.py:1 — Changed-scope CI silently omits the migration acceptance test' && \
+  pass "A9: second title rendered with its path:line anchor" || fail "A9: second finding missing: ${out}"
+has_line "$out" 'findings: unavailable' && fail "A9: bracket-list report still degraded to unavailable" || pass "A9: no degrade -- the report layout was read"
+
+# A10: deliberately malformed -- real content, a REVIEW_FINDINGS: line that
+# says items exist, but a shape NONE of the three known layouts can read
+# (no FINDING:, no ## heading, no "- [sev]" bullet). Negative control: this
+# MUST still fail, and its reason must differ from A4 (report_missing) and
+# A11 (empty_report) -- a parser that reads this as "findings: none" is the
+# exact silent-swallow bug this task exists to prevent.
+R10="${SUITE_TMP}/r10.md"
+printf 'REVIEW_VERDICT: FAIL\nREVIEW_FINDINGS: critical=0 high=3 medium=0 low=0\n\nSeverity: HIGH | Migration drops the role grant | file engine/db/migrations/0001_add_role.sql\n' > "$R10"
+out="$("${FINDINGS_SH}" --report "$R10" --report-path docs/handoff/dispatch-t10/review-glm.md 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && pass "A10: rc 0 (renderer never kills the gate)" || fail "A10: rc ${rc}"
+has_line "$out" 'findings_source: none' && pass "A10: malformed report -> findings_source: none" || fail "A10: source wrong: ${out}"
+has_line "$out" 'findings: unavailable' && has_line "$out" 'findings_reason: parse_failed' && \
+  pass "A10: malformed report -> findings: unavailable + findings_reason: parse_failed" || fail "A10: degrade block wrong: ${out}"
+has_line "$out" 'Severity: HIGH' && fail "A10: unrecognized layout leaked a raw line as a finding" || pass "A10: no false-positive extraction"
+
+# A11: report file exists but is empty (0 bytes) -- the reviewer produced
+# NOTHING, not even the REVIEW_VERDICT/REVIEW_FINDINGS contract lines. Must
+# read as its OWN reason, never silently as "findings: none" (a real
+# zero-count verdict, see A5) and never conflated with A4's report_missing
+# or A10's parse_failed.
+R11="${SUITE_TMP}/r11.md"
+: > "$R11"
+out="$("${FINDINGS_SH}" --report "$R11" --report-path docs/handoff/dispatch-t11/review-glm.md 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && pass "A11: rc 0 on an empty report" || fail "A11: rc ${rc}"
+has_line "$out" 'findings_reason: empty_report' && pass "A11: empty report -> findings_reason: empty_report" || fail "A11: reason wrong: ${out}"
+has_line "$out" 'findings_reason: parse_failed' && fail "A11: empty report conflated with parse_failed" || pass "A11: distinct from parse_failed"
+has_line "$out" 'findings: none' && fail "A11: empty report silently read as a clean zero-count verdict" || pass "A11: distinct from a real findings: none verdict"
 
 # ═══ Part B: the lane writer (leadv2-dispatch-product-close.sh) end to end ══════
 

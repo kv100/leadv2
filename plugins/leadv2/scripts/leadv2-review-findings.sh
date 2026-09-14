@@ -160,13 +160,23 @@ _rgf_sev_norm() { # <word> -> canonical severity or ""
 # stdout. rc ALWAYS 0. Block shape (appended AFTER the writer's existing head lines,
 # which stay byte-identical and first, so head -1 / ^status: consumers are safe):
 #   reviewer_says: do_not_merge     (only when the advisory fired)
-#   findings_source: finding_lines | markdown_sections | none
+#   findings_source: finding_lines | bracket_lines | markdown_sections | none
 #   findings:                       (followed by one "- [Sev] anchor — desc" per item)
 #   findings: none                  (zero counts AND zero items — the one quiet case)
-#   findings: unavailable           (+ findings_reason: parse_failed | report_missing)
+#   findings: unavailable           (+ findings_reason: parse_failed | report_missing | empty_report)
 #   omitted: medium=K low=N         (lows are NEVER rendered; design rule 4)
 #   report: <relpath>               (pointer for the human, whenever a report exists)
 # Every Critical and every High is rendered, always, uncapped (design rule 1).
+#
+# CODEX-REVIEWS-LOSE-THEIR-FINDINGS-TEXT-01: three silences, three names, never
+# collapsed into the same "findings: unavailable" string with no distinguishing
+# reason: report_missing (no file at that path at all), empty_report (a file is
+# there but carries no bytes worth reading — the reviewer produced NOTHING, not
+# even a verdict line), parse_failed (the report has real content and the
+# REVIEW_FINDINGS: counts say items exist, but none of the three known layouts
+# — finding_lines, bracket_lines, markdown_sections — could read them out). The
+# fourth outcome, findings: none, is NOT a silence: it is the reviewer's own
+# explicit zero-count verdict and must never be spelled like a failure.
 # ---------------------------------------------------------------------------
 render_gate_findings() {
   local report="${1:-}" json="${2:-}" arm="${3:-}" relpath="${4:-}"
@@ -176,6 +186,17 @@ render_gate_findings() {
 
   if [[ -z "${report}" || ! -r "${report}" ]]; then
     printf 'findings_source: none\nfindings: unavailable\nfindings_reason: report_missing\n'
+    [[ -n "${relpath}" ]] && printf 'report: %s\n' "${relpath}"
+    rm -f "${tmp}" 2>/dev/null
+    return 0
+  fi
+
+  # A report that exists but is empty (or whitespace-only) is the reviewer
+  # producing nothing at all — distinct from a layout we cannot read (which
+  # requires real content: a REVIEW_FINDINGS: line whose counts say items
+  # exist) and distinct from the file simply not being there.
+  if [[ ! -s "${report}" ]] || ! grep -qE '[^[:space:]]' "${report}" 2>/dev/null; then
+    printf 'findings_source: none\nfindings: unavailable\nfindings_reason: empty_report\n'
     [[ -n "${relpath}" ]] && printf 'report: %s\n' "${relpath}"
     rm -f "${tmp}" 2>/dev/null
     return 0
@@ -210,6 +231,29 @@ render_gate_findings() {
       _ln="$(printf '%s' "$_line" | sed -nE 's/.*line=([0-9]+).*/\1/p')"
       _d="$(printf '%s' "$_line" | sed -nE 's/.*desc=(.*)$/\1/p')"
       printf '%s\037%s\037%s\037%s\037%s\n' "${_sev}" "${_f}" "${_ln:-0}" "" "${_d}"
+    done >> "${tmp}"
+  elif grep -qE '^[[:space:]]*-[[:space:]]*\[[A-Za-z]+\]' "${report}" 2>/dev/null; then
+    # Priority 1b: flat bracket-severity bullets, no FINDING: prefix and no ##
+    # heading — "- [high] Title (path:lines)". This is the layout
+    # CODEX-REVIEWS-LOSE-THEIR-FINDINGS-TEXT-01 (dispatch-199f5d8e) fell through
+    # on: neither finding_lines' FINDING:/json check nor markdown_sections'
+    # heading walk recognizes it, so counts landed non-zero with zero items and
+    # the whole report degraded to parse_failed even though every title was
+    # sitting right there in the file.
+    src="bracket_lines"
+    grep -E '^[[:space:]]*-[[:space:]]*\[[A-Za-z]+\]' "${report}" | while IFS= read -r _line; do
+      _sev="$(_rgf_sev_norm "$(printf '%s' "$_line" | sed -nE 's/^[[:space:]]*-[[:space:]]*\[([A-Za-z]+)\].*/\1/p')")"
+      [[ -n "${_sev}" ]] || continue
+      _rest="$(printf '%s' "$_line" | sed -E 's/^[[:space:]]*-[[:space:]]*\[[A-Za-z]+\][[:space:]]*//')"
+      # trailing "(path/to/file.ext:7-19)" anchor, when present.
+      _anchor="$(printf '%s' "$_rest" | grep -oE '\([A-Za-z0-9_./-]+\.[A-Za-z0-9]+(:[0-9-]+)?\)[[:space:]]*$')"
+      _f=""
+      if [[ -n "${_anchor}" ]]; then
+        _rest="${_rest%"${_anchor}"}"
+        _rest="${_rest%"${_rest##*[![:space:]]}"}"
+        _f="${_anchor#(}"; _f="${_f%)}"
+      fi
+      printf '%s\037%s\037\037\037%s\n' "${_sev}" "${_f}" "${_rest}"
     done >> "${tmp}"
   else
     # Priority 2: markdown severity sections.
