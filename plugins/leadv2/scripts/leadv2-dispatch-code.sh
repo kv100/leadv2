@@ -1172,6 +1172,7 @@ _resolve_pinned_placement() {
   # sees WHY a lane was reclaimed (deliverable #2). signal derives from the
   # row's reason: pid evidence vs stream freshness vs none.
   local _row _v _reason _signal _age _live=0 _probe_id _watcher_only=0 _wpid
+  local _pl_pid_source _pl_pid _pl_my_durable_pid=""
   for _probe_id in "dispatch-${key}" "${key}"; do
     _row="$(bash "${LANE_LIVENESS_BIN}" --project-root "${PROJECT_ROOT}" --lane "${_probe_id}" --no-codex --json 2>/dev/null || true)"
     _v="$(_placement_probe_field "${_row}" verdict)"
@@ -1186,6 +1187,29 @@ _resolve_pinned_placement() {
       *log_fresh*|*stream_fresh*)   _signal="stream_fresh" ;;
     esac
     if [[ "${_v}" == "alive" || "${_v}" == starting:* ]]; then
+      # DISPATCH-REENTRY-SELF-RACE: a starting:*/alive verdict backed only by a
+      # pid_source=lead_durable row can be THIS dispatching session's own
+      # pre-dispatch registration for this exact lane (e.g. Gate 1), re-read a
+      # moment later as "foreign liveness" -- every retry re-stamps the row's
+      # age to ~0, so the refusal can never clear on its own. Distinguish self
+      # from foreign by IDENTITY, not by rung: _lv2_durable_pid() (sourced from
+      # leadv2-active-registry.sh above) walks the SAME $PPID chain the
+      # registrar used to stamp the row's `pid`, so a match proves the row is
+      # THIS run's own durable lead pid -- not merely "some lead_durable row
+      # that happens to be alive". A genuinely different lead session's
+      # lead_durable row is pid_alive too and must still refuse (negative
+      # control: a foreign starting:* row stays live).
+      _pl_pid_source="$(_placement_probe_field "${_row}" pid_source)"
+      if [[ "${_pl_pid_source}" == "lead_durable" ]]; then
+        _pl_pid="$(_placement_probe_field "${_row}" pid)"
+        if [[ -z "${_pl_my_durable_pid}" ]] && declare -F _lv2_durable_pid >/dev/null 2>&1; then
+          _pl_my_durable_pid="$(_lv2_durable_pid 2>/dev/null)"
+        fi
+        if [[ -n "${_pl_pid}" && -n "${_pl_my_durable_pid}" && "${_pl_pid}" == "${_pl_my_durable_pid}" ]]; then
+          emit decision "lane_liveness_self_row_ignored task=${sig8:-?} probe_id=${_probe_id} verdict=${_v} age=${_age} pid=${_pl_pid}"
+          continue
+        fi
+      fi
       _live=1
       break
     fi
