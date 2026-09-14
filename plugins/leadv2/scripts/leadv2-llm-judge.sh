@@ -428,7 +428,7 @@ ceiling_status="ok"
 # the think-model resolver (fable; opus only when fable is unavailable).
 # R5: `|| true` — same script runs `set -euo pipefail`; an unguarded resolver
 # failure aborted the whole judge before the line-3 default could apply.
-model="$(bash "$ROUTER_SCRIPT" think-model 2>/dev/null || true)"
+model="$(bash "$ROUTER_SCRIPT" think-model --role judge --class "$TASK_CLASS" --task-id "$TASK_ID" 2>/dev/null || true)"
 model="${model:-fable}"
 
 if [[ -f "$ROUTER_SCRIPT" ]]; then

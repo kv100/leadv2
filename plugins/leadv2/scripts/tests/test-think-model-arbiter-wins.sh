@@ -165,11 +165,11 @@ fi
 # ── case 3: arbiter has no verdict (routing yaml missing) + env=fable ───────
 out="$(run_think fable "$MISSING_ROUTING" "$CAP_YAML" "$TMP/live.sh" --role judge)"
 row="$(last_row)"
-if [[ "$out" == "fable" ]] && grep -q 'reason=fail_open_env_candidate_stakes_or_data_missing' <<<"$row" \
+if [[ "$out" == "fable" ]] && grep -q 'reason=fail_open_env_candidate_think_config_unreadable' <<<"$row" \
    && grep -q 'chosen_by=env_fallback' <<<"$row"; then
   pass "case3: no verdict -> env candidate fable, journalled env_fallback with the arbiter's why"
 else
-  fail "case3: expected fable/fail_open_env_candidate_stakes_or_data_missing/env_fallback, got '$out' row='$row'"
+  fail "case3: expected fable/fail_open_env_candidate_think_config_unreadable/env_fallback, got '$out' row='$row'"
 fi
 
 # ── case 3b: dead quota reader (S5) + env=fable -> fail-open env candidate ──

@@ -8,7 +8,10 @@
 # only supplies the DEFAULT candidate, never an outright override; opus is
 # used ONLY when the candidate is unavailable. That opus fallback lives in
 # exactly ONE place — the router — never at a call site.
-# Usage: think="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh")"
+# Context is inherited from the dispatch/admission boundary:
+# LEADV2_TASK_CLASS, LEADV2_THINK_ROLE, and LEADV2_THINK_TASK_ID.  The router
+# consumes them directly so this wrapper stays compatible with bare callers.
+# Usage: think="$(LEADV2_TASK_CLASS=Heavy bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh")"
 set -uo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROUTER="${LEADV2_TEST_ROUTER:-${LIB_DIR}/../leadv2-router.sh}"

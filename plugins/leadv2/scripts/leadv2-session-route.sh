@@ -64,7 +64,7 @@ CLAUDE_STANDARD_EFFORT="medium"
 # command substitution aborts the WHOLE script (rc=127, zero stdout) if the
 # resolver file is missing/unreachable. Documented default arm on resolver
 # failure is fable (same convention as repo-install/llm-judge).
-CLAUDE_HEAVY_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
+CLAUDE_HEAVY_MODEL="$(LEADV2_TASK_CLASS="$TASK_CLASS" bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
 [[ -n "$CLAUDE_HEAVY_MODEL" ]] || CLAUDE_HEAVY_MODEL="fable"
 CLAUDE_HEAVY_EFFORT="high"
 # HEAVY-TIER-VS-SAFETY-OPUS-01: tag-forced high-risk (safety) routes pin Opus.
@@ -201,7 +201,7 @@ HIGH_RISK_TAGS="${LEADV2_HIGH_RISK_TAGS:-$HIGH_RISK_TAGS}"
 # config/session-routing.yaml:31). The operator override path is
 # LEADV2_THINK_MODEL, honoured inside the resolver itself. R5: failure-guarded
 # (see note at the first Heavy-tier site) — never aborts, never empty.
-CLAUDE_HEAVY_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
+CLAUDE_HEAVY_MODEL="$(LEADV2_TASK_CLASS="$TASK_CLASS" bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
 [[ -n "$CLAUDE_HEAVY_MODEL" ]] || CLAUDE_HEAVY_MODEL="fable"
 
 if ! [[ "$CODEX_MAX_USED_PERCENT" =~ ^[0-9]+$ ]] || (( CODEX_MAX_USED_PERCENT < 1 || CODEX_MAX_USED_PERCENT > 100 )); then

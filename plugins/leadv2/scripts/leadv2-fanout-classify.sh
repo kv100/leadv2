@@ -125,7 +125,7 @@ LAUNCH_CLASS_L="$(printf '%s' "$LAUNCH_CLASS" | tr '[:upper:]' '[:lower:]')"
 if [[ "$LAUNCH_CLASS_L" == "heavy" || "$LAUNCH_CLASS_L" == "strategic" ]]; then
   # FABLE-THINK-TIER-01 R2: the child lead is a THINK role — resolve through
   # the think-model resolver (fable; opus only when fable is unavailable).
-  LEAD_MODEL="$(bash "${SCRIPT_DIR:-$(dirname "$0")}/leadv2-router.sh" think-model 2>/dev/null || echo fable)"
+  LEAD_MODEL="$(bash "${SCRIPT_DIR:-$(dirname "$0")}/leadv2-router.sh" think-model --class "$LAUNCH_CLASS" 2>/dev/null || echo fable)"
   LEAD_EFFORT="high"
 else
   LEAD_MODEL="sonnet"
