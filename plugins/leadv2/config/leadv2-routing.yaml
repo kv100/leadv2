@@ -183,6 +183,12 @@ router_v2:
                       # is kept=114 R2=-0.3974 -- negative, same as anthropic below, so codex stays null, not
                       # a guess. See docs/handoff/dispatch-c8711201/developer.full.md for full run output.
     anthropic: null   # UNPRICED -- leadv2-drain-weights.py --provider anthropic, this repo, 2026-09-13: see docs/handoff/dispatch-f8880421/developer.full.md for run output/status.
+                      # PRICE-KEY-ANTHROPIC-VS-CLAUDE-MISMATCH-01 (dispatch-0144df45, 2026-09-14): keyed
+                      # `anthropic`, not `claude`, on purpose -- matches leadv2-drain-weights.py's own fit
+                      # bucket name (scripts/leadv2-drain-weights.py:85-87), the tool that would write a
+                      # real number here. capability_matrix rows carry provider: claude; both _price_key()
+                      # implementations (launch-registry.py, route-arbiter.sh) normalize claude->anthropic
+                      # before the lookup so this key is actually read once it is ever priced.
     freepool: 1.0     # unchanged semantics: floor_applies adds +100 in ecost() regardless of this number (arbiter :1810).
   # Currency: `cost` is "fraction of THIS provider's own binding window per
   # Mtok" -- a GLM percent is not an Anthropic percent. The arbiter never

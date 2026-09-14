@@ -578,8 +578,16 @@ def _cost_median(vals):
     mid=n//2
     return vs[mid] if n%2 else (vs[mid-1]+vs[mid])/2.0
 _COST_MEDIAN=_cost_median(list(_cost_numeric.values()))
+# PRICE-KEY-ANTHROPIC-VS-CLAUDE-MISMATCH-01 (dispatch-0144df45, 2026-09-14):
+# capability_matrix rows carry provider: claude, but router_v2.cost keys the
+# anthropic-window price as `anthropic:` (leadv2-drain-weights.py's own fit
+# bucket, scripts/leadv2-drain-weights.py:85-87, is what writes a fitted
+# number there). Normalize claude->anthropic here, not the yaml, so a future
+# fitted price is found instead of silently falling through to the median.
 def _price_key(c):
-    return 'glm-flash' if c.get('arm')=='glm-flash' else c.get('provider')
+    if c.get('arm')=='glm-flash': return 'glm-flash'
+    _p=c.get('provider')
+    return 'anthropic' if _p=='claude' else _p
 def provider_cost(c):
     # Returns the numeric price only; see _cost_src(c) for its provenance
     # token. LEGACY mode when the yaml carries no router_v2.cost block at
