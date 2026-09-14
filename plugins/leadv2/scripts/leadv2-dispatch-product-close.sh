@@ -3938,12 +3938,24 @@ else
       # regression be finalized as delivered. Distinct from the kill-switch branch above
       # (E2E_ON!=1 is a deliberate disabled state, never a failure) -- this only fires when
       # the gate actually RAN and reported a real non-zero verdict.
-      if [[ "${_e2e_ownership}" == "1" && -z "${WRITES_CSV}" ]]; then
-        printf 'status: fail\nreason: e2e_regression\nrc: %s\nscope: whole_tree_fallback\n' "${e2e_rc}" > "${HANDOFF}/e2e-gate.md"
-      else
-        printf 'status: fail\nreason: e2e_regression\nrc: %s\n' "${e2e_rc}" > "${HANDOFF}/e2e-gate.md"
+      # THE-E2E-RUNG-CALLS-PRE-EXISTING-RED-A-REGRESSION-01 item 2: name the
+      # failing suites in the terminal line itself -- previously only
+      # cause=e2e_regression rc=<n> reached the journal, and reading which
+      # suite(s) blocked required opening e2e-gate.log/e2e-gate.md separately.
+      _failing_suites_csv="${_own_csv}"
+      if [[ -z "${_failing_suites_csv}" ]]; then
+        _failing_suites_csv="$(awk '
+          /^  Failures \(blocking\):$/ { infail=1; next }
+          infail && /^    - / { sub(/^    - /, ""); printf "%s,", $0; next }
+          { infail=0 }
+        ' "${HANDOFF}/e2e-gate.log" 2>/dev/null | sed 's/,$//')"
       fi
-      _dl_note dead e2e_regression "rc=${e2e_rc}"
+      if [[ -z "${WRITES_CSV}" ]]; then
+        printf 'status: fail\nreason: e2e_regression\nrc: %s\nscope: whole_tree_fallback\nfailing_suites: %s\n' "${e2e_rc}" "${_failing_suites_csv}" > "${HANDOFF}/e2e-gate.md"
+      else
+        printf 'status: fail\nreason: e2e_regression\nrc: %s\nfailing_suites: %s\n' "${e2e_rc}" "${_failing_suites_csv}" > "${HANDOFF}/e2e-gate.md"
+      fi
+      _dl_note dead e2e_regression "rc=${e2e_rc} failing_suites=${_failing_suites_csv}"
       exit 8
     fi
   fi
