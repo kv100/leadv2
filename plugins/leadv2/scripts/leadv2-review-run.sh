@@ -65,7 +65,7 @@ fi
 # ---------------------------------------------------------------------------
 # 1. Arg parsing
 # ---------------------------------------------------------------------------
-TASK=""; ROOT=""; HANDOFF=""; DIFF_FILE=""; AUTHOR=""; FANOUT_ARG=""; TASK_DIR_ARG=""
+TASK=""; ROOT=""; HANDOFF=""; DIFF_FILE=""; AUTHOR=""; FANOUT_ARG=""; TASK_DIR_ARG=""; MISSION_FILE_ARG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -75,6 +75,10 @@ while [[ $# -gt 0 ]]; do
     --diff)    DIFF_FILE="${2:-}"; shift 2 ;;
     --author)  AUTHOR="${2:-}"; shift 2 ;;
     --fanout)  FANOUT_ARG="${2:-}"; shift 2 ;;
+    # THE-REVIEWER-NEVER-READS-THE-SPEC-01: callers can pin the exact
+    # specification revision explicitly.  Otherwise the resolver below uses
+    # the lane-local artifacts in a deliberate order.
+    --mission-file) MISSION_FILE_ARG="${2:-}"; shift 2 ;;
     # WORKER-DOD-GATE-01: the founder task dir (docs/handoff/<TASK_ID>), where
     # brief.md/report.md live -- distinct from --handoff (docs/handoff/dispatch-<sig>).
     # Never assumed equal to --handoff; omitted -> the defense-in-depth DoD call
@@ -131,6 +135,77 @@ mkdir -p "${HANDOFF}" 2>/dev/null || true
 # Engine-local logger. See DEVIATION NOTE above — the lane's real journal `emit` is
 # never called from this file.
 emit() { printf '[leadv2-review-run] %s %s\n' "${1:-}" "${2:-}" >&2; }
+
+# ---------------------------------------------------------------------------
+# 1b. Mission/spec input — resolve once, then review an immutable snapshot.
+# ---------------------------------------------------------------------------
+# A lane's assignment can be edited while its worker is running.  Reading the
+# mutable source directly would let the reviewer judge the diff against a
+# different revision from the one that directed the build.  The snapshot is
+# therefore made before pool resolution and its source, digest, and byte cost
+# are carried into both the reviewer contract and review-gate.md.
+REVIEW_MISSION_AVAILABLE=0
+REVIEW_MISSION_SOURCE=""
+REVIEW_MISSION_SNAPSHOT="${HANDOFF}/review-mission-source.md"
+REVIEW_MISSION_SHA256=""
+REVIEW_MISSION_BYTES=0
+REVIEW_DIFF_BYTES=0
+REVIEW_INPUT_TOTAL_BYTES=0
+REVIEW_MISSION_SOURCE_DISPLAY="unavailable"
+
+_review_mission_source() { # stdout: one existing, readable candidate; rc 1 otherwise
+  local candidate
+  for candidate in \
+    "${MISSION_FILE_ARG}" \
+    "${TASK_DIR_ARG:+${TASK_DIR_ARG}/MISSION.md}" \
+    "${TASK_DIR_ARG:+${TASK_DIR_ARG}/lane-mission.md}" \
+    "${HANDOFF}/lane-mission.md" \
+    "${HANDOFF}/MISSION.md" \
+    "${ROOT}/docs/handoff/${TASK}/MISSION.md" \
+    "${ROOT}/docs/handoff/dispatch-${TASK}/lane-mission.md"; do
+    [[ -n "${candidate}" && -f "${candidate}" && -r "${candidate}" ]] || continue
+    printf '%s' "${candidate}"
+    return 0
+  done
+  return 1
+}
+
+_review_display_path() { # <absolute-or-relative-path>
+  local path="$1"
+  case "${path}" in
+    "${ROOT}"/*) printf '%s' "${path#"${ROOT}"/}" ;;
+    *) printf '%s' "${path}" ;;
+  esac
+}
+
+_review_prepare_mission_snapshot() {
+  local source tmp
+  REVIEW_DIFF_BYTES="$(wc -c < "${DIFF_FILE}" 2>/dev/null | tr -d '[:space:]')"
+  REVIEW_DIFF_BYTES="${REVIEW_DIFF_BYTES:-0}"
+  source="$(_review_mission_source)" || return 0
+  tmp="$(mktemp "${HANDOFF}/.review-mission-source.XXXXXX" 2>/dev/null)" || return 0
+  if ! cat "${source}" > "${tmp}"; then
+    rm -f "${tmp}" 2>/dev/null || true
+    return 0
+  fi
+  mv -f "${tmp}" "${REVIEW_MISSION_SNAPSHOT}" || return 0
+  REVIEW_MISSION_SOURCE="${source}"
+  REVIEW_MISSION_SOURCE_DISPLAY="$(_review_display_path "${source}")"
+  REVIEW_MISSION_SHA256="$(shasum -a 256 "${REVIEW_MISSION_SNAPSHOT}" 2>/dev/null | awk '{print $1}')"
+  REVIEW_MISSION_BYTES="$(wc -c < "${REVIEW_MISSION_SNAPSHOT}" 2>/dev/null | tr -d '[:space:]')"
+  REVIEW_MISSION_BYTES="${REVIEW_MISSION_BYTES:-0}"
+  REVIEW_INPUT_TOTAL_BYTES=$((REVIEW_DIFF_BYTES + REVIEW_MISSION_BYTES))
+  [[ -n "${REVIEW_MISSION_SHA256}" ]] || return 0
+  REVIEW_MISSION_AVAILABLE=1
+}
+
+_review_prepare_mission_snapshot
+if [[ "${REVIEW_MISSION_AVAILABLE}" -eq 1 ]]; then
+  emit decision "review_mission task=${TASK} source=${REVIEW_MISSION_SOURCE_DISPLAY} sha256=${REVIEW_MISSION_SHA256} diff_bytes=${REVIEW_DIFF_BYTES} mission_bytes=${REVIEW_MISSION_BYTES} total_bytes=${REVIEW_INPUT_TOTAL_BYTES}"
+else
+  REVIEW_INPUT_TOTAL_BYTES="${REVIEW_DIFF_BYTES}"
+  emit decision "review_mission task=${TASK} source=unavailable diff_bytes=${REVIEW_DIFF_BYTES} mission_bytes=0 total_bytes=${REVIEW_INPUT_TOTAL_BYTES}"
+fi
 
 # ── REVIEW-GATE-SILENCE-READS-AS-PASS-01: terminal gate-artifact guarantee ────
 # Every normal exit of this engine writes review-gate.md inline at its own
@@ -417,6 +492,8 @@ _review_recover_from_codex_store() { # <review_out_file>
 parse_review_verdict() { # review-file
   local review_file="$1"
   PARSED_VERDICT=""
+  PARSED_CODE_VERDICT=""
+  PARSED_MISSION_VERDICT=""
   VERDICT_SOURCE=""
   FINDINGS_CRITICAL=0
   FINDINGS_HIGH=0
@@ -431,6 +508,34 @@ parse_review_verdict() { # review-file
     [[ -n "${PARSED_VERDICT}" ]] && VERDICT_SOURCE="alt_marker"
   fi
   [[ -n "${PARSED_VERDICT}" ]] || return 1
+
+  # Keep the historical overall marker as the gate's aggregate verdict, but
+  # require independently machine-readable dimensions whenever a mission
+  # snapshot was available. A reviewer that only says "FAIL" has not told us
+  # whether code is broken or the code is sound but built the wrong thing.
+  local code_matches mission_matches code_count mission_count
+  code_matches="$(sed -nE 's/^[[:space:]]*REVIEW_CODE_VERDICT:[[:space:]]*(FAIL|PASS_WITH_NITS|PASS)([[:space:]]|$).*/\1/p' "${review_file}")"
+  mission_matches="$(sed -nE 's/^[[:space:]]*REVIEW_MISSION_VERDICT:[[:space:]]*(FAIL|PASS_WITH_NITS|PASS|UNAVAILABLE)([[:space:]]|$).*/\1/p' "${review_file}")"
+  code_count="$(printf '%s\n' "${code_matches}" | grep -c .)"
+  mission_count="$(printf '%s\n' "${mission_matches}" | grep -c .)"
+  if [[ "${REVIEW_MISSION_AVAILABLE}" -eq 1 ]]; then
+    [[ "${code_count}" -eq 1 && "${mission_count}" -eq 1 ]] || return 1
+    PARSED_CODE_VERDICT="${code_matches}"
+    PARSED_MISSION_VERDICT="${mission_matches}"
+    [[ "${PARSED_MISSION_VERDICT}" != UNAVAILABLE ]] || return 1
+  else
+    # Standalone callers predating lane mission artifacts remain observable,
+    # not falsely described as spec-reviewed. Their gate says unavailable;
+    # any real lane source takes the strict branch above.
+    if [[ "${code_count}" -gt 1 || "${mission_count}" -gt 1 ]]; then return 1; fi
+    PARSED_CODE_VERDICT="${code_matches:-${PARSED_VERDICT}}"
+    PARSED_MISSION_VERDICT="${mission_matches:-UNAVAILABLE}"
+    [[ "${PARSED_MISSION_VERDICT}" == UNAVAILABLE ]] || return 1
+  fi
+  if [[ "${PARSED_CODE_VERDICT}" == FAIL || "${PARSED_MISSION_VERDICT}" == FAIL ]]; then
+    PARSED_VERDICT=FAIL
+    VERDICT_SOURCE="dimension_failure_override"
+  fi
 
   local findings_matches findings_count
   findings_matches="$(sed -nE 's/^[[:space:]]*REVIEW_FINDINGS:[[:space:]]*critical=([0-9]+)[[:space:]]+high=([0-9]+)[[:space:]]+medium=([0-9]+)[[:space:]]+low=([0-9]+)[[:space:]]*$/\1 \2 \3 \4/p' "${review_file}")"
@@ -1065,6 +1170,20 @@ _review_state_write() {
 # four unchanged verbatim-format contract lines so every downstream parser
 # (parse_review_verdict, leadv2-review-findings.sh) is unaffected.
 _review_build_contract() {
+  if [[ "${REVIEW_MISSION_AVAILABLE}" -eq 1 ]]; then
+    printf 'MISSION-ALIGNMENT INPUT (read before the diff):\n'
+    printf 'Snapshot: %s\nSource at snapshot time: %s\nSHA-256: %s\n' \
+      "${REVIEW_MISSION_SNAPSHOT}" "${REVIEW_MISSION_SOURCE_DISPLAY}" "${REVIEW_MISSION_SHA256}"
+    printf 'Input bytes: diff=%s mission=%s total=%s\n\n' \
+      "${REVIEW_DIFF_BYTES}" "${REVIEW_MISSION_BYTES}" "${REVIEW_INPUT_TOTAL_BYTES}"
+    printf 'Judge implementation correctness and mission alignment independently. A diff can be correct yet fail the mission.\n'
+    printf 'If mission alignment fails, report a Critical or High FINDING line whose file is the mission snapshot and whose desc says what requested outcome is absent or contradicted.\n\n'
+    printf 'BEGIN IMMUTABLE MISSION SNAPSHOT\n'
+    cat "${REVIEW_MISSION_SNAPSHOT}"
+    printf '\nEND IMMUTABLE MISSION SNAPSHOT\n\n'
+  else
+    printf 'MISSION-ALIGNMENT INPUT: unavailable for this standalone invocation. State REVIEW_MISSION_VERDICT: UNAVAILABLE; do not claim mission alignment was checked.\n\n'
+  fi
   if [[ "${REVIEW_MODE}" == "verify_only" ]]; then
     printf 'VERIFICATION-ONLY ROUND %s\n\n' "${REVIEW_ROUND}"
     printf 'This diff already went through review. Below are the prior findings from the previous round.\n'
@@ -1281,7 +1400,7 @@ review_adir="${ROOT}/docs/handoff/dispatch-${TASK}-review"
 mkdir -p "${review_adir}" 2>/dev/null || true
 REVIEW_STAMP="${HANDOFF}/.review-start.stamp"
 touch "${REVIEW_STAMP}" 2>/dev/null || true
-_review_contract_base=$'Your review MUST contain these two lines, verbatim format, before any prose:\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nFAIL if any Critical or High finding. PASS if the diff is clean. PASS_WITH_NITS otherwise.\nAlso report every Critical/High finding on its own line, exact format:\nFINDING: severity=<Critical|High> file=<path> line=<n> dimension=<correctness|security|design|perf> desc=<one line>\n\nIf no findings are found, please output a brief explanation (at least one sentence) after the required lines to ensure the review body is sufficient for processing.'
+_review_contract_base=$'Your review MUST contain these four lines, verbatim format, before any prose:\nREVIEW_CODE_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_MISSION_VERDICT: <FAIL|PASS|PASS_WITH_NITS|UNAVAILABLE>\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nREVIEW_CODE_VERDICT judges implementation correctness only. REVIEW_MISSION_VERDICT judges whether the diff realizes the supplied mission snapshot only. REVIEW_VERDICT is FAIL if either independent dimension is FAIL; PASS if both are clean; PASS_WITH_NITS otherwise. UNAVAILABLE is permitted only when the contract says the mission input is unavailable.\nAlso report every Critical/High finding on its own line, exact format:\nFINDING: severity=<Critical|High> file=<path> line=<n> dimension=<correctness|security|design|perf|mission_alignment> desc=<one line>\n\nIf no findings are found, please output a brief explanation (at least one sentence) after the required lines to ensure the review body is sufficient for processing.'
 
 # REVIEW-ROUND1-EXHAUSTIVE-01: diff hash hoisted here (was computed later, at
 # the old line ~546) so round detection — which must run before pool resolve
@@ -1753,6 +1872,8 @@ done
 # an arm can turn PASS into FAIL, never FAIL into PASS.
 verdict=""
 reviewer_primary=""
+GATE_CODE_VERDICT="PASS"
+GATE_MISSION_VERDICT="$([[ "${REVIEW_MISSION_AVAILABLE}" -eq 1 ]] && printf PASS || printf UNAVAILABLE)"
 _union_fail_arm=""
 _review_has_fail=0
 _review_has_nonfail=0
@@ -1798,6 +1919,18 @@ for _arm in "${ran_arms[@]}"; do
   if [[ -z "${reviewer_primary}" ]]; then
     verdict="${PARSED_VERDICT}"
     reviewer_primary="${_arm}"
+  fi
+  if [[ "${PARSED_CODE_VERDICT}" == FAIL ]]; then
+    GATE_CODE_VERDICT=FAIL
+  elif [[ "${PARSED_CODE_VERDICT}" == PASS_WITH_NITS && "${GATE_CODE_VERDICT}" == PASS ]]; then
+    GATE_CODE_VERDICT=PASS_WITH_NITS
+  fi
+  if [[ "${REVIEW_MISSION_AVAILABLE}" -eq 1 ]]; then
+    if [[ "${PARSED_MISSION_VERDICT}" == FAIL ]]; then
+      GATE_MISSION_VERDICT=FAIL
+    elif [[ "${PARSED_MISSION_VERDICT}" == PASS_WITH_NITS && "${GATE_MISSION_VERDICT}" == PASS ]]; then
+      GATE_MISSION_VERDICT=PASS_WITH_NITS
+    fi
   fi
   if [[ "${PARSED_VERDICT}" == FAIL ]]; then
     _review_has_fail=1
@@ -1903,6 +2036,7 @@ if [[ "${SECURITY_CRITICAL}" -gt 0 || "${SECURITY_HIGH}" -gt 0 ]]; then
   # unioned into FINDINGS_RAW/FINDINGS_DEDUP above and will be counted from
   # FINDINGS_JSON below like every other arm's findings -- one array, one count.
   verdict="FAIL"
+  GATE_CODE_VERDICT=FAIL
   emit decision "review_security_block task=${TASK} critical=${SECURITY_CRITICAL} high=${SECURITY_HIGH}"
 fi
 
@@ -2007,6 +2141,14 @@ _effective_high=$((FINDINGS_HIGH_TOTAL))
 # reviewer's own REVIEW_FINDINGS: counts and are what today's gate contract keys on).
 
 ARMS_CSV="$(IFS=,; echo "${ran_arms[*]}")"
+MISSION_INPUT_LINES="mission_source: ${REVIEW_MISSION_SOURCE_DISPLAY}
+mission_snapshot: ${REVIEW_MISSION_SNAPSHOT}
+mission_sha256: ${REVIEW_MISSION_SHA256:-unavailable}
+mission_bytes: ${REVIEW_MISSION_BYTES}
+diff_bytes: ${REVIEW_DIFF_BYTES}
+review_input_bytes: ${REVIEW_INPUT_TOTAL_BYTES}
+correctness_verdict: ${GATE_CODE_VERDICT}
+mission_verdict: ${GATE_MISSION_VERDICT}"
 
 # REVIEW-FANOUT-VISIBILITY-01: compute the degradation verdict for the artifact.
 # `requested` is what the caller asked for (REVIEW_FANOUT), `ran` is how many arms
@@ -2094,7 +2236,7 @@ fi
 
 if [[ "${verdict}" == FAIL ]]; then
   {
-    printf 'arms: %s\n%s\n%s\n%s\n' "${ARMS_CSV}" "${FANOUT_LINE}" "${UNREADABLE_LINE}" "${VERIFIED_LINE}"
+    printf 'arms: %s\n%s\n%s\n%s\n%s\n' "${ARMS_CSV}" "${FANOUT_LINE}" "${UNREADABLE_LINE}" "${VERIFIED_LINE}" "${MISSION_INPUT_LINES}"
     printf 'status: fail\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
       "${FINDINGS_CRITICAL_TOTAL}" "${FINDINGS_HIGH_TOTAL}" "${FINDINGS_MEDIUM_TOTAL}" "${FINDINGS_LOW_TOTAL}"
     render_gate_findings "${REVIEW_ARTIFACT:-${HANDOFF}/review-${reviewer_primary}.md}" "${FINDINGS_JSON}" \
@@ -2108,7 +2250,7 @@ if [[ "${verdict}" == FAIL ]]; then
 fi
 
 {
-  printf 'arms: %s\n%s\n%s\n%s\n' "${ARMS_CSV}" "${FANOUT_LINE}" "${UNREADABLE_LINE}" "${VERIFIED_LINE}"
+  printf 'arms: %s\n%s\n%s\n%s\n%s\n' "${ARMS_CSV}" "${FANOUT_LINE}" "${UNREADABLE_LINE}" "${VERIFIED_LINE}" "${MISSION_INPUT_LINES}"
   printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer_primary}" "${diff_hash:0:8}"
   render_gate_findings "${REVIEW_ARTIFACT:-${HANDOFF}/review-${reviewer_primary}.md}" "${FINDINGS_JSON}" \
     "${reviewer_primary}" "docs/handoff/dispatch-${TASK}/review-${reviewer_primary}.md" || true
