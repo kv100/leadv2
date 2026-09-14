@@ -1203,7 +1203,14 @@ def resolve(tid):
         # watcher-only row gets NO starting grace: it falls straight through
         # to the dead determination below (the C2 floor already excludes
         # watcher pids).
-        if registered and not row.get("watcher_only"):
+        # LANE-MENTION-ARGV0-01: a `recovered` row with no pid (the sweep's
+        # pid-less visibility row -- see lib/leadv2-lane-state.sh reconcile)
+        # gets NO starting grace either, same reasoning as watcher_only above:
+        # the sweep re-stamps started_at every pass, so a recurring bystander
+        # mention would re-earn the grace forever and feed the same
+        # skip/refuse loop this rung was already hardened against.
+        pidless_recovered = bool(session) and bool(session.get("recovered")) and not session.get("pid")
+        if registered and not row.get("watcher_only") and not pidless_recovered:
             age = age_from_started_at(session)
             if age is None and os.path.isfile(dispatch_json):
                 dj_mtime = file_mtime(dispatch_json)
