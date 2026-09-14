@@ -1096,3 +1096,65 @@ ad, 2026-09-04, подтверждено ведущей по журналам д
   безопасно (в warn-режиме `exit 2` никогда не происходит), но при флипе в `deny`
   `continueOnBlock: true` заглушит сам `exit 2` и превратит запрет обратно в предупреждение —
   снять этот флаг ОДНОВРЕМЕННО с флипом режима, иначе флип — театр.
+
+### SD-MAIN-CORE-SUITE-RED-01
+
+**Context (2026-09-14, THE-KNOWN-RED-REGISTRY-ROTTED-AND-EVERY-LANE-PAYS-01).** `tests/known-red-
+suites.txt` is a dated snapshot (2026-09-02, 14 entries) of suites tolerated by `tests/run-all.sh`'s
+wrapper classification and `tests/ci-gate.sh`. `plugins/leadv2/scripts/tests/run-core-offline.sh`
+classifies its whole nested-suite set all-or-nothing: the wrapper only reads as non-blocking
+`[KNOWN-RED]` when EVERY failing nested suite is on the list — one unregistered red anywhere fails
+the wrapper, and thus `tests/run-all.sh`, and thus `leadv2-phase8-e2e-gate.sh` for every lane,
+whether or not that lane touched the failing suite. Because the old growth rule ("may only shrink,
+no exceptions") gave no legitimate channel to register a suite that turned red after the 2026-09-02
+snapshot, thirteen-plus suites went red over the following twelve days and nobody could cheaply add
+them — the registry rotted silently and the blast radius grew with it. Six lanes died on
+2026-09-14 alone (`e2e_regression` x3, `e2e_timeout`, `dirty_lane`, `review_verdict_fail`), each
+with a green suite of its own, each hand-landed by the lead.
+
+**By-name list.** The 14 entries already in `tests/known-red-suites.txt` before this task (CI-RUNS-
+THE-SUITES-01 / FIFTEEN-RED-SUITES-01 baseline, 2026-09-02) plus the following, reproduced live on
+worktree `8747b0f29414` on 2026-09-14 (bare `bash plugins/leadv2/scripts/tests/run-core-offline.sh`,
+measured on a busy box — ~100 concurrent leadv2 worktrees present; the run was interrupted after
+its early shards to avoid burning the whole task budget on a contended machine, so this is a
+partial-but-verified census, not the full sweep — every name below has a real `[CORE-OFFLINE]
+FAILED:` log line as its evidence, none is guessed):
+
+  - Codex quota guardrails (effort/circuit/hook) — plausibly concurrent-load sensitive (quota/
+    circuit-flavored, same shape as the SUITE-SPEED-01 lock entry); not yet reproduced standalone.
+  - T13 slice2 (arbiter bench-fallback + abandon dedup)
+  - dod gate suite registration (both map forms + run-all selection)
+  - idle-lead guard hook
+  - journal honours the pinned root
+  - lane placement pin (--resume-lane/--worktree) — PLUGIN-PAPERCUTS-01 (2026-09-01) previously
+    repaired this exact suite; this is a later, distinct regression.
+  - lane trace instrument (Mission B: writer/concurrency/off-path/reader)
+  - lane verdict three states (D2-UNBLIND-AND-THIRD-STATE-M0M1-01)
+  - lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)
+  - lane write-set admission block (LANE-WRITESET-REGISTRY-01)
+  - parked worker contract and one-shot resume (WORKER-PARKED-ON-BG-01)
+  - per-turn injection dedup (HOOK-INJECT-DEDUP-01)
+  - provider quota gate (QUOTA-GATE-PARITY-01) — plausibly concurrent-load sensitive; not yet
+    reproduced standalone.
+  - shared-sink test guard (TESTS-POLLUTE-REAL-JOURNAL-01)
+
+That is 14 newly-registered + 14 pre-existing = 28 tracked entries as of this task, against a
+founder/lead measurement earlier the same day of "27 red, 14 registered" on `main`. The two counts
+are from different processes at different times on a machine under different concurrent load and are
+not expected to match exactly — do not reconcile them by editing one to match the other; re-measure
+if the gap matters. **Repair (fixing the suites themselves) is explicitly out of scope for this SD**
+— that is `FIFTEEN-RED-SUITES-01` continued. This SD exists only to keep the by-name list somewhere
+searchable, since `tests/known-red-suites.txt` itself is the machine-read source of truth.
+
+- **Due:** none — this is a standing registry, not a timed decision.
+- **GO:** re-run `bash plugins/leadv2/scripts/tests/run-core-offline.sh | tail -1` on a quiet
+  machine (no concurrent leadv2 worktrees) and diff its `[CORE-OFFLINE] FAILED:` lines against
+  `tests/known-red-suites.txt`; a mismatch in either direction is the trigger to update both files.
+- **Action:** when a suite here goes green, remove its line from `tests/known-red-suites.txt` (free,
+  no sign-off needed) and drop it from the list above. When a suite not here goes red, add it to
+  both places with a dated reason — `tests/known-red-guard.sh` now enforces the date-token
+  requirement instead of blocking all growth (see the guard's own file for why the old rule caused
+  this rot).
+- **Rollback:** none needed — this SD only records data; nothing here is a behavior flip.
+- **Почему:** без этой строки исходный дрейф регистра — не видимый никому, пока лейны не начинают
+  умирать — повторится: снова один снятый снапшот, снова тринадцать забытых имён.

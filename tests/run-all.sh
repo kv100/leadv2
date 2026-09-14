@@ -593,6 +593,18 @@ $(git -C "${ROOT}" diff --name-only "${_range_start}..HEAD" 2>/dev/null)"
         # FABLE-THINK-TIER-01 R7: the carrier map row for run-all.sh must be
         # reachable so the test suite for the carrier map can be selected.
         stem="run-all.sh"
+      elif [[ "${cf}" == "tests/known-red-suites.txt" ]]; then
+        # THE-KNOWN-RED-REGISTRY-ROTTED-AND-EVERY-LANE-PAYS-01: the allow-list
+        # is a .txt in tests/, not plugins/leadv2/scripts/, so the generic
+        # allowlist below never reaches it — same shape as .gitignore above.
+        # A registry edit must select the suite that proves growth is dated
+        # and no entry is stale (self-registered via run-all-triggers).
+        stem="known-red-suites.txt"
+      elif [[ "${cf}" == "tests/known-red-guard.sh" ]]; then
+        # THE-KNOWN-RED-REGISTRY-ROTTED-AND-EVERY-LANE-PAYS-01: the guard
+        # lives in tests/, not plugins/leadv2/scripts/, so it also needs a
+        # synthetic stem (same shape as the row above).
+        stem="known-red-guard.sh"
       else
         case "${cf}" in
           plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/scripts/*.py|plugins/leadv2/hooks/*.sh) ;;
