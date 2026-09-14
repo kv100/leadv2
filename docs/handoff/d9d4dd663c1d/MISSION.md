@@ -163,3 +163,36 @@ over-complication. Treat the cheap half as in scope and the expensive half as ex
 - OUT OF SCOPE: building a per-task effort inference model. Do not. If the class-based tiering of
   item 1 carries an effort with each tier, that is enough granularity; anything finer needs
   evidence that it changes outcomes, and we do not have that evidence today.
+
+## AMENDMENT (founder correction, 2026-09-14): the constraint was INVERTED, and he never asked for it
+
+*«Бля я точно не мог сказать что "думать" только на фейбл или опус. А вот то что фейбл только думает
+а не пишет код я такое мог сказать. Думать могут и глм и кодекс и клод.»*
+
+This is the key sentence in the whole lane, so read it twice. The founder's rule was a constraint on
+**fable** — *fable thinks, fable does not write code*. What landed in the config is a constraint on
+**thinking** — *thinking's arm is fable*. Those are not the same statement, and the second does not
+follow from the first: "fable only thinks" says nothing about who else may think.
+
+The implication got inverted somewhere between the ruling and `FABLE-THINK-TIER-01`
+(`model-capability.yaml:34`, implemented from a row dispatched 2026-09-01, `dispatch-b94c3b1c`).
+The inverted form is what produced 375 of 375 think resolutions landing on exactly two Anthropic
+arms, and it is the whole of the founder's «перекос на антропик и фейбл».
+
+**The rule to implement, in his words, both halves:**
+
+1. **Thinking is open to glm, codex and claude alike.** No provider owns it. The candidate set for a
+   thinking role is chosen by class and by the normal arbiter terms — capability, headroom,
+   quota — exactly like any other role. GLM is explicitly included and needs nothing wired
+   (see the deepthink amendment above).
+2. **fable thinks and does not write code.** That half stands and is already true in the matrix —
+   fable's `kinds:` carry `plan, audit, review` and no `code`. Do not weaken it.
+
+Note what this does NOT authorise: removing fable from the think candidate set. It stays a
+candidate, on merit, under whatever tier its capability (6) and the task's class justify. The defect
+is that it was the ONLY candidate, not that it was a candidate.
+
+**Carry this forward as a finding, not just a fix.** A rule stated as a constraint on an ARM was
+implemented as a constraint on a ROLE, and nothing in 375 resolutions made the inversion visible —
+every line looked like a normal resolution. Say in your report what, if anything, would have caught
+it earlier; that is worth more to us than the config diff.
