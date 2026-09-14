@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-mark-finished-releases-writeset.sh
+file=plugins/leadv2/scripts/leadv2-active-registry.sh
+anchor=s|os.replace(tmp_path, yaml_path)|os.replace(tmp_path, yaml_path) if not os.environ.get("LV2_TEST_FORCE_REPLACE") else open(yaml_path, "w", encoding="utf-8").write(yaml.dump(data, default_flow_style=False, sort_keys=False))|
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 4: replace_rc=1 replace_intact=0 dump_rc=4 dump_intact=0
+diff_hash=bfc9d02191bf8e82fe2cf98735a066b05534fbcdfc99c191a26a872ebc47831b
+lane_diff_hash=2d327f989283e56798cee9321b60b1132ff2cb0dee866a8a1759ab239d0e063c
+porcelain_clean=yes
+restored=yes
