@@ -85,3 +85,37 @@ ambiguity is exactly why nobody can answer the founder's question today.
   (`THE-BALANCER-CONCENTRATES-ON-THE-EMPTIEST-BUCKET-01`) owns arm selection. Do not touch
   selection logic; this lane is about what is RECORDED and what is ENFORCED after selection.
 - `docs/tasks.yaml`, `docs/leadv2/open-threads.md` — lead-owned.
+
+## AMENDMENT (founder ruling, 2026-09-14): same vendor is acceptable when the reviewer is STRONGER
+
+*«ну это было бы ок если бы всегда ревью более слабой модели делал более сильная»*. The rule is
+therefore not "never same vendor" but: **the reviewer must be a different vendor, OR a strictly
+stronger model.** Implement that, not the cruder version above.
+
+Applied to the three violations found, it rescues **none** of them — all three are
+capability-EQUAL, not stronger:
+
+```text
+sonnet(cap 4) -> fable(cap 4)   x2     equal
+fable (cap 4) -> opus (cap 4)   x1     equal
+```
+
+And here is the blocker you must solve first: **the matrix cannot express "stronger" today.**
+Seven of twelve rows share `capability: 4`:
+
+```text
+capability 2 : glm-flash, freepool, haiku
+capability 3 : codex/gpt-5.6-luna
+capability 4 : glm, codex/terra, codex/sol, sol, sonnet, opus, fable
+capability 5 : astra/gpt-6-astra
+```
+
+So `capability` cannot order opus above sonnet, or sol above terra. A strictly-stronger test built
+on it would silently pass every same-vendor pair inside the cap-4 block — a false green wearing a
+rule's name. Either establish a real strength ordering (OpenAI publishes one for its own family:
+`~/.codex/models_cache.json` priorities astra 1, sol 6, terra 7, luna 8 — a strength ladder we
+already cite in `leadv2-routing.yaml:294-312`; Anthropic has no equivalent column in our config),
+or state plainly that "stronger" is not expressible and the rule degrades to different-vendor for
+the arms where it cannot be decided. Do not fake an ordering.
+
+Report which arms you can order and which you cannot, and say which rule each pair fell under.

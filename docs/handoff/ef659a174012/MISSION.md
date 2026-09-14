@@ -101,3 +101,20 @@ prevent this**. Establish that with evidence before changing a line. Candidates,
 - Writing a value into `router_v2.cost`.
 - Hardcoding an arm preference or exclusion in arbiter code.
 - `docs/tasks.yaml`, `docs/leadv2/open-threads.md` — lead-owned.
+
+## AMENDMENT (2026-09-14): a named tie-break candidate, cheap to confirm or kill
+
+While answering a founder question about reviewer strength I measured something that bears directly
+on your item 1. **Seven of twelve matrix rows share `capability: 4`** — glm, codex/terra, codex/sol,
+sol, sonnet, opus, fable — and every provider except glm-flash prices at 1.0 today. So on a large
+class of tasks BOTH discriminators tie simultaneously.
+
+And glm is the **first** capability-4 row in the matrix, in file order.
+
+That yields a specific, falsifiable hypothesis for the 61% concentration: when price ties at 1.0 and
+capability ties at 4, the tie may be broken by matrix row order rather than by headroom. Confirm or
+kill it cheaply — reorder the rows in a fixture and see whether the pick follows the order. If it
+does, that is the cause, and it is also why headroom never got a vote. If it does not, say what
+actually broke the tie and move on.
+
+Treat this as a lead, not a finding: I did not test it.
