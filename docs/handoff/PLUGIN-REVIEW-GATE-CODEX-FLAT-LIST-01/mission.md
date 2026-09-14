@@ -1,60 +1,67 @@
-# PLUGIN-REVIEW-GATE-CANNOT-PARSE-CODEX-FLAT-LIST-01 — round 2
+# PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01 — round 3
 
-Round 1 landed `1b8b0243` on this lane's branch. Round 2 fixes it. All writes stay in
-**`~/Projects/leadv2`**, in THIS worktree.
+Round 2 landed `5e9274e7`. Codex reviewed it and returned **FAIL: 3 High**, all in
+`plugins/leadv2/scripts/leadv2-review-run.sh`. The full review is at
+`docs/handoff/PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01/review-codex.md` — read it first.
+All writes stay in **`~/Projects/leadv2`**, in THIS worktree.
 
-## The round-1 fix does not work, and the proof is this lane's own review
-Codex reviewed `1b8b0243` and emitted three `[high]` findings as a flat bracket list into
-`docs/handoff/PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01/review-codex.md`. The gate then wrote:
+**The defect is still reproducing on this lane's own review.** The round-2 gate artifact reads
+`status: blocked / reason: findings_lost / declared_verdict: FAIL / findings_total: 0` while the
+Codex report it was parsing carries `REVIEW_FINDINGS: critical=0 high=3` and three `- [high]`
+bullets. That is the bug this row exists to kill, measured on itself for the second round running.
 
-```
-status: blocked
-reason: findings_lost
-declared_verdict: FAIL
-findings_total: 0
-```
+## H1 — structured findings suppress every bracket-list finding (`:2028-2029`)
+The new flat-list parser runs **only when the report has zero `FINDING:` lines**. Any mixed-shape
+report therefore loses all of its bracketed findings — the exact loss the row was opened for, just
+moved one condition to the left.
 
-Three real findings in the file, zero counted — the exact defect the row names, reproducing on
-the fix meant to remove it. Treat that artifact pair as your regression fixture: it is a real
-Codex report, not a synthetic one.
+**Fix:** parse both shapes unconditionally and deduplicate only genuinely equivalent findings.
 
-## The three findings — fix all three
-1. **`findings_total` is absent on the normal gate path** (`review-mission-source.md:20-21`).
-   The normal fail gate emits only per-severity fields, and the round-1 test substituted `high`
-   for the mission-required `findings_total`, so the required equality is neither implemented nor
-   tested. Emit `findings_total` on the normal gate path and assert it equals the count of ALL
-   bracketed findings in the fixture.
-2. **Unanchored flat findings collapse during dedup** (`leadv2-review-run.sh:2040-2050`).
-   A flat bullet with no trailing location is emitted with blank file and line, so every
-   same-severity unanchored finding shares one dedup key and silently reduces the count. Give each
-   unanchored item a stable unique key (e.g. include the normalized description), and add a
-   multi-item unanchored regression test.
-3. **Structured findings suppress bracket-list findings** (`leadv2-review-run.sh:2028-2029`).
-   The new parser runs ONLY when the report has zero `FINDING:` lines, so a mixed-shape report
-   loses every bracketed finding. Parse BOTH shapes, dedup only genuinely equivalent findings, and
-   add a mixed-report test proving every bracketed item is counted.
+**Test:** a mixed report carrying both a `FINDING:` block and `- [high] …` bullets; every item of
+both shapes appears in `findings_total`.
 
-## Acceptance — behavioural, not a grep
-- Re-run the gate against the real `review-codex.md` above: `findings_total` must be **3**, and
-  `reason` must NOT be `findings_lost`.
-- Tests for all three shapes: flat-only, mixed (`FINDING:` + brackets), unanchored-multi.
-- `findings_lost` must still fire for a genuinely unreadable or empty report — do not make it
-  unreachable.
-- **Negative control, RUN it three times, once per fix:** revert each of the three changes
-  individually inside the function body in a scratch copy, re-run, show the matching test goes RED,
-  restore. Paste all outputs. One mutation is not a control for three independent defects.
+## H2 — unanchored flat findings collapse in dedup (`:2040-2050`)
+A flat bullet with no trailing `(file:line)` is emitted with blank `file` and `line`, so every
+same-severity unanchored finding shares one dedup key and silently reduces `findings_total`.
+Silent reduction is indistinguishable from "there was only one".
 
-## Known trap, still open from round 1
-`review_gate` is emitted from **two** sites. Round 1's report says `leadv2-dispatch-product-close.sh`
-was investigated and found unaffected — verify that claim yourself rather than inheriting it, and
-say in your report which site you tested against.
+**Fix:** give each unanchored item a dedup key that is stable and unique — e.g. fold the
+normalized description into the key. State which key you chose.
+
+**Test:** three unanchored `- [high]` bullets with different text → `findings_total` is 3, not 1.
+
+## H3 — `findings_total` is absent on the normal gate path (review-mission-source.md:20-21)
+The normal fail gate emits only per-severity fields, and the round-2 test substituted `high` for
+the mission-required `findings_total`. So the required observable is neither emitted nor asserted —
+the test passed by testing a different field.
+
+**Fix:** emit `findings_total` on the normal gate path.
+
+**Test:** assert `findings_total` equals the count of **all** bracketed fixture findings. Not
+`high`. Not a per-severity sum computed the same way the producer computes it — count the fixture's
+items independently.
+
+## Negative controls — one per finding, all three RUN
+Three independent defects need three mutations; one mutation is not a control for three. For each:
+restore the round-2 behaviour (H1: re-add the zero-`FINDING:`-lines condition; H2: blank out the
+unanchored dedup key again; H3: drop the `findings_total` emit), show the matching test go RED,
+restore, show it green. Paste all three red/green pairs.
+
+## The acceptance that matters
+Re-run the round-2 review artifact through the fixed parser. The file
+`docs/handoff/PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01/review-codex.md` is a real Codex report with
+three real `[high]` findings and a `REVIEW_FINDINGS:` header. The fixed parser must yield
+`findings_total: 3` and a gate status that is `fail` (the verdict Codex declared) — **not**
+`blocked / findings_lost`. Paste the before and after.
 
 ## Off limits
-- Reviewer-arm selection, quota filtering, author exclusion — untouched.
-- Do not weaken a fixture to get green. The pre-existing `test-review-gate-shows-findings.sh`
-  B/C failures were traced in round 1 to a selfcheck-gate/dirty-worktree interaction unrelated to
-  this fix — leave them, but say whether they still reproduce.
+- Reviewer-arm selection, the route arbiter, quota logic — untouched. This row is the parser and
+  the gate artifact only.
+- Do not make the gate permissive to clear `findings_lost`. `findings_lost` must keep firing when
+  findings really are lost; the fix is that they stop being lost.
+- `leadv2-review-run.sh` is the sole owner of arm selection — do not move that responsibility.
 
 ## Report
-Append to `docs/handoff/PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01/report.md` under `## Round 2`.
+Append `## Round 3` to `docs/handoff/PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01/report.md`: the fix per
+finding, the three tests, the three controls, and the before/after of the self-parse acceptance.
 End with `DELIVERABLE_COMPLETE`.
