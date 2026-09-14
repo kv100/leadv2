@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-review-mission-alignment.sh
+file=plugins/leadv2/scripts/leadv2-review-run.sh
+anchor=s/GATE_MISSION_VERDICT=FAIL/GATE_MISSION_VERDICT=PASS/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: wrong_task rc=7 expected=7 gate=arms: sonnet fanout: 1/1 degraded=false launched=1 pool_ok=1 source=pool reason=none excluded=- unreadable: none verified: 0/1 reason=single_arm_pool mission_source: docs/handoff/spec-wrong_task.md mission_snapshot: /private/tmp/review-mission-alignment.3wcZwb/repo/docs/handoff/dispatch-wrong_task/review-mission-source.md mission_sha256: 7841a3563ee748a271389f78cf893923462f717d1d5822617499a56defc17600 mission_bytes: 76 diff_bytes: 43 review_input_bytes: 119 correctness_verdict: PASS mission_verdict: PASS status: fail critical: 0 high: 1 medium: 0 low: 0 findings_source: finding_lines findings: - [High] docs/handoff/spec-wrong_task.md:1 — requested widget is absent despite otherwise sound code]} report: docs/handoff/dispatch-wrong_task/review-sonnet.md 
+diff_hash=83a2c012aeda79c72d2e040ac569e33767366e39f81a11302774e7f6998a0b1f
+lane_diff_hash=5b16678a817216c136f3949d28e4685bca98f35b4cc0abb4742058328a7bd896
