@@ -967,19 +967,38 @@ try:
         # its end of life. rc=8 = ownership refusal, distinct from rc=4
         # (not registered).
         target = next((s for s in sessions if s.get("task_id") == task_id), None)
-        if target is not None and target.get("recovered"):
-            print(f"[registry] mark_finished: refused, row is recovery-owned (recovered=true); only lane_reconcile owns it: {task_id}", file=sys.stderr)
-            sys.exit(8)
-        for s in sessions:
-            if s.get("task_id") == task_id:
-                s["terminal_status"] = outcome
-                s["terminal_evidence"] = evidence
-                s["terminal_at"] = now
-                s["updated_at"] = now
-                break
-        else:
+        # PLUGIN-MARK-FINISHED-DOES-NOT-RELEASE-THE-ROW-01: rc=4 (not
+        # registered) must be checked BEFORE the recovered-row refusal, or a
+        # bare task_id with no row at all was reported as rc=8 (wrong
+        # diagnosis: nothing to refuse ownership OF).
+        if target is None:
             print(f"[registry] mark_finished: task not registered: {task_id}", file=sys.stderr)
             sys.exit(4)
+        if target.get("recovered"):
+            print(f"[registry] mark_finished: refused, row is recovery-owned (recovered=true); only lane_reconcile owns it: {task_id}", file=sys.stderr)
+            sys.exit(8)
+        target["terminal_status"] = outcome
+        target["terminal_evidence"] = evidence
+        target["terminal_at"] = now
+        target["updated_at"] = now
+        # PLUGIN-MARK-FINISHED-DOES-NOT-RELEASE-THE-ROW-01: measured bug --
+        # this op used to stamp terminal_status and STOP, leaving the row
+        # fully live for register/check_writes's writeset admission and
+        # check_limits's lane cap, so a merged lane's claim outlived the
+        # lane itself and the next lane needing the same files was refused
+        # writeset_conflict against a row nobody was running anymore.
+        # `stale: true` is the EXISTING release convention, not a new one --
+        # _lv2_ws_dead/register's admission loop and check_writes (both
+        # above) already skip `other.get("stale")` rows, and
+        # leadv2_active_check_limits's lane-cap count already filters
+        # `s.get("stale")` out. Reusing it here (instead of removing the
+        # row) means the writeset/cap release this task requires does NOT
+        # regress PULSE-01: leadv2-lane-heartbeat.sh's `status` reads
+        # terminal_status/terminal_evidence off this SAME row after finish
+        # (test-leadv2-lane-heartbeat.sh Tests 4/5 depend on that read
+        # succeeding post-finish) -- outright removal would answer
+        # not_found instead of completed/finished_empty.
+        target["stale"] = True
 
     elif op == "append_provider_receipt":
         task_id, receipt_json = args
@@ -1140,6 +1159,32 @@ try:
         except OSError:
             pass
         raise
+
+    # PLUGIN-MARK-FINISHED-DOES-NOT-RELEASE-THE-ROW-01: rc=0 from this op
+    # must mean the release actually landed on disk, not merely that this
+    # process's in-memory `data` was mutated -- re-read the file we just
+    # wrote, still under the SAME flock, so a lost edit (a yaml
+    # round-trip/serialization bug, or a future no-op regression that still
+    # falls through to "success") is caught HERE instead of surfacing later
+    # as a writeset_conflict against a row that, per this very check,
+    # should no longer be blocking anything.
+    if op == "mark_finished":
+        with open(yaml_path, encoding="utf-8") as _mf_verify_fh:
+            _mf_verify_data = yaml.safe_load(_mf_verify_fh) or {}
+        _mf_verify_row = next(
+            (s for s in (_mf_verify_data.get("sessions") or [])
+             if isinstance(s, dict) and s.get("task_id") == task_id),
+            None,
+        )
+        if (_mf_verify_row is None
+                or not _mf_verify_row.get("stale")
+                or _mf_verify_row.get("terminal_status") != outcome):
+            print(
+                f"[registry] mark_finished: post-write verify failed task={task_id} "
+                f"row={_mf_verify_row!r}",
+                file=sys.stderr,
+            )
+            sys.exit(9)
 
 finally:
     fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -1436,6 +1481,18 @@ leadv2_active_heartbeat() {
 # evidence_json: JSON object the caller computed (default '{}' = no proof of
 # output -- the reader treats outcome=completed with empty evidence as
 # finished_empty, never trusting a bare self-report).
+# PLUGIN-MARK-FINISHED-DOES-NOT-RELEASE-THE-ROW-01: rc=0 means the row's
+# writeset/lane-cap claim is RELEASED (stale: true, verified by a re-read of
+# active.yaml after the write -- not just that this function ran). The row
+# itself is kept, terminal_status/terminal_evidence intact, so
+# leadv2-lane-heartbeat.sh's `status` still resolves completed/finished_empty
+# for it afterward -- `stale: true` is the existing convention
+# register/check_writes/check_limits already use to exclude a row from new
+# admission checks and the lane cap, reused here rather than invented.
+# rc=4 -- task_id not registered (no row to release); rc=8 -- row is
+# recovery-owned (recovered: true), only lane_reconcile may close it; rc=9 --
+# the write landed in memory but a re-read of the file afterward did not
+# show the release (lost edit) -- never rc=0 on a release that didn't stick.
 leadv2_active_mark_finished() {
   local task_id="${1:?task_id required}"
   local outcome="${2:?outcome required}"
