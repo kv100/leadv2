@@ -188,13 +188,23 @@ if os.environ.get("LV2_TEST_FORCE_REPLACE"):
     os.replace = fail_replace
 if os.environ.get("LV2_TEST_FORCE_DUMP"):
     import yaml
-    def fail_dump(*_args, **_kwargs):
-        raise OSError("forced yaml.dump failure")
+    real_dump = yaml.dump
+    dump_calls = 0
+    fail_on = int(os.environ["LV2_TEST_FORCE_DUMP"])
+    def fail_dump(*args, **kwargs):
+        global dump_calls
+        dump_calls += 1
+        if dump_calls == fail_on:
+            raise OSError("forced yaml.dump failure")
+        return real_dump(*args, **kwargs)
     yaml.dump = fail_dump
 PY
 
   rc_replace=0
-  PYTHONPATH="$hook_dir" LV2_TEST_FORCE_REPLACE=1 LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
+  # Current code does one staging dump, then replace.  The mutation control
+  # restores a direct "w" fallback that reaches dump call 2 only after that
+  # open has truncated active.yaml; this forces that second dump to fail.
+  PYTHONPATH="$hook_dir" LV2_TEST_FORCE_REPLACE=1 LV2_TEST_FORCE_DUMP=2 LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
     source "'"$REGISTRY_SH"'"
     leadv2_active_mark_finished T1 completed "{}"
   ' >/dev/null 2>&1 || rc_replace=$?
