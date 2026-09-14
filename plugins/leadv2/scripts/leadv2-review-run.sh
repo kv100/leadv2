@@ -2016,6 +2016,40 @@ for _arm in "${ran_arms[@]}"; do
     [[ -n "${_sev}" ]] || continue
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${_arm}" "${_sev}" "${_f}" "${_ln}" "${_dim}" "${_desc}" >> "${FINDINGS_RAW}"
   done
+  # PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01: an arm with no `FINDING:` lines can
+  # still carry real findings as a flat bracket-severity list — "- [high] Title
+  # (path:line)" — the shape a Codex adversarial review actually emits (see
+  # docs/handoff/V5-M1-CI-SELECTION-R2/review-codex.md). leadv2-review-findings.sh's
+  # renderer already recognizes this shape for DISPLAY (bracket_lines); this engine's
+  # own count union above never did, so a real FAIL with real findings landed here as
+  # zero rows, tripped the "declared FAIL but zero Critical/High" impossible-state
+  # check below, and the gate reported status=blocked reason=findings_lost over a
+  # review that was never lost. Additive only: FINDING: lines still win when present.
+  if ! grep -qE '^FINDING:' "${_file}" 2>/dev/null; then
+    { grep -E '^[[:space:]]*-[[:space:]]*\[[A-Za-z]+\]' "${_file}" 2>/dev/null || :; } | while IFS= read -r _line; do
+      _sev_raw="$(printf '%s\n' "${_line}" | sed -nE 's/^[[:space:]]*-[[:space:]]*\[([A-Za-z]+)\].*/\1/p')"
+      case "${_sev_raw}" in
+        [Cc]ritical) _sev="Critical" ;;
+        [Hh]igh)     _sev="High" ;;
+        [Mm]edium)   _sev="Medium" ;;
+        [Ll]ow)      _sev="Low" ;;
+        *)           _sev="" ;;
+      esac
+      [[ -n "${_sev}" ]] || continue
+      _rest="$(printf '%s\n' "${_line}" | sed -E 's/^[[:space:]]*-[[:space:]]*\[[A-Za-z]+\][[:space:]]*//')"
+      _f=""; _ln=""
+      _loc="$(printf '%s\n' "${_rest}" | sed -nE 's/.*\(([^()]+)\)[[:space:]]*$/\1/p')"
+      if [[ "${_loc}" == *:* ]]; then
+        _f="${_loc%%:*}"
+        _ln="$(printf '%s' "${_loc#*:}" | sed -nE 's/^([0-9]+).*/\1/p')"
+      elif [[ -n "${_loc}" ]]; then
+        _f="${_loc}"
+      fi
+      _dim="review"
+      _desc="${_rest}"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${_arm}" "${_sev}" "${_f}" "${_ln}" "${_dim}" "${_desc}" >> "${FINDINGS_RAW}"
+    done
+  fi
 done
 { grep -E '^FINDING:' "${HACKDETECT_OUT}" 2>/dev/null || :; } | while IFS= read -r _line; do
   _sev="$(printf '%s\n' "${_line}" | sed -nE 's/.*severity=([A-Za-z]+).*/\1/p')"
