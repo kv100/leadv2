@@ -1,10 +1,14 @@
 verdict: APPROVE
 next_action: review_round_2
 
-Fixed leadv2-review-run.sh's findings parser to recognize flat bracket-severity findings (Codex shape), stopping false `findings_lost` blocks.
+Round 2 of PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01: fixed all 3 Codex-found defects in `leadv2-review-run.sh`'s findings union/gate.
 
-- Added additive bracket-list parsing branch to the per-arm FINDING: union loop (only when no `FINDING:` lines present).
-- product-close.sh's gate (the other emit site) already reads the arm's self-declared `REVIEW_FINDINGS:` line directly — confirmed unaffected, left untouched.
-- New suite `test-review-gate-codex-flat-list.sh` (9/9 green) with real specimen fixture, negative control (empty report still blocks), and mutation control (RED without fix, restored).
+- Added `findings_total` to the normal `status: fail` gate path (was only in the `findings_lost` block).
+- Unanchored bracket findings now get a description-based dedup key so same-severity items no longer collapse.
+- Bracket-list parsing now runs unconditionally (additive to `FINDING:` lines), so mixed-shape reports keep every finding.
+- Real specimen (`review-codex.md`, 3 high findings) now reports `findings_total: 3`, never `findings_lost`.
+- 18/18 new suite tests green, incl. 3 separate mutation controls (one per fix) all RED without their fix.
+- Regression: `test-review-body-recovery.sh` PASS=45 FAIL=0 (unchanged); `test-review-gate-shows-findings.sh` PASS=49 FAIL=6 (same as round 1, pre-existing).
+- Independently re-verified `leadv2-dispatch-product-close.sh` has zero `findings_lost` occurrences — confirmed unaffected, untouched.
 
-Full: report.md / developer.full.md
+Full: full.md

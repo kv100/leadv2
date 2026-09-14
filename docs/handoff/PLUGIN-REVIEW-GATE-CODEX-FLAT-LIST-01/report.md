@@ -173,4 +173,49 @@ No Python files were changed (`py_compile` N/A).
   get green" and this is an environment-sensitive finding, not a regression
   from this diff.
 
+## Round 2
+
+Codex's own review of round 1 (`1b8b0243`) — `docs/handoff/PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01/review-codex.md`
+— found 3 `[high]` defects in the round-1 fix itself. All 3 fixed in `leadv2-review-run.sh`:
+
+1. **`findings_total` absent on the normal `status: fail` path.** Added
+   `FINDINGS_TOTAL_ALL=$((CRITICAL+HIGH+MEDIUM+LOW))` (same array the per-severity counts already
+   come from) and print it ahead of `critical:/high:/medium:/low:` in the fail block.
+2. **Unanchored bracket findings collapsed during dedup.** The dedup key was
+   `file|line|severity|dimension`; an unanchored bullet has empty file/line, so every same-severity
+   unanchored finding shared one key. Fixed: fold the normalized description into the key when file
+   AND line are both empty. Anchored findings (the common case) are unaffected.
+3. **Structured findings suppressed bracket-list findings.** The bracket-bullet scan was gated
+   behind "report has zero `FINDING:` lines" — any `FINDING:` line anywhere lost every bracketed
+   finding. Fixed: bracket scan now runs unconditionally, additive to the `FINDING:` scan, same
+   `FINDINGS_RAW` union, dedup (fix #2) still collapses genuine duplicates.
+
+**Acceptance:** the real specimen (`review-codex.md`, 3 anchored `[high]` findings, copied into
+`plugins/leadv2/scripts/tests/fixtures/review-gate-codex-flat-list/review-codex-round2-specimen.md`)
+now reports `findings_total: 3` through the real engine, never `findings_lost` (test suite
+Scenario 5).
+
+**Tests:** `test-review-gate-codex-flat-list.sh` extended with S3 (mixed shape), S4 (unanchored
+multi), S5 (real specimen), and an `findings_total` assertion added to S1. Three SEPARATE mutation
+controls, one per fix (each patches a scratch engine copy, asserts exactly 1 marker occurrence,
+runs the scenario that exercises that fix, shows RED, reverts) — round 1's single mutation control
+no longer applied since fix #3 removed the marker it patched. All 18 checks green; all 3 mutations
+RED without their fix. Full output in `docs/handoff/dispatch-e6816fbf/developer.full.md`.
+
+**Regression:** `test-review-body-recovery.sh` PASS=45 FAIL=0 (unchanged). `test-review-gate-shows-findings.sh`
+PASS=49 FAIL=6, identical to round 1's post-fix score (pre-existing, unrelated selfcheck-gate
+interaction, reproduces on unmodified HEAD).
+
+**Known trap, re-verified (not inherited):** `grep -n findings_lost plugins/leadv2/scripts/leadv2-dispatch-product-close.sh`
+→ zero matches. That file's `parse_review_verdict()` reads the arm's self-declared `REVIEW_FINDINGS:`
+line directly with no union/dedup step, so it cannot exhibit any of these 3 bugs. Confirmed
+independently this round. Left untouched.
+
+**Open item, not resolved:** the committed `review-gate.md`/`review-findings.json` artifacts from
+an earlier live `/leadv2 review` run against this lane show `findings_total: 0` for the same
+specimen that reproduces correctly (`findings_total: 3`) under my isolated repro and under the test
+suite's real-engine harness. Could not reproduce the empty result under the real CLI within the
+turn budget; flagged in `developer.full.md` rather than asserting an unconfirmed root cause. Does
+not block the 3 named fixes, which are independently verified by direct code inspection.
+
 DELIVERABLE_COMPLETE
