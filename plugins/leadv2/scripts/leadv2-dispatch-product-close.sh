@@ -4477,7 +4477,7 @@ if [[ "${verdict}" == FAIL ]]; then
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
   _rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
-  emit decision "review_gate task=${TASK} status=fail critical=${FINDINGS_CRITICAL} high=${FINDINGS_HIGH}${_rgf_dnm}"
+  emit decision "review_gate task=${TASK} status=fail author=${AUTHOR} reviewer=${reviewer} critical=${FINDINGS_CRITICAL} high=${FINDINGS_HIGH}${_rgf_dnm}"
   _dl_note dead review_verdict_fail "critical=${FINDINGS_CRITICAL} high=${FINDINGS_HIGH}"
   _stamp_review_terminal fail
   exit 7
