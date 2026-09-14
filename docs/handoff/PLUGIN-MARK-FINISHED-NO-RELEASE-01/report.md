@@ -122,3 +122,131 @@ both standalone-with-fix and at baseline — they only "fail" inside the full co
   its tests and callers, consistent with the task's own framing ("a library, not a CLI").
 
 DELIVERABLE_COMPLETE
+
+## Round 2
+
+### H1 selector decision: release every safe duplicate atomically
+
+`mark_finished` now selects **all** rows whose `task_id` equals the requested
+id, preflights the entire batch for `recovered: true`, and then stamps every
+selected row terminal and `stale: true` in the one locked YAML transaction. A
+recovery-owned duplicate refuses the entire operation (`rc=8`) before any row
+is changed; that preserves lane-reconcile ownership and avoids a partial
+release. The post-write readback now requires at least one matching row,
+requires **zero non-stale matching rows**, and checks every matching row's
+terminal status. I chose all-safe-row release because these rows all represent
+the same task claim; retaining a live duplicate preserves a writeset/cap
+claim that `mark_finished` is meant to retire.
+
+The fixture has two live `T1` rows, one claiming `src/a.txt` and the other
+`src/b.txt`. Both conflict checks are `5` before finish and `0` after it.
+
+### H2 atomic strategy: no in-place fallback
+
+The direct `open(active.yaml, "w")` fallback was removed. The only commit is a
+same-directory temp file followed by `os.replace`; if either staging or
+replace raises, cleanup removes only the temp and the original registry stays
+untouched. The focused test injects (1) a failed replace followed by a
+would-be second dump failure, and (2) a first staging-dump failure. The
+removed fallback means case (1) never opens the live file at all; the mutation
+control reintroduces that exact class of direct write and forces dump call 2
+to fail after truncation.
+
+### Focused regression, green
+
+```
+$ timeout 120 bash plugins/leadv2/scripts/tests/test-mark-finished-releases-writeset.sh
+[TEST] PASS: 1: bash -n leadv2-active-registry.sh
+[TEST] PASS: 2: two duplicate rows released (before a/b=5/5, after a/b=0/0, rows=2 stale=True)
+[TEST] PASS: 3: unregistered task_id -> rc=4 (non-zero), active.yaml byte-identical
+[TEST] PASS: 4: forced os.replace rc=1 and forced yaml.dump rc=1 leave active.yaml byte-identical
+
+=== Results: 4 passed, 0 failed ===
+```
+
+### Negative controls, red then restored green
+
+#### H1 first-match-only mutation
+
+Artifact: `mutation-control/20260914T215820Z-live-52381.txt`.
+
+```
+$ leadv2-mutation-control.sh --live ... 's/targets = [...]/targets = [next(...)]/' ...
+MUTATION-CONTROL ok mode=live ...
+red_line=[TEST] FAIL: 2: before_a/b=5/5 finish_rc=9 after_a/b=0/5 released=False
+... second T1 row ... "stale": false
+porcelain_clean=yes
+```
+
+Restored baseline:
+
+```
+[TEST] PASS: 2: two duplicate rows released (before a/b=5/5, after a/b=0/0, rows=2 stale=True)
+```
+
+#### H2 truncating-`w` fallback mutation
+
+Artifact: `mutation-control/20260914T220057Z-live-1421.txt`.
+
+```
+$ leadv2-mutation-control.sh --live ... 's|os.replace(...)|... open(yaml_path, "w") ... yaml.dump(...)|' ...
+MUTATION-CONTROL ok mode=live ...
+red_line=[TEST] FAIL: 4: replace_rc=1 replace_intact=0 dump_rc=4 dump_intact=0
+porcelain_clean=yes
+```
+
+Restored baseline:
+
+```
+[TEST] PASS: 4: forced os.replace rc=1 and forced yaml.dump rc=1 leave active.yaml byte-identical
+```
+
+### Falsification set
+
+```
+$ bash -n plugins/leadv2/scripts/leadv2-active-registry.sh
+$ bash -n plugins/leadv2/scripts/tests/test-mark-finished-releases-writeset.sh
+$ timeout 120 bash plugins/leadv2/scripts/tests/test-mark-finished-releases-writeset.sh
+=== Results: 4 passed, 0 failed ===
+```
+
+No standalone Python file changed; the injected Python is the registry's
+existing heredoc, exercised by the focused suite above.
+
+### Changed-scope runner (raw terminal summary)
+
+```
+$ timeout 600 bash tests/run-all.sh --scope changed
+[CORE-OFFLINE] scope=changed running 24 of 93 suites (base=main@6cc7dd0c2e, 2 changed files, 0 unmapped)
+[CORE-OFFLINE] plugins/leadv2/scripts/tests/test-mark-finished-releases-writeset.sh (scope-selected ad-hoc)
+[TEST] PASS: 1: bash -n leadv2-active-registry.sh
+[TEST] PASS: 2: two duplicate rows released (before a/b=5/5, after a/b=0/0, rows=2 stale=True)
+[TEST] PASS: 3: unregistered task_id -> rc=4 (non-zero), active.yaml byte-identical
+[TEST] PASS: 4: forced os.replace rc=1 and forced yaml.dump rc=1 leave active.yaml byte-identical
+=== Results: 4 passed, 0 failed ===
+[CORE-OFFLINE] suites passed=8 failed=13 missing=0 known_red_skipped=3 repo=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PLUGIN-MARK-FINISHED-NO-RELEASE-01
+[NOT-KNOWN-RED] core:plugins/leadv2/scripts/tests/test-phase-refusal-lane-release.sh
+[NOT-KNOWN-RED] core:plugins/leadv2/tests/test-fanout-lane-detach.sh
+[NOT-KNOWN-RED] core:plugins/leadv2/scripts/tests/test-active-register-miss.sh
+[NOT-KNOWN-RED] core:plugins/leadv2/scripts/tests/test-lane-liveness-lies.sh
+[NOT-KNOWN-RED] core:plugins/leadv2/scripts/tests/test-registry-fails-closed.sh
+[NOT-KNOWN-RED] core:plugins/leadv2/scripts/tests/test-writes-overlap.sh
+[NOT-KNOWN-RED] core:active registry phase updates
+[NOT-KNOWN-RED] core:plugins/leadv2/scripts/tests/test-active-registry-noop-is-nonzero.sh
+[NOT-KNOWN-RED] core:plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
+[NOT-KNOWN-RED] core:plugins/leadv2/scripts/tests/test-shadow-control-plane.sh
+[NOT-KNOWN-RED] core:plugins/leadv2/scripts/tests/test-writeset-carousel.sh
+[NOT-KNOWN-RED] core:plugins/leadv2/scripts/tests/test-dispatch-writes-reaches-registry.sh
+[NOT-KNOWN-RED] core:lanes snapshot reconciliation
+[FAIL] plugins/leadv2/scripts/tests/run-core-offline.sh
+[PASS] tests/test-status-surface-bash32.sh
+[PASS] tests/test-status-surface-single-lead.sh
+exit=124
+```
+
+The aggregate runner timed out after its focused regression passed. Its 13
+other reds include sandbox-denied `/bin/ps` and `mktemp` operations and suites
+outside this diff; none name `mark_finished`'s new duplicate or atomic-write
+paths.
+
+DELIVERABLE_COMPLETE
