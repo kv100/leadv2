@@ -1,5 +1,51 @@
 # Open-threads retirement report
 
+## GLM-MAY-REVIEW-AND-ITS-CEILING-IS-95-NOT-80-01
+
+`router_v2.quota_ceilings.glm` is the live arbiter authority and now declares
+`work_pct: 95`, `review_pct: 98`; the arbiter does not import resolver
+`DEFAULT_*` fallbacks. Ordinary glm is admitted for a different author and
+refused for its own diff by the existing `glm:author:` pool entry. glm-flash
+and freepool remain static exclusions, even when included in a configured
+review order.
+
+Raw pre-fix extraction:
+
+```text
+RED_BEFORE_DEFAULT_REVIEW_EXCLUSIONS=['glm', 'glm-flash', 'freepool']
+    glm:    { work_pct: 80, review_pct: 90 }
+```
+
+Raw green focused output:
+
+```text
+[TEST] PASS: arbiter reads routing.yaml ceilings, not resolver DEFAULT_* fallbacks
+[TEST] PASS: foreign author resolves glm; flash/freepool name their exclusions — reviewer=glm pool=glm:ok:85,glm-flash:excluded:review_arm_exclusion,freepool:excluded:review_arm_exclusion,codex:author: refusal=
+[TEST] PASS: self-review refused by name (glm:author), codex selected — reviewer=codex pool=glm:author:,glm-flash:excluded:review_arm_exclusion,freepool:excluded:review_arm_exclusion,codex:ok:10 refusal=
+[TEST] PASS: worker util=80 admits glm — arm=glm ... util_glm=80
+[TEST] PASS: worker util=94 admits glm — arm=glm ... util_glm=94
+[TEST] PASS: worker util=95 caps glm — arm=refuse ... reason=requested_arm_capped ... arm_excluded=glm:capped
+SUMMARY: pass=8 fail=0
+```
+
+The product-close journal conversion is:
+
+```text
+route_resolved by=arbiter role=reviewer arm=glm task=<task> reason=<arbiter-reason>
+```
+
+No live Z.AI usage claim is made: all quota values above are hermetic fixture
+inputs. Search surface `plugins/leadv2/scripts/tests/test-*` found one other
+direct guard of the wrong global ban, `test-glm-first-recovery.sh` case 6;
+it is rewritten. Two fixture-only `[glm]` policy occurrences do not assert the
+shipped default and are not counted. The new suite self-registers for
+`leadv2-glm-policy-resolve.py`, `leadv2-route-arbiter`, and
+`leadv2-routing.yaml`; `LEADV2_RUN_ALL_LIST_TRIGGERS=1` prints all three maps.
+`test-provider-quota-gate.sh` passed 30/0. Shell syntax, Python compilation,
+and `git diff --check` passed. `tests/run-all.sh --scope changed` was started
+foreground but its core-offline delegate exceeded the 300-second bound and was
+interrupted, so it is not claimed green.
+
 ## Scope status
 
 The plugin half is committed with the ledger and its two dedicated plugin

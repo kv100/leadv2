@@ -12,8 +12,8 @@
 #      into the launcher env (spawn-argv probe via LEADV2_DISPATCH_GLM_BIN).
 #   4. A protected-path task NEVER routes to glm-flash — matrix cell
 #      protected:false + ladder untrusted:true.
-#   5. Vocabulary: glm-flash is dispatchable-build but review-excluded
-#      (glm family never reviews).
+#   5. Vocabulary: glm-flash and freepool remain review-excluded, while ordinary
+#      glm may review another arm's diff (its own diff is author-excluded).
 #
 # NEGATIVE CONTROL (E2E-KILLRATE-01 discipline, same shape as T14-NC): case 4
 # applies its mutation to a SCRATCH COPY of config/leadv2-routing.yaml (flash
@@ -235,18 +235,21 @@ else
   fail "NC(revert): live config flash cell lost protected: false"
 fi
 
-# ── Case 5: vocabulary — dispatchable-build yes, review-excluded yes ────────
+# ── Case 5: vocabulary — static exclusions are flash/freepool only ──────────
 vocab="$(python3 -c '
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("_pr", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 print("build:" + ("glm-flash" in m.DISPATCHABLE_BUILD_ARMS and "yes" or "no"))
-print("review_excluded:" + ("glm-flash" in m.DEFAULT_REVIEW_EXCLUSIONS and "yes" or "no"))
+excluded = set(m.DEFAULT_REVIEW_EXCLUSIONS)
+print("review_exclusions:" + ",".join(sorted(excluded)))
+print("glm_review_allowed:" + ("glm" not in excluded and "yes" or "no"))
 print("plan:" + ("glm-flash" in m.DISPATCHABLE_PLAN_ARMS and "yes" or "no"))
 ' "${RESOLVER_PY}" 2>&1)" || vocab=""
-if [[ "${vocab}" == *'build:yes'* && "${vocab}" == *'review_excluded:yes'* && "${vocab}" == *'plan:no'* ]]; then
-  pass "vocab: glm-flash dispatchable-build, review-excluded, not a plan arm"
+if [[ "${vocab}" == *'build:yes'* && "${vocab}" == *'review_exclusions:freepool,glm-flash'* \
+      && "${vocab}" == *'glm_review_allowed:yes'* && "${vocab}" == *'plan:no'* ]]; then
+  pass "vocab: glm-flash/freepool review-excluded; ordinary glm allowed; flash not a plan arm"
 else
   fail "vocab: got ${vocab:-<import failed>}"
 fi
@@ -358,10 +361,16 @@ resolver, *paths = map(Path, sys.argv[1:])
 spec = importlib.util.spec_from_file_location("resolver", resolver)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-# Tenant files explicitly pin the GLM family exclusion.  freepool is governed
-# by its own admission gate and existing tenants intentionally do not repeat
-# that plugin-only default; this drift test locks the new glm-flash addition.
-required = {arm for arm in mod.DEFAULT_REVIEW_EXCLUSIONS if arm in {"glm", "glm-flash"}}
+# Tenant files explicitly pin only glm-flash.  freepool is governed by its own
+# admission gate and existing tenants intentionally do not repeat that plugin
+# default.  Guard both static exclusions and the absence of ordinary glm here:
+# this test must not turn an arm-ownership rule into a role ban again.
+expected = {"glm-flash", "freepool"}
+if set(mod.DEFAULT_REVIEW_EXCLUSIONS) != expected:
+    print("default review exclusions must be exactly %s, got %s" %
+          (sorted(expected), sorted(mod.DEFAULT_REVIEW_EXCLUSIONS)))
+    raise SystemExit(1)
+required = {"glm-flash"}
 bad = []
 for path in paths:
     text = path.read_text()
@@ -381,9 +390,9 @@ for tenant_yaml in "${PROJECTS_ROOT}"/*/.claude/ref/leadv2-routing.yaml; do
   [[ -f "${tenant_yaml}" ]] && tenant_yamls+=("${tenant_yaml}")
 done
 if [[ ${#tenant_yamls[@]} -gt 0 ]] && python3 "${DRIFT_CHECK}" "${RESOLVER_PY}" "${tenant_yamls[@]}"; then
-  pass "tenant drift: explicit review_arm_exclusions include the default GLM family (${#tenant_yamls[@]} checked)"
+  pass "tenant drift: explicit review_arm_exclusions include glm-flash; defaults keep freepool out and ordinary glm in (${#tenant_yamls[@]} checked)"
 else
-  fail "tenant drift: explicit review_arm_exclusions omit a default GLM family arm (checked ${#tenant_yamls[@]})"
+  fail "tenant drift: explicit review_arm_exclusions omit glm-flash (checked ${#tenant_yamls[@]})"
 fi
 STALE_TENANT="${FIXTURE}/stale-tenant.yaml"
 printf 'router:\n  glm_policy:\n    codex_quota_gate:\n      review_arm_exclusions: [glm]\n' > "${STALE_TENANT}"
