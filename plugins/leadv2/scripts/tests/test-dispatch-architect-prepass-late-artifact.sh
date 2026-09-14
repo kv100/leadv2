@@ -67,7 +67,7 @@ CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DI
 LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" LEADV2_DISPATCH_ARCHITECT_BIN="$ARCH" \
 LEADV2_DISPATCH_ARCHITECT_TIMEOUT_SEC=10 LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
 LEADV2_ROUTER_V2=0 LEADV2_EXCLUDED_ARMS=__none__ LEADV2_LANE_SHAPE=off \
-  bash "$DISPATCH" 'test D1 artifact lands after launcher rc returns' --kind product --protected --writes "a.txt,b.txt,c.txt" >"$ROOT/out.log" 2>&1 )
+  bash "$DISPATCH" 'test D1 artifact lands after launcher rc returns' --no-probe-yet --kind product --protected --writes "a.txt,b.txt,c.txt" >"$ROOT/out.log" 2>&1 )
 rc=$?
 
 grep -q 'architect_prepass task=.* status=ran' "$ROOT/out.log" || {
