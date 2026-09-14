@@ -6132,6 +6132,21 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
     emit decision "architect_prepass task=${sig8} status=disabled reason=kill_switch"
     return 0
   fi
+  # FABLE-CANNOT-TAKE-ANY-NON-PRODUCT-LANE-01: a validated report declaration
+  # names the sole reviewable deliverable for this lane.  It is intentionally
+  # not an implementation design, so asking the architect to produce
+  # LANE_WRITES/acceptance for it can only manufacture a false code scope and
+  # park a legitimate audit/review/plan lane.  This is narrower than a kind
+  # exemption: it applies only after `report:<repo-relative path>` passed the
+  # shared parser at resolve time, and ordinary product-classified lanes still
+  # take the full prepass below.
+  if [[ -n "${LANE_DELIVERABLE_DECL:-}" ]] \
+     && lv2_deliverable_parse "${LANE_DELIVERABLE_DECL}" >/dev/null; then
+    _lane_writes_guard "${sig8}" "${writes}" 0 || return 1
+    _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || return 1
+    emit decision "architect_prepass task=${sig8} status=skipped reason=report_only_deliverable deliverable=${LANE_DELIVERABLE_DECL}"
+    return 0
+  fi
   # A comma-separated declaration is proof only when it has exactly one non-empty entry.
   # PREPASS-PROVIDER-FALLBACK-01-R1: printf '%s' left the stream without a final
   # newline, so wc -l counted ONE declared path as zero and TWO as one -- the
