@@ -1,0 +1,11 @@
+# ASTRA-SELECTOR-HAS-NO-NEGATIVE-CONTROL-01
+
+astra и sol стали выбираемыми (ряд 9791190a2fea, слияние d15812fd, проверено живыми резолвами --pin-arm astra -> gpt-6-astra и --pin-arm sol -> gpt-5.6-sol), но два обязательных хвоста остались незакрытыми, потому что линия припарковалась по e2e_timeout. Первое: нет негативного контроля на необслуживаемое имя модели — надо показать, что селектор ОТКАЗЫВАЕТ на входе с названной причиной, а не молча откатывается на terra или sonnet; селектор, про который не доказано, что он отказывает необслуживаемой модели, не доказан и как выбирающий обслуживаемую, и это ровно та форма отказа, из-за которой писалось решение CODEX-TIERS-COLLAPSED-ONTO-ASTRA-01. Правило "ступень, которую аккаунт не обслуживает, не должна быть выбираемой" уже записано в комментарии конфига, но исполняется только чтением, а не проверкой. Второе: test-codex-tiers-selectable.sh не расширена под новые arm id. Важно: эта сюита СЕЙЧАС красная — 3 FAIL при 6 PASS, все три вида "no arbiter route_resolved line" для проб Standard, Heavy и мутации red-collapse; замерено 2026-09-14 прогоном в рабочем дереве линии И на нетронутом main, результат побайтово одинаковый, то есть заранее красная, а не регрессия от astra. Значит работа делится на две: сперва понять, почему её собственные пробы не дают строки резолва (кандидаты: проба не передаёт --no-probe-yet и упирается в гейт посылки, как это уже было с test-complexity-source-provenance.sh, где ровно эта причина давала ноль route_resolved на синтетическом фикстуре), потом расширить её на astra и sol. Приёмка: сюита зелёная целиком, включая новый негативный контроль на имя модели вне ~/.codex/models_cache.json, и по-прежнему доказывающая, что astra не выигрывает работу стандартного размера (сегодня это проверено разово вручную: при стандартном размере без закрепления выигрывает arm=sonnet reason=cheapest_capable).
+
+## Method — binding
+
+- Name the surface of every count; report the command that produced each number.
+- Run the negative control this row names. A rule you cannot demonstrate refusing is not a rule.
+- Register any new suite so `tests/run-all.sh --scope changed` SELECTS it.
+- Do NOT renumber `capability` (founder ruling 2026-09-14) and do NOT write into
+  `router_v2.cost` (that thread is closed on measured evidence).
