@@ -134,6 +134,10 @@ CODEX_MODEL_TIERS = {
     ("gpt-6-astra", "top"): _CODEX_EFFORT_TABLES["top"],
     ("gpt-6-astra", "standard"): _CODEX_EFFORT_TABLES["standard"],
     ("gpt-6-astra", "volume"): _CODEX_EFFORT_TABLES["volume"],
+    # ASTRA-MUST-BE-SELECTABLE-01: the "astra" tier is a single-model chain
+    # (codex-task.sh's _resolve_tier_model_effort), named directly instead of
+    # reached only as every other tier's cache-absence fallback.
+    ("gpt-6-astra", "astra"): _CODEX_EFFORT_TABLES["top"],
 }
 
 

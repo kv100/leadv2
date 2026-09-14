@@ -61,12 +61,15 @@ DEFAULT_BUILD_SPILL = ["glm", "glm-flash", "codex", "sonnet", "freepool"]
 # them, so adding the names would make the seam lie and convert honest
 # `requested_arm_not_launchable` refusals into spawn-time crashes. When the
 # registry lands, replace the seam's stub THERE (one function), not here.
-DISPATCHABLE_BUILD_ARMS = {"glm", "glm-flash", "codex", "sonnet", "freepool"}
+# ASTRA-MUST-BE-SELECTABLE-01: astra/sol are codex-family capability_matrix
+# arms (provider: codex, launched through the same codex-task.sh channel) --
+# admitted to build/plan wherever codex already is, same reasoning.
+DISPATCHABLE_BUILD_ARMS = {"glm", "glm-flash", "codex", "sonnet", "freepool", "astra", "sol"}
 
 # PLANNER-MODELS-DECISION-01: glm and kimi are build-only and are never admitted
 # to a planning role. Role decides the SET; the ladder still decides the ORDER.
 # T19: freepool is build-only too -- never a planning arm, same reasoning as glm.
-DISPATCHABLE_PLAN_ARMS = {"codex", "sonnet", "opus", "fable"}
+DISPATCHABLE_PLAN_ARMS = {"codex", "sonnet", "opus", "fable", "astra", "sol"}
 # T19: freepool is excluded from ever being the review arm, same as glm --
 # a review gate is mandatory on every diff (Codex/Opus), never the arm
 # reviewing its own diff. GLM-53-FLASH-ARM-01: glm-flash is glm-family and

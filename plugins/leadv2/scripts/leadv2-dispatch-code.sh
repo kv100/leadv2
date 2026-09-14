@@ -2799,6 +2799,31 @@ _arm_provider() {  # <arm_id> -> provider string
       return
     fi
   done
+  # ASTRA-MUST-BE-SELECTABLE-01: astra/sol are capability_matrix-only arms,
+  # deliberately absent from dispatch_ladder (that list governs default-
+  # auction fallback CONTINUATION; a heavy-only strategic arm must never
+  # auto-join the no-pin fallback chain). The ladder scan above can never
+  # find them, so consult the capability_matrix before falling back to
+  # guessing the arm name is its own provider -- guessing wrong would key
+  # their quota-lockout record under a fake "astra"/"sol" bucket instead of
+  # the real, shared "codex" one, letting a quota-locked codex account still
+  # be dialed through a pinned astra/sol request.
+  local _mp
+  _mp="$(python3 -c '
+import sys, yaml
+try:
+    d = yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    sys.exit(0)
+for c in ((d.get("router_v2") or {}).get("capability_matrix") or []):
+    if str(c.get("arm", "")) == sys.argv[2]:
+        print(c.get("provider", ""))
+        break
+' "${ROUTING_YAML}" "${_arm}" 2>/dev/null)"
+  if [[ -n "${_mp}" ]]; then
+    printf '%s' "${_mp}"
+    return
+  fi
   printf '%s' "${_arm}"
 }
 
@@ -3677,7 +3702,7 @@ _dispatch_worker_liveness() {  # <arm> <handle> -> alive|dead|unknown (stdout)
         printf 'dead'
       fi
       ;;
-    codex)
+    codex|astra|sol)
       local liveness_bin verdict
       liveness_bin="${LEADV2_DISPATCH_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lane-liveness.sh}"
       [[ -f "${liveness_bin}" ]] || { printf 'unknown'; return; }
@@ -6381,14 +6406,14 @@ PY
 # costlier arm. Validate at RESOLUTION time instead and fail loudly: a config
 # error must surface as a config error, never as a routing fallthrough.
 # Called at every site that exports RESOLVED_CODEX_TIER.
-_codex_tier_validate() {  # <tier> <sig8> — returns 0 valid; exits 1 loudly on a launcher-rejected tier
-  local _tier="${1:-}" _sig="${2:-?}"
+_codex_tier_validate() {  # <tier> <sig8> [<arm>] — returns 0 valid; exits 1 loudly on a launcher-rejected tier
+  local _tier="${1:-}" _sig="${2:-?}" _arm="${3:-codex}"
   case "${_tier}" in
-    top|standard|volume) return 0 ;;
+    top|standard|volume|astra) return 0 ;;
   esac
-  emit decision "route_tier_invalid task=${_sig} arm=codex tier=${_tier} accepted=top|standard|volume reason=launcher_rejects_tier"
-  log_err "[leadv2-dispatch-code] REFUSE: routing pins codex tier '${_tier}' but codex-task.sh accepts only top|standard|volume (spark is banned in this project). Fix leadv2-routing.yaml -- refusing loudly instead of falling through to a costlier arm."
-  printf '[leadv2-dispatch-code] REFUSE: codex tier %s is not launchable (codex-task.sh accepts: top|standard|volume)\n' "${_tier}" >&2
+  emit decision "route_tier_invalid task=${_sig} arm=${_arm} tier=${_tier} accepted=top|standard|volume|astra reason=launcher_rejects_tier"
+  log_err "[leadv2-dispatch-code] REFUSE: routing pins ${_arm} tier '${_tier}' but codex-task.sh accepts only top|standard|volume|astra (spark is banned in this project). Fix leadv2-routing.yaml -- refusing loudly instead of falling through to a costlier arm."
+  printf '[leadv2-dispatch-code] REFUSE: %s tier %s is not launchable (codex-task.sh accepts: top|standard|volume|astra)\n' "${_arm}" "${_tier}" >&2
   exit 1
 }
 
@@ -7150,7 +7175,7 @@ CONTRACT_EOF
           lane_adopt_pid "${DISPATCH_REG_ID}" "${DISPATCH_LEAD_SESSION_ID:-direct}" "${WORK_ROOT:-${PROJECT_ROOT}}" "build" "${pid}" >/dev/null 2>&1 || true
       fi
       ;;
-    codex)
+    codex|astra|sol)
       # CODEX arm (ROUTING-ENFORCEMENT-01): launch through the sanctioned codex-task.sh
       # channel only -- `task ... --background` detaches its own job (codex-companion's
       # enqueueBackgroundTask, not something this script spawns/detaches itself) and prints
@@ -7179,10 +7204,10 @@ CONTRACT_EOF
         local refusal
         refusal="$(refusal_reason "${arm}" "${rc}" "${out}" "${err}" || true)"
         if [[ -n "${refusal}" ]]; then
-          LAST_ARM_OUTCOME="codex_refused_${refusal}"
-          emit decision "arm_refused by=router model=codex task=${sig8} reason=codex_refused_${refusal}"
-          _maybe_record_quota_lockout "codex" "${refusal}" "${out}"$'\n'"${err}"
-          log "spawn(codex) refused: ${refusal}"
+          LAST_ARM_OUTCOME="${arm}_refused_${refusal}"
+          emit decision "arm_refused by=router model=${arm} task=${sig8} reason=${arm}_refused_${refusal}"
+          _maybe_record_quota_lockout "${arm}" "${refusal}" "${out}"$'\n'"${err}"
+          log "spawn(${arm}) refused: ${refusal}"
           return 2
         fi
         # PLUGIN-PAPERCUTS-01 (defect 2, acceptance 4): a spawn-time failure that
@@ -7193,8 +7218,8 @@ CONTRACT_EOF
         # rides along as detail=.
         local _codex_err_detail
         _codex_err_detail="$(printf '%s\n' "${err}" "${out}" | grep -m1 -E -i 'error|unknown|refused|failed' | tr -d '\n' | cut -c1-160)"
-        emit decision "spawn_failed by=router model=codex task=${sig8} rc=${rc} reason=launcher_nonzero_exit detail=${_codex_err_detail:-<launcher-stderr-empty>}"
-        log_err "spawn(codex) failed rc=${rc}: ${out} ${err}"
+        emit decision "spawn_failed by=router model=${arm} task=${sig8} rc=${rc} reason=launcher_nonzero_exit detail=${_codex_err_detail:-<launcher-stderr-empty>}"
+        log_err "spawn(${arm}) failed rc=${rc}: ${out} ${err}"
         return 1
       fi
       # jobId format: <task|review>-<base36-timestamp>-<random6> -- same regex
@@ -7202,8 +7227,8 @@ CONTRACT_EOF
       handle="$(printf '%s
 ' "${out}" | grep -oE '(task|review)-[a-z0-9]+-[a-z0-9]+' | head -1)"
       if [[ -z "${handle}" ]]; then
-        emit decision "spawn_failed by=router model=codex task=${sig8} reason=empty_handle"
-        log_err "spawn(codex) returned no parseable jobId -- treating as launch failure (no-op launcher?)"
+        emit decision "spawn_failed by=router model=${arm} task=${sig8} reason=empty_handle"
+        log_err "spawn(${arm}) returned no parseable jobId -- treating as launch failure (no-op launcher?)"
         return 1
       fi
       # Liveness: codex-task.sh's own `status <jobId>` resolves the SAME job registry
@@ -7211,8 +7236,8 @@ CONTRACT_EOF
       # it exits non-zero ("No job found for ...") when the id is unknown, so this is the
       # codex-arm equivalent of the glm arm's `status` check / the sonnet arm's `kill -0`.
       if ! bash "${CODEX_BIN}" status "${handle}" >/dev/null 2>&1 9>&-; then
-        emit decision "spawn_failed by=router model=codex task=${sig8} handle=${handle} reason=not_live"
-        log_err "spawn(codex) handle=${handle} has no live job record -- treating as launch failure"
+        emit decision "spawn_failed by=router model=${arm} task=${sig8} handle=${handle} reason=not_live"
+        log_err "spawn(${arm}) handle=${handle} has no live job record -- treating as launch failure"
         return 1
       fi
       ;;
@@ -7268,7 +7293,7 @@ CONTRACT_EOF
 _arm_status_probe() {  # <arm> <handle>
   local arm="$1" handle="$2" bin=""
   case "${arm}" in
-    codex)    bin="${CODEX_BIN}" ;;
+    codex|astra|sol) bin="${CODEX_BIN}" ;;
     kimi)     bin="${KIMI_BIN}" ;;
     glm|glm-flash) bin="${GLM_BIN}" ;;
     freepool) bin="${FREEPOOL_BIN}" ;;
@@ -7351,7 +7376,7 @@ _arm_exit76_signal() {  # <arm> <raw_text>
 _arm_final_output() {  # <arm> <handle>
   local arm="$1" handle="$2" bin="" tail_n="${LEADV2_ARM_TAIL_LINES:-60}" raw logpath out
   case "${arm}" in
-    codex)    bin="${CODEX_BIN}" ;;
+    codex|astra|sol) bin="${CODEX_BIN}" ;;
     kimi)     bin="${KIMI_BIN}" ;;
     glm|glm-flash) bin="${GLM_BIN}" ;;
     freepool) bin="${FREEPOOL_BIN}" ;;
@@ -7835,7 +7860,7 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
   # SD-CODEX-SILENT-INSTANT-COMPLETE-01: captured before spawn so the
   # instant-complete rollout scan below never mistakes a PRIOR unrelated
   # codex session's rollout file for this one's.
-  [[ "${arm}" == "codex" ]] && _codex_spawn_epoch="$(date +%s)"
+  [[ "${arm}" == "codex" || "${arm}" == "astra" || "${arm}" == "sol" ]] && _codex_spawn_epoch="$(date +%s)"
   if [[ "${do_spawn}" == "1" ]]; then
     spawn_out="$(spawn_worker "${arm}" "${mission}" "${sig8}")"; src=$?
     printf '%s\n' "${spawn_out}"
@@ -7928,13 +7953,13 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
     # generic early-verdict window above found neither a terminal failure nor
     # no-work -- i.e. the job is still "running/unknown" (or already completed,
     # in which case the probe below finds output instantly and returns at once).
-    if [[ "${arm}" == "codex" ]]; then
+    if [[ "${arm}" == "codex" || "${arm}" == "astra" || "${arm}" == "sol" ]]; then
       local _fb_rc=0
       _codex_first_byte_deadline_check "${handle}" "${sig8}" || _fb_rc=$?
       if [[ ${_fb_rc} -eq 7 ]]; then
-        LAST_ARM_OUTCOME="codex_dead_no_first_byte"
-        emit decision "arm_refused by=router model=codex task=${sig8} reason=no_first_byte"
-        log "spawn(codex) no first byte within deadline; spilling to next arm"
+        LAST_ARM_OUTCOME="${arm}_dead_no_first_byte"
+        emit decision "arm_refused by=router model=${arm} task=${sig8} reason=no_first_byte"
+        log "spawn(${arm}) no first byte within deadline; spilling to next arm"
         local fb_abort_rc=0
         dispatch_abort "${token}" || fb_abort_rc=$?
         [[ ${fb_abort_rc} -eq 0 ]] && return 7
@@ -7946,9 +7971,9 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
       local _ic_rc=0
       _codex_instant_complete_deadline_check "${sig8}" "${_codex_spawn_epoch}" "${WORK_ROOT}" || _ic_rc=$?
       if [[ ${_ic_rc} -eq 7 ]]; then
-        LAST_ARM_OUTCOME="codex_dead_instant_complete"
-        emit decision "arm_refused by=router model=codex task=${sig8} reason=instant_complete"
-        log "spawn(codex) instant-complete with null last_agent_message; spilling to next arm"
+        LAST_ARM_OUTCOME="${arm}_dead_instant_complete"
+        emit decision "arm_refused by=router model=${arm} task=${sig8} reason=instant_complete"
+        log "spawn(${arm}) instant-complete with null last_agent_message; spilling to next arm"
         local ic_abort_rc=0
         dispatch_abort "${token}" || ic_abort_rc=$?
         [[ ${ic_abort_rc} -eq 0 ]] && return 7
@@ -7962,10 +7987,10 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
       local _wl_rc=0
       _codex_worker_liveness_deadline_check "${handle}" "${sig8}" "${_codex_spawn_epoch}" "${WORK_ROOT}" || _wl_rc=$?
       if [[ ${_wl_rc} -eq 7 ]]; then
-        LAST_ARM_OUTCOME="codex_dead_worker_liveness"
-        emit decision "arm_refused by=router model=codex task=${sig8} reason=worker_liveness"
-        _emit_event arm_refused "${sig8}" codex "${handle}" worker_liveness
-        log "spawn(codex) worker liveness probe declared dead; spilling to next arm"
+        LAST_ARM_OUTCOME="${arm}_dead_worker_liveness"
+        emit decision "arm_refused by=router model=${arm} task=${sig8} reason=worker_liveness"
+        _emit_event arm_refused "${sig8}" "${arm}" "${handle}" worker_liveness
+        log "spawn(${arm}) worker liveness probe declared dead; spilling to next arm"
         local wl_abort_rc=0
         dispatch_abort "${token}" || wl_abort_rc=$?
         [[ ${wl_abort_rc} -eq 0 ]] && return 7
@@ -9653,8 +9678,8 @@ exit is treated as an incident."
   # RESOLVED_CODEX_TIER is read by _spawn_worker_body's codex case (global, not passed as
   # a positional -- spawn_worker's signature is shared across all three spawning arms).
   # PLUGIN-PAPERCUTS-01 (defect 2): validate against the launcher BEFORE exporting.
-  if [[ "${arm}" == "codex" ]]; then
-    _codex_tier_validate "${tier:-standard}" "${sig8}"
+  if [[ "${arm}" == "codex" || "${arm}" == "astra" || "${arm}" == "sol" ]]; then
+    _codex_tier_validate "${tier:-standard}" "${sig8}" "${arm}"
     export RESOLVED_CODEX_TIER="${tier:-standard}"
   fi
   # EFFORT-IS-NOT-WIRED-01: legacy resolver has no effort dimension (it never
@@ -9864,8 +9889,8 @@ exit is treated as an incident."
         # index 0, so pre-fix the journal's arm= value and the first
         # worker_spawned model could legitimately differ.
         arm="${candidate_arms[0]}"; reason="${_arb_reason:-cheapest_capable}"; router_label="arbiter"
-        if [[ "${arm}" == codex ]]; then
-          _codex_tier_validate "${_arb_tier:-standard}" "${sig8}"   # PLUGIN-PAPERCUTS-01 defect 2
+        if [[ "${arm}" == codex || "${arm}" == astra || "${arm}" == sol ]]; then
+          _codex_tier_validate "${_arb_tier:-standard}" "${sig8}" "${arm}"   # PLUGIN-PAPERCUTS-01 defect 2
           export RESOLVED_CODEX_TIER="${_arb_tier:-standard}"
         fi
         export RESOLVED_EFFORT="${_arb_effort:-medium}"
@@ -10158,12 +10183,12 @@ exit is treated as an incident."
     # arbiter-chosen codex cell. Later loop iterations (fallback candidates
     # past index 0) are not arbiter picks even on an arbiter-routed lane, so
     # this only substitutes on the exact first-iteration match.
-    if [[ "${candidate}" == "codex" ]]; then
+    if [[ "${candidate}" == "codex" || "${candidate}" == "astra" || "${candidate}" == "sol" ]]; then
       if [[ "${router_label:-}" == "arbiter" && "${candidate}" == "${candidate_arms[0]:-}" && -n "${_arb_tier:-}" ]]; then
-        _codex_tier_validate "${_arb_tier}" "${sig8}"   # PLUGIN-PAPERCUTS-01 defect 2
+        _codex_tier_validate "${_arb_tier}" "${sig8}" "${candidate}"   # PLUGIN-PAPERCUTS-01 defect 2
         export RESOLVED_CODEX_TIER="${_arb_tier}"
       else
-        _codex_tier_validate "${tier:-standard}" "${sig8}"   # PLUGIN-PAPERCUTS-01 defect 2
+        _codex_tier_validate "${tier:-standard}" "${sig8}" "${candidate}"   # PLUGIN-PAPERCUTS-01 defect 2
         export RESOLVED_CODEX_TIER="${tier:-standard}"
       fi
     fi

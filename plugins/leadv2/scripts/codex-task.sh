@@ -11,8 +11,8 @@ set -euo pipefail
 #   codex-task.sh result [job-id]
 #   codex-task.sh cancel [job-id]
 #
-# --tier <top|standard|volume>  Resolves to a Codex model (+ effort where the
-#   subcommand accepts one) via ONE shared table (_resolve_tier_model_effort;
+# --tier <top|standard|volume|astra>  Resolves to a Codex model (+ effort where
+#   the subcommand accepts one) via ONE shared table (_resolve_tier_model_effort;
 #   the timeout-retry helper _tier_model_effort delegates to the same function
 #   so the two can never drift). Each chain is presence-checked against
 #   ~/.codex/models_cache.json per tier; an absent model falls back DOWN the
@@ -20,6 +20,13 @@ set -euo pipefail
 #     top      -> gpt-5.6-sol/high,     falls back gpt-5.6-terra, then gpt-6-astra
 #     standard -> gpt-5.6-terra/medium, falls back gpt-6-astra   (EFFORT-RECAL 2026-07-10, was /high)
 #     volume   -> gpt-5.6-luna/low,     falls back gpt-6-astra   (EFFORT-RECAL 2026-07-10, was /medium)
+#     astra    -> gpt-6-astra/high, no fallback -- ASTRA-MUST-BE-SELECTABLE-01
+#       (founder 2026-09-14): astra is priority 1 in models_cache.json, above
+#       the whole 5.6 family, but was reachable only as the terminal fallback
+#       of the three chains above -- unreachable while the account can serve
+#       sol/terra/luna, which it always can. This tier names it directly, one
+#       chain link, so a caller that wants the strongest model gets it
+#       deterministically instead of by every other tier's cache going dark.
 #   Tier->model sources: the pre-ASTRA-BUMP-01 mapping this header documented,
 #   cross-checked against the codex cost ladder in
 #   plugins/leadv2/config/leadv2-routing.yaml capability_matrix (volume=3 <
@@ -1460,8 +1467,9 @@ _resolve_tier_model_effort() {
     top)      _chain=(gpt-5.6-sol gpt-5.6-terra gpt-6-astra); _effort="high" ;;
     standard) _chain=(gpt-5.6-terra gpt-6-astra);             _effort="medium" ;;
     volume)   _chain=(gpt-5.6-luna gpt-6-astra);              _effort="low" ;;
+    astra)    _chain=(gpt-6-astra);                           _effort="high" ;;
     *)
-      echo "[codex-task] unknown --tier: $_tier (expected top|standard|volume)" >&2
+      echo "[codex-task] unknown --tier: $_tier (expected top|standard|volume|astra)" >&2
       return 1
       ;;
   esac
