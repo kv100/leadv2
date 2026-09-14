@@ -314,7 +314,7 @@ router_v2:
     # sizes:[heavy]-only adversarial/exhaustive arm.
     - { arm: codex, provider: codex, model: gpt-5.6-luna, tier: volume, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true, capability: 3 }
     - { arm: codex, provider: codex, model: gpt-5.6-terra, tier: standard, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true, capability: 4 }
-    - { arm: codex, provider: codex, model: gpt-5.6-sol, tier: top, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 4 }
+    - { arm: codex, provider: codex, model: gpt-5.6-sol, tier: top, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 5 }
     # ASTRA-MUST-BE-SELECTABLE-01 (founder 2026-09-14, verbatim: "Астра точно
     # должна быть, и запускай сразу на астра. Если астры нет, добавить и чтобы
     # на ней тоже запускалось всё что требует сильной модели."): the comment
@@ -332,17 +332,26 @@ router_v2:
     # SIZE_MAP strategic/heavy-only vocabulary (leadv2-route-arbiter.sh
     # SIZE_MAP) -- astra/sol cannot win a standard-sized default auction by
     # matrix construction, never by an `if arm==` branch in arbiter code.
-    # astra's capability: 5 (above every other row in this matrix, reflecting
-    # its models_cache.json priority 1) is what a caller gets by NAME when it
-    # asks for the strongest model available; sol's capability: 4 matches its
-    # existing codex-tier row exactly -- same model, same strength, just now
-    # independently addressable. provider: codex on both inherits the existing
+    # STRENGTH ORDER (founder ruling 2026-09-14, subjective and explicitly his:
+    # "астра и фейбл = 6, кодекс сол и опус = 5, все другое уже ок"). Before it,
+    # SEVEN of twelve rows shared capability: 4 -- glm, codex/terra, codex/sol,
+    # sol, sonnet, opus, fable -- so the matrix could not say that opus outranks
+    # sonnet or that sol outranks terra, and a "reviewer must be STRICTLY
+    # stronger" rule built on this field would have silently passed every
+    # same-vendor pair inside that block: a false green wearing a rule's name.
+    # The field now carries a real order: 6 astra/fable, 5 codex-sol/sol/opus,
+    # 4 glm/terra/sonnet, 3 luna, 2 haiku/glm-flash/freepool. astra stays what a
+    # caller gets by NAME when it asks for the strongest model available; both
+    # gpt-5.6-sol rows move together, being the same model. Note fable at 6 wins
+    # only plan/audit/review -- its `kinds:` carry no `code` -- so a high number
+    # here makes it the strong REVIEWER/planner on the Anthropic bucket, not a
+    # code arm. This field orders strength; it does not gate kinds or sizes. provider: codex on both inherits the existing
     # `router_v2.cost.codex: null` median-fallback price, unchanged.
-    - { arm: astra, provider: codex, model: gpt-6-astra, tier: astra, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive, flagship], review: true, protected: true, capability: 5 }
-    - { arm: sol, provider: codex, model: gpt-5.6-sol, tier: top, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 4 }
+    - { arm: astra, provider: codex, model: gpt-6-astra, tier: astra, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive, flagship], review: true, protected: true, capability: 6 }
+    - { arm: sol, provider: codex, model: gpt-5.6-sol, tier: top, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 5 }
     - { arm: haiku, provider: claude, model: haiku, tier: standard, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true, capability: 2, pool_default: true } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
     - { arm: sonnet, provider: claude, model: sonnet, tier: standard, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true, capability: 4 }
-    - { arm: opus, provider: claude, model: opus, tier: high, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 4, pool_default: false }
+    - { arm: opus, provider: claude, model: opus, tier: high, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 5, pool_default: false }
     # FABLE-RESTORE-01 (founder permission, 2026-09-06 open-threads.md, entry
     # [FABLE-RESTORE-01]): fable had ZERO capability_matrix cells since
     # FABLE-RETIRE-01 (2026-07-07), so the arbiter could never select it as a
@@ -357,7 +366,7 @@ router_v2:
     # (plan synthesis, judge, diagnose synth, learn proposal, PO audit, review
     # Heavy critic, architect prepass) — never `code`, fable is not a build arm.
     # Rollback: delete this row.
-    - { arm: fable, provider: claude, model: fable, tier: high, kinds: [plan, audit, review], sizes: [standard, heavy], tags: [architecture, adversarial], review: true, protected: true, capability: 4 }
+    - { arm: fable, provider: claude, model: fable, tier: high, kinds: [plan, audit, review], sizes: [standard, heavy], tags: [architecture, adversarial], review: true, protected: true, capability: 6 }
 
   # EFFORT-IS-NOT-WIRED-01: the second routing knob (docs/model-effort-matrix.md
   # -- model = hardness, effort = marginal value of extra thinking) resolved
