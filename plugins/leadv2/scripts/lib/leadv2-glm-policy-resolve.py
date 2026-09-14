@@ -112,6 +112,63 @@ DEFAULT_REVIEW_ARM_ORDER = ["codex", "glm", "kimi", "fable", "opus", "sonnet"]
 DEFAULT_GLM_REVIEW_THRESHOLD_PCT = 90.0
 DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT = 95.0
 
+# STRONGER-REVIEWER-01 (founder amendment 2026-09-14, this task's own mission
+# doc): "same vendor is acceptable when the reviewer is STRONGER" -- not "never
+# same vendor". ladder_providers (built from dispatch_ladder's `provider:`
+# field) already carries vendor identity for every dispatch_ladder arm; astra
+# and sol never got a dispatch_ladder row of their own (their only routing.yaml
+# rows live in capability_matrix), so ladder_providers.get() would return the
+# bare arm name for them and silently defeat the vendor check for exactly the
+# two flagship codex arms. This alias table is the fallback for that gap only.
+_VENDOR_ALIASES = {"astra": "codex", "sol": "codex"}
+
+# Total order for tie-breaking WITHIN one vendor, weakest-first. Both tables are
+# reused from data that already exists for an unrelated purpose -- neither is a
+# new invented ranking:
+#   - Anthropic: leadv2-routing.yaml dispatch_ladder's `review_rank` (haiku=1,
+#     sonnet=2, opus=3, fable=4), documented there as "used ONLY by the
+#     review-pool resolver's non-empty floor". Reused here for tie-break
+#     because it is the only ordering Anthropic arms have; capability alone
+#     ties sonnet/opus/fable at 4.
+#   - Codex: ~/.codex/models_cache.json `priority` (lower = stronger), probed
+#     2026-09-14: astra=1, sol=4, terra=7, luna=8.
+# "codex" (the arm NAME used in the review pool order) is deliberately absent
+# from _CODEX_STRENGTH: it resolves to gpt-5.6-terra or gpt-5.6-luna depending
+# on the dispatch ladder's own tier pick at call time, which this resolver
+# cannot see -- so its strength against astra/sol is UNRESOLVABLE, not merely
+# unknown-and-defaulted. Never impute a value for it; see
+# _same_vendor_not_stronger below, which treats unresolvable as "not stronger"
+# (the safe direction: same vendor + can't prove stronger => excluded).
+_ANTHROPIC_STRENGTH = {"haiku": 1, "sonnet": 2, "opus": 3, "fable": 4}
+_CODEX_STRENGTH = {"astra": 4, "sol": 3, "terra": 2, "luna": 1}
+
+
+def _vendor_of(arm, ladder_providers):
+    return ladder_providers.get(arm) or _VENDOR_ALIASES.get(arm, arm)
+
+
+def _strength_of(arm):
+    if arm in _ANTHROPIC_STRENGTH:
+        return _ANTHROPIC_STRENGTH[arm]
+    if arm in _CODEX_STRENGTH:
+        return _CODEX_STRENGTH[arm]
+    return None
+
+
+def _same_vendor_not_stronger(author, candidate, ladder_providers):
+    """True when `candidate` must be excluded as a reviewer for `author`
+    under the amendment: same vendor AND not proven strictly stronger.
+    Different vendor -> always False (never excluded by this rule).
+    Same vendor + no strength data for either arm -> True (unresolvable is
+    treated as not-stronger, never as an implicit pass)."""
+    if _vendor_of(author, ladder_providers) != _vendor_of(candidate, ladder_providers):
+        return False
+    a_rank = _strength_of(author)
+    c_rank = _strength_of(candidate)
+    if a_rank is None or c_rank is None:
+        return True
+    return not (c_rank > a_rank)
+
 # QUOTA-GATE-PARITY-01: limit_reached is fetched verbatim from the provider
 # rate_limit.limit_reached field and is NOT derived from used_percent (captured
 # 2026-08-24T13:54Z from ~/.claude/state/leadv2/quota-cache/codex.json, written
@@ -657,6 +714,14 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
         if arm == author:
             entries.append("%s:author:" % arm)
             continue
+        # STRONGER-REVIEWER-01: same vendor as the author is fine ONLY when this
+        # candidate is a strictly stronger arm (or vendor is unresolvable for
+        # either side, in which case it is NOT fine -- see
+        # _same_vendor_not_stronger). Checked before lockout/quota so the pool
+        # entry names the real reason instead of a misleading quota disposition.
+        if _same_vendor_not_stronger(author, arm, ladder_providers):
+            entries.append("%s:excluded:same_vendor_not_stronger" % arm)
+            continue
         # D4 (dispatch-8e2a32be): a live on-disk quota lockout for this arm's provider
         # bars it outright, BEFORE the kimi probe-gate and the pct/threshold gate below
         # -- a locked-out provider is never even quota-checked. Runs for every arm
@@ -712,7 +777,18 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
                 reviewer = arm
 
     reviewer = reviewer or checked_unknown
-    refusal = "" if reviewer else "all_review_arms_unavailable"
+    if reviewer:
+        refusal = ""
+    elif entries and all(e.endswith(":excluded:same_vendor_not_stronger") or e.endswith(":author:")
+                          for e in entries):
+        # STRONGER-REVIEWER-01: every candidate was excluded specifically by the
+        # vendor/strength rule (never by quota/lockout) -- name that distinctly
+        # so "no cross-vendor-or-stronger reviewer available" is a journalled,
+        # searchable fact rather than folded into the generic quota-exhaustion
+        # refusal. The floor below still applies (unconditional guarantee).
+        refusal = "no_stronger_or_cross_vendor_reviewer"
+    else:
+        refusal = "all_review_arms_unavailable"
 
     # D3 (dispatch-8e2a32be): the preferred pool above is genuinely exhausted (every
     # candidate author-excluded/locked-out/blocked/never assigned) -- fall to the

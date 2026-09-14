@@ -268,7 +268,7 @@ gateB1="${rootB1}/docs/handoff/dispatch-b1sig001/review-gate.md"
 grep -q '^- \[High\] scripts/gate-cost-report.sh' "$gateB1" 2>/dev/null && \
   pass "B1: the High is ON the gate, not just 'high: 1'" || fail "B1: no rendered High -- $(cat "$gateB1" 2>/dev/null)"
 grep -q '^report: docs/handoff/dispatch-b1sig001/review-glm.md$' "$gateB1" 2>/dev/null && pass "B1: report pointer present" || fail "B1: pointer missing"
-grep -q 'review_gate task=b1sig001 status=fail critical=0 high=1 do_not_merge=1' "${SUITE_TMP}/b1/journal.log" 2>/dev/null && \
+grep -qE 'review_gate task=b1sig001 status=fail author=[^ ]+ reviewer=[^ ]+ critical=0 high=1 do_not_merge=1' "${SUITE_TMP}/b1/journal.log" 2>/dev/null && \
   pass "B1: additive do_not_merge=1 ledger token on the fail line" || fail "B1: ledger token missing -- $(cat "${SUITE_TMP}/b1/journal.log" 2>/dev/null)"
 
 # B2: PASS_WITH_NITS + «не мержить как есть» -> status: pass and exit 0 UNCHANGED,
