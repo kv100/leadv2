@@ -1,50 +1,54 @@
-# PLUGIN-MARK-FINISHED-DOES-NOT-RELEASE-THE-ROW-01
+# PLUGIN-MARK-FINISHED-DOES-NOT-RELEASE-THE-ROW-01 — round 2
 
-Backlog row `980e16e6ffd2` (persona-engine `docs/tasks.yaml`, group `leadv2-plugin`).
-Repo for ALL writes: **`~/Projects/leadv2`** — the file is
-`plugins/leadv2/scripts/leadv2-active-registry.sh`, which exists only here.
+Round 1 landed `132dd4b3`. Codex reviewed it and returned **FAIL: 2 High**, both in
+`plugins/leadv2/scripts/leadv2-active-registry.sh`. Read
+`docs/handoff/PLUGIN-MARK-FINISHED-NO-RELEASE-01/review-codex.md` first. All writes stay in
+**`~/Projects/leadv2`**, in THIS worktree.
 
-## Problem (measured, three misses in one day)
-`leadv2_active_mark_finished` returns **rc=0 without removing the row from `active.yaml`**. So a
-merged lane keeps its write-set claim, and the next lane that needs the same files is refused
-`writeset_conflict`. The caller sees rc=0 and believes the release happened. Two consequences
-already paid for:
-- a lead cannot retire its own claim — it calls the function, gets rc=0, and the claim survives;
-- `active.yaml` accumulates rows whose lane is long dead (the live registry currently carries
-  dozens of `stale: true` rows in `spawning`), so the lane cap is consumed by ghosts.
+## H1 — only the FIRST duplicate row is released (`:969-1001`)
+`next(...)` mutates only the first matching `task_id`, and the post-write verifier repeats that
+same first-match lookup — so it confirms the row it just changed and never sees the others. A
+second non-stale duplicate keeps its write-set claim and keeps blocking the next lane.
 
-Related known fact: `leadv2-active-registry.sh` is a **library, not a CLI** — `bash <script> list`
-is a silent rc=0. Source it. If you add a check, make sure it is reachable the way callers
-actually enter.
+This defeats the row's entire purpose. The live registry carries dozens of `stale: true` rows and
+the pulse reports `призраки: 8`; if only the first of N is released, the ghosts survive and the
+lane cap stays consumed.
 
-## Change
-1. `leadv2_active_mark_finished` must actually remove (or definitively mark released, per the
-   schema's own convention — read it, don't invent one) the row it names.
-2. It must return **non-zero** when it did not: row not found, file unwritable, lock not taken,
-   concurrent rewrite lost the edit. rc=0 must mean "the row is gone from `active.yaml`, verified
-   by re-reading the file after the write" — not "the function ran".
-3. Never leave `active.yaml` truncated or half-written on a failure path.
+**Fix:** either define an unambiguous single-row selector, or atomically release ALL matching
+claim rows that are safe to retire. State which you chose and why. The verifier must re-read the
+file and confirm **zero** live rows remain for that task_id — not "the one I touched is gone".
 
-## Acceptance
-Registered probe: `grep -n mark_finished ~/Projects/leadv2/plugins/leadv2/scripts/leadv2-active-registry.sh | head -1`
-— that grep is a locator, not proof. The real acceptance is behavioural:
+**Test:** a fixture with two live rows sharing one task_id. After `mark_finished`, both are gone
+and neither blocks a dispatch-time write-set check.
 
-- A test under `tests/` that, against a FIXTURE `active.yaml` (never the live one):
-  (a) marks an existing row finished → rc=0 **and** a re-read shows the row absent **and** its
-      writes no longer block a dispatch-time write-set check;
-  (b) marks a row that does not exist → **non-zero**, file unchanged;
-  (c) simulates a failed write (read-only file) → **non-zero**, file not corrupted.
-- **Negative control, RUN it:** inside the function body, make the removal a no-op while still
-  returning 0 — exactly today's bug. Re-run the test in a scratch worktree, show it goes RED,
-  restore. Paste both outputs. If the suite stays green under that mutation, it does not test
-  this row at all.
+## H2 — the fallback write path can empty `active.yaml` (`:1143-1151`)
+After `os.replace` fails, the code opens the live file with mode `w` — which **truncates it before
+`yaml.dump` completes**. An I/O or serialization failure at that moment leaves `active.yaml` empty
+or half-written. That is the live registry of every running lane in both repos.
 
-## Off limits
-- Do NOT mass-sweep the live `~/.claude/leadv2-state/*/active.yaml` — other sessions are live in
-  both repos right now. Fix the function; sweeping is a separate decision.
-- Do not change the lane-cap resolution order (override file > meta > `LEADV2_LANE_CAP`).
-- Do not touch the write-set conflict taxonomy itself.
+This directly violates the round-1 contract: no failure path may leave `active.yaml` truncated or
+half-written. Round 1 shipped the opposite.
+
+**Fix:** remove the in-place overwrite fallback, or replace it with a same-directory atomic
+strategy (temp file in the same directory + `os.replace`) that preserves the original on **every**
+failure path.
+
+**Test:** force the failure (make `os.replace` raise, then make `yaml.dump` raise mid-write) and
+assert the original file content is intact byte-for-byte afterwards.
+
+## Negative controls — one per finding, both RUN
+Round 1's single control did not cover either of these. For H1: restore the first-match-only
+release and show the duplicate-row test go RED. For H2: restore the truncating `w` open and show
+the corruption test go RED. Paste both pairs (red, then restored green). One mutation is not a
+control for two independent defects.
+
+## Off limits — unchanged
+- Do NOT sweep the live `~/.claude/leadv2-state/*/active.yaml`. Fixtures only; other sessions are
+  live in both repos right now.
+- Do not change the lane-cap resolution order or the write-set conflict taxonomy.
+- `leadv2-active-registry.sh` stays a library, not a CLI.
 
 ## Report
-`docs/handoff/PLUGIN-MARK-FINISHED-NO-RELEASE-01/report.md` — diff summary, the three test cases
-green, the negative control red. End with `DELIVERABLE_COMPLETE`.
+Append `## Round 2` to `docs/handoff/PLUGIN-MARK-FINISHED-NO-RELEASE-01/report.md`: the selector
+decision for H1, the atomic strategy for H2, both tests green, both controls red.
+End with `DELIVERABLE_COMPLETE`.
