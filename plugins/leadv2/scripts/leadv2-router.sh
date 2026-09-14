@@ -421,9 +421,16 @@ else:
     arms = pool(True) or pool(False)
 if not arms:
     sys.exit(13)          # think_matrix_cell_missing
+# EFFORT-ROLE-AXIS-01: `role` rides in verbatim (the same THINK_ROLE string
+# `_think_role_kind` already collapsed into `kind` above) so the arbiter's
+# effort_matrix can key on the CALLING ROLE too -- think_stakes.classes maps
+# heavy AND strategic onto the identical size=heavy/complexity=complex row,
+# so kind/size/complexity alone can never separate an architect-prepass call
+# from a judge call at the same class; only the raw role string can.
 desc = {'kind': kind, 'size': size, 'complexity': complexity,
         'complexity_source': 'judge', 'arm_pool': arms,
-        'subtype': 'think:' + str(sys.argv[5]), 'task': str(sys.argv[6])}
+        'subtype': 'think:' + str(sys.argv[5]), 'task': str(sys.argv[6]),
+        'role': str(sys.argv[5]).lower()}
 print(json.dumps(desc))
 PY
   }
