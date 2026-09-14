@@ -4,16 +4,13 @@
 # leadv2-provider-quota-gate.sh and leadv2-glm-quota-gate.sh.
 #
 # Values copied verbatim from plugins/leadv2/config/leadv2-routing.yaml
-# router_v2.quota_ceilings (glm 80/90, codex 95/98, claude 95/95) — this file does
+# router_v2.quota_ceilings (glm 95/98, codex 95/98, claude 95/95) — this file does
 # NOT replace that yaml as the declared source of truth; it is the shell-readable
 # mirror the two bash gates need (neither guarantees PyYAML).
 #
-# KNOWN DIVERGENCE (deliberately not fixed here, see architect prepass §0):
-# lib/leadv2-glm-policy-resolve.py's DEFAULT_BUILD_THRESHOLD_PCT enforces codex
-# BUILD at 80.0, not the 90 declared here/in the routing yaml. That is STRICTER
-# than declared, so it is not a safety hole — it is left alone per the mission's
-# "do NOT change the values" constraint. tests/test-provider-quota-gate.sh asserts
-# this exact exception by name so it cannot silently widen.
+# The resolver's DEFAULT_* fallbacks and this shell mirror are kept equal by
+# test-provider-quota-gate.sh.  They support legacy non-arbiter callers; the
+# live route arbiter reads router_v2.quota_ceilings from routing.yaml directly.
 #
 # leadv2_quota_ceiling <glm|codex|claude> <build|review>
 #   Echoes the integer ceiling on stdout, rc 0. On an unknown provider/purpose,

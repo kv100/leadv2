@@ -639,13 +639,14 @@ _pc_write_unreviewed() {
 # pool and no opus/glm review path. Fixed here: the resolver now returns an ORDERED,
 # quota-filtered, author-excluding POOL (--review-pool --author) so this function
 # picks the first eligible arm instead of being handed a single already-collided one.
-# Founder decisions encoded (2026-07-30): opus is now a valid reviewer arm; glm
-# reviews up to its OWN 90% band (review-only headroom above the 80% build gate).
+# Founder decisions encoded (2026-07-30, amended 2026-09-14): opus is a valid
+# reviewer arm; ordinary glm reviews another arm's diff through the author-aware
+# pool, with the canonical 95% work / 98% review ceilings.
 # Fail-safe: any resolver-missing/error path yields empty reviewer/pool + a distinct
 # refusal reason -- the caller then writes `status: no_reviewer`, never a silent
 # collapse to sonnet (which would just re-create the self-review bug for a sonnet
-# author) or to glm (founder rule: GLM never reviews without going through its own
-# quota check, never as a blind fallback).
+# author) or to any blind fallback; ordinary glm is admitted only by its
+# author-aware, quota-checked pool entry.
 # One admission predicate for arbiter adoption, fallback and remaining count.
 # A checked unknown is NOT measured headroom: only the three Anthropic review
 # adapters may attempt it, through run_reviewer_arm's normal launcher. Bare

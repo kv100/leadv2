@@ -122,7 +122,7 @@ run_gate glm build
 [[ "$RC" == 0 ]] && grep -q 'OK — glm' <<<"$OUT" && pass "S8: pct < ceiling -> allow" || fail "S8" "rc=$RC out=$OUT"
 
 # ── S9 pct >= ceiling: refuse ────────────────────────────────────────────────
-write_fixture glm '{"status":"ok","five_hour":{"pct":85},"weekly":{"pct":10}}'  # default glm build ceiling 80
+write_fixture glm '{"status":"ok","five_hour":{"pct":95},"weekly":{"pct":10}}'  # default glm build ceiling 95
 run_gate glm build
 [[ "$RC" == 1 ]] && grep -q 'LEADV2_DISPATCH_REFUSED: quota_gate' <<<"$OUT" && grep -q 'REROUTE' <<<"$OUT" \
   && pass "S9: pct >= ceiling -> refuse rc 1" || fail "S9" "rc=$RC out=$OUT"

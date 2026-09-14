@@ -86,7 +86,7 @@ router:
       build_threshold_pct: 80.0
       review_threshold_pct: 95.0
       build_spill_order: [glm, codex, sonnet]
-      review_arm_exclusions: [glm]
+      review_arm_exclusions: [glm-flash, freepool]
 YAML
 RT_NOGATE="${BASE}/routing-nogate.yaml"
 cat > "${RT_NOGATE}" <<'YAML'
@@ -169,15 +169,15 @@ case5() {
   else bad "5: expected arm=sonnet rule=safety_gate_publish_payments (got: ${out})"; fi
 }
 
-# ---- Case 6: review never resolves glm (R8) ----------------------------------
+# ---- Case 6: ordinary glm is no longer globally review-excluded -------------
 case6() {
   reading glm "${GLM_OK}"; reading codex "${CODEX_96}"; reading anthropic "${ANTHROPIC_44}"
   local out
-  out="$(resolve "${RT_GATE}" "${SIG_IDLE}" review codex)"
-  if printf '%s\n' "${out}" | grep -q '^arm=sonnet$' \
-     && ! printf '%s\n' "${out}" | grep -q '^arm=glm$'; then
-    ok "6: job=review base=codex blocked -> arm=sonnet, never glm"
-  else bad "6: expected arm=sonnet (got: ${out})"; fi
+  out="$(resolve "${RT_GATE}" "${SIG_IDLE}" review glm)"
+  if printf '%s\n' "${out}" | grep -q '^arm=glm$' \
+     && ! printf '%s\n' "${out}" | grep -q '^rule=review_arm_exclusions$'; then
+    ok "6: job=review base=glm remains glm; ownership is enforced by the author-aware pool"
+  else bad "6: expected ordinary glm not to be globally review-excluded (got: ${out})"; fi
 }
 
 # ---- Case 7: gate absent -> byte-identical v1 output -------------------------

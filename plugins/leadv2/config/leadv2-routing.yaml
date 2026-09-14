@@ -101,7 +101,11 @@ router_v2:
   # not answer at all is NOT treated as capped -- it is demoted on cost and named
   # by probe_outage=. `unknown` is not `100%`.
   quota_ceilings:
-    glm:    { work_pct: 80, review_pct: 90 }
+    # GLM-MAY-REVIEW-AND-ITS-CEILING-IS-95-NOT-80-01 (founder, 2026-09-14):
+    # this is the live arbiter authority.  Ordinary work stays eligible below
+    # 95%; review uses the reserved headroom below 98%.  Do not duplicate this
+    # decision in router_v2.cost or a role-local capability value.
+    glm:    { work_pct: 95, review_pct: 98 }
     # CODEX-TIER-100-NO-BURST-WINDOW-01 (founder, 2026-09-06): the codex plan moved
     # to the $100 tier AND the 5h burst window stopped being a limit -- the live
     # probe now reports a single 168h weekly window for codex (reset_codex=168.00h_live).

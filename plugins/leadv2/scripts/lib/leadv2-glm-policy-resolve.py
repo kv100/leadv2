@@ -70,11 +70,11 @@ DISPATCHABLE_BUILD_ARMS = {"glm", "glm-flash", "codex", "sonnet", "freepool", "a
 # to a planning role. Role decides the SET; the ladder still decides the ORDER.
 # T19: freepool is build-only too -- never a planning arm, same reasoning as glm.
 DISPATCHABLE_PLAN_ARMS = {"codex", "sonnet", "opus", "fable", "astra", "sol"}
-# T19: freepool is excluded from ever being the review arm, same as glm --
-# a review gate is mandatory on every diff (Codex/Opus), never the arm
-# reviewing its own diff. GLM-53-FLASH-ARM-01: glm-flash is glm-family and
-# inherits the same exclusion -- a flash model never reviews any diff.
-DEFAULT_REVIEW_EXCLUSIONS = ["glm", "glm-flash", "freepool"]
+# T19: freepool is excluded from ever being the review arm.  GLM-53-FLASH-ARM-01:
+# glm-flash is the cheap mechanical tier and never reviews.  Ordinary glm is a
+# reviewer for another arm's diff; the review-pool's arm==author branch below is
+# the ownership rule that refuses it for its own diff.
+DEFAULT_REVIEW_EXCLUSIONS = ["glm-flash", "freepool"]
 DEFAULT_BUILD_THRESHOLD_PCT = 95.0
 DEFAULT_REVIEW_THRESHOLD_PCT = 98.0
 
@@ -109,7 +109,10 @@ DEFAULT_REVIEW_THRESHOLD_PCT = 98.0
 # five_hour unchanged across a live fable probe, separate Fable weekly_scoped
 # window in the reader).
 DEFAULT_REVIEW_ARM_ORDER = ["codex", "glm", "kimi", "fable", "opus", "sonnet"]
-DEFAULT_GLM_REVIEW_THRESHOLD_PCT = 90.0
+# Keep the legacy review-pool fallback aligned with the canonical arbiter and
+# shell-gate ceiling: work is admitted below 95; review may use the reserved
+# headroom until 98.  router_v2.quota_ceilings is the live arbiter authority.
+DEFAULT_GLM_REVIEW_THRESHOLD_PCT = 98.0
 DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT = 95.0
 
 # STRONGER-REVIEWER-01 (founder amendment 2026-09-14, this task's own mission
@@ -666,6 +669,12 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
     """
     gate = glm_policy.get("codex_quota_gate") or {}
     order = gate.get("review_arm_order") or list(DEFAULT_REVIEW_ARM_ORDER)
+    # Static role exclusions are separate from the ownership rule below:
+    # glm-flash/freepool never review, while ordinary glm is eligible unless it
+    # is the diff author.  Apply this to the configured order too, so a tenant
+    # cannot accidentally re-admit a permanently review-ineligible arm merely
+    # by listing it in review_arm_order.
+    review_exclusions = set(gate.get("review_arm_exclusions", DEFAULT_REVIEW_EXCLUSIONS))
     # PLANNER-MODELS-DECISION-01: plan job filters the pool against DISPATCHABLE_PLAN_ARMS
     # (excludes glm/kimi). Review and build keep the existing unfiltered order.
     if job == "plan":
@@ -713,6 +722,9 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
     for i, arm in enumerate(order):
         if arm == author:
             entries.append("%s:author:" % arm)
+            continue
+        if arm in review_exclusions:
+            entries.append("%s:excluded:review_arm_exclusion" % arm)
             continue
         # STRONGER-REVIEWER-01: same vendor as the author is fine ONLY when this
         # candidate is a strictly stronger arm (or vendor is unresolvable for
