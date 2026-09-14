@@ -177,7 +177,11 @@ router_v2:
   cost:
     glm-flash: 0.33   # GLM-EFFICIENCY-01 (founder ruling q-bba84179, 2026-09-02): Z.AI credit-weight ratio, docs.z.ai/devpack/teamplan.md -- not re-derived here.
     glm: 1.0          # unit; GLM-EFFICIENCY-01 baseline the glm-flash ratio is expressed against.
-    codex: null       # UNPRICED -- leadv2-drain-weights.py --provider codex, this repo, 2026-09-13: see docs/handoff/dispatch-f8880421/developer.full.md for run output/status.
+    codex: null       # UNPRICED -- CODEX-HAS-TOKENS-BUT-NO-DRAIN-SERIES-01 (dispatch-c8711201, 2026-09-14): a
+                      # codex drain series now exists (leadv2-codex-drain-fit.py, util_codex readings from
+                      # journal.md joined to arm-registered-confirmed token totals); the provider-level fit
+                      # is kept=114 R2=-0.3974 -- negative, same as anthropic below, so codex stays null, not
+                      # a guess. See docs/handoff/dispatch-c8711201/developer.full.md for full run output.
     anthropic: null   # UNPRICED -- leadv2-drain-weights.py --provider anthropic, this repo, 2026-09-13: see docs/handoff/dispatch-f8880421/developer.full.md for run output/status.
     freepool: 1.0     # unchanged semantics: floor_applies adds +100 in ecost() regardless of this number (arbiter :1810).
   # Currency: `cost` is "fraction of THIS provider's own binding window per
