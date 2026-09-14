@@ -1152,6 +1152,17 @@ duration_class=str(d.get('duration_class','unknown')).lower()
 # (judge|flag|heuristic|unknown -- design.md §5.1). Absent from an
 # older/unpatched caller renders as 'unknown' -> conf 0.0, the cautious default.
 complexity_source=str(d.get('complexity_source','unknown')).lower()
+# EFFORT-ROLE-AXIS-01 (founder 2026-09-14, "effort is not a function of class
+# alone"): the descriptor's own `role` field -- think calls carry the raw
+# THINK_ROLE string here (leadv2-router.sh _think_build_desc) so effort can
+# key on the CALLING ROLE, not only kind/complexity/size. Needed because
+# think_stakes.classes maps BOTH heavy and strategic to the identical
+# size=heavy/complexity=complex row (config/model-capability.yaml) -- those
+# two fields cannot ever distinguish an architect-prepass call from a judge
+# call at the same class, so effort collapsed to one value per kind
+# regardless of which role asked. Named `caller_role` to avoid shadowing
+# `role` (worker|reviewer) bound at :466 -- different axis, same word.
+caller_role=str(d.get('role','')).lower()
 # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01 (2026-09-07): the single-line
 # `capable=` comprehension above is retired. It folded FOUR different facts
 # (kind/size fit, trust, caller admissibility) into one silent set, and the
@@ -2055,13 +2066,17 @@ for _loser in sorted({c['arm'] for c in ok} - {w['arm']}):
 # ANYWHERE in the matrix outranks any arm-keyed row -- so a yaml edit alone
 # (no script change) still retunes every outcome, the anti-hardcoding
 # property test-effort-routing.sh case (6) grades.
-TASK_EFFORT_KEYS={'kinds','sizes','complexity','duration_class','protected','default'}
+# `roles` joins the task-keyed set (EFFORT-ROLE-AXIS-01): it is known from
+# the descriptor before any arm is chosen, exactly like kinds/sizes -- never
+# an arm property, so it belongs in phase 1, not the `tags` fallback.
+TASK_EFFORT_KEYS={'kinds','sizes','complexity','duration_class','protected','default','roles'}
 def _effort_row_is_task_keyed(row):
     return set(row.keys()) <= (TASK_EFFORT_KEYS | {'effort'})
 def _effort_row_matches(row):
     if row.get('default'): return True
     if 'tags' in row:
         if not (set(row.get('tags') or []) & set(w.get('tags') or [])): return False
+    if 'roles' in row and caller_role not in (row.get('roles') or []): return False
     if 'kinds' in row and mkind not in (row.get('kinds') or []): return False
     if 'sizes' in row and size not in (row.get('sizes') or []): return False
     if 'complexity' in row and complexity not in (row.get('complexity') or []): return False
@@ -2326,7 +2341,11 @@ _cost_tok = ' cost_src=%s' % _cost_src(w)
 # MERGE 2026-09-13: _urgency_tok (48b8297b4cc1) and _cost_tok (cc4557feef48)
 # are two different provenance fields added to this line by two lanes. Both
 # are emitted; the format grew by one %s rather than dropping either.
-print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok,_obs_tok,_urgency_tok,_cc_tok,_cost_tok))
+# EFFORT-ROLE-AXIS-01: the caller_role that fed the effort_matrix lookup
+# above, so a decision line proves which axis produced this effort without
+# re-deriving it from the caller's own THINK_ROLE env var after the fact.
+_role_tok = ' role=%s' % (caller_role or 'none')
+print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok,_obs_tok,_urgency_tok,_cc_tok,_cost_tok,_role_tok))
 PY
 }
 

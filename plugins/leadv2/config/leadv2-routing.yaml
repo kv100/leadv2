@@ -402,6 +402,19 @@ router_v2:
     # Phase 1 -- task-keyed, evaluated first (effort follows the TASK).
     - { kinds: [safety], effort: high }
     - { protected: true, effort: high }
+    # EFFORT-IS-NOT-A-FUNCTION-OF-CLASS-ALONE-01 (founder 2026-09-14): `roles`
+    # is a task-keyed axis alongside kinds/sizes (leadv2-route-arbiter.sh
+    # TASK_EFFORT_KEYS), fed by the think descriptor's own `role` field
+    # (leadv2-router.sh _think_build_desc). think_stakes.classes maps BOTH
+    # heavy and strategic onto the identical size=heavy/complexity=complex
+    # row, so kind/size/complexity can never separate an architect-prepass
+    # call from a judge call at the same class -- only the raw role string
+    # can. Placed ABOVE the generic kinds:[plan,audit,review] row below so a
+    # judge/diagnose call (which _think_role_kind maps to kind=review) does
+    # not fall through to that row's effort=high; every other role
+    # (architect-prepass, plan-synthesis, lead-main, default) is unaffected
+    # and still resolves off the kind row that follows.
+    - { roles: [judge, diagnose], effort: low }
     - { kinds: [plan, audit, review], effort: high }
     - { kinds: [code], complexity: [complex], effort: high }
     - { kinds: [code], effort: medium }  # a build is NEVER low: founder 2026-09-04
