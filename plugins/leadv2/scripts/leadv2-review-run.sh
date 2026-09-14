@@ -2103,7 +2103,7 @@ if [[ "${verdict}" == FAIL ]]; then
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
   _review_state_write
   _rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
-  emit decision "review_gate task=${TASK} status=fail critical=${FINDINGS_CRITICAL_TOTAL} high=${FINDINGS_HIGH_TOTAL} unreadable=${_REVIEW_UNREADABLE:-none}${_rgf_dnm}"
+  emit decision "review_gate task=${TASK} status=fail author=${AUTHOR} reviewer=${reviewer_primary} critical=${FINDINGS_CRITICAL_TOTAL} high=${FINDINGS_HIGH_TOTAL} unreadable=${_REVIEW_UNREADABLE:-none}${_rgf_dnm}"
   exit 7
 fi
 
@@ -2116,5 +2116,5 @@ fi
 mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
 _review_state_write
 _rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
-emit decision "review_gate task=${TASK} status=pass diff=${diff_hash:0:8} arms=${ARMS_CSV} unreadable=${_REVIEW_UNREADABLE:-none}${_rgf_dnm}"
+emit decision "review_gate task=${TASK} status=pass author=${AUTHOR} reviewer=${reviewer_primary} diff=${diff_hash:0:8} arms=${ARMS_CSV} unreadable=${_REVIEW_UNREADABLE:-none}${_rgf_dnm}"
 exit 0
