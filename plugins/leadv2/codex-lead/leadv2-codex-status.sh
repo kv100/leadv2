@@ -9,7 +9,10 @@
 #
 # Fail-open by design: a failed read renders "?" for that field, never "0%"
 # (leadv2-quota-live.sh's own contract), and this script's own exit code is
-# 0 unless argv is wrong.
+# 0 unless argv is wrong. When the reader named a remedy for the failure
+# (codex needs_login on a 401-on-refresh, anthropic needs_session on no
+# fresh in-process token), the field names it too: "?(codex login)" /
+# "?(reauth)" instead of a bare "?" (A-DEAD-INSTRUMENT-MUST-ANNOUNCE-ITSELF-01).
 #
 # Usage: leadv2-codex-status.sh [-h|--help]
 set -u
@@ -99,12 +102,19 @@ try:
     a = data.get("anthropic") or {}
     if a.get("status") == "ok":
         cc = anthropic_field(a)
+    elif a.get("needs_session"):
+        # A-DEAD-INSTRUMENT-MUST-ANNOUNCE-ITSELF-01: "?" alone already keeps
+        # this from being mistaken for a measured reading; naming the remedy
+        # when the reader identified one saves a round-trip to find out why.
+        cc = "?(reauth)"
 except Exception:
     pass
 try:
     c = data.get("codex") or {}
     if c.get("status") == "ok":
         cx = codex_field(c)
+    elif c.get("needs_login"):
+        cx = "?(codex login)"
 except Exception:
     pass
 try:

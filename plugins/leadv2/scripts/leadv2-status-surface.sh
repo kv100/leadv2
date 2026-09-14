@@ -2472,6 +2472,13 @@ _print_limit_line() {
     unauthenticated)
       printf '  %s: %s\n' "$provider" "${detail:-нет валидного OAuth-токена}"
       ;;
+    unknown)
+      # A-DEAD-INSTRUMENT-MUST-ANNOUNCE-ITSELF-01: the probe answered and
+      # said it could not measure -- never a bare number, always the ⚠
+      # marker plus the reader's own error (and remedy, when named), so this
+      # line can never be mistaken for a measured reading at a glance.
+      printf '  %s: ⚠ не удалось измерить (%s)%s\n' "$provider" "${detail:-probe failed}" "$suffix"
+      ;;
     *)
       if [ -n "$value" ]; then
         printf '  %s: %s%s\n' "$provider" "$value" "$suffix"
