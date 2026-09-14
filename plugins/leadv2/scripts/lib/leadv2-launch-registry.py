@@ -278,8 +278,19 @@ def load_capability_matrix(routing_yaml=None):
 # lib/leadv2-route-arbiter.sh): glm-flash prices off its own arm key, every
 # other row off `provider`; a routing yaml with no router_v2.cost block at
 # all (legacy fixtures) falls back to the row's own `cost:` field.
+# PRICE-KEY-ANTHROPIC-VS-CLAUDE-MISMATCH-01 (dispatch-0144df45, 2026-09-14):
+# capability_matrix rows for haiku/sonnet/opus/fable carry provider: claude,
+# but router_v2.cost keys the anthropic-window price as `anthropic:` (matching
+# leadv2-drain-weights.py's own fit bucket name -- "claude-haiku/opus/sonnet
+# -> anthropic", scripts/leadv2-drain-weights.py:85-87 -- which is what
+# actually writes a fitted number into this key). `claude` is normalized to
+# `anthropic` here, not the yaml renamed, so a future fitted price is found
+# instead of silently falling through to the median.
 def _price_key(row):
-    return "glm-flash" if row.get("arm") == "glm-flash" else row.get("provider")
+    if row.get("arm") == "glm-flash":
+        return "glm-flash"
+    provider = row.get("provider")
+    return "anthropic" if provider == "claude" else provider
 
 
 def load_provider_cost(routing_yaml=None):

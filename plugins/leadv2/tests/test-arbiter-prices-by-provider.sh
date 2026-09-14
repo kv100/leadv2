@@ -24,6 +24,17 @@
 #   (6) malformed price     — non-numeric router_v2.cost entry is a config
 #                            error (rc=2, reason=routing_yaml_invalid), never
 #                            a silent fallback, and the message names the key.
+#   (7) claude/anthropic   — PRICE-KEY-ANTHROPIC-VS-CLAUDE-MISMATCH-01
+#       normalization         (dispatch-0144df45, 2026-09-14): a capability_matrix
+#                            row with provider: claude (the real matrix's own
+#                            spelling for haiku/sonnet/opus/fable) must read
+#                            router_v2.cost.anthropic (the real matrix's own
+#                            spelling for that price, matching
+#                            leadv2-drain-weights.py's fit bucket) --
+#                            cost_src=anthropic:measured, not a median
+#                            fallback. (7b) is the swapped negative control:
+#                            proves the anthropic price is actually READ, not
+#                            coincidentally cheapest.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/../scripts" && pwd)"
@@ -187,6 +198,44 @@ if [[ $rc -ne 0 && "$out" == *"routing_yaml_invalid"* && "$out" == *"cost.codex"
   pass "(6) malformed router_v2.cost.codex -> rc=$rc, reason=routing_yaml_invalid names the key"
 else
   fail "(6) got rc=$rc out=[$out]"
+fi
+
+# (7) PRICE-KEY-ANTHROPIC-VS-CLAUDE-MISMATCH-01: a row shaped exactly like
+# the real matrix's claude-family rows (provider: claude) must be priced off
+# router_v2.cost.anthropic (the real matrix's own key for that price), not
+# fall through to the median because price_key(row) returned "claude" and
+# found nothing under it.
+cat >"$TMP/r7.yaml" <<EOF
+$BASE_MATRIX_HDR
+  cost: {anthropic: 1.0, glm: 5.0}
+  capability_matrix:
+    - {arm: sonnet, provider: claude, model: sonnet, kinds: [code], sizes: [standard], protected: true, capability: 4}
+    - {arm: glm, provider: glm, model: glm-5.3, kinds: [code], sizes: [standard], protected: true, capability: 4}
+EOF
+out="$(run "$TMP/r7.yaml" "$DESC")"
+if [[ "$(arm_of "$out")" == "sonnet" && "$(cost_src_of "$out")" == "cost_src=anthropic:measured" ]]; then
+  pass "(7) provider: claude row prices off cost.anthropic (1.0 < glm 5.0) -> arm=sonnet, cost_src=anthropic:measured"
+else
+  fail "(7) got arm=$(arm_of "$out") $(cost_src_of "$out") out=[$out]"
+fi
+
+# (7b) negative control: swap the two prices -> the OTHER arm wins. If
+# price_key(row) still returned the unnormalized "claude" and missed
+# cost.anthropic entirely, this would misfire identically to (7) (median
+# fallback both times) instead of tracking the swap -- this is what proves
+# the anthropic price is actually READ, not coincidentally cheapest.
+cat >"$TMP/r7b.yaml" <<EOF
+$BASE_MATRIX_HDR
+  cost: {anthropic: 5.0, glm: 1.0}
+  capability_matrix:
+    - {arm: sonnet, provider: claude, model: sonnet, kinds: [code], sizes: [standard], protected: true, capability: 4}
+    - {arm: glm, provider: glm, model: glm-5.3, kinds: [code], sizes: [standard], protected: true, capability: 4}
+EOF
+out="$(run "$TMP/r7b.yaml" "$DESC")"
+if [[ "$(arm_of "$out")" == "glm" && "$(cost_src_of "$out")" == "cost_src=glm:measured" ]]; then
+  pass "(7b) negative control: prices swapped -> arm=glm wins (proves cost.anthropic is actually read for provider: claude)"
+else
+  fail "(7b) got arm=$(arm_of "$out") $(cost_src_of "$out") out=[$out]"
 fi
 
 printf 'SUMMARY pass=%d fail=%d\n' "$PASS" "$FAIL"
