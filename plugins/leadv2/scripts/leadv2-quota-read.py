@@ -546,6 +546,18 @@ def read_codex():
     # refresh_token) runs at most once per reuse window; a reused access token
     # the endpoint rejects (401/403) forces exactly one rotation and one retry
     # before failing open.
+    #
+    # CODEX-QUOTA-READER-401-WHILE-CODEX-WORKS-01: auth.json is SHARED with the
+    # interactive codex CLI, and refresh_token rotation is single-use. If the
+    # CLI rotates it between our disk read and our POST landing, the server
+    # sees an already-consumed refresh_token and answers 401/403 even though
+    # the CLI's own refresh succeeded and the account is perfectly alive --
+    # measured live 2026-09-14 (codex-login.log shows a fresh login exchange
+    # at 08:38Z, minutes after a quota-read 401 at 08:26Z, while a same-night
+    # dispatch job completed fine on gpt-5.6-terra). A re-read of auth.json
+    # picks up whatever the winner of that race just wrote, so ONE retry
+    # (never more, same bound as the reused-access-token retry below) tells
+    # apart "lost a rotation race" from "this credential is actually dead".
     refreshed, wrote_back, access_reused = False, False, False
     try:
         cached_at, cached_age = _codex_access_from_disk()
@@ -555,7 +567,18 @@ def read_codex():
             access, wrote_back = _codex_refresh_now()
             refreshed = True
     except urllib.error.HTTPError as e:
-        return unknown("codex", "refresh http %d" % e.code, needs_login=True)
+        if e.code in (401, 403):
+            try:
+                access, wrote_back = _codex_refresh_now()
+                refreshed = True
+            except urllib.error.HTTPError as e2:
+                return unknown("codex", "refresh http %d, retry http %d" % (e.code, e2.code),
+                               needs_login=True)
+            except Exception as e2:
+                return unknown("codex", "refresh http %d, retry: %s" % (e.code, e2),
+                               needs_login=True)
+        else:
+            return unknown("codex", "refresh http %d" % e.code, needs_login=True)
     except Exception as e:
         return unknown("codex", "auth/refresh: %s" % e, needs_login=True)
 
