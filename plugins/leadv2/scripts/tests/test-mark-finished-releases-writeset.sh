@@ -17,15 +17,14 @@
 #
 # Tests:
 #   1. bash -n syntax check
-#   2. mark an EXISTING row finished -> rc=0, re-read shows stale=true +
-#      terminal_status, AND a conflicting writeset check that was refused
-#      BEFORE finish is admitted AFTER finish (the behavioural proof the bug
-#      report asked for)
+#   2. mark TWO live duplicate rows finished -> rc=0, re-read shows both
+#      stale=true + terminal_status, AND neither duplicate blocks its former
+#      write set or lane-cap admission afterward
 #   3. mark a row that does NOT exist -> non-zero (rc=4), file byte-identical
-#   4. simulate a failed write (state dir made read-only, so mkstemp/rename
-#      cannot land -- chmod on the FILE alone does not block rename(2) on
-#      this filesystem, verified empirically) -> non-zero, file unchanged
-#      and still valid YAML (never truncated/half-written)
+#   4. force os.replace failure -> non-zero and active.yaml byte-identical
+#   5. force yaml.dump failure while staging the temp -> non-zero and
+#      active.yaml byte-identical.  The production implementation has no
+#      direct-write fallback, so neither failure can touch the live file.
 #
 # Portable: sandboxed via LEADV2_PROJECT_ROOT/LEADV2_STATE_ROOT env
 # overrides, no git repo needed.
@@ -55,9 +54,9 @@ else
   fail "1: bash -n leadv2-active-registry.sh"
 fi
 
-# ── Test 2: finish releases the writeset claim, row stays readable ─────────
+# ── Test 2: finish releases every duplicate claim, rows stay readable ──────
 test2() {
-  local sb yaml before_conflict_rc finish_rc after_conflict_rc
+  local sb yaml before_a_rc before_b_rc finish_rc after_a_rc after_b_rc
   sb="$(new_sandbox)"
   yaml="$(
     LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
@@ -66,16 +65,36 @@ test2() {
     '
   )"
 
-  LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
-    source "'"$REGISTRY_SH"'"
-    leadv2_active_register T1 Standard "$LEADV2_PROJECT_ROOT" branch false "" "" "src/a.txt" >/dev/null
-  '
+  mkdir -p "$(dirname "$yaml")"
+  cat > "$yaml" <<'YAML'
+meta:
+  schema_version: 2
+  hard_limit: 2
+  standard_max: 2
+sessions:
+  - task_id: T1
+    class: Standard
+    worktree: /fixture/one
+    writes: src/a.txt
+    stale: false
+  - task_id: T1
+    class: Standard
+    worktree: /fixture/two
+    writes: src/b.txt
+    stale: false
+YAML
 
-  before_conflict_rc=0
+  before_a_rc=0
   LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
     source "'"$REGISTRY_SH"'"
     leadv2_active_check_writes_conflict T2 "src/a.txt"
-  ' >/dev/null 2>&1 || before_conflict_rc=$?
+  ' >/dev/null 2>&1 || before_a_rc=$?
+
+  before_b_rc=0
+  LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
+    source "'"$REGISTRY_SH"'"
+    leadv2_active_check_writes_conflict T2 "src/b.txt"
+  ' >/dev/null 2>&1 || before_b_rc=$?
 
   finish_rc=0
   LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
@@ -83,28 +102,33 @@ test2() {
     leadv2_active_mark_finished T1 completed "{\"has_diff\":true}"
   ' >/dev/null 2>&1 || finish_rc=$?
 
-  after_conflict_rc=0
+  after_a_rc=0
   LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
     source "'"$REGISTRY_SH"'"
     leadv2_active_check_writes_conflict T2 "src/a.txt"
-  ' >/dev/null 2>&1 || after_conflict_rc=$?
+  ' >/dev/null 2>&1 || after_a_rc=$?
 
-  local row_json
-  row_json="$(python3 -c '
+  after_b_rc=0
+  LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
+    source "'"$REGISTRY_SH"'"
+    leadv2_active_check_writes_conflict T2 "src/b.txt"
+  ' >/dev/null 2>&1 || after_b_rc=$?
+
+  local rows_json
+  rows_json="$(python3 -c '
 import sys, yaml, json
 d = yaml.safe_load(open(sys.argv[1])) or {}
-row = next((s for s in d.get("sessions") or [] if s.get("task_id") == "T1"), None)
-print(json.dumps(row))
+rows = [s for s in d.get("sessions") or [] if s.get("task_id") == "T1"]
+print(json.dumps(rows))
 ' "$yaml")"
-  local stale term
-  stale="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('stale'))" <<<"$row_json")"
-  term="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('terminal_status'))" <<<"$row_json")"
+  local released
+  released="$(python3 -c 'import json,sys; rows=json.load(sys.stdin); print(len(rows) == 2 and all(r.get("stale") is True and r.get("terminal_status") == "completed" for r in rows))' <<<"$rows_json")"
 
-  if [[ "$before_conflict_rc" -eq 5 && "$finish_rc" -eq 0 && "$after_conflict_rc" -eq 0 \
-        && "$stale" == "True" && "$term" == "completed" ]]; then
-    pass "2: finish rc=0, stale=True, terminal_status=completed, writeset conflict released (before=5 after=0)"
+  if [[ "$before_a_rc" -eq 5 && "$before_b_rc" -eq 5 && "$finish_rc" -eq 0 \
+        && "$after_a_rc" -eq 0 && "$after_b_rc" -eq 0 && "$released" == "True" ]]; then
+    pass "2: two duplicate rows released (before a/b=5/5, after a/b=0/0, rows=2 stale=True)"
   else
-    fail "2: before_conflict_rc=$before_conflict_rc finish_rc=$finish_rc after_conflict_rc=$after_conflict_rc stale=$stale term=$term row=$row_json"
+    fail "2: before_a/b=$before_a_rc/$before_b_rc finish_rc=$finish_rc after_a/b=$after_a_rc/$after_b_rc released=$released rows=$rows_json"
   fi
 }
 test2
@@ -139,9 +163,9 @@ test3() {
 }
 test3
 
-# ── Test 4: failed write (read-only state dir) -> non-zero, file intact ────
+# ── Test 4/5: staging failures never touch active.yaml ─────────────────────
 test4() {
-  local sb yaml state_dir rc
+  local sb yaml hook_dir rc_replace rc_dump
   sb="$(new_sandbox)"
   LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
     source "'"$REGISTRY_SH"'"
@@ -154,24 +178,41 @@ test4() {
     '
   )"
   cp "$yaml" "$yaml.before"
-  state_dir="$(dirname "$yaml")"
-  chmod 555 "$state_dir"
+  hook_dir="$sb/hooks"
+  mkdir -p "$hook_dir"
+  cat > "$hook_dir/sitecustomize.py" <<'PY'
+import os
+if os.environ.get("LV2_TEST_FORCE_REPLACE"):
+    def fail_replace(*_args, **_kwargs):
+        raise OSError("forced os.replace failure")
+    os.replace = fail_replace
+if os.environ.get("LV2_TEST_FORCE_DUMP"):
+    import yaml
+    def fail_dump(*_args, **_kwargs):
+        raise OSError("forced yaml.dump failure")
+    yaml.dump = fail_dump
+PY
 
-  rc=0
-  LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
+  rc_replace=0
+  PYTHONPATH="$hook_dir" LV2_TEST_FORCE_REPLACE=1 LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
     source "'"$REGISTRY_SH"'"
     leadv2_active_mark_finished T1 completed "{}"
-  ' >/dev/null 2>&1 || rc=$?
+  ' >/dev/null 2>&1 || rc_replace=$?
 
-  chmod 755 "$state_dir"
+  local replace_intact=0 dump_intact=0
+  cmp -s "$yaml" "$yaml.before" && replace_intact=1
 
-  local still_valid=0
-  python3 -c "import yaml; yaml.safe_load(open('$yaml'))" 2>/dev/null && still_valid=1
+  rc_dump=0
+  PYTHONPATH="$hook_dir" LV2_TEST_FORCE_DUMP=1 LEADV2_PROJECT_ROOT="$sb/proj" LEADV2_STATE_ROOT="$sb/state" bash -c '
+    source "'"$REGISTRY_SH"'"
+    leadv2_active_mark_finished T1 completed "{}"
+  ' >/dev/null 2>&1 || rc_dump=$?
+  cmp -s "$yaml" "$yaml.before" && dump_intact=1
 
-  if [[ "$rc" -ne 0 ]] && cmp -s "$yaml" "$yaml.before" && [[ "$still_valid" -eq 1 ]]; then
-    pass "4: read-only state dir -> rc=$rc (non-zero), active.yaml unchanged and still valid YAML"
+  if [[ "$rc_replace" -ne 0 && "$replace_intact" -eq 1 && "$rc_dump" -ne 0 && "$dump_intact" -eq 1 ]]; then
+    pass "4: forced os.replace rc=$rc_replace and forced yaml.dump rc=$rc_dump leave active.yaml byte-identical"
   else
-    fail "4: rc=$rc, cmp=$(cmp -s "$yaml" "$yaml.before"; echo $?), still_valid=$still_valid"
+    fail "4: replace_rc=$rc_replace replace_intact=$replace_intact dump_rc=$rc_dump dump_intact=$dump_intact"
   fi
 }
 test4

@@ -966,21 +966,23 @@ try:
         # bystander's terminal stamp -- the reaper in lane_reconcile owns
         # its end of life. rc=8 = ownership refusal, distinct from rc=4
         # (not registered).
-        target = next((s for s in sessions if s.get("task_id") == task_id), None)
+        # Duplicate rows are an historical registry fact, not an excuse to
+        # release only whichever row happens to occur first in YAML order.
+        # A finish is a claim-release operation, so its selector is ALL rows
+        # for this task_id.  We preflight recovery ownership before mutating
+        # any row: a recovered duplicate is exclusively lane_reconcile's,
+        # and refusing the entire batch avoids a partial release.
+        targets = [s for s in sessions if s.get("task_id") == task_id]
         # PLUGIN-MARK-FINISHED-DOES-NOT-RELEASE-THE-ROW-01: rc=4 (not
         # registered) must be checked BEFORE the recovered-row refusal, or a
         # bare task_id with no row at all was reported as rc=8 (wrong
         # diagnosis: nothing to refuse ownership OF).
-        if target is None:
+        if not targets:
             print(f"[registry] mark_finished: task not registered: {task_id}", file=sys.stderr)
             sys.exit(4)
-        if target.get("recovered"):
+        if any(target.get("recovered") for target in targets):
             print(f"[registry] mark_finished: refused, row is recovery-owned (recovered=true); only lane_reconcile owns it: {task_id}", file=sys.stderr)
             sys.exit(8)
-        target["terminal_status"] = outcome
-        target["terminal_evidence"] = evidence
-        target["terminal_at"] = now
-        target["updated_at"] = now
         # PLUGIN-MARK-FINISHED-DOES-NOT-RELEASE-THE-ROW-01: measured bug --
         # this op used to stamp terminal_status and STOP, leaving the row
         # fully live for register/check_writes's writeset admission and
@@ -998,7 +1000,12 @@ try:
         # (test-leadv2-lane-heartbeat.sh Tests 4/5 depend on that read
         # succeeding post-finish) -- outright removal would answer
         # not_found instead of completed/finished_empty.
-        target["stale"] = True
+        for target in targets:
+            target["terminal_status"] = outcome
+            target["terminal_evidence"] = evidence
+            target["terminal_at"] = now
+            target["updated_at"] = now
+            target["stale"] = True
 
     elif op == "append_provider_receipt":
         task_id, receipt_json = args
@@ -1139,20 +1146,11 @@ try:
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as tf:
             yaml.dump(data, tf, default_flow_style=False, sort_keys=False)
-        try:
-            os.replace(tmp_path, yaml_path)
-        except (OSError, PermissionError):
-            # Sandboxed callers (e.g. codex CLI's stricter --sandbox
-            # enforcement) can reject a rename that crosses a symlink
-            # boundary even though a direct write to the target succeeds.
-            # Still under the flock -- fall back to overwriting the target
-            # file in place instead of rename+replace.
-            with open(yaml_path, "w", encoding="utf-8") as tf2:
-                yaml.dump(data, tf2, default_flow_style=False, sort_keys=False)
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+        # Never fall back to opening yaml_path with "w": doing so truncates
+        # the live registry before a second dump can succeed.  A failed
+        # same-directory replace leaves the old active.yaml byte-for-byte
+        # intact; the outer cleanup then removes only the uncommitted temp.
+        os.replace(tmp_path, yaml_path)
     except Exception:
         try:
             os.unlink(tmp_path)
@@ -1171,17 +1169,17 @@ try:
     if op == "mark_finished":
         with open(yaml_path, encoding="utf-8") as _mf_verify_fh:
             _mf_verify_data = yaml.safe_load(_mf_verify_fh) or {}
-        _mf_verify_row = next(
-            (s for s in (_mf_verify_data.get("sessions") or [])
-             if isinstance(s, dict) and s.get("task_id") == task_id),
-            None,
-        )
-        if (_mf_verify_row is None
-                or not _mf_verify_row.get("stale")
-                or _mf_verify_row.get("terminal_status") != outcome):
+        _mf_verify_rows = [
+            s for s in (_mf_verify_data.get("sessions") or [])
+            if isinstance(s, dict) and s.get("task_id") == task_id
+        ]
+        _mf_live_rows = [s for s in _mf_verify_rows if not s.get("stale")]
+        if (not _mf_verify_rows
+                or _mf_live_rows
+                or any(s.get("terminal_status") != outcome for s in _mf_verify_rows)):
             print(
                 f"[registry] mark_finished: post-write verify failed task={task_id} "
-                f"row={_mf_verify_row!r}",
+                f"rows={_mf_verify_rows!r} live_rows={_mf_live_rows!r}",
                 file=sys.stderr,
             )
             sys.exit(9)
