@@ -315,6 +315,31 @@ router_v2:
     - { arm: codex, provider: codex, model: gpt-5.6-luna, tier: volume, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true, capability: 3 }
     - { arm: codex, provider: codex, model: gpt-5.6-terra, tier: standard, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true, capability: 4 }
     - { arm: codex, provider: codex, model: gpt-5.6-sol, tier: top, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 4 }
+    # ASTRA-MUST-BE-SELECTABLE-01 (founder 2026-09-14, verbatim: "Астра точно
+    # должна быть, и запускай сразу на астра. Если астры нет, добавить и чтобы
+    # на ней тоже запускалось всё что требует сильной модели."): the comment
+    # block above is still true for the `arm: codex` rows -- astra stays their
+    # named FALLBACK tail, never blended into a codex-tier row, so the
+    # CODEX-TIERS-COLLAPSED-ONTO-ASTRA-01 fix is untouched. What was missing is
+    # a way to ASK for astra (or sol) directly: `--pin-arm` filters candidates
+    # to one `arm:` value, and no row ever carried arm=astra or arm=sol, so
+    # neither was reachable by name -- sol was additionally unreachable even
+    # via the default auction (terra ties it on cost at the same capability
+    # and always wins on price). These two rows are DISTINCT arm ids, not new
+    # codex tiers: `--pin-arm astra` / `--pin-arm sol` now filter to exactly
+    # one row apiece, same singleton-filter mechanism as every other pinnable
+    # arm, so the pin flag works unchanged. `sizes: [heavy]` is the existing
+    # SIZE_MAP strategic/heavy-only vocabulary (leadv2-route-arbiter.sh
+    # SIZE_MAP) -- astra/sol cannot win a standard-sized default auction by
+    # matrix construction, never by an `if arm==` branch in arbiter code.
+    # astra's capability: 5 (above every other row in this matrix, reflecting
+    # its models_cache.json priority 1) is what a caller gets by NAME when it
+    # asks for the strongest model available; sol's capability: 4 matches its
+    # existing codex-tier row exactly -- same model, same strength, just now
+    # independently addressable. provider: codex on both inherits the existing
+    # `router_v2.cost.codex: null` median-fallback price, unchanged.
+    - { arm: astra, provider: codex, model: gpt-6-astra, tier: astra, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive, flagship], review: true, protected: true, capability: 5 }
+    - { arm: sol, provider: codex, model: gpt-5.6-sol, tier: top, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 4 }
     - { arm: haiku, provider: claude, model: haiku, tier: standard, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true, capability: 2, pool_default: true } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
     - { arm: sonnet, provider: claude, model: sonnet, tier: standard, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true, capability: 4 }
     - { arm: opus, provider: claude, model: opus, tier: high, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 4, pool_default: false }
