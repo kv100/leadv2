@@ -2198,6 +2198,19 @@ _extra += (' headroom_unknown=%s' % _headroom_unknown[_hw_label(w.get('provider'
 # priced. headroom_priced= names every candidate provider whose cost was scaled at
 # all, so a moved choice can be read straight off the line. Absent when nothing
 # was priced -- which is also the control that keeps the assertion honest.
+# REVIEWER-CHOICE-MUST-EXPLAIN-ITSELF-01 (founder, 2026-09-14): `if _w != 1.0`
+# inside headroom_weight() means an arm priced at EXACTLY 1.0 (full headroom,
+# no scaling applied) never gets a dict entry -- so a winner that happened to
+# have full headroom was silently missing from its own decision line while
+# every arm that lost stayed named with its weight. Once the token is going to
+# print at all (some OTHER candidate WAS scaled), the winner's own entry is
+# forced in here -- via the same _hw_w already computed above for headroom_w=
+# -- so "the arm that won" is never the one fact this line cannot answer.
+# Still silent when NOTHING was priced (both branches false): a run where
+# every candidate has full headroom prints no token, same as before --
+# tests/test-route-arbiter.sh (g6) pins that absence case.
+if _hw_w is not None and _headroom_priced:
+    _headroom_priced.setdefault(_hw_label(w.get('provider'), w.get('arm')), _hw_w)
 _extra += (' headroom_priced=%s' % ','.join('%s:%g' % (p_, w_) for p_, w_ in sorted(_headroom_priced.items()))) if _headroom_priced else ''
 # ...and the same fact on the winner's line, where it answers the question the
 # 09-03 evidence could not: was the chain short because nothing cheaper exists,

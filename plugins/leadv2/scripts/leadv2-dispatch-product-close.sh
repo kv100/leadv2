@@ -767,30 +767,114 @@ resolve_review_pool_call() {
   # T17: use the same live-window arbiter for review selection. The existing
   # pool resolver remains the availability authority; an arbiter choice is only
   # adopted when that arm is present as an available, non-self reviewer.
+  #
+  # REVIEWER-CHOICE-MUST-EXPLAIN-ITSELF-AND-FABLE-IS-NOT-THE-DEFAULT-01
+  # (founder, 2026-09-14): the arbiter's chain is pure cost/headroom order --
+  # it has no notion of "this reviewer is a scarce top-capability arm, spend
+  # it deliberately". Before this fix that meant the cheapest-by-cost-alone
+  # candidate could be a tier-6 arm (fable) on an ordinary review, every time
+  # its headroom happened to be full (row 0921a034/0485 territory) -- legal
+  # under STRONGER-REVIEWER-01 (fable outranks sonnet in _ANTHROPIC_STRENGTH,
+  # so it is never excluded as same-vendor-not-stronger), just never the
+  # PREFERRED choice for work that does not need it.
+  #
+  # _RA_DEFERRED_REVIEW_ARMS is the declared axis -- data, not a scattered
+  # `if arm=="fable"` branch -- naming the review-pool arms whose capability
+  # tier is the top one (6: astra/fable, the founder's pinned order). Deferred
+  # to a SECOND pass of this same cost-ordered walk, never dropped from it:
+  # if nothing else in the chain is eligible, pass 2 restores them, so a task
+  # that genuinely has no cheaper capable reviewer never loses coverage.
+  # LEADV2_REVIEWER_PREFER_NON_FABLE=0 is the one-flag rollback (negative
+  # control: tests/test-reviewer-fable-preference.sh proves the flag off
+  # reproduces the pre-fix pick).
+  _RA_DEFERRED_REVIEW_ARMS=" fable "
+  local _ra_prefer_non_fable="${LEADV2_REVIEWER_PREFER_NON_FABLE:-1}"
+  # "genuinely hard / important" (founder's own words, not a number this repo
+  # owns elsewhere): two signals, chosen because both are ALREADY recorded
+  # facts, never invented here. (1) the author is itself a top/near-top-tier
+  # arm the founder named by example -- "reviewing the output of strong arms
+  # (opus, codex-sol, astra)" -- read off AUTHOR, the arg this script was
+  # already given. (2) the task's own admission class, read off the SAME
+  # journal line leadv2_cost_actual_record already parses a few hundred lines
+  # up (task_class=) -- Heavy/Strategic is this repo's existing "big and
+  # consequential" bucket; reusing it is not a new tiering decision (the
+  # class->arm think tiering itself, 2a715fc3, is off limits and untouched --
+  # this only READS the class already written for another purpose).
+  local _ra_author_bare="${AUTHOR%%:*}"
+  local _ra_strong_author=0
+  case "${_ra_author_bare}" in
+    opus|sol|astra) _ra_strong_author=1 ;;
+  esac
+  local _ra_task_class=""
+  _ra_task_class="$(bash "${JOURNAL_BIN}" tail "dispatch-${TASK}" 100000 2>/dev/null \
+    | grep -oE 'task_class=[A-Za-z]+' | head -1 | cut -d= -f2)"
+  local _ra_hard_signal="none" _ra_hard_important=0
+  if [[ "${_ra_strong_author}" == 1 ]]; then
+    _ra_hard_important=1; _ra_hard_signal="author_strong_arm:${_ra_author_bare}"
+  fi
+  case "${_ra_task_class}" in
+    Heavy|Strategic)
+      _ra_hard_important=1
+      [[ "${_ra_hard_signal}" == "none" ]] && _ra_hard_signal="task_class:${_ra_task_class}"
+      ;;
+  esac
   if declare -F route_arbiter >/dev/null 2>&1; then
-    local _ra_desc _ra_out _ra_rc _ra_arm _ra_chain _ra_util _ra_author _ra_pick=""
+    local _ra_desc _ra_out _ra_rc _ra_arm _ra_chain _ra_util _ra_author _ra_pick="" _ra_fable_gate="n/a"
     _ra_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":"review","size":"standard","protected":sys.argv[1]=="1","safety":sys.argv[1]=="1"}))' "${_sig_protected}")"
     _ra_out="$(route_arbiter reviewer "${_ra_desc}")"; _ra_rc=$?
     _ra_arm="$(printf '%s\n' "${_ra_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _ra_chain="$(printf '%s\n' "${_ra_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
     _ra_util="$(printf '%s\n' "${_ra_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
-    _ra_author="${AUTHOR%%:*}"
+    _ra_author="${_ra_author_bare}"
     if [[ ${_ra_rc} -eq 0 ]]; then
-      local _ra_candidate
+      local _ra_candidate _ra_pass
       IFS=',' read -r -a _ra_candidates <<< "${_ra_chain}"
-      for _ra_candidate in "${_ra_candidates[@]}"; do
-        [[ "${_ra_candidate}" == "${_ra_author}" ]] && continue
-        local _ra_entry
-        _ra_entry="$(printf '%s\n' "${_resolver_out}" | sed -n 's/^pool=//p' | tr ',' '\n' | awk -F: -v arm="${_ra_candidate}" '$1 == arm {print; exit}')"
-        if [[ -n "${_ra_entry}" ]] && _pc_review_entry_eligible "${_ra_entry}"; then
-          _ra_pick="${_ra_candidate}"; break
-        fi
+      for _ra_pass in 1 2; do
+        [[ -n "${_ra_pick}" ]] && break
+        for _ra_candidate in "${_ra_candidates[@]}"; do
+          [[ "${_ra_candidate}" == "${_ra_author}" ]] && continue
+          if [[ "${_ra_pass}" == 1 && "${_ra_prefer_non_fable}" != 0 \
+                && "${_ra_hard_important}" != 1 \
+                && " ${_RA_DEFERRED_REVIEW_ARMS} " == *" ${_ra_candidate} "* ]]; then
+            _ra_fable_gate="deferred_pass1:${_ra_candidate}"
+            continue
+          fi
+          local _ra_entry
+          _ra_entry="$(printf '%s\n' "${_resolver_out}" | sed -n 's/^pool=//p' | tr ',' '\n' | awk -F: -v arm="${_ra_candidate}" '$1 == arm {print; exit}')"
+          if [[ -n "${_ra_entry}" ]] && _pc_review_entry_eligible "${_ra_entry}"; then
+            _ra_pick="${_ra_candidate}"; break
+          fi
+        done
       done
       if [[ -n "${_ra_pick}" ]]; then
         _resolver_out="$(printf '%s\n' "${_resolver_out}" | sed "s/^reviewer=.*/reviewer=${_ra_pick}/")"
-        emit decision "route_resolved by=arbiter role=reviewer arm=${_ra_pick} task=${TASK} reason=cheapest_capable ${_ra_util}" || true
+        # Reason taxonomy (single-entry deferred set == fable, so fable_gate
+        # is only ever "n/a" or "deferred_pass1:fable" -- never ambiguous
+        # about WHICH arm it refers to): fable_gate==deferred_pass1:* means
+        # pass1 actually deferred fable (only possible when the preference
+        # was active AND the task was not hard/important); n/a means fable
+        # was never deferred, so if it still won, the ONLY two ways that can
+        # happen are named explicitly rather than both collapsing into
+        # "hard_important" (a prior draft mislabeled the flag-disabled
+        # rollback case as hard_important, which is exactly the kind of
+        # unauditable reason= this whole task exists to eliminate).
+        local _ra_reason="cheapest_capable"
+        if [[ "${_ra_fable_gate}" == deferred_pass1:* ]]; then
+          if [[ " ${_RA_DEFERRED_REVIEW_ARMS} " == *" ${_ra_pick} "* ]]; then
+            _ra_reason="cheapest_capable_fallback_no_alternative"
+          else
+            _ra_reason="cheapest_capable_non_fable_preferred"
+          fi
+        elif [[ " ${_RA_DEFERRED_REVIEW_ARMS} " == *" ${_ra_pick} "* ]]; then
+          if [[ "${_ra_hard_important}" == 1 ]]; then
+            _ra_reason="cheapest_capable_hard_important"
+          else
+            _ra_reason="cheapest_capable_policy_disabled"
+          fi
+        fi
+        emit decision "route_resolved by=arbiter role=reviewer arm=${_ra_pick} task=${TASK} reason=${_ra_reason} reviewer_prefer_non_fable=${_ra_prefer_non_fable} reviewer_hard_important=${_ra_hard_important} reviewer_hard_signal=${_ra_hard_signal} reviewer_fable_gate=${_ra_fable_gate} ${_ra_util}" || true
       else
-        emit decision "arbiter_broken task=${TASK} role=reviewer rc=0 reason=arbiter_arm_not_available ${_ra_util}" || true
+        emit decision "arbiter_broken task=${TASK} role=reviewer rc=0 reason=arbiter_arm_not_available reviewer_hard_important=${_ra_hard_important} reviewer_hard_signal=${_ra_hard_signal} ${_ra_util}" || true
       fi
     else
       emit decision "arbiter_broken task=${TASK} role=reviewer rc=${_ra_rc} reason=fail_open_to_review_pool $(_arb_fault_detail "${_ra_out}")" || true
