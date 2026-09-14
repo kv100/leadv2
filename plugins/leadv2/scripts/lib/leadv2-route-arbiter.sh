@@ -1789,6 +1789,42 @@ def _headroom_ramp(un):
     # tests/test-headroom-continuous.sh.
     _u=min(un,_HEADROOM_U_SAT)
     return max(_HEADROOM_W_MIN, min(_HEADROOM_W_MAX, _HEADROOM_W_MIN + (_HEADROOM_W_MAX-_HEADROOM_W_MIN)*_u/_HEADROOM_U_SAT))
+# THE-BALANCER-CONCENTRATES-ON-THE-EMPTIEST-BUCKET-01 (founder, 2026-09-14):
+# `usable_now` is remaining-percentage-points PER HOUR (leadv2-quota-read.py),
+# so its own achievable ceiling scales with 100/period_hours -- a fresh
+# five_hour window can reach 20/h, a fresh 168h weekly window can reach at
+# most ~0.6/h. _HEADROOM_U_SAT (8.0) was tuned against the five_hour scale
+# alone, so a weekly-bound provider's ramp lives in the bottom ~7% of
+# [0.2,1.0] REGARDLESS of how much quota is left: measured, glm weekly
+# pct=83 hours_to_reset=36.8h -> usable_now=17/36.8=0.462 -> ramp=0.246; a
+# FRESH weekly window at 0% used (hours_to_reset=168) can only ever reach
+# usable_now=100/168=0.595 -> ramp=0.260. A 0.014-wide range across the
+# entire remaining-quota axis is not a gradient, it is noise the cost/
+# observed-cost terms dominate every time -- the exact "three providers in
+# one basket" failure the continuous ramp itself was built to fix
+# (W1-GRANULARITY-CONTINUOUS-HEADROOM-01, 2026-09-10), reintroduced
+# structurally by a saturation constant that never accounted for period.
+#
+# Scaling the saturation point by period does NOT fix this: usable_now's
+# rate form means a window CLOSE to reset inflates regardless of how little
+# is left (remaining/hours_to_reset grows as hours_to_reset shrinks even for
+# a small remaining), so re-deriving a smaller period-scaled saturation
+# constant would have made glm's 36.8h-to-reset price as MORE headroom, the
+# opposite of the founder's complaint (tried and rejected here, not shipped).
+#
+# Fix instead judges a LONG-period window (weekly-scale; the rate no longer
+# carries meaningful information because it is dominated by 1/hours_to_reset
+# regardless of remaining) by its remaining FRACTION directly -- a quantity
+# that is period-invariant by construction and already computed as `pct` on
+# the SAME binding window usable_now came from. Short-period windows (the
+# five_hour scale the constant was tuned against, and anything whose period
+# is unreadable) are UNTOUCHED: the existing rate ramp still runs exactly as
+# before, so every fixture that never carries a real >=24h period stays
+# byte-identical. _HEADROOM_LONG_PERIOD_HOURS=24 draws the line comfortably
+# above five_hour (5) and comfortably below weekly (168) -- there is no
+# window kind in this repo between them. Rollback is the same flag as the
+# ramp itself, LEADV2_ARBITER_HEADROOM_GRADIENT=0.
+_HEADROOM_LONG_PERIOD_HOURS=24.0
 def headroom_weight(provider, arm=None):
     # 0485: arm-aware -- a scoped arm's gradient is priced from ITS OWN
     # binding window (session or scoped weekly, whichever binds it), so the
@@ -1808,7 +1844,13 @@ def headroom_weight(provider, arm=None):
     try: un=float(un)
     except (TypeError, ValueError):
         _headroom_unknown[_lbl]='unreadable'; return 1.0
-    _w=_headroom_ramp(un)
+    _period=num(_info.get('period_hours'))
+    _pct=num(_info.get('pct'))
+    if _period is not None and _period>=_HEADROOM_LONG_PERIOD_HOURS and _pct is not None:
+        _remaining_fraction=max(0.0,min(1.0,(100.0-_pct)/100.0))
+        _w=_HEADROOM_W_MIN+(_HEADROOM_W_MAX-_HEADROOM_W_MIN)*_remaining_fraction
+    else:
+        _w=_headroom_ramp(un)
     if _w != 1.0: _headroom_priced[_lbl]=_w
     return _w
 # ARBITER-DECISION-INPUTS-01 D1: quota that expires before it can be used is
