@@ -35,6 +35,25 @@ ambiguity is exactly why nobody can answer the founder's question today.
    named set of recent terminal lanes and, for each, determine whether it reached review/test/e2e
    and failed to record, or never got there. The answer is probably "both, in different
    proportions" — then give the proportions. This is the whole question; the rest is downstream.
+
+   **Do NOT attribute a lane to a repo by its state-root directory — it is roughly a coin flip.**
+   Measured 2026-09-14 from the explicit work-root field in the journals under
+   `~/.claude/leadv2-state/leadv2/tasks/`: **196 lanes declare `~/Projects/leadv2` and 195 declare
+   `~/Projects/persona-engine`.** The state root comes from the session environment, not from cwd,
+   so a leadv2 lane dispatched from a persona-engine session books itself in persona-engine's
+   control plane and vice versa. Root totals for context: leadv2 735 lanes, persona-engine 609,
+   getmany-followup-bot 64.
+
+   Consequence for you: any per-repo denominator built on the directory is wrong, and a "recent
+   lanes in this repo" sample selected that way is half foreign. Use the declared work-root field.
+   My own cliff counts (build 718 … review 9) were globbed across ALL roots, so they are totals and
+   are not distorted by this — but they also cannot be split per repo without re-deriving from the
+   field. Say which denominator you used.
+
+   Second boundary on the same data, from the peer session: persona-engine set `LEADV2_E2E_CMD` at
+   **2026-09-14T08:20Z** so its e2e gate stops parking lanes before review. Treat persona-engine
+   lanes before and after that timestamp as two regimes; mixing them will make the cliff look like
+   it healed on its own.
 2. **Explain the 31 `phase_record_refused` and the 3 `phase_record_failed` (rc=6).** A refusal that
    nobody reads is the same class of defect as the launcher refusals we made into journal events on
    2026-09-14. Name the reasons and their counts.
