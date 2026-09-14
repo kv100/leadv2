@@ -95,3 +95,71 @@ arbiter verdict. A third of "thinking" decisions are made by a fallback.
   glm-flash-share question).
 - The review gate and phase ordering — a sibling lane (`7b7fb938bb30`) owns those.
 - `docs/tasks.yaml`, `docs/leadv2/open-threads.md` — lead-owned.
+
+## AMENDMENT (2026-09-14): the constraint is FOUND — do not spend a round re-deriving it
+
+Item 2 asked you to name the line that confines the think model to Anthropic. I found it while
+answering a founder question; take it as given and go straight to the decision.
+
+**`plugins/leadv2/config/model-capability.yaml:34`, contract `FABLE-THINK-TIER-01`:**
+
+```yaml
+fable:
+  role: think            # FABLE-THINK-TIER-01: default arm for every thinking role
+  fallback: opus
+```
+
+and the header block at `:22-28` states the contract in full: *"model-capability.yaml is now READ by
+one consumer — leadv2-router.sh think_model(), which routes every THINKING role to fable with opus
+as the fallback."* The fable row may carry `unavailable: true`, in which case `think_model()`
+returns opus.
+
+So the two-arm outcome (fable 228 / opus 147 / nothing else, across all 375 resolutions) is not an
+accident and not a bug — it is that contract doing exactly what it says. **It is deliberate, and it
+is the thing the founder is now overriding.** Your job is to replace a fixed default+fallback pair
+with class-dependent tiering, not to hunt for a defect.
+
+## AMENDMENT: GLM is a legitimate think arm, and needs nothing wired
+
+Founder: *«думающая модель может быть глм… у глм есть deepthinking mode и он крутой»*. He is right
+that it qualifies, and there is nothing to enable:
+
+`DEEPTHINK-MODE-IS-NOT-WIRED-01` (2026-09-04, `glm-coder.sh:123-130`) established deliberately that
+there is **no `GLM_THINK` flag**, because at Z.AI thinking intensity IS the effort vocabulary —
+glm-5.3 and glm-5.3-flash **always reason**, `thinking.type` only supports `enabled`, and it
+collapses into effort. So GLM already thinks on every call. Adding a second flag was rejected then
+and stays rejected; putting GLM in the think candidate set costs nothing and unlocks the cheapest
+reasoning arm we have. Do not re-open the deepthink flag question — read that report first if
+tempted.
+
+## AMENDMENT: effort — what is real, and the one thing worth changing
+
+Founder: *«у кодекс и клода есть эффорт и он реально влияет на аутпут и кол-во токенов»*. Measured,
+so you do not have to:
+
+```text
+effort across all journals:  high 685 | unknown 107 | medium 56 | max 32 | low 22
+```
+
+Effort is NOT decoration — it reaches the provider: `claude-subsession.sh:641` appends
+`--effort "$EFFORT"` to the Claude args. But note how differently the two providers treat it:
+
+- **Claude**: effort is a free parameter, passed through per call.
+- **Codex**: effort is WELDED TO THE TIER (`codex-task.sh:21-33`, EFFORT-RECAL 2026-07-10):
+  `top -> gpt-5.6-sol/high`, `standard -> gpt-5.6-terra/medium`, `volume -> gpt-5.6-luna/low`, and
+  the comment says effort stays per tier even on fallback. So "terra at high effort" is currently
+  **inexpressible** — asking for more thinking on codex necessarily changes the model too.
+
+That is the founder's *«heavy задачи тоже не все одинаковые»* in mechanical terms, and it is a real
+limit worth naming in your report.
+
+**What is worth doing, and what is over-engineering.** He asked directly whether this is
+over-complication. Treat the cheap half as in scope and the expensive half as explicitly NOT:
+
+- IN SCOPE: `effort=high` is 685 of 902 — 76%, plus 107 `unknown`. The default sits at the
+  expensive end, and for Claude that is maximum token spend on three quarters of all work. Report
+  what the default is, where it is set, and what a lower default would cost in quality terms that
+  you can actually evidence. A default that is high because nobody chose it is a quota leak.
+- OUT OF SCOPE: building a per-task effort inference model. Do not. If the class-based tiering of
+  item 1 carries an effort with each tier, that is enough granularity; anything finer needs
+  evidence that it changes outcomes, and we do not have that evidence today.
