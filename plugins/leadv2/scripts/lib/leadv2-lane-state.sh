@@ -446,6 +446,15 @@ with open(lock, 'a+') as lf:
     ancestors=ancestry()
     worker_markers={'claude','leadv2-session-runner.sh','leadv2-codex-session-runner.sh','codex','glm-coder.sh','kimi-coder.sh'}
     non_workers={'leadv2-dispatch-code.sh','leadv2-lane-liveness.sh','grep','ps','tail','Monitor'}
+    # LANE-MENTION-ARGV0-01: the mention test needs a program-set basis for
+    # SCRIPT names (argv can wrap them in any interpreter -- `bash
+    # .../leadv2-dispatch-code.sh` has argv[0] == 'bash', never the script)
+    # but must stay argv[0]-only for TOOL names, because a legitimate tool
+    # shell's argv may itself contain the string 'grep'/'ps'/'tail'/'Monitor'
+    # as part of a quoted command (HEAD case 2) without that shell being one
+    # of those tools. Derived, not duplicated, so the two bases can't drift.
+    non_worker_scripts={x for x in non_workers if x.endswith('.sh')}
+    non_worker_tools=non_workers - non_worker_scripts
     for worktree in worktrees:
       real=os.path.realpath(worktree)
       if '/.claude/worktrees/' not in real: continue
@@ -472,18 +481,26 @@ with open(lock, 'a+') as lf:
         pid=int(parts[0]); start=' '.join(parts[1:6]); command=parts[6]
         try: argv=shlex.split(command)
         except ValueError: continue
+        # LANE-MENTION-ARGV0-01: this reconcile's own lineage (the dispatcher
+        # or hook that spawned it, and every shell in between) is never a
+        # mention -- checked before the mention test, not just before
+        # adoption, so a self-run sweep cannot conjure a row for its own
+        # command line.
+        if pid in ancestors: continue
         # ORPHAN (66d6209a) union: a whole argv token (or parent dir), never
         # a substring -- X-old is not X.
         token=any(arg == worktree or arg.startswith(worktree + '/') for arg in argv)
         programs={os.path.basename(arg) for arg in argv}
         # Mention (-> unowned visibility row) needs a token hit from a command
-        # whose LEAD program (argv[0]) is not observation tooling: grep/tail/
-        # ps/dispatch never make a lane (branch a/b/c); a tool shell that
-        # names the lane does (HEAD case 2). argv[0] decides, not any token:
-        # flags and the lane path itself would otherwise pollute the class.
+        # that is not observation tooling. Tool names (grep/tail/ps/Monitor)
+        # are judged at argv[0] only -- a tool shell that merely names one in
+        # a quoted string still mentions (HEAD case 2). Script names
+        # (dispatch/liveness) are judged over the whole argv program set --
+        # they cannot legitimately appear except as "something is running
+        # this script", under any interpreter (bash/nohup/-x wrapper).
         argv0=os.path.basename(argv[0]) if argv else ''
-        if token and argv0 not in non_workers: mentioned=True
-        if pid in ancestors: continue
+        if token and argv0 not in non_worker_tools and not (programs & non_worker_scripts):
+          mentioned=True
         if programs & non_workers: continue
         if not programs & worker_markers: continue
         cwd_owner = os.path.realpath(proc_cwd(pid) or '') == real
@@ -499,7 +516,12 @@ with open(lock, 'a+') as lf:
         # Registered WITHOUT a pid: visibility row for the status surface /
         # humans; it does not claim an owner, and it ages out on
         # LEADV2_RECOVERED_UNOWNED_TTL_SEC (see fix 3 above) so it cannot
-        # block dispatch beyond the registry's own pending window.
+        # block dispatch beyond the registry's own pending window. LANE-
+        # MENTION-ARGV0-01: started_at is re-stamped every sweep pass, so a
+        # recurring bystander can keep this row's age near zero forever --
+        # the liveness probe (leadv2-lane-liveness.sh) denies pid-less
+        # `recovered` rows the `starting:` grace for exactly that reason, so
+        # this row alone can never refuse a dispatch.
         row={'task_id':task, 'session_id':'recovered', 'lead_session_id':'recovered', 'worktree':worktree,
              'phase':'recovered_unowned', 'started_at':now(), 'updated_at':now(),
              'dead_at':None, 'recovered':True, 'lane_events':[]}
