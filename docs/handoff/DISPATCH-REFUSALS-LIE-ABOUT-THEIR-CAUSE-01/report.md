@@ -40,8 +40,8 @@ All controls were run with the real `leadv2-mutation-control.sh` after commit
 | D2 | `present but untracked` → `present but invisible` | `mutation-control/20260915T083238Z-66193.txt` | `FAIL: D2 untracked refusal mismatch rc=5` |
 | D3 | remove `external_id` from matcher keys | `mutation-control/20260915T083310Z-75918.txt` | `FAIL: D3 external_id resolution mismatch rc=8` |
 
-The complete unedited red output, anchors, exit codes, and mutation hashes are
-the three committed mutation-control artifacts named above.
+The complete red output, anchors, exit codes, and mutation hashes are the
+three committed mutation-control artifacts named above.
 
 ### GREEN after restore
 
@@ -72,16 +72,16 @@ PASS: D3 unknown id refuses and names searched keys
 ```
 
 The required `tests/run-all.sh --scope changed` runner was run in the
-foreground. It was RED for pre-existing/ambient reasons outside these three
-seams: the core wrapper waited on an existing concurrent lock and hit its
-bounded ceiling, then unrelated suites failed under the sandbox's denied
-`mktemp` location. The raw terminal lines were:
+foreground after the caller migration. It was RED because its 150-suite core
+selection exceeded the deliberately imposed 60-second per-suite ceiling; it
+was not represented as green. The raw terminal lines were:
 
 ```text
-[CORE-OFFLINE] waiting for lock file=... held by a concurrent run
-[SUITE-TIMEOUT] plugins/leadv2/scripts/tests/run-core-offline.sh exceeded 120s ceiling
-[SUITE-TIMEOUT] tests/test-status-surface-bash32.sh exceeded 120s ceiling
-mktemp: mkdtemp failed on .../T/tmp.*: Operation not permitted
+[CORE-OFFLINE] scope=changed running 161 of 93 suites (base=main@5da9324f27, 33 changed files, 0 unmapped)
+[CORE-OFFLINE] running 150 suites across 4 shards
+[SUITE-TIMEOUT] plugins/leadv2/scripts/tests/run-core-offline.sh exceeded 60s ceiling
+[FAIL] plugins/leadv2/scripts/tests/run-core-offline.sh
+exit 124 (outer 130-second bound)
 ```
 
 After the first runner exposed legacy test callers using the now-invalid
