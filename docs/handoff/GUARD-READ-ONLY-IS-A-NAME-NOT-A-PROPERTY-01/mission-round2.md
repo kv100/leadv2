@@ -11,15 +11,36 @@ not have to re-derive which failures are yours:
 |---|---|---|---|
 | `plugins/leadv2/scripts/tests/test-nested-depth.sh` | **7/0 green** | **6/1 red** | **yours — a real regression** |
 | `plugins/leadv2/scripts/tests/test-nested-count-fix.sh` | 6/1 red | 6/1 red | pre-existing on main, not yours |
-| `tests/test-status-surface-bash32.sh` | being measured; re-measure it yourself | red | classify it with the paired run |
+| `tests/test-status-surface-bash32.sh` | ran on main with no FAIL lines — re-measure and state its real count | red | classify it with the paired run |
 
 ## The one real finding — `test-nested-depth.sh`
-It was green on main and is red here. The cause is almost certainly that a case in it spawns
-`general-purpose` on the **nested** path and expects it to be admitted — the guard's old comment
-said nested sub-runs are *"READ/PLAN/PROBE only (Explore, general-purpose)"*, and round 1 correctly
-removed `general-purpose` from that set on both paths.
+It was green on main and is red here. **The failing case is already named for you** — the lead ran it:
 
-**Find the failing case and read it before deciding anything.** Name it with `file:line`. Then one
+```
+[TEST] FAIL: T1: audit log missing route.subrun.depth_exceeded reason
+[TEST SUMMARY] PASS=6 FAIL=1
+```
+
+Read that before deciding anything. The assertion is **not** "general-purpose may be spawned". It
+is that a nested spawn exceeding the depth limit writes `route.subrun.depth_exceeded` into the
+audit log. The case evidently uses `general-purpose` as its vehicle to reach the depth check — and
+round 1 made that role refuse *earlier*, for a different reason, so the depth refusal never happens
+and its cause never reaches the log.
+
+That reframes the question. Two orderings are possible and you must say which is right:
+
+- **(a) The vehicle is incidental.** Any read-only role reaches the depth check. Switch the case to
+  `Explore`; the assertion — depth-exceeded is audited — survives untouched, and the write-role
+  refusal legitimately wins for `general-purpose`.
+- **(b) The ordering is the defect.** A role refusal now masks a depth refusal, so one cause hides
+  another and the audit log can no longer say why a spawn died. Then the fix belongs in the guard:
+  evaluate depth before role, or record both. This repo has paid repeatedly for exactly this shape
+  — one refusal wearing another's name.
+
+Decide from the code, not from which is less work. State the ordering you chose and why. If (b),
+keep the change minimal and touch nothing else in the guard.
+
+**Find the case with `file:line` and read it before deciding anything.** Name it with `file:line`. Then one
 of exactly two things is true, and you must say which:
 
 1. **The test encodes the defect.** It asserts that a nested caller may spawn `general-purpose`,
