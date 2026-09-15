@@ -60,6 +60,14 @@ DISPATCHER="$PLUGIN_ROOT/scripts/leadv2-dispatch-code.sh"
 # tool has no such value. An empty pool after this filter is the arbiter's
 # loud pool_empty_all_excluded refusal -- never a silent fallback model.
 SPEAKABLE_MODELS="sonnet opus haiku fable"
+# SPAWN-GATE-AND-MODEL-GUARD-DEADLOCK-01 (2026-09-15): the auto-consult path
+# above already hands the arbiter this pool. The DENY's own manual-CLI
+# way-forward text (below, for a spawn whose true work_kind the recon
+# auto-consult couldn't guess) did NOT -- so a human following that exact
+# suggested command could get back an unspeakable decision (e.g. arm=freepool
+# model=freepool-default) and walk straight into the deadlock this row exists
+# to close. Same pool, same JSON field, one emission site of the constant.
+SPEAKABLE_JSON="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1].split()))' "$SPEAKABLE_MODELS")"
 
 # Kill switch FIRST: one env var, named in every refusal text below.
 if [[ "${LEADV2_ROUTE_ENFORCE:-1}" == "0" ]]; then
@@ -177,8 +185,8 @@ Gate consult (one call, no separate CLI trip; kind=recon assumed for a bare read
   fi
   if [[ -f "$ARBITER_CLI" ]]; then
     DENY="$DENY
-Way forward (plain spawn, e.g. when the work is NOT recon -- the gate consults as recon and the true kind differs): consult the arbiter for the true kind, then re-issue this spawn with the decided model (or no model):
-  bash $ARBITER_CLI worker '{\"work_kind\":\"build|recon|review|plan\",\"size\":\"standard\",\"subtype\":\"$SUBTYPE\",\"task\":\"one line\"}'"
+Way forward (plain spawn, e.g. when the work is NOT recon -- the gate consults as recon and the true kind differs): consult the arbiter for the true kind WITH the speakable pool (omitting speakable_models here is what used to reopen this exact deadlock -- the arbiter would answer a real but unspeakable arm), then re-issue this spawn with the decided model (or no model):
+  bash $ARBITER_CLI worker '{\"work_kind\":\"build|recon|review|plan\",\"size\":\"standard\",\"subtype\":\"$SUBTYPE\",\"task\":\"one line\",\"speakable_models\":$SPEAKABLE_JSON}'"
   fi
   if [[ -f "$DISPATCHER" ]]; then
     DENY="$DENY
