@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-ratelimit-refresh-if-stale.sh
+file=plugins/leadv2/scripts/leadv2-ratelimit-refresh-if-stale.sh
+anchor=124s/.*/true/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 3 stale row + successful probe -> captured_epoch advances (got: {"status":"ok","state":"ok","captured_epoch":1789474484,"resetsAt":"2026-09-16T05:00:00+00:00","overageStatus":"normal"})
+diff_hash=a941008f725ddccaae28721526044e36d30f55757ca95a6bea7c048adbbafbd7
+lane_diff_hash=2e092916d31b73b20949894e5bfa0e6ec89b5819bfc3ce9dcb4777f03403ed55

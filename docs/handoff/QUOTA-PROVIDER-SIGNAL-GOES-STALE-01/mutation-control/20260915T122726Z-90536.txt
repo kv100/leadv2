@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-ratelimit-refresh-if-stale.sh
+file=plugins/leadv2/scripts/leadv2-ratelimit-refresh-if-stale.sh
+anchor=100s/.*/if false; then/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] PASS: 4 failed refresh (prior row exists) -> row restored byte-identical, captured_epoch unchanged
+diff_hash=41e752e8901262b4c1daf7db23f453664455a62762733793c088d74581e8ad5a
+lane_diff_hash=2e092916d31b73b20949894e5bfa0e6ec89b5819bfc3ce9dcb4777f03403ed55

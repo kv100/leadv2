@@ -84,6 +84,13 @@ MODE="report"
 DB="${LEADV2_BURN_DB:-$HOME/.claude/burn/history.db}"
 CFG="${LEADV2_MAIN_MODEL_CFG:-$(dirname "$0")/../ref/leadv2-main-model.yaml}"
 QUOTA_LIVE="${LEADV2_QUOTA_LIVE:-$(dirname "$0")/leadv2-quota-live.sh}"
+# QUOTA-PROVIDER-SIGNAL-GOES-STALE-01: refresh-on-read seam. Default ON (that
+# IS "normal operation, no manual step" per the founder's own framing) --
+# hermetic test suites that invoke this script must opt OUT explicitly
+# (export LEADV2_QUOTA_REFRESH_ON_READ=0) rather than this defaulting to a
+# silent no-op that never fires for real callers.
+RL_REFRESH_ON_READ="${LEADV2_QUOTA_REFRESH_ON_READ:-1}"
+RATELIMIT_REFRESH_SH="${LEADV2_RATELIMIT_REFRESH_SH:-$(dirname "$0")/leadv2-ratelimit-refresh-if-stale.sh}"
 
 MAX_5H_IN=8000000
 MAX_WK_IN=100000000
@@ -133,6 +140,15 @@ stats() {  # $1 = SQL predicate appended to WHERE
     || echo "0 0 0 0 0"
 }
 
+# QUOTA-PROVIDER-SIGNAL-GOES-STALE-01: refresh-on-read, before the SELECT below so a stale
+# row gets one chance to become fresh in THIS invocation. Cheap when already fresh (one
+# sqlite3 read, no lock, no subprocess); never blocks longer than one probe run, and only
+# every RL_FRESH_SECS. Swallows its own failures by design — a dead refresher must never
+# crash the gauge it is trying to keep fresh.
+if [[ "$RL_REFRESH_ON_READ" == "1" && -x "$RATELIMIT_REFRESH_SH" ]]; then
+  LEADV2_BURN_DB="$DB" LEADV2_RATELIMIT_FRESH_SECS="$RL_FRESH_SECS" bash "$RATELIMIT_REFRESH_SH" >/dev/null 2>&1 || true
+fi
+
 # ── rate_limit_info hook (kv table; written by the ratelimit-probe aggregator capture) ──
 # Parsed BEFORE the weekly reads: the weekly window basis (below) needs the kv's weekly
 # resetsAt + captured_epoch.
@@ -148,7 +164,12 @@ if [[ -n "$RL_RAW" ]]; then
   RL_JSON="$RL_RAW"
   RL_STATUS="$(printf '%s' "$RL_RAW" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
   RL_OVERAGE="$(printf '%s' "$RL_RAW" | sed -n 's/.*"overageStatus"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-  RL_RESETS="$(printf '%s' "$RL_RAW" | sed -n 's/.*"resetsAt"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' | head -1)"
+  # resetsAt is written as a quoted ISO-8601 string by leadv2-ratelimit-probe.sh (never a bare
+  # number) — a numeric-only pattern here always missed it, printing "resets=?" even when the
+  # payload carried a real value. Quoted-string form first, numeric kept as a fallback for any
+  # future envelope that writes it unquoted (see the "future envelope" note at line ~392).
+  RL_RESETS="$(printf '%s' "$RL_RAW" | sed -n 's/.*"resetsAt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  [[ -z "$RL_RESETS" ]] && RL_RESETS="$(printf '%s' "$RL_RAW" | sed -n 's/.*"resetsAt"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
   RL_EPOCH="$(printf '%s' "$RL_RAW" | sed -n 's/.*"captured_epoch"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' | head -1)"
   if [[ -n "${RL_EPOCH:-}" ]]; then
     now_ep="$(date -u +%s)"
