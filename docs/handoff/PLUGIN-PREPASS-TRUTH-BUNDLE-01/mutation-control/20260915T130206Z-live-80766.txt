@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-prepass-outcome-is-named.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s/printf '%s' "prepass_timeout"/printf '%s' "rate_limited"/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: rc=124 was not prepass_timeout
+diff_hash=2d91ccd8e06f1d88c813f0664b606a7ce3ffc490ae407010f03f8eb73cbc8f74
+lane_diff_hash=f8f795a5ea62d60983ab9477c0f359c3842c9d68ca43903b60ac36b0929029d8
+porcelain_clean=yes
+restored=yes

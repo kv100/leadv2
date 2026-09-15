@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-prepass-fallback-admits-codex.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=/_architect_prepass_provider() {/,/_architect_fallback_provider_allowed() {/ s/"anthropic"/"openai"/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: fallback rc=1 out=
+diff_hash=016e6db34ef3b00d9260032d1778e53190d04c6cafea2471aa1e7656aea1dee4
+lane_diff_hash=f8f795a5ea62d60983ab9477c0f359c3842c9d68ca43903b60ac36b0929029d8
+porcelain_clean=yes
+restored=yes

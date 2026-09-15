@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-prepass-verifies-the-design-artifact.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=/_prepass_verify_design_artifact() {/,/if \[\[ "${claimed}" = \/\* \]\];/ s/PREPASS_DESIGN_ARTIFACT_TEMP=0/PREPASS_DESIGN_ARTIFACT_TEMP=0; PREPASS_DESIGN_ARTIFACT_REASON="design_artifact_verified"; return 0/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: missing rc=0 out= reason=design_artifact_verified
+diff_hash=e837bfd51900397358cc3422c7192c8385a0aeb681c0768ec55ee1dba48cc89b
+lane_diff_hash=f8f795a5ea62d60983ab9477c0f359c3842c9d68ca43903b60ac36b0929029d8
+porcelain_clean=yes
+restored=yes
