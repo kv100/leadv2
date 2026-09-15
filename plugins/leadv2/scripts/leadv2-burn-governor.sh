@@ -14,7 +14,7 @@
 #   verdict=<ok|soft|hard> burn24h=<int> soft=<int> hard=<int> reason=<token>
 #
 # Env:
-#   LEADV2_BURN_GOVERNOR    default 1 (0 disables: verdict=ok reason=disabled)
+#   LEADV2_BURN_GOVERNOR    default 0 (0 disables: verdict=ok reason=disabled)
 #   LEADV2_BURN_SOFT_24H    default 800000000
 #   LEADV2_BURN_HARD_24H    default 1300000000
 #   LEADV2_CLAUDE_BURN_DIR  default $HOME/.claude/burn

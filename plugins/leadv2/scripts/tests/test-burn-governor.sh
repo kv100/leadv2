@@ -37,6 +37,10 @@ unset LEADV2_PROJECT_ROOT LEADV2_LANE_WORK_ROOT LEADV2_TASK_ID \
       LEADV2_BURN_GOVERNOR LEADV2_BURN_SOFT_24H LEADV2_BURN_HARD_24H \
       LEADV2_BURN_OVERRIDE LEADV2_CLAUDE_BURN_DIR
 
+# Dispatcher rows below use synthetic task text and test only the burn seam;
+# the premise probe is a separate product gate and would reject that fixture.
+LEADV2_PREMISE_PROBE=0
+
 tmp="$(lv2_mktemp_dir "burn-governor-test")"; trap 'rm -rf "$tmp"' EXIT
 
 if bash -n "${GOVERNOR_BIN}"; then
@@ -83,32 +87,32 @@ gv_field() {  # <line> <field>
 # 2: sum just under soft -> ok
 DB2="${tmp}/g2/history.db"; make_fixture_db "${DB2}"
 insert_hours_ago "${DB2}" 1 100 0 0 0
-line="$(LEADV2_CLAUDE_BURN_DIR="${tmp}/g2" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
+line="$(LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/g2" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
 [[ "$(gv_field "${line}" verdict)" == "ok" ]] && pass "2: under-soft -> verdict=ok" || fail "2: under-soft" "${line}"
 
 # 3: sum == soft exactly -> soft (boundary is >=)
 DB3="${tmp}/g3/history.db"; make_fixture_db "${DB3}"
 insert_hours_ago "${DB3}" 1 200 0 0 0
-line="$(LEADV2_CLAUDE_BURN_DIR="${tmp}/g3" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
+line="$(LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/g3" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
 [[ "$(gv_field "${line}" verdict)" == "soft" ]] && pass "3: burn==soft -> verdict=soft" || fail "3: burn==soft" "${line}"
 
 # 4: sum == hard exactly -> hard
 DB4="${tmp}/g4/history.db"; make_fixture_db "${DB4}"
 insert_hours_ago "${DB4}" 1 300 0 0 0
-line="$(LEADV2_CLAUDE_BURN_DIR="${tmp}/g4" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
+line="$(LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/g4" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
 [[ "$(gv_field "${line}" verdict)" == "hard" ]] && pass "4: burn==hard -> verdict=hard" || fail "4: burn==hard" "${line}"
 
 # 5: sum above hard -> hard
 DB5="${tmp}/g5/history.db"; make_fixture_db "${DB5}"
 insert_hours_ago "${DB5}" 1 500 0 0 0
-line="$(LEADV2_CLAUDE_BURN_DIR="${tmp}/g5" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
+line="$(LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/g5" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
 [[ "$(gv_field "${line}" verdict)" == "hard" ]] && pass "5: burn>hard -> verdict=hard" || fail "5: burn>hard" "${line}"
 
 # 6: -25h row excluded, -23h row included (the case that fails against 'T' format)
 DB6="${tmp}/g6/history.db"; make_fixture_db "${DB6}"
 insert_hours_ago "${DB6}" 25 1000000 0 0 0
 insert_hours_ago "${DB6}" 23 5 0 0 0
-line="$(LEADV2_CLAUDE_BURN_DIR="${tmp}/g6" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
+line="$(LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/g6" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
 if [[ "$(gv_field "${line}" burn24h)" == "5" ]]; then
   pass "6: -25h row excluded, -23h row included (D1 hour_key format)"
 else
@@ -123,59 +127,67 @@ else
   fail "7: governor disabled" "${line}"
 fi
 
-# 8: no db file -> no_telemetry
-line="$(LEADV2_CLAUDE_BURN_DIR="${tmp}/no-such-dir" bash "${GOVERNOR_BIN}" verdict)"
-[[ "$(gv_field "${line}" reason)" == "no_telemetry" ]] && pass "8: missing db -> no_telemetry" || fail "8: missing db" "${line}"
+# 8: the recorded founder order keeps the default path disabled.
+line="$(env -u LEADV2_BURN_GOVERNOR LEADV2_CLAUDE_BURN_DIR="${tmp}/g5" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
+if [[ "$(gv_field "${line}" verdict)" == "ok" && "$(gv_field "${line}" reason)" == "disabled" ]]; then
+  pass "8: BURN-GOVERNOR-OFF-BY-FOUNDER-ORDER-01 unset -> ok/disabled"
+else
+  fail "8: BURN-GOVERNOR-OFF-BY-FOUNDER-ORDER-01 default off" "${line}"
+fi
 
-# 9: hourly table dropped -> no_telemetry
+# 9: no db file -> no_telemetry
+line="$(LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/no-such-dir" bash "${GOVERNOR_BIN}" verdict)"
+[[ "$(gv_field "${line}" reason)" == "no_telemetry" ]] && pass "9: missing db -> no_telemetry" || fail "9: missing db" "${line}"
+
+# 10: hourly table dropped -> no_telemetry
 DB9="${tmp}/g9/history.db"
 mkdir -p "${tmp}/g9"; sqlite3 "${DB9}" "CREATE TABLE other (x INTEGER);"
-line="$(LEADV2_CLAUDE_BURN_DIR="${tmp}/g9" bash "${GOVERNOR_BIN}" verdict)"
-[[ "$(gv_field "${line}" reason)" == "no_telemetry" ]] && pass "9: hourly table missing -> no_telemetry" || fail "9: hourly missing" "${line}"
+line="$(LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/g9" bash "${GOVERNOR_BIN}" verdict)"
+[[ "$(gv_field "${line}" reason)" == "no_telemetry" ]] && pass "10: hourly table missing -> no_telemetry" || fail "10: hourly missing" "${line}"
 
-# 10: sqlite3 absent from PATH -> no_telemetry, exit 0
+# 11: sqlite3 absent from PATH -> no_telemetry, exit 0
 STUBPATH="${tmp}/no-sqlite-path"; mkdir -p "${STUBPATH}"
 for _b in bash sh sed grep cat mkdir printf date python3 basename dirname; do
   _real="$(command -v "${_b}" 2>/dev/null || true)"
   [[ -n "${_real}" ]] && ln -sf "${_real}" "${STUBPATH}/${_b}"
 done
-line="$(PATH="${STUBPATH}" LEADV2_CLAUDE_BURN_DIR="${tmp}/g2" bash "${GOVERNOR_BIN}" verdict)"; rc=$?
+line="$(PATH="${STUBPATH}" LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/g2" bash "${GOVERNOR_BIN}" verdict)"; rc=$?
 if [[ "$(gv_field "${line}" reason)" == no_telemetry* && "${rc}" == "0" ]]; then
-  pass "10: sqlite3 absent from PATH -> no_telemetry, exit 0"
+  pass "11: sqlite3 absent from PATH -> no_telemetry, exit 0"
 else
-  fail "10: sqlite3 absent" "line=${line} rc=${rc}"
+  fail "11: sqlite3 absent" "line=${line} rc=${rc}"
 fi
 
-# 11: hard<=soft (misconfigured) -> defaults used, reason contains bad_config
-line="$(LEADV2_CLAUDE_BURN_DIR="${tmp}/g2" LEADV2_BURN_HARD_24H=1 LEADV2_BURN_SOFT_24H=100 bash "${GOVERNOR_BIN}" verdict)"
+# 12: hard<=soft (misconfigured) -> defaults used, reason contains bad_config
+line="$(LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/g2" LEADV2_BURN_HARD_24H=1 LEADV2_BURN_SOFT_24H=100 bash "${GOVERNOR_BIN}" verdict)"
 if [[ "$(gv_field "${line}" soft)" == "800000000" && "$(gv_field "${line}" hard)" == "1300000000" \
       && "$(gv_field "${line}" reason)" == *bad_config* ]]; then
-  pass "11: hard<=soft -> defaults + bad_config"
+  pass "12: hard<=soft -> defaults + bad_config"
 else
-  fail "11: hard<=soft misconfig" "${line}"
+  fail "12: hard<=soft misconfig" "${line}"
 fi
 
-# 12: non-numeric threshold -> defaults + bad_config
-line="$(LEADV2_CLAUDE_BURN_DIR="${tmp}/g2" LEADV2_BURN_SOFT_24H=abc bash "${GOVERNOR_BIN}" verdict)"
+# 13: non-numeric threshold -> defaults + bad_config
+line="$(LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/g2" LEADV2_BURN_SOFT_24H=abc bash "${GOVERNOR_BIN}" verdict)"
 if [[ "$(gv_field "${line}" soft)" == "800000000" && "$(gv_field "${line}" reason)" == *bad_config* ]]; then
-  pass "12: non-numeric threshold -> defaults + bad_config"
+  pass "13: non-numeric threshold -> defaults + bad_config"
 else
-  fail "12: non-numeric threshold" "${line}"
+  fail "13: non-numeric threshold" "${line}"
 fi
 
-# 13: NULL in one column of one row still contributes its other columns (D7)
+# 14: NULL in one column of one row still contributes its other columns (D7)
 DB13="${tmp}/g13/history.db"; make_fixture_db "${DB13}"
 sqlite3 "${DB13}" "INSERT INTO hourly (hour_key,cc_sum,cr_sum,input_sum,output_sum)
   SELECT strftime('%Y-%m-%d-%H','now','-1 hours'), NULL, 100, 200, 300;"
-line="$(LEADV2_CLAUDE_BURN_DIR="${tmp}/g13" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
-[[ "$(gv_field "${line}" burn24h)" == "600" ]] && pass "13: NULL column doesn't zero the row (D7)" || fail "13: NULL column" "${line}"
+line="$(LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/g13" LEADV2_BURN_SOFT_24H=200 LEADV2_BURN_HARD_24H=300 bash "${GOVERNOR_BIN}" verdict)"
+[[ "$(gv_field "${line}" burn24h)" == "600" ]] && pass "14: NULL column doesn't zero the row (D7)" || fail "14: NULL column" "${line}"
 
 # D6: a valid 21-digit hard threshold (hard > soft, both numeric — a legitimate
 # operator config, not a misconfiguration) must classify correctly and never crash
 # or silently wrap into a refusal via bash `(( ))` overflow.
 DBoverflow="${tmp}/goverflow/history.db"; make_fixture_db "${DBoverflow}"
 insert_hours_ago "${DBoverflow}" 1 100 0 0 0
-line="$(LEADV2_CLAUDE_BURN_DIR="${tmp}/goverflow" LEADV2_BURN_HARD_24H=999999999999999999999 LEADV2_BURN_SOFT_24H=1 bash "${GOVERNOR_BIN}" verdict)"; rc=$?
+line="$(LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/goverflow" LEADV2_BURN_HARD_24H=999999999999999999999 LEADV2_BURN_SOFT_24H=1 bash "${GOVERNOR_BIN}" verdict)"; rc=$?
 if [[ "${rc}" == "0" && "$(gv_field "${line}" verdict)" == "soft" && "$(gv_field "${line}" reason)" != *bad_config* ]]; then
   pass "D6: 21-digit hard threshold classifies correctly, no crash/overflow"
 else
@@ -183,7 +195,7 @@ else
 fi
 # D6 companion: a genuinely misconfigured 21-digit pair (hard<=soft) still resolves
 # to defaults + bad_config, not a bash-arithmetic-overflow crash or hang.
-line="$(LEADV2_CLAUDE_BURN_DIR="${tmp}/goverflow" LEADV2_BURN_HARD_24H=1 LEADV2_BURN_SOFT_24H=999999999999999999999 bash "${GOVERNOR_BIN}" verdict)"; rc=$?
+line="$(LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR="${tmp}/goverflow" LEADV2_BURN_HARD_24H=1 LEADV2_BURN_SOFT_24H=999999999999999999999 bash "${GOVERNOR_BIN}" verdict)"; rc=$?
 if [[ "${rc}" == "0" && "$(gv_field "${line}" reason)" == *bad_config* ]]; then
   pass "D6: 21-digit misconfigured pair -> defaults + bad_config, no crash"
 else
