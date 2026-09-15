@@ -597,6 +597,14 @@ cp "$SCRIPTS_DIR/lib/"* "$F3_SCRATCH/lib/" 2>/dev/null || true
 # case exists to exercise.
 cp "$SCRIPTS_DIR/leadv2-state-path.sh" "$F3_SCRATCH/" 2>/dev/null || true
 cp "$SCRIPTS_DIR/leadv2-portable-lock.sh" "$F3_SCRATCH/" 2>/dev/null || true
+# REDSUITE-D-CODEX-F3-ADOPTION-AND-RETIRED-IDLE-GUARD-01: D1-SINGLE-WRITER-FOR-LANE-STATE
+# routes lane_transition (called by lane_adopt_pid right after lane_register)
+# through leadv2-active-registry.sh's update_phase op, lazy-sourced from
+# _lv2_lane_state_dir -- which in this scratch tree resolves to $F3_SCRATCH,
+# not the real scripts/. Without this copy the source fails, lane_transition
+# returns rc=9 "registry unavailable", and adoption refuses a row that was in
+# fact registered correctly (seed_lane_row above) -- never_reaches_subject.
+cp "$SCRIPTS_DIR/leadv2-active-registry.sh" "$F3_SCRATCH/" 2>/dev/null || true
 rm -f "$F3_SCRATCH/lib/leadv2-codex-quota-gate.sh"
 F3_RC=0
 seed_lane_row "$F3_ROOT" "f3-task"
