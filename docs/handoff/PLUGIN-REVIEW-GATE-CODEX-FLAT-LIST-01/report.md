@@ -218,4 +218,138 @@ suite's real-engine harness. Could not reproduce the empty result under the real
 turn budget; flagged in `developer.full.md` rather than asserting an unconfirmed root cause. Does
 not block the 3 named fixes, which are independently verified by direct code inspection.
 
+## Round 3
+
+**Verdict: no source change made.** All three findings Codex re-reported (H1/H2/H3, in
+`docs/handoff/PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01/review-codex.md`) describe the round-1 code,
+not round-2's committed fix. Root cause of round 2's own "open item" (why the live gate artifact
+showed `findings_total: 0` while isolated repro showed 3) is now explained, not just flagged:
+
+```
+$ git log --format='%H %ci %s' -3 -- plugins/leadv2/scripts/leadv2-review-run.sh
+5e9274e7... 2026-09-14 23:04:19 +0300 fix(review-gate): round 2 -- findings_total, unanchored dedup, mixed-shape parsing
+1b8b0243... 2026-09-14 22:21:52 +0300 fix(review-gate): recognize flat bracket-severity findings (Codex shape)
+4410095a... 2026-09-14 17:30:35 +0300 fix(review): bind verdict to mission snapshot
+
+$ stat -f '%Sm' docs/handoff/PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01/review-codex.md docs/handoff/PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01/review-gate.md
+Sep 14 22:43:46 2026
+Sep 14 22:43:46 2026
+```
+
+`review-codex.md` was generated at 22:43:46 — **after** round 1 (1b8b0243, 22:21:52) but **before**
+round 2 (5e9274e7, 23:04:19). Codex reviewed round-1's code (bracket parsing gated behind zero
+`FINDING:` lines, unfolded dedup key, no `findings_total` on the fail path) and correctly found
+all three bugs at those exact line numbers. Round 2 fixed all three ~20 minutes later. The round-3
+mission text's framing ("Round 2 landed 5e9274e7. Codex reviewed it...") does not match the file
+timestamps — Codex reviewed round 1, and the stale artifact was never regenerated against round 2.
+
+### H1 (structured findings suppress bracket findings) — already fixed
+`leadv2-review-run.sh:2007-2057`: the `FINDING:` scan (2010-2018) and the bracket-bullet scan
+(2019-2056) both run **unconditionally**, additively unioned into the same `FINDINGS_RAW`, for
+every arm in `ran_arms`. No `if`/gate around the bracket branch exists in the current tree.
+Covered by test Scenario 3 (mixed shape) and Mutation Control 3 below.
+
+### H2 (unanchored findings collapse in dedup) — already fixed
+`leadv2-review-run.sh:2100-2106`: `awk -F'\t' '{key=$3"|"$4"|"$2"|"$5; if ($3 == "" && $4 == "") { key = key "|" $6 }; ...}'`
+folds the normalized description (`$6`) into the dedup key whenever both file and line are empty.
+Covered by test Scenario 4 (3 unanchored same-severity bullets) and Mutation Control 2 below.
+
+### H3 (`findings_total` absent on the normal gate path) — already fixed
+The fail-path printf (`leadv2-review-run.sh`, `status: fail` block) emits `findings_total: %s`
+ahead of the per-severity fields, sourced from `FINDINGS_TOTAL_ALL` (a count over the deduped
+union, independent of any per-severity sum). Covered by test Scenario 1 and Mutation Control 1
+below.
+
+### Tests — full suite, this round, unmodified engine
+```
+$ bash plugins/leadv2/scripts/tests/test-review-gate-codex-flat-list.sh
+[TEST] PASS: bash -n clean (leadv2-review-run.sh)
+[TEST] PASS: fixture carries 1 bracketed [high] finding(s)
+[TEST] PASS: S1: gate does not misreport findings_lost for the flat bracket-list specimen
+[TEST] PASS: S1: gate correctly reports status=fail (exit 7) for the declared FAIL verdict
+[TEST] PASS: S1: gate's high count (1) equals the fixture's bracketed [high] finding count
+[TEST] PASS: S1: gate's findings_total (1) is present on the normal fail path
+[TEST] PASS: S1: review-findings.json independently counts 1 High finding(s) -- agrees with gate
+[TEST] PASS: S2: a genuinely empty union (no FINDING:, no bracket lines) still blocks as findings_lost
+[TEST] PASS: S3: mixed report (FINDING: line + bracket bullet) counts BOTH findings (findings_total=2)
+[TEST] PASS: S4: 3 unanchored same-severity bracket findings all survive dedup (findings_total=3)
+[TEST] PASS: S5: the real round-2 specimen no longer reports findings_lost
+[TEST] PASS: S5: gate's findings_total (3) equals the real specimen's bracketed [high] finding count
+[TEST] PASS: MUTATION 1-findings_total-absent: scratch engine still bash -n clean after the revert
+[TEST] PASS: MUTATION 1 RED: with findings_total reverted out, the normal fail gate omits it again
+[TEST] PASS: MUTATION 2-unanchored-dedup-collapse: scratch engine still bash -n clean after the revert
+[TEST] PASS: MUTATION 2 RED: with the dedup fix reverted, 3 unanchored findings collapse back to 1
+[TEST] PASS: MUTATION 3-mixed-shape-suppressed: scratch engine still bash -n clean after the revert
+[TEST] PASS: MUTATION 3 RED: with bracket-parsing re-gated behind FINDING:-line presence, the mixed report loses its bracket finding again
+
+=== 18 passed, 0 failed ===
+```
+
+### Negative controls (from the existing suite, one per finding, all three RUN this round)
+- **Mutation 1** (H3 — findings_total absent): reverts the `status: fail` printf to the round-1
+  shape (per-severity fields only). RED: `findings_total:` absent from the gate again. GREEN on
+  the unmodified engine: `findings_total: 1` present (S1).
+- **Mutation 2** (H2 — unanchored dedup collapse): reverts the dedup awk key to drop the
+  description fallback. RED: 3 unanchored `[high]` bullets collapse to `findings_total: 1`. GREEN
+  on the unmodified engine: `findings_total: 3` (S4).
+- **Mutation 3** (H1 — mixed-shape suppression): re-gates the bracket scan behind
+  `! grep -qE '^FINDING:'`. RED: the mixed-shape fixture (1 `FINDING:` line + 1 bracket bullet)
+  drops back to `findings_total: 1`. GREEN on the unmodified engine: `findings_total: 2` (S3).
+All three pairs are in the raw suite output above (Mutation N + its preceding scenario).
+
+### The acceptance that matters — before/after on the real specimen
+**Before** (committed artifact, generated 22:43:46 against round-1 code, predates round 2's fix):
+```
+status: blocked
+reason: findings_lost
+arms: codex
+declared_verdict: FAIL
+findings_total: 0
+```
+**After** (fresh isolated run of the SAME `review-codex.md` file through the current, unmodified
+`leadv2-review-run.sh`, real engine CLI, stubbed reviewer-arm output = the fixture verbatim):
+```
+correctness_verdict: FAIL
+mission_verdict: FAIL
+status: fail
+findings_total: 3
+critical: 0
+high: 3
+medium: 0
+low: 0
+findings_source: finding_lines
+findings:
+- [High] .../review-mission-source.md:20 — Required findings_total is absent (...)
+- [High] plugins/leadv2/scripts/leadv2-review-run.sh:2040 — Unanchored flat findings collapse during deduplication (...)
+- [High] plugins/leadv2/scripts/leadv2-review-run.sh:2028 — Structured findings suppress all bracket-list findings (...)
+```
+`findings_total: 3`, `status: fail` — matches Codex's declared verdict exactly, never
+`blocked`/`findings_lost`. This is also exactly what the suite's own Scenario 5 already asserts
+against the identical fixture (`fixtures/review-gate-codex-flat-list/review-codex-round2-specimen.md`,
+byte-identical to `review-codex.md`, `diff -q` confirmed).
+
+### Self-check
+```
+$ bash -n plugins/leadv2/scripts/leadv2-review-run.sh && echo OK
+OK
+$ bash -n plugins/leadv2/scripts/tests/test-review-gate-codex-flat-list.sh && echo OK
+OK
+```
+No files changed this round (no diff to review), so no Python compile step and no changed-scope
+test-runner invocation applies.
+
+### Off-limits respected
+- Reviewer-arm selection, route arbiter, quota logic: untouched (verified — no edits made anywhere
+  this round).
+- `findings_lost` remains reachable: Scenario 2 (genuinely empty report) still blocks with that
+  reason.
+- No gate made more permissive — the gate was not touched at all.
+
+### Left alone
+- The stale `docs/handoff/PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01/review-gate.md` /
+  `review-codex.md` artifacts — left as-is; they are the "before" evidence for this exact round,
+  and are pre-existing untracked files, not lane state this task owns.
+- `leadv2-dispatch-product-close.sh`'s separate `review_gate` emission site — out of scope for
+  this row (parser + gate artifact in `leadv2-review-run.sh` only, per this round's Off-limits).
+
 DELIVERABLE_COMPLETE
