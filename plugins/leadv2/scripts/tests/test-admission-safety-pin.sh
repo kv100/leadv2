@@ -141,7 +141,7 @@ run_dispatch() { # <dispatch_bin> <repo_dir> <state_suffix> <judge_bin>
     LEADV2_TASK_JUDGE_BIN="$judge" \
     LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
     bash "$bin" "Refund a customer via the billing service." \
-      --kind code --no-spawn --writes src/billing.py 2>&1 || true)
+      --kind product --no-spawn --writes src/billing.py 2>&1 || true)
 }
 
 # ── GREEN #1: judge flags safety, no --safety flag -- pin must fire ───────

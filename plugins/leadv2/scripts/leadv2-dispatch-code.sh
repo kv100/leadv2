@@ -1305,8 +1305,19 @@ _resume_mission_visibility_preflight() { # <raw-mission> <resume-ref>
     return 0
   fi
 
+  # A brief can exist in the pinned lane and still be invisible to the
+  # committed-tree read above. Calling that state "absent" sends the operator
+  # toward copying the same file again, rather than committing the file already
+  # there. Check disk after HEAD (HEAD is the success contract) so a genuinely
+  # untracked brief gets its own actionable refusal.
+  if [[ -f "${candidate}/${p}" ]] && ! git -C "${candidate}" ls-files --error-unmatch -- "${p}" >/dev/null 2>&1; then
+    printf '[leadv2-dispatch-code] REFUSE mission: path=%s is present but untracked in lane worktree=%s\n' "${p}" "${candidate}" >&2
+    printf 'Remedy:\n  git -C %s add %s && git -C %s commit -- %s\n' "${candidate}" "${p}" "${candidate}" "${p}" >&2
+    exit 5
+  fi
+
   # A committed brief on main but not lane HEAD is a different operator error
-  # from a path that exists nowhere. Untracked content is absent by contract.
+  # from a path that exists nowhere.
   if git -C "${PROJECT_ROOT}" cat-file -e "main:${p}" 2>/dev/null; then
     main_has=1
   fi
@@ -8297,12 +8308,12 @@ PYEOF
         ;;
       none)
         emit decision "premise_probe task=${sig8} verdict=refused reason=backlog_row_not_found"
-        log_err "premise refused: reason=backlog_row_not_found task=${sig8} founder=${founder_task_id:-none} -- no docs/tasks.yaml or markdown backlog row carries this id; use --no-probe-yet only for deliberately ad-hoc work (audited with actor and why)"
+        log_err "premise refused: reason=backlog_row_not_found task=${sig8} founder=${founder_task_id:-none} -- no docs/tasks.yaml or markdown backlog row matches this id (searched keys: id, external_id, node_id, intent); use --no-probe-yet only for deliberately ad-hoc work (audited with actor and why)"
         exit "${PREMISE_REFUSED_RC}"
         ;;
       *)
         emit decision "premise_probe task=${sig8} verdict=refused reason=backlog_row_not_found md=${_md_status}"
-        log_err "premise refused: reason=backlog_row_not_found task=${sig8} founder=${founder_task_id:-none} -- markdown backlog lookup did not identify an owner row; use --no-probe-yet only for deliberately ad-hoc work (audited with actor and why)"
+        log_err "premise refused: reason=backlog_row_not_found task=${sig8} founder=${founder_task_id:-none} -- markdown backlog lookup did not identify an owner row after docs/tasks.yaml searched keys: id, external_id, node_id, intent; use --no-probe-yet only for deliberately ad-hoc work (audited with actor and why)"
         exit "${PREMISE_REFUSED_RC}"
         ;;
     esac
@@ -8801,6 +8812,29 @@ cmd_resolve() {
   # LANE-PLACEMENT-01: both placement flags together = usage error (exit 1, no state write).
   if [[ -n "${placement_lane_ref}" && -n "${placement_path}" ]]; then
     log_err "--resume-lane and --worktree are mutually exclusive"; usage
+  fi
+
+  # An omitted kind deliberately remains conservative. A supplied kind that
+  # does not belong to either the explicit non-product vocabulary or the one
+  # supported product spelling is an operator typo, not evidence of product
+  # work: refuse before any gate, journal, reservation, or prepass can run.
+  if [[ -n "${kind}" ]]; then
+    local _kind_lc _kind_known=0 _kind_item
+    _kind_lc="$(printf '%s' "${kind}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${_kind_lc}" == "product" ]]; then
+      _kind_known=1
+    else
+      local -a _known_non_product_kinds=()
+      IFS='|' read -r -a _known_non_product_kinds <<< "${LEADV2_NON_PRODUCT_KINDS}"
+      for _kind_item in "${_known_non_product_kinds[@]}"; do
+        [[ "${_kind_lc}" == "${_kind_item}" ]] && { _kind_known=1; break; }
+      done
+    fi
+    if [[ "${_kind_known}" != "1" ]]; then
+      log_err "invalid --kind '${kind}'; accepted kinds: product|${LEADV2_NON_PRODUCT_KINDS}"
+      usage
+    fi
+    kind="${_kind_lc}"
   fi
 
   # Resolve the mission text: @file -> read file; "-" -> stdin; else inline.

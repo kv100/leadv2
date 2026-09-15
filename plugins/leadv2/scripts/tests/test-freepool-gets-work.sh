@@ -90,7 +90,7 @@ dispatch_probe() { # <dispatcher> <label> [arbiter] [judge]
     LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
     LEADV2_TASK_JUDGE_BIN="${judge}" LEADV2_DISPATCH_SUBSESSION_BIN="${WORKER}" \
     bash "${bin}" "freepool tests-only admission ${label}" \
-      --kind code --task-class standard --no-spawn \
+      --kind product --task-class standard --no-spawn \
       --writes 'tests/freepool-probe.sh,docs/handoff/FREEPOOL/report.md' 2>&1
   )
 }

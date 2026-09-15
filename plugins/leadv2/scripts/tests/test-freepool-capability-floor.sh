@@ -208,7 +208,7 @@ arb_out="$(cd "$REPO" && LEADV2_STATE_ROOT="$TMP/state-root" \
   LEADV2_TASK_JUDGE_BIN=/bin/false \
   LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
   bash "$DISPATCH_BIN" "FP-08 floor journal probe ${TMP}" \
-    --kind code --task-class standard --no-spawn --writes src/x.py 2>&1 || true)"
+    --kind product --task-class standard --no-spawn --writes src/x.py 2>&1 || true)"
 printf '%s\n' "$arb_out" > "$TMP/dispatch-out.log"
 if printf '%s\n' "$arb_out" | grep -q 'arm_floor_applied arm=freepool task=[0-9a-f]\{8\} reason=standard/code'; then
   pass "(dispatch) arm_floor_applied journal line emitted from the arbiter's own output"
@@ -307,7 +307,7 @@ a_out="$(cd "$REPO2" && LEADV2_STATE_ROOT="$TMP/state-root2" \
   LEADV2_DISPATCH_CODEX_BIN="$TMP/poison-codex.sh" \
   LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
   bash "$DISPATCH_BIN" "FP-08 wait no-work probe with a real diff ${TMP}" \
-    --kind code --task-class bulk --writes src/x.py 2>&1 || true)"
+    --kind product --task-class bulk --writes src/x.py 2>&1 || true)"
 printf '%s\n' "$a_out" > "$TMP/a-out.log"
 if printf '%s\n' "$a_out" | grep -q 'route_resolved by=arbiter role=worker arm=freepool'; then
   pass "(a) bulk build resolved to freepool"
@@ -432,7 +432,7 @@ e4_out="$(cd "$REPO3" && LEADV2_STATE_ROOT="$TMP/state-root3" \
   LEADV2_TASK_JUDGE_BIN=/bin/false \
   LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
   bash "$DISPATCH_BIN" "FP-06 floor-mode-full dispatch probe ${TMP}" \
-    --kind code --task-class standard --no-spawn --writes src/x.py 2>&1 || true)"
+    --kind product --task-class standard --no-spawn --writes src/x.py 2>&1 || true)"
 printf '%s\n' "$e4_out" > "$TMP/e4-out.log"
 if printf '%s\n' "$e4_out" | grep -q 'freepool_floor_mode mode=full source=env test_only=0 task=[0-9a-f]\{8\}'; then
   pass "(e4) freepool_floor_mode mode=full source=env journaled by the dispatcher"
@@ -460,7 +460,7 @@ e4b_out="$(cd "$REPO3" && LEADV2_STATE_ROOT="$TMP/state-root3" \
   LEADV2_TASK_JUDGE_BIN=/bin/false \
   LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
   bash "$DISPATCH_BIN" "FP-06 floor-mode-default dispatch probe ${TMP}" \
-    --kind code --task-class standard --no-spawn --writes src/x.py 2>&1 || true)"
+    --kind product --task-class standard --no-spawn --writes src/x.py 2>&1 || true)"
 if printf '%s\n' "$e4b_out" | grep -q 'freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=[0-9a-f]\{8\}'; then
   pass "(e4b) no override: mode=bulk_only source=yaml journaled (canonical arm.yaml key)"
 else

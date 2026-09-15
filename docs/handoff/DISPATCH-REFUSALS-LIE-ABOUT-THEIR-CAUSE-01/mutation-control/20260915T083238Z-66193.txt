@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-dispatch-refusal-truth.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s/present but untracked/present but invisible/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: D2 untracked refusal mismatch rc=5: [leadv2-dispatch-code] WARN: foreign project root detected (env=/Users/kostiantyn.vlasenko/Projects/leadv2 cwd=/Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/leadv2-mutctl.Q2ITIP) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01) [leadv2-dispatch-code] REFUSE mission: path=mission.md is present but invisible in lane worktree=/Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/dispatch-refusal-truth.eXbyZg/d2-repo/.claude/worktrees/lane Remedy:   git -C /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/dispatch-refusal-truth.eXbyZg/d2-repo/.claude/worktrees/lane add mission.md && git -C /Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/dispatch-refusal-truth.eXbyZg/d2-repo/.claude/worktrees/lane commit -- mission.md
+diff_hash=9d25e6348da6b7a192f87c1921672d1293cbfbd8ed725b9fb9f215286091c4f9
+lane_diff_hash=926c27a3cf2980b7ad0d9692ce37627322338f894f828394c8bb4a6efe6662f0

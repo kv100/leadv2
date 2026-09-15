@@ -210,7 +210,7 @@ _dispatch_for_class() { # $1 = task class
     LEADV2_DISPATCH_KIMI_BIN=/bin/false LEADV2_DISPATCH_CODEX_BIN=/bin/false \
     LEADV2_DISPATCH_SUBSESSION_BIN=/bin/false \
     LEADV2_WRITESET_PENDING_WINDOW_SEC=0 \
-    bash "${DISPATCH}" "effort dispatch probe: $1 class" --kind code --task-class "$1" --writes "src/effort-probe-$1-$RANDOM.py" 2>&1
+    bash "${DISPATCH}" "effort dispatch probe: $1 class" --kind product --task-class "$1" --writes "src/effort-probe-$1-$RANDOM.py" 2>&1
   ) >/dev/null 2>&1
   rm -f "${FIXTURE}/dispatch-arb-state" 2>/dev/null || true
 }
@@ -341,7 +341,7 @@ fi
   LEADV2_DISPATCH_KIMI_BIN=/bin/false LEADV2_DISPATCH_CODEX_BIN=/bin/false \
   LEADV2_DISPATCH_SUBSESSION_BIN=/bin/false \
   LEADV2_WRITESET_PENDING_WINDOW_SEC=0 \
-  bash "${MUT_DISPATCH}" "effort NC probe: trivial" --kind code --task-class trivial --writes "src/effort-probe-nc-$RANDOM.py" 2>&1
+  bash "${MUT_DISPATCH}" "effort NC probe: trivial" --kind product --task-class trivial --writes "src/effort-probe-nc-$RANDOM.py" 2>&1
 ) >/dev/null 2>&1
 rm -f "${FIXTURE}/dispatch-arb-state-nc" 2>/dev/null || true
 if grep -q 'GLM_EFFORT=<unset>' "${RECORD}" 2>/dev/null; then

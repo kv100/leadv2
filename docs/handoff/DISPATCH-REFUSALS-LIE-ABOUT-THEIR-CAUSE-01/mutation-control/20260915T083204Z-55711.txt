@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-dispatch-refusal-truth.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s/if \[\[ -n "${kind}" \]\]; then/if false; then/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: D1 unknown kind refusal mismatch rc=8: [leadv2-dispatch-code] WARN: foreign project root detected (env=/Users/kostiantyn.vlasenko/Projects/leadv2 cwd=/Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/leadv2-mutctl.Ux022m) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01) [leadv2-dispatch-code] project_root_guard task=3a10a8b7 status=foreign_env_overridden env_root=/Users/kostiantyn.vlasenko/Projects/leadv2 cwd_root=/Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/leadv2-mutctl.Ux022m [leadv2-dispatch-code] premise_probe task=3a10a8b7 verdict=refused reason=backlog_row_not_found [leadv2-dispatch-code] ERROR: premise refused: reason=backlog_row_not_found task=3a10a8b7 founder=none -- no docs/tasks.yaml or markdown backlog row matches this id (searched keys: id, external_id, node_id, intent); use --no-probe-yet only for deliberately ad-hoc work (audited with actor and why)
+diff_hash=dde999ca8fb655b7bbaa62461563528d0c7208d596efca0393723ce55b008ac7
+lane_diff_hash=926c27a3cf2980b7ad0d9692ce37627322338f894f828394c8bb4a6efe6662f0

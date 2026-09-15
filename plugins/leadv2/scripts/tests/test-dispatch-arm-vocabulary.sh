@@ -115,7 +115,7 @@ EOF
     LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$ROOT/ledger.tsv" \
     GLM_POLICY_RESOLVER="$stub" \
     LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
-    bash "$DISPATCH" 'test mission for kimi mismatch' --kind code --writes src/main.py 2>&1
+    bash "$DISPATCH" 'test mission for kimi mismatch' --kind product --writes src/main.py 2>&1
   )" || rc=$?
   rc=${rc:-0}
 
@@ -385,7 +385,7 @@ case9_task_class_flag_sets_env() {
     LEADV2_LANE_SHAPE=off \
     LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$ROOT/ledger-case9.tsv" \
     LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
-    bash -x "$DISPATCH" 'test mission for task-class flag' --kind code --writes src/main.py --task-class Heavy 2>&1
+    bash -x "$DISPATCH" 'test mission for task-class flag' --kind product --writes src/main.py --task-class Heavy 2>&1
   )"
   # NOTE: `printf ... | grep -q` under this file's `set -o pipefail` fails the
   # pipeline on grep's early-exit SIGPIPE even when the match succeeds -- use

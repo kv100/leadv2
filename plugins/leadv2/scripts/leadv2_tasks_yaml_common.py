@@ -70,8 +70,13 @@ def row_matches(it: dict, task_id: str) -> bool:
     """
     if not task_id:
         return False
-    if str(it.get("id", "")) == task_id:
-        return True
+    # A row has several durable identities. `id` is the primary internal key,
+    # while `external_id` and `node_id` are the ids callers commonly see in
+    # the backlog projection. Keep this exact and ordered -- no substring
+    # matching means a prefix cannot accidentally claim a neighbouring row.
+    for key in ("id", "external_id", "node_id"):
+        if str(it.get(key, "")) == task_id:
+            return True
     intent_head = str(it.get("intent", "") or "").split(":", 1)[0].strip()
     return intent_head == task_id
 

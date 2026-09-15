@@ -230,7 +230,7 @@ EOF
 partb() { # <label> <task_class> <expected substring of argv>
   local out
   out="$(LEADV2_ROUTE_ARBITER_ROUTING_YAML="$FIXTURE_YAML" python3 "$REGISTRY_PY" \
-    --kind code --role developer --arm codex --task-class "$1" --json 2>&1)" || true
+    --kind product --role developer --arm codex --task-class "$1" --json 2>&1)" || true
   if [[ "$out" == *"$2"* && "$out" == *'"ok": true'* ]]; then
     pass "g5: part-B rows: code/$1 -> $2"
   else
@@ -245,7 +245,7 @@ partb heavy    '"--model", "gpt-5.6-terra", "--effort", "high"'
 BAD_YAML="$BASE/routing-bad.yaml"
 printf 'router_v2:\n  capability_matrix:\n    - { arm: codex, provider: codex, model: gpt-5.5, tier: standard, cost: 4, kinds: [code], sizes: [standard], review: true, protected: true, capability: 4 }\n' > "$BAD_YAML"
 BAD_OUT="$(LEADV2_ROUTE_ARBITER_ROUTING_YAML="$BAD_YAML" python3 "$REGISTRY_PY" \
-  --kind code --role developer --arm codex --task-class standard --json 2>&1)" || true
+  --kind product --role developer --arm codex --task-class standard --json 2>&1)" || true
 if [[ "$BAD_OUT" == *'"reason": "codex_model_tier_not_registered"'* ]]; then
   pass "g5: unregistered (model,tier) pair refuses instead of substituting"
 else

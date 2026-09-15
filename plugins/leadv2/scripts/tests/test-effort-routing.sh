@@ -297,7 +297,7 @@ fi
   LEADV2_ROUTE_ARBITER_ROUTING_YAML="$SONNET_YAML" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" \
   LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-arb-sonnet" \
   ROUTE_TEST_QUOTA="$(quota 99 99 1)" ROUTE_TEST_FREE_RC=1 \
-  timeout 60 bash "$DC" 'sonnet effort wiring probe' --kind code --task-class heavy --protected --writes src/x.py >"$TMP/sonnet-dispatch.out" 2>&1 || true
+  timeout 60 bash "$DC" 'sonnet effort wiring probe' --kind product --task-class heavy --protected --writes src/x.py >"$TMP/sonnet-dispatch.out" 2>&1 || true
 )
 if grep -qE 'route_resolved .*\barm=sonnet\b' "$TMP/sonnet-dispatch.out"; then
   pass 'sonnet fixture pins the arm: the decision line says arm=sonnet'

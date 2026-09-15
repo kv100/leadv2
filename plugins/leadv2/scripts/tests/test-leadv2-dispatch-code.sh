@@ -165,7 +165,7 @@ _dispatch_probe() { # $1 = Title-case task class, $2 = worker role or ""
     LEADV2_DISPATCH_KIMI_BIN=/bin/false LEADV2_DISPATCH_CODEX_BIN=/bin/false \
     LEADV2_DISPATCH_SUBSESSION_BIN=/bin/false \
     LEADV2_WRITESET_PENDING_WINDOW_SEC=0 \
-    bash "${DISPATCH}" "think dispatch probe: $1${2:+ role=$2} run=$RANDOM" --kind code --task-class "$1" --writes "src/think-probe-$1-$RANDOM.py" 2>&1
+    bash "${DISPATCH}" "think dispatch probe: $1${2:+ role=$2} run=$RANDOM" --kind product --task-class "$1" --writes "src/think-probe-$1-$RANDOM.py" 2>&1
   ) >/dev/null 2>&1
   rm -f "${FIXTURE}/dispatch-arb-state" 2>/dev/null || true
 }

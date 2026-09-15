@@ -312,7 +312,7 @@ run_dispatch() {
     LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
     LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
     bash "$DISPATCH_BIN" "codex-tiers-selectable probe ${suffix}" \
-      --kind code --no-spawn --no-probe-yet --writes src/x.py \
+      --kind product --no-spawn --no-probe-yet --writes src/x.py \
       ${arm_flag[@]+"${arm_flag[@]}"} ${extra[@]+"${extra[@]}"} 2>&1 || true
   )
 }

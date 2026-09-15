@@ -178,7 +178,7 @@ REPO="$TMP/repo"; mkdir -p "$REPO/.claude/ref" "$REPO/docs/leadv2"
 git -C "$REPO" init -q -b main; git -C "$REPO" config user.email t@t; git -C "$REPO" config user.name t
 touch "$REPO/seed"; git -C "$REPO" add seed; git -C "$REPO" commit -qm seed
 WORKER="$TMP/worker.sh"; printf '#!/usr/bin/env bash\nprintf "PID=%%s LABEL=t SESSION_ID=t\\n" "$$"\n' >"$WORKER"; chmod +x "$WORKER"
-out="$(CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DIR="$TMP/cache" LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" LEADV2_ROUTE_ARBITER_LIB="$TMP/deleted-route-arbiter.sh" LEADV2_CANONICAL_ROOT="$TMP/no-canonical" GLM_POLICY_RESOLVER="$TMP/missing.py" bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'fallback test' --kind code --protected --no-spawn --writes src/x.py 2>&1 || true)"
+out="$(CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DIR="$TMP/cache" LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" LEADV2_ROUTE_ARBITER_LIB="$TMP/deleted-route-arbiter.sh" LEADV2_CANONICAL_ROOT="$TMP/no-canonical" GLM_POLICY_RESOLVER="$TMP/missing.py" bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'fallback test' --kind product --protected --no-spawn --writes src/x.py 2>&1 || true)"
 if [[ "$out" == *'arbiter_broken'* && "$out" == *'route_resolved'* ]]; then pass 'missing arbiter falls open to ladder and dispatch resolves'; else fail "fallback output=$out"; fi
 
 # (f) T17 C1: an out-of-vocabulary --kind (the real caller values
@@ -362,7 +362,7 @@ run_g() {  # <dispatch-bin> <tag> -> stdout+journal of one --no-spawn dispatch
   LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
   LEADV2_REQUIRE_PHASES=0 LEADV2_DISPATCH_SUBSESSION_BIN="$G_WORKER" \
-  bash "$1" "no-capable-cell probe $2" --kind code --no-spawn --writes "src/no-capable-cell-$2.py" 2>&1 || true )
+  bash "$1" "no-capable-cell probe $2" --kind product --no-spawn --writes "src/no-capable-cell-$2.py" 2>&1 || true )
 }
 
 g_out="$(run_g "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 1)"
@@ -531,13 +531,13 @@ sub_out="$(CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPAT
   LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
   LEADV2_CANONICAL_ROOT="$LANE_ROOT" \
   LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" LEADV2_ROUTE_ARBITER_LIB="$TMP/deleted-route-arbiter.sh" \
-  bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'substitution test' --kind code --no-spawn --writes src/x.py 2>&1 || true)"
+  bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'substitution test' --kind product --no-spawn --writes src/x.py 2>&1 || true)"
 plain_out="$(CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-plain" \
   LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
   LEADV2_CANONICAL_ROOT="$LANE_ROOT" \
   LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
-  bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'plain test' --kind code --no-spawn --writes src/x.py 2>&1 || true)"
+  bash "$SCRIPTS_DIR/leadv2-dispatch-code.sh" 'plain test' --kind product --no-spawn --writes src/x.py 2>&1 || true)"
 if [[ "$sub_out" == *'arbiter_lib_substituted'* && "$plain_out" != *'arbiter_lib_substituted'* ]]; then
   pass 'a dispatcher running someone else'"'"'s arbiter says so'
 else

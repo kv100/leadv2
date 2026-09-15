@@ -102,7 +102,7 @@ export ARMFIX_CACHE="${CACHE}"
   LEADV2_ARM_EARLY_VERDICT_S=2 LEADV2_PC_WORKER_POLL_S=1 \
   LEADV2_PULSE_MODE=0 LEADV2_BURN_GOVERNOR=0 \
     bash "${DISPATCH}" 'armfix trivial forced-empty first arm' \
-      --kind code --task-class Light --writes src/proof.txt >/dev/null 2>&1
+      --kind product --task-class Light --writes src/proof.txt >/dev/null 2>&1
 )
 
 for _ in $(seq 1 100); do

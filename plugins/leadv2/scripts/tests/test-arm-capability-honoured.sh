@@ -205,7 +205,7 @@ run_dispatch() { # <dispatch_bin> <repo_dir> <state_suffix>
     LEADV2_TASK_JUDGE_BIN="$TASK_JUDGE" \
     LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
     bash "$bin" "arm-capability-honoured probe ${TMP}" \
-      --kind code --no-spawn --writes src/x.py 2>&1 || true)
+      --kind product --no-spawn --writes src/x.py 2>&1 || true)
 }
 
 # ── GREEN: real, unmutated dispatch script ────────────────────────────────
