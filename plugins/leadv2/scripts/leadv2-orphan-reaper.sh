@@ -56,16 +56,22 @@
 # would-kill verdicts without signalling.
 #
 # Usage: leadv2-orphan-reaper.sh [--dry-run] [--project-root <path>]
-# Env:  DRY_RUN=1                    same effect as --dry-run
+# Env:  DRY_RUN=1|true|yes|on       same effect as --dry-run (case-insensitive;
+#                                    DRY_RUN=true matches the repo convention
+#                                    in leadv2-backfill-history.sh)
 #                                    (REAPER-DRY-RUN-ENV-VAR-IS-SILENTLY-
 #                                    IGNORED-01: the env var used to be
 #                                    read and then unconditionally
 #                                    overwritten by the script's own
 #                                    default, so it was silently ignored.
 #                                    Either surface asking for dry-run
-#                                    wins -- env DRY_RUN=1 OR --dry-run;
+#                                    wins -- env DRY_RUN or --dry-run;
 #                                    there is no way to force a live run
-#                                    when DRY_RUN=1 is exported, by design)
+#                                    when a truthy DRY_RUN is exported,
+#                                    by design. Any other non-empty value
+#                                    (0/false/no/off count as explicit off)
+#                                    is REFUSED with exit 2 -- an unknown
+#                                    spelling never falls through to live.)
 #       LEADV2_PROJECT_ROOT          project whose pulse pidfiles to scan
 #       LEADV2_REAPER_PROJECTS_DIR   transcript root override (tests)
 #       LEADV2_REAPER_IDLE_MIN       transcript idle threshold (default 360,
@@ -100,8 +106,17 @@ SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 # dry-run (env DRY_RUN=1 OR the --dry-run flag below) wins -- a safety
 # switch fails toward safe, never toward live.
 _dry_run_env="${DRY_RUN:-}"
+_dry_run_env_lc="$(printf '%s' "${_dry_run_env}" | tr '[:upper:]' '[:lower:]')"
 DRY_RUN=0
-[[ "$_dry_run_env" == "1" ]] && DRY_RUN=1
+case "${_dry_run_env_lc}" in
+  1|true|yes|on) DRY_RUN=1 ;;
+  ""|0|false|no|off) : ;;
+  *)
+    # REAPER-DRY-RUN-ENV-VAR-IS-SILENTLY-IGNORED-01 round 3: an unknown
+    # spelling must never fall through to a live run. Refuse, naming the
+    # value received and the accepted set.
+    printf '[orphan-reaper] refusing: DRY_RUN=%q is not recognised (on: 1/true/yes/on; off: 0/false/no/off/unset)\n' "${_dry_run_env}" >&2; exit 2 ;;
+esac
 PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-}"
 
 while [[ $# -gt 0 ]]; do

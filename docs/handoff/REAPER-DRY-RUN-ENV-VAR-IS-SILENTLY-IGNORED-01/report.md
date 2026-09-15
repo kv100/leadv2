@@ -210,3 +210,125 @@ nothing that suite's own fixture-spawn/argv-matching logic depends on.
 No Python files changed; `python3 -m py_compile` not applicable.
 
 DELIVERABLE_COMPLETE
+
+## Round 3
+
+### Choice: (a) truthy spellings + refusal on anything else
+
+`leadv2-backfill-history.sh:38-40` already uses `DRY_RUN=true`/`DRY_RUN=false`, so the truthy
+spellings are this repo's own convention. But silently treating an unrecognised value (`maybe`)
+as OFF (a live run) would recreate the row's "worse than no switch" state one spelling away, so
+the accepted table is:
+
+- ON (case-insensitive): `1`, `true`, `yes`, `on`
+- OFF (case-insensitive, or unset/empty): `0`, `false`, `no`, `off`
+- anything else non-empty: REFUSED at startup, exit 2, naming the value received and the
+  accepted set. No non-default value is ever silently discarded, and no unknown spelling ever
+  falls through to a live run.
+
+Implementation (`plugins/leadv2/scripts/leadv2-orphan-reaper.sh`, replaces the round-2
+`[[ "$_dry_run_env" == "1" ]]` form; lowercase via `tr` — no Bash 4+ expansion):
+
+```bash
+_dry_run_env="${DRY_RUN:-}"
+_dry_run_env_lc="$(printf '%s' "${_dry_run_env}" | tr '[:upper:]' '[:lower:]')"
+DRY_RUN=0
+case "${_dry_run_env_lc}" in
+  1|true|yes|on) DRY_RUN=1 ;;
+  ""|0|false|no|off) : ;;
+  *)
+    printf '[orphan-reaper] refusing: DRY_RUN=%q is not recognised (on: 1/true/yes/on; off: 0/false/no/off/unset)\n' "${_dry_run_env}" >&2; exit 2 ;;
+esac
+```
+
+The `--dry-run` flag still wins unconditionally (unchanged); the header Env: doc block updated
+to the full table.
+
+### Part 2 — the false green is fixed: extended suite ran RED before the fix
+
+`plugins/leadv2/scripts/tests/test-reaper-dry-run-env-precedence.sh` extended with cases 5-7
+(full truthy/off/refusal table, one case per spelling) plus a third mutation control NC-3.
+Ran against the unmodified round-2 reaper on HEAD BEFORE applying the fix:
+
+```
+PASS: case1: DRY_RUN=1 env alone -> fixture survives, log says would-TERM
+PASS: case2 / case3 / case4 (unchanged)
+FAIL: case5(true) -- truthy spelling DRY_RUN=true was silently treated as off -- fixture killed (twice)
+FAIL: case5(TRUE) / case5(True) / case5(yes) / case5(YES) / case5(on) / case5(On)   (all FAIL)
+PASS: case6: DRY_RUN=false -> fixture killed (explicit off is off)  (FALSE/0/no/OFF also PASS)
+FAIL: case7 -- unknown DRY_RUN=maybe not refused properly: rc=0, out=...[orphan-reaper] TERM pid=..., alive=no
+FAIL: NC-1 -- sed mutation did not apply cleanly -- pattern drifted (expected: anchor matched the old form)
+PASS: NC-2
+FAIL: NC-3 -- sed mutation did not apply cleanly (expected: refusal branch did not exist yet)
+FAILURES in test-reaper-dry-run-env-precedence.sh
+```
+
+Round-2's suite was indeed green on main while `DRY_RUN=true` killed — this red is the proof
+the false green existed and this round's suite actually covers the defect.
+
+### Post-fix table (suite output, real fixtures, SUITE_RC=0, ALL PASS)
+
+```
+PASS: case1: DRY_RUN=1 env alone -> fixture survives, log says would-TERM
+PASS: case2: --dry-run flag alone -> fixture survives (flag still works)
+PASS: case3: flag=--dry-run + env DRY_RUN=0 (disagree) -> flag wins, fixture survives
+PASS: case4: neither switch set -> fixture is killed (live path intact)
+PASS: case5: DRY_RUN=true -> fixture survives (truthy honoured, case-insensitive)
+PASS: case5: DRY_RUN=TRUE / True / yes / YES / on / On  (all PASS)
+PASS: case6: DRY_RUN=false -> fixture killed (explicit off is off)  (FALSE / 0 / no / OFF all PASS)
+PASS: case7: DRY_RUN=maybe -> refused (rc=2), refusal names the value, fixture untouched
+ALL PASS: test-reaper-dry-run-env-precedence.sh      (SUITE_RC=0)
+```
+
+Refusal probe artifact (live script, rc measured unpiped):
+
+```
+DRY_RUN='maybe' -> rc=2 effective=REFUSED | [orphan-reaper] refusing: DRY_RUN=maybe is not recognised (on: 1/true/yes/on; off: 0/false/no/off/unset)
+```
+
+(An empty subject-set run prints no would-TERM line, so the ON/OFF half of the table is
+evidenced by the suite's fixture cases above, which assert `DRY-RUN would TERM pid=<pid>`.)
+
+### Negative controls (one per property; all RUN, all loud on anchor drift)
+
+```
+PASS: NC-1: neutered env-recognition -> DRY_RUN=1 env is ignored again, fixture killed (case1/case5 go red on mutation)
+PASS: NC-2: neutered flag-precedence -> --dry-run deferred to env=0, fixture killed (case3 goes red on mutation)
+PASS: NC-3: refusal removed -> DRY_RUN=maybe falls through silently, fixture killed rc=0 (case7 goes red on mutation)
+```
+
+- NC-1 (restoring the original defect): sed replaces the capture line `_dry_run_env="${DRY_RUN:-}"`
+  with `_dry_run_env=""` — the env value is never seen, `1` lands in OFF, fixture dies.
+  Anchor verified both ways (new form present, old form absent) or the control FAILs loudly.
+  (Two earlier NC-1 shapes were rejected during development because the new refusal branch made
+  the mutant fail *toward safe*, swallowing the expected kill: the anchor drift FAILed loudly
+  both times, as designed.)
+- NC-2 unchanged from round 2.
+- NC-3: removes the refusal `exit 2` (anchored to the `recognised` printf line); `maybe` then
+  falls through to OFF -> live kill, rc=0 — exactly the silently-discarded-value state the row
+  forbids. Case 7 goes red.
+- Control 3 (live path, case 4): neither switch set -> fixture is KILLED. The fix does not
+  disable the reaper.
+
+### Off-limits respected
+
+No change to which processes are selected; lane registry / lane cap / leadv2-active-registry.sh
+untouched; no existing assertion weakened — cases 1-4 and NC-2 are unchanged from round 2
+except NC-1's mutation anchor (see above; its assertion semantics are unchanged).
+
+### Self-check / falsification
+
+- `bash -n` on both changed files: clean.
+- No Python changed.
+- Sibling suites that exercise `leadv2-orphan-reaper.sh`:
+```
+test-lane-verdict-pid-is-a-worker.sh            rc=0  2 passed, 0 failed
+test-reaper-sweeper-subject.sh                  rc=0
+test-orphan-reaper-and-singleflight-01.sh       rc=0  24 passed, 0 failed, 1 skipped
+test-reaper-per-subject-candidate-report.sh     rc=1  FAIL: fixture setup -- could not find the spawned fixture process by argv
+```
+  The one red is PRE-EXISTING: re-run against the pre-fix HEAD blob of the reaper gives the
+  same rc=1 and the same fixture-setup FAIL (bisected by temporarily checking out
+  `HEAD:plugins/leadv2/scripts/leadv2-orphan-reaper.sh`), so it is not caused by this diff.
+
+DELIVERABLE_COMPLETE
