@@ -51,6 +51,13 @@ PASS=13 FAIL=0
 The established lead-path suite also passed with `PASS=8 FAIL=0`; the existing
 dispatcher-verdict suite passed all 21 checks.
 
+Changed-scope registration was checked independently:
+
+```text
+[SELECT] .../plugins/leadv2/scripts/tests/test-readonly-caller-cannot-mutate.sh
+run-all: 11 selected, scope=changed, select_only=1
+```
+
 ## Negative controls: live mutation-control artifacts
 
 All three controls ran through `leadv2-mutation-control.sh --live` against the
