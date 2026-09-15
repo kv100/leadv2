@@ -18,16 +18,29 @@
 #                                        when the two surfaces disagree)
 #   4. neither switch set            -> fixture is KILLED (live path intact)
 #
+# Round 3 (full truthy/off/refusal table):
+#   5. env DRY_RUN=true / yes / on   -> fixture SURVIVES (repo convention:
+#                                        leadv2-backfill-history.sh uses
+#                                        DRY_RUN=true/false), case-insensitive
+#   6. env DRY_RUN=false / no / off  -> fixture is KILLED (explicit off)
+#   7. env DRY_RUN=maybe (unknown)   -> reaper REFUSES at startup (exit 2,
+#                                        fixture untouched, refusal names
+#                                        the value) -- never a silent fall
+#                                        through to live
+#
 # Mutation negative controls (COPIES, mutation inside the body — never a
 # top-level insert, the 2026-08-25 lesson):
-#   NC-1  neuter the env-recognition line so DRY_RUN=1 in the environment
-#         is never honoured -> case 1 flips (env-only dry-run stops
-#         working; this is the original defect, restored).
+#   NC-1  neuter the env-recognition so truthy values in the environment
+#         are never honoured -> case 1 and the round-3 truthy cases flip
+#         (env-only dry-run stops working; the original defect, restored).
 #   NC-2  neuter the flag-precedence line so --dry-run defers to the env
 #         value instead of always setting 1 -> case 3 flips (flag no
 #         longer wins when env says 0). A distinct line from NC-1, so it
 #         is a separate control -- one mutation is not a check for two
 #         cases.
+#   NC-3  remove the refusal branch so an unknown value silently falls
+#         through to live -> case 7 flips (refusal gone; this is the
+#         "silently discard the operator's value" state the row forbids).
 #
 # Hermetic: LEADV2_REAPER_SUBJECT_SCOPE pins every reaper run to this
 # suite's own tmp dir (SUITES-MUTATE-LIVE-CONTROL-PLANE-01) so it can never
@@ -172,18 +185,57 @@ else
 fi
 kill -9 "${PID4}" 2>/dev/null || true
 
+# ══ Round 3: full truthy/off table ═════════════════════════════════════════
+for _truthy in true TRUE True yes YES on On; do
+  if expect_survive "case5(${_truthy})" "${_truthy}" ""; then
+    pass "case5: DRY_RUN=${_truthy} -> fixture survives (truthy honoured, case-insensitive)"
+  else
+    fail "case5(${_truthy})" "truthy spelling DRY_RUN=${_truthy} was silently treated as off -- fixture killed (twice)"
+  fi
+  kill -9 "${LAST_CASE_PID}" 2>/dev/null || true
+done
+
+for _off in false FALSE 0 no OFF; do
+  spawn_aged_fixture; _pid_off="${SPAWN_PID}"
+  run_reaper "${REAPER}" "${_off}" ""
+  sleep 0.3
+  if kill -0 "${_pid_off}" 2>/dev/null; then
+    fail "case6(${_off})" "explicit off spelling DRY_RUN=${_off} left fixture alive -- off must be off"
+  else
+    pass "case6: DRY_RUN=${_off} -> fixture killed (explicit off is off)"
+  fi
+  kill -9 "${_pid_off}" 2>/dev/null || true
+done
+
+# ══ Case 7: unknown value -> reaper refuses at startup, fixture untouched ══
+spawn_aged_fixture; PID7="${SPAWN_PID}"
+RUN_RC=0
+RUN_OUT="$(DRY_RUN="maybe" LEADV2_REAPER_SUBJECT_SCOPE="${TMP_ROOT}" \
+  LEADV2_REAPER_SWEEPER_STUCK_SEC=1 \
+  bash "${REAPER}" --project-root "${TMP_ROOT}" 2>&1)" || RUN_RC=$?
+sleep 0.3
+if (( RUN_RC != 0 )) && [[ "${RUN_OUT}" == *"maybe"* ]] && kill -0 "${PID7}" 2>/dev/null; then
+  pass "case7: DRY_RUN=maybe -> refused (rc=${RUN_RC}), refusal names the value, fixture untouched"
+else
+  fail "case7" "unknown DRY_RUN=maybe not refused properly: rc=${RUN_RC}, out=${RUN_OUT}, alive=$(kill -0 "${PID7}" 2>/dev/null && echo yes || echo no)"
+fi
+kill -9 "${PID7}" 2>/dev/null || true
+
 # ── Mutation negative controls (copies; mutation INSIDE the body) ──────────
 
-# NC-1: neuter env-recognition -> DRY_RUN=1 in the environment never honoured
-sed 's|\[\[ "\$_dry_run_env" == "1" \]\] && DRY_RUN=1|[[ "$_dry_run_env" == "MUTATED-NEVER" ]] \&\& DRY_RUN=1|' \
+# NC-1: neuter env-capture -> the inherited DRY_RUN is never seen at all,
+# which is the original defect (silently ignored, live run proceeds)
+sed 's|_dry_run_env="${DRY_RUN:-}"|_dry_run_env=""|' \
   "${REAPER}" > "${TMP_ROOT}/reaper-nc1.sh"
-if grep -q 'MUTATED-NEVER' "${TMP_ROOT}/reaper-nc1.sh" && bash -n "${TMP_ROOT}/reaper-nc1.sh" 2>/dev/null; then
+if grep -q '^_dry_run_env=""$' "${TMP_ROOT}/reaper-nc1.sh" \
+   && ! grep -q '^_dry_run_env="${DRY_RUN:-}"$' "${TMP_ROOT}/reaper-nc1.sh" \
+   && bash -n "${TMP_ROOT}/reaper-nc1.sh" 2>/dev/null; then
   spawn_aged_fixture; PIDN1="${SPAWN_PID}"
   run_reaper "${TMP_ROOT}/reaper-nc1.sh" "1" ""
   if kill -0 "${PIDN1}" 2>/dev/null; then
     fail "NC-1" "mutated reaper still spared the fixture (mutation not exercised -- case1 does not test the env line)"
   else
-    pass "NC-1: neutered env-recognition -> DRY_RUN=1 env is ignored again, fixture killed (case1 goes red on mutation)"
+    pass "NC-1: neutered env-recognition -> DRY_RUN=1 env is ignored again, fixture killed (case1/case5 go red on mutation)"
   fi
   kill -9 "${PIDN1}" 2>/dev/null || true
 else
@@ -207,6 +259,30 @@ if grep -q 'DRY_RUN="\$_dry_run_env"; shift' "${TMP_ROOT}/reaper-nc2.sh" && bash
   kill -9 "${PIDN2}" 2>/dev/null || true
 else
   fail "NC-2" "sed mutation did not apply cleanly -- pattern drifted, fix the suite"
+fi
+
+# NC-3: remove the refusal branch -> unknown value silently falls through
+# to live (the "silently discard the operator's value" state the row forbids)
+sed '/recognised/s|exit 2 ;;|: ;;|' "${REAPER}" > "${TMP_ROOT}/reaper-nc3.sh"
+if ! grep -q 'recognised.*exit 2' "${TMP_ROOT}/reaper-nc3.sh" \
+   && grep -q 'recognised' "${TMP_ROOT}/reaper-nc3.sh" \
+   && bash -n "${TMP_ROOT}/reaper-nc3.sh" 2>/dev/null; then
+  spawn_aged_fixture; PIDN3="${SPAWN_PID}"
+  RUN_RC_N3=0
+  RUN_OUT_N3="$(DRY_RUN="maybe" LEADV2_REAPER_SUBJECT_SCOPE="${TMP_ROOT}" \
+    LEADV2_REAPER_SWEEPER_STUCK_SEC=1 \
+    bash "${TMP_ROOT}/reaper-nc3.sh" --project-root "${TMP_ROOT}" 2>&1)" || RUN_RC_N3=$?
+  sleep 0.3
+  if kill -0 "${PIDN3}" 2>/dev/null; then
+    fail "NC-3" "mutated reaper (no refusal) still spared the fixture (mutation not exercised -- case7 does not test the refusal branch)"
+  elif (( RUN_RC_N3 != 0 )); then
+    fail "NC-3" "mutated reaper still exits nonzero on unknown value (rc=${RUN_RC_N3}) -- refusal not actually removed"
+  else
+    pass "NC-3: refusal removed -> DRY_RUN=maybe falls through silently, fixture killed rc=0 (case7 goes red on mutation)"
+  fi
+  kill -9 "${PIDN3}" 2>/dev/null || true
+else
+  fail "NC-3" "sed mutation did not apply cleanly -- pattern drifted, fix the suite"
 fi
 
 if (( FAIL == 0 )); then
