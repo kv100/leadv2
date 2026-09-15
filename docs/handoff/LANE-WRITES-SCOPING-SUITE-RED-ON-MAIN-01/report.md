@@ -50,3 +50,50 @@ siblings use the audited `--no-probe-yet` route (`62e7a253`,
 `test-dispatch-architect-prepass-late-artifact.sh:70` and
 `test-dispatch-architect-prepass-orphan-timeout.sh:52`).
 
+## Falsification attempt and result
+
+I tested the only suite-local changes suggested by that classification: an
+explicit `/tmp` fixture root (with a fail-loud invalid-root guard), a real red
+premise row for C1, and `--no-probe-yet` for M7. The complete rerun retained
+the identical boundary and the identical eight failures:
+
+```text
+Results: 4 passed(red->green), 8 failed, 5 green-pre-fix, 0 could-not-run
+red=4 green-pre-fix=5 could-not-run=0
+FAIL: C1-glm: post-fix did not pass (rc=1)
+FAIL: C1-codex: post-fix did not pass (rc=1)
+FAIL: C1-sonnet: post-fix did not pass (rc=1)
+FAIL: C2-b: post-fix did not pass (rc=1)
+FAIL: C3: post-fix did not pass (rc=1)
+FAIL: H5: post-fix did not pass (rc=1)
+FAIL: M7: post-fix did not pass (rc=1)
+FAIL: L11: post-fix did not pass (rc=1)
+```
+
+That falsifies the proposed suite-only repair. I reverted the experiment: no
+assertion was weakened and no production-ish suite change is being claimed as
+a fix. The earlier `mktemp` observation is an environment diagnostic, not a
+sufficient explanation for these eight verdicts.
+
+The remaining candidates require a new owning row because they are either
+real regressions in the off-limits dispatch/product-close paths or a harness
+observability defect that cannot be safely distinguished while every subject
+invocation is redirected to `/dev/null`:
+
+| Still-red group | Proposed row title |
+| --- | --- |
+| C1-glm, C1-codex, C1-sonnet | `LANE-WRITES-C1-LAUNCHER-CWD-SUBJECT-TRACE-01` |
+| C2-b, C3, H5, L11 | `PRODUCT-CLOSE-LANE-WRITES-ASSERTION-VERDICTS-01` |
+| M7 | `DISPATCH-M7-LANE-WRITES-PREMISE-TRACE-01` |
+
+## Self-check
+
+```text
+$ bash -n plugins/leadv2/scripts/tests/test-lane-writes-scoping.sh
+rc=0
+$ bash plugins/leadv2/scripts/tests/test-lane-writes-scoping.sh
+rc=1
+Results: 4 passed(red->green), 8 failed, 5 green-pre-fix, 0 could-not-run
+```
+
+DELIVERABLE_COMPLETE
