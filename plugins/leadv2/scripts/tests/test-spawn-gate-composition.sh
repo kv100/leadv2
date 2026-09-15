@@ -128,7 +128,11 @@ gv="$(guard_verdict "$PAY_EH")"
 echo "== F: the DENY's own manual-CLI way-forward must carry speakable_models (else IT reopens the deadlock) =="
 reset_journal
 r="$(LEADV2_SPAWN_GATE_AUTO_CONSULT=0 gate_reason "$PAY_EH")"
-[[ "$r" == *'speakable_models'* ]] && pass 'F1 manual way-forward command names speakable_models' || fail "F1 way-forward missing speakable_models: $r"
+# the exact JSON field, not just the word -- the surrounding prose also
+# names "speakable_models" by hand, so a substring check on the bare word
+# would still pass after the field itself was stripped (caught live: MC1's
+# first run passed F1 for the wrong reason and only F2 went red).
+[[ "$r" == *'"speakable_models":['* ]] && pass 'F1 manual way-forward command names speakable_models' || fail "F1 way-forward missing speakable_models: $r"
 [[ "$r" == *'"sonnet"'*'"opus"'*'"haiku"'*'"fable"'* ]] && pass 'F2 the suggested JSON carries the full speakable pool, not a partial list' || fail "F2 pool incomplete: $r"
 
 echo "== MUTATION CONTROL 1: strip the way-forward speakable_models translation -> F1 goes RED =="
