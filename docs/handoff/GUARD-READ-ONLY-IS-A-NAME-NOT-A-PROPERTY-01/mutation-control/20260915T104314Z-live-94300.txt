@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-nested-depth.sh
+file=plugins/leadv2/hooks/leadv2-routing-guard.sh
+anchor=/tmp/reorder-mutant.patch
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: T1: audit log missing route.subrun.depth_exceeded reason
+diff_hash=ca88ce50f5b227ec75984e6baaac5f8449269b2797d2a00b6f4478b8de8678fd
+lane_diff_hash=b3d15a141b437f83465c079ce1ecb1221484ceb12ba88bdd8a8d3db1ebfcd956
+porcelain_clean=yes
+restored=yes

@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-readonly-caller-cannot-mutate.sh
+file=plugins/leadv2/hooks/leadv2-bash-pre-dispatch.sh
+anchor=s/explore|recon) ;;/*) return 0 ;;/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: GREEN A: Explore git commit rc=0; expected rc=2 and named cause
+diff_hash=28dc64dc496c0afcdc12b49025dbdcfc2e8c3a50046c3b36b88ca59e76aa4eb4
+lane_diff_hash=b935c36791e464a2041951c2ea2c437b20efa0b88f3111b8db4992e9029adec0
+porcelain_clean=yes
+restored=yes

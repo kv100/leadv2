@@ -16,6 +16,51 @@ except Exception:
 ' 2>/dev/null || true)"
 [[ -n "$COMMAND" ]] || exit 0
 
+# Read-only is a capability boundary, not a role-name promise. Explore and
+# recon retain Bash for local discovery, but must not use it for a narrow set
+# of named mutations. Keep this inline beside the dispatcher: it receives the
+# real hook input and uses the same exit-2 refusal convention as its sub-hooks.
+_lv2_readonly_caller_mutation_guard() {
+  local _lv2_readonly_caller="$1" _lv2_command="$2"
+  local _lv2_command_class=""
+
+  case "$_lv2_readonly_caller" in
+    explore|recon) ;;
+    *) return 0 ;;
+  esac
+
+  if [[ "$_lv2_command" =~ (^|[[:space:];\|&])git[[:space:]]+commit([[:space:];\|&]|$) ]]; then
+    _lv2_command_class="git_commit"
+  elif [[ "$_lv2_command" =~ (^|[[:space:];\|&])git[[:space:]]+push([[:space:];\|&]|$) ]]; then
+    _lv2_command_class="git_push"
+  elif [[ "$_lv2_command" =~ (^|[[:space:];\|&])sed[[:space:]]+-i([[:space:]]|$) ]]; then
+    _lv2_command_class="sed_in_place"
+  elif [[ "$_lv2_command" =~ (^|[[:space:];\|&])ssh[[:space:]]+ ]]; then
+    # A local hook cannot establish whether a remote command mutates state.
+    _lv2_command_class="ssh"
+  elif [[ "$_lv2_command" =~ (^|[[:space:];\|&])docker[[:space:]]+exec([[:space:];\|&]|$) ]]; then
+    _lv2_command_class="docker_exec"
+  elif [[ "$_lv2_command" =~ (^|[[:space:];\|&])curl[[:space:]].*(-X[[:space:]]*|--request[[:space:]=]+)([Pp][Oo][Ss][Tt]|[Pp][Uu][Tt]|[Dd][Ee][Ll][Ee][Tt][Ee])([[:space:];\|&]|$) ]]; then
+    _lv2_command_class="curl_mutating_method"
+  fi
+
+  [[ -n "$_lv2_command_class" ]] || return 0
+  printf -- '[leadv2-bash-pre-dispatch] DENIED read-only caller mutation: agent_type="%s" command_class="%s". Read-only callers may inspect local state only; return the mutation to the lead.\n' \
+    "$_lv2_readonly_caller" "$_lv2_command_class" >&2
+  return 2
+}
+
+_lv2_readonly_caller="$(printf '%s' "$INPUT" | python3 -c '
+import json, sys
+try:
+    print((json.load(sys.stdin).get("agent_type") or "").strip().lower())
+except Exception:
+    pass
+' 2>/dev/null || true)"
+_lv2_readonly_caller_mutation_guard "$_lv2_readonly_caller" "$COMMAND"
+_lv2_readonly_guard_rc=$?
+[[ "$_lv2_readonly_guard_rc" -eq 2 ]] && exit 2
+
 STDOUT_FILE="$(mktemp "${TMPDIR:-/tmp}/leadv2-bash-pre-out.XXXXXX" 2>/dev/null || true)"
 STDERR_FILE="$(mktemp "${TMPDIR:-/tmp}/leadv2-bash-pre-err.XXXXXX" 2>/dev/null || true)"
 [[ -n "$STDOUT_FILE" && -n "$STDERR_FILE" ]] || {
