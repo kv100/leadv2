@@ -7,5 +7,6 @@ Round 2 finding: the "product-kind migration causes a prepass tax" concern is fa
 - Changed-scope runner (`LEADV2_RUN_ALL_SUITE_TIMEOUT_S=60`, 130s outer bound): same red before and after — `run-core-offline.sh` `[SUITE-TIMEOUT]`, exit 124, unrelated to `--kind` labeling.
 - Synthetic isolated-repo timing control confirms the mechanism is real (product+2-file-writes → `architect_prepass status=ran`; tooling → never runs) but unreachable via any migrated fixture.
 - Flagged (not fixed, out of scope): round 1's find/replace also corrupted an unrelated `leadv2-event.sh --kind` namespace in `codex-task.sh` + 2 test files (`productx_*`).
+- Addendum: mandated self-check reran `test-dispatch-refusal-truth.sh` and got 5/1, not round 1's claimed 6/0 — D2 fails deterministically whenever `$TMPDIR` lacks a `/private` prefix (the macOS default), a pre-existing test-fixture defect, not a round-2 regression. Not fixed (D1/D2/D3 off-limits this round); flagged.
 
 Full: developer.full.md

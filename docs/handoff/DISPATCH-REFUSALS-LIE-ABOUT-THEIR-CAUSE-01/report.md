@@ -272,4 +272,59 @@ omitted.
 and are not touched by this round. No `--kind` call site was changed. No
 ceiling was raised. No `|| true` / `2>/dev/null` was added anywhere.
 
+## Round 2 — addendum: the mandated falsification pass found a real D2 red
+
+The task binding requires running `test-dispatch-refusal-truth.sh` as part of
+the pre-completion self-check. Doing that in this session, standalone,
+produced **5 pass / 1 fail**, not the 6/0 both the round-1 report and the
+earlier part of this round's text quote:
+
+```
+PASS: D1 unknown kind is refused with supplied value and shared accepted set
+PASS: D1 absent kind remains the conservative default
+FAIL: D2 untracked refusal mismatch rc=5: [leadv2-dispatch-code] REFUSE mission: path=mission.md is present but untracked in lane worktree=/private/var/folders/.../T/tmp.9jBw1vHyHI/d2-repo/.claude/worktrees/lane Remedy:   git -C /private/var/folders/.../T/tmp.9jBw1vHyHI/d2-repo/.claude/worktrees/lane add mission.md && git -C /private/var/folders/.../T/tmp.9jBw1vHyHI/d2-repo/.claude/worktrees/lane commit -- mission.md
+PASS: D2 absent mission remains a distinct disk-absence refusal
+PASS: D3 external_id resolves the real backlog row
+PASS: D3 unknown id refuses and names searched keys
+[DISPATCH-REFUSAL-TRUTH] pass=5 fail=1
+```
+
+**Root cause, isolated by direct reproduction of the D2 case outside the
+suite** (`_resume_mission_visibility_preflight` invoked standalone against a
+throwaway `git worktree add` fixture): this is not the leaked
+`LEADV2_WRITE_ROOT`/`LEADV2_LANE_WORK_ROOT`/`PROJECT_ROOT` values inherited
+from this dispatch session's own shell (re-ran with all three `env -u`'d —
+same failure, same rc=5), and not the earlier cosmetic
+`foreign project root detected` WARN line (that WARN also disappears once
+`PROJECT_ROOT` is scrubbed, but the failure persists independent of it). The
+actual cause is `$TMPDIR`: in this shell it resolves to
+`/var/folders/.../T/` (confirmed via `echo $TMPDIR`; no leading `/private`).
+`test-dispatch-refusal-truth.sh` builds its `D2_LANE` fixture path (line 53)
+directly from `mktemp -d "${TMPDIR:-/tmp}/dispatch-refusal-truth.XXXXXX"`
+without physical-realpath normalization, then does a literal `grep -Fq`
+(lines 67-68) for that raw string inside the dispatcher's refusal message.
+The dispatcher's own worktree resolution goes through
+`leadv2-lane-worktree.sh`'s `phys()` helper (`cd "$1" && pwd -P`, line 183),
+which macOS resolves through the `/var` → `/private/var` symlink — a footgun
+that file's own comment at line 180 already names by name
+(`# /var -> /private/var; git's 'worktree list --porcelain' reports the
+physical`). So the dispatcher's remedy line always prints the
+`/private/var/folders/...` form, while the test's raw `D2_LANE` variable
+never has the `/private` prefix on any macOS shell where `$TMPDIR` isn't
+already pre-resolved — which is the ordinary default. This reproduces
+deterministically (verified twice) and is not a race or a one-off flake.
+
+**Disposition — not fixed, flagged**: `test-dispatch-refusal-truth.sh` (and
+the D1/D2/D3 mechanism it drives) is explicitly off-limits for this round
+("The refusal-cause fix itself (D1/D2/D3) — settled in round 1"), so it was
+not edited. This is a pre-existing defect in round 1's own new test fixture,
+not something round 2 introduced, and round 2 made zero code changes that
+could affect it. It means the "`[DISPATCH-REFUSAL-TRUTH] pass=6 fail=0`"
+result quoted earlier in this document (both round 1's self-check and the
+first half of round 2) is environment-dependent and does not reproduce on a
+shell with a normal (non-`/private`-prefixed) `$TMPDIR` — flagging this for
+the lead as a follow-up alongside the already-flagged `productx_*`
+corruption, rather than silently re-asserting a green result this session
+could not actually reproduce.
+
 DELIVERABLE_COMPLETE

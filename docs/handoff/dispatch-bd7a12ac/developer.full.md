@@ -155,4 +155,44 @@ incident"). No `.sh`/`.py` files changed, so `bash -n`/`py_compile`
 self-checks are not applicable; the changed-scope runner was run and
 reported per the mission's explicit before/after requirement (see §3).
 
+## 8. Addendum: mandated self-check found a real D2 red
+
+This session re-ran the task binding's mandated falisfication step
+(`test-dispatch-refusal-truth.sh`, part of the changed-scope suite this
+whole task is about) as a self-check before finishing and got **5 pass / 1
+fail**, not the 6/0 quoted above (§7) and in round 1's own report:
+
+```
+FAIL: D2 untracked refusal mismatch rc=5: [leadv2-dispatch-code] REFUSE
+mission: path=mission.md is present but untracked in lane worktree=/private/
+var/folders/.../T/tmp.9jBw1vHyHI/d2-repo/.claude/worktrees/lane
+Remedy:   git -C /private/var/folders/.../T/tmp.9jBw1vHyHI/d2-repo/.claude/
+worktrees/lane add mission.md && git -C /private/var/folders/.../T/
+tmp.9jBw1vHyHI/d2-repo/.claude/worktrees/lane commit -- mission.md
+[DISPATCH-REFUSAL-TRUTH] pass=5 fail=1
+```
+
+Root cause, isolated by direct reproduction of the D2 case standalone:
+`$TMPDIR` in this shell is `/var/folders/.../T/` (no `/private` prefix — the
+ordinary macOS default, confirmed via `echo $TMPDIR`). The test builds its
+`D2_LANE` fixture path directly from that raw `mktemp -d` result with no
+realpath normalization, then `grep -Fq`s for it verbatim inside the
+dispatcher's refusal message. The dispatcher's own path resolution, via
+`leadv2-lane-worktree.sh`'s `phys()` helper (`cd "$1" && pwd -P`, line 183),
+resolves through the `/var` → `/private/var` symlink — a footgun that same
+file's own comment at line 180 already names explicitly. So the two strings
+never match on a normal shell. Confirmed this is not the leaked
+`LEADV2_WRITE_ROOT`/`LEADV2_LANE_WORK_ROOT`/`PROJECT_ROOT` env vars inherited
+from this dispatch session (reran with all three `env -u`'d — identical
+failure) and not one-off flakiness (reproduced twice).
+
+**Not fixed**: `test-dispatch-refusal-truth.sh` and the D1/D2/D3 mechanism
+are explicitly off-limits this round ("settled in round 1"). This is a
+pre-existing defect in round 1's own new fixture, not a round-2 regression —
+round 2 made zero code changes. Flagged for the lead as a follow-up,
+alongside the already-flagged `productx_*` corruption (§5 above). Full
+reproduction is in
+`docs/handoff/DISPATCH-REFUSALS-LIE-ABOUT-THEIR-CAUSE-01/report.md` under
+its matching addendum heading.
+
 DELIVERABLE_COMPLETE
