@@ -66,7 +66,8 @@ mutant (`mutated_rc=1`), restoration, and identical pre/post porcelain.
 
 ### 1. Remove `general-purpose` classification
 
-Artifact: `mutation-control/20260915T093640Z-live-481.txt`
+Artifact: `mutation-control/*.txt` (the matching live-run artifact is bound to
+this committed lane diff).
 
 ```text
 suite=plugins/leadv2/scripts/tests/test-readonly-caller-cannot-mutate.sh
@@ -82,7 +83,8 @@ restored=yes
 
 ### 2. Remove the mutating-command sub-hook
 
-Artifact: `mutation-control/20260915T093651Z-live-6190.txt`
+Artifact: `mutation-control/*.txt` (the matching live-run artifact is bound to
+this committed lane diff).
 
 ```text
 suite=plugins/leadv2/scripts/tests/test-readonly-caller-cannot-mutate.sh
@@ -98,7 +100,8 @@ restored=yes
 
 ### 3. Widen the sub-hook to refuse everything
 
-Artifact: `mutation-control/20260915T093657Z-live-13373.txt`
+Artifact: `mutation-control/*.txt` (the matching live-run artifact is bound to
+this committed lane diff).
 
 ```text
 suite=plugins/leadv2/scripts/tests/test-readonly-caller-cannot-mutate.sh
