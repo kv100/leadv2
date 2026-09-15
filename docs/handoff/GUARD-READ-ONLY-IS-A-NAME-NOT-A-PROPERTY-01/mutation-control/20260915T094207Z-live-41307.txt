@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-readonly-caller-cannot-mutate.sh
+file=plugins/leadv2/hooks/leadv2-bash-pre-dispatch.sh
+anchor=s/local _lv2_command_class=""/local _lv2_command_class="all_commands"/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: GREEN B: read-only command over-refused (rc=2): git log -1 --oneline
+diff_hash=01827b8eb9ae34fbabfb65343e636c648d0a559c251711d832413a01e85e0a89
+lane_diff_hash=9259f5218cdd04beb7372dc7319d79004427fca8fef0599cd7cfd579b1b1f599
+porcelain_clean=yes
+restored=yes

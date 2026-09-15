@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-readonly-caller-cannot-mutate.sh
+file=plugins/leadv2/hooks/leadv2-routing-guard.sh
+anchor=s/|general-purpose) return 0 ;;/) return 0 ;;/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: GREEN C: general-purpose spawn rc=0; expected rc=2 and remedy
+diff_hash=83b2793ca1b0eee4e54b509d7b1f02f0fb64a4951bcaa19863235c0ccf97b670
+lane_diff_hash=9259f5218cdd04beb7372dc7319d79004427fca8fef0599cd7cfd579b1b1f599
+porcelain_clean=yes
+restored=yes
