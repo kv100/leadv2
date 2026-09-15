@@ -40,24 +40,17 @@ That reframes the question. Two orderings are possible and you must say which is
 Decide from the code, not from which is less work. State the ordering you chose and why. If (b),
 keep the change minimal and touch nothing else in the guard.
 
-**Find the case with `file:line` and read it before deciding anything.** Name it with `file:line`. Then one
-of exactly two things is true, and you must say which:
+Find the case with `file:line` and read it before deciding anything.
 
-1. **The test encodes the defect.** It asserts that a nested caller may spawn `general-purpose`,
-   which is the very classification this row corrects. Then update that case to assert the new
-   behaviour — refused, with the cause named — and say in the report that you changed an assertion
-   and why it was asserting the wrong thing. Do not delete the case; convert it.
-2. **The test is right and the change is too wide.** Nested sub-runs genuinely needed
-   `general-purpose` for read/plan/probe work and `Explore` does not cover it. Then say what
-   `Explore` cannot do that is actually needed, with an example — and stop. Do not paper over it.
+The lead's standing decision, so you are not guessing at intent: a role carrying `tools: *` is
+write-capable on **both** paths, and `Explore` remains the nested read-only route so the guard does
+not become an outage. That settles the classification; it does not settle the ordering, which is
+what this round is about.
 
-The lead's decision, so you are not guessing at intent: a role carrying `tools: *` is write-capable
-on **both** paths, and `Explore` remains the nested read-only route so the guard does not become an
-outage. Reading (1) is expected. Reading (2) needs evidence, and if you have it, it wins.
-
-Changing a test to match new behaviour is legitimate exactly once — when the old assertion was
-wrong. It is the most dangerous edit in this repo, so it carries the heaviest burden of
-explanation, and the negative control below is what keeps it honest.
+If you edit the test case at all, say plainly that you changed an assertion and why the old one was
+asserting the wrong thing. Editing a test to match new behaviour is legitimate exactly once — when
+the old assertion was wrong — and it is the most dangerous edit in this repo, so it carries the
+heaviest burden of explanation. The control below is what keeps it honest.
 
 ## The other two suites
 `test-nested-count-fix.sh` is red on main at the same 6/1 — pre-existing, **do not fix it here**
@@ -73,10 +66,12 @@ bound, on which platform.
 ## Round 1's controls stay
 Keep all three. Add one for this round:
 
-**Negative control for the converted assertion — RUN it.** Remove `general-purpose` from
-`_is_write_role` and show the converted `test-nested-depth.sh` case go RED. That is what proves the
-case now tests the new behaviour instead of merely having been edited until it passed. Paste the
-red/green pair. An unmatched mutation anchor is a test failure, never a silent skip.
+**RUN it.** Remove `general-purpose` from `_is_write_role` and show that the `T1` case behaves
+differently — RED under the reading you chose. That is what proves the case tests real behaviour
+rather than having been edited until it passed. Under reading (b) the control is the same mutation
+against the reordered guard: the depth cause must stop being recorded.
+
+Paste the red/green pair. An unmatched mutation anchor is a test failure, never a silent skip.
 
 ## Do not
 - Do not delete an assertion, loosen a grep, or add `|| true` anywhere.
