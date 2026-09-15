@@ -3,10 +3,10 @@
 # Two policies:
 #   1. LEAD path (no agent_type): write-capable roles — the SAME set the nested
 #      path denies (developer, frontend-developer, postgres-pro, devops-engineer,
-#      architect, product-owner) — are REFUSED (exit 2): a direct Agent spawn
+#      architect, product-owner, general-purpose) — are REFUSED (exit 2): a direct Agent spawn
 #      skips complexity estimation, the balancer, the arbiter and the phase
 #      ladder. Remedy: dispatch via leadv2-dispatch-code.sh. Read-only roles
-#      (Explore, general-purpose, recon) stay allowed. Loud escape hatch:
+#      (Explore, recon) stay allowed. Loud escape hatch:
 #      LEADV2_LEAD_WRITE_SPAWN_ALLOW=1 (+ LEADV2_LEAD_WRITE_SPAWN_WHY) allows
 #      the spawn, announces itself on stderr, and journals the use to
 #      docs/leadv2/lead-write-spawn-overrides.log.
@@ -15,7 +15,8 @@
 #      codex-policy.yaml) — NEVER blocks (exits 0). Safe for all repos.
 #   2. SUBAGENT NESTED-SPAWN path (v2.1.172+): caller has agent_type in hook input.
 #      Policy loaded from config/nested-spawn-policy.yaml (per-repo override wins).
-#      Base allowlist: Explore|general-purpose with explicit model=haiku|sonnet.
+#      Base allowlist is loaded from policy; the write-role check below still
+#      denies general-purpose because it is write-capable.
 #      ESCALATION path: types/models outside base allowlist allowed ONLY when
 #        docs/handoff/<LEADV2_TASK_ID>/escalation-budget.yaml exists with used < max_escalations
 #        and requested type/model appear in allowed_types/allowed_models.
@@ -77,7 +78,7 @@ CWD_FROM_INPUT="$(printf -- '%s' "$PARSED" | sed -n '4p')"
 # not fork this list: both paths must consult _is_write_role.
 _is_write_role() {
   case "$1" in
-    developer|frontend-developer|postgres-pro|devops-engineer|architect|product-owner) return 0 ;;
+    developer|frontend-developer|postgres-pro|devops-engineer|architect|product-owner|general-purpose) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -172,7 +173,7 @@ print(tool_class)
     # a nested sub-run, regardless of base_allowlist or escalation budget.
     if _is_write_role "$SUBAGENT_TYPE"; then
         _audit_log "deny" "route.subrun.write_role_denied"
-        printf -- '[leadv2-routing-guard] DENIED nested spawn: subagent_type="%s" is a write-capable role — nested sub-runs are READ/PLAN/PROBE only (Explore, general-purpose). Return blocker to lead.\n' "$SUBAGENT_TYPE" >&2
+        printf -- '[leadv2-routing-guard] DENIED nested spawn: subagent_type="%s" is a write-capable role — nested sub-runs are READ/PLAN/PROBE only (Explore, recon). Return blocker to lead.\n' "$SUBAGENT_TYPE" >&2
         exit 2
     fi
 
@@ -457,8 +458,8 @@ done
 # The lead is the only actor that can start a lane and the one with the most
 # leverage; a direct Agent spawn here skips complexity estimation, the
 # balancer, the arbiter and the phase ladder in one call. Write-capable roles
-# are refused with a remedy, not just a wall. Read-only roles (Explore,
-# general-purpose, recon) stay allowed — a guard that refuses everything is
+# are refused with a remedy, not just a wall. Read-only roles (Explore, recon)
+# stay allowed — a guard that refuses everything is
 # an outage, not a fix.
 if _is_write_role "$SUBAGENT_TYPE"; then   # LEAD-WRITE-ROLE-GATE
   # Escape hatch: loud and journaled. Every use appends to
@@ -475,7 +476,7 @@ if _is_write_role "$SUBAGENT_TYPE"; then   # LEAD-WRITE-ROLE-GATE
   fi
   printf -- '[leadv2-routing-guard] DENIED lead direct spawn: subagent_type="%s" is a write-capable role. A direct Agent spawn skips complexity estimation, the balancer, the arbiter and the phase ladder — dispatch instead so the work is estimated, routed and phased:\n' "$SUBAGENT_TYPE" >&2
   printf -- '  bash <plugin>/scripts/leadv2-dispatch-code.sh --task-id <task-id> ...\n' >&2
-  printf -- 'Read-only roles (Explore, general-purpose, recon) stay allowed from the lead.\n' >&2
+  printf -- 'Read-only roles (Explore, recon) stay allowed from the lead.\n' >&2
   printf -- 'Escape hatch (journalled + announced): LEADV2_LEAD_WRITE_SPAWN_ALLOW=1 [LEADV2_LEAD_WRITE_SPAWN_WHY="<reason>"]\n' >&2
   exit 2
 fi

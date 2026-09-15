@@ -14,9 +14,9 @@
 #   T1. bash -n on the hook.
 #   T2. Every write-capable role from the LEAD -> rc=2 AND the refusal names
 #       leadv2-dispatch-code.sh (a block with no remedy just gets bypassed).
-#   T3. Positive controls: Explore/haiku and general-purpose/haiku from the
-#       LEAD stay allowed (rc=0). A guard that refuses everything is an
-#       outage, not a fix.
+#   T3. Positive controls: Explore/haiku and recon/haiku from the LEAD stay
+#       allowed (rc=0). A guard that refuses everything is an outage, not a
+#       fix.
 #   T4. critic+sonnet from the LEAD -> rc=0 (the warn-only advisory path is
 #       preserved; only the write-role list blocks).
 #   T5. Nested path unchanged: caller=explore targeting developer -> rc=2,
@@ -84,7 +84,7 @@ fi
 
 # T2 ── every write-capable role refused from the lead, with a remedy ─────────
 T2_FAILS=0
-for role in developer frontend-developer postgres-pro devops-engineer architect product-owner; do
+for role in developer frontend-developer postgres-pro devops-engineer architect product-owner general-purpose; do
   _run_guard "$(_make_input '' "$role" sonnet "$TMPROOT")"
   if [[ "$RC" -ne 2 ]]; then
     fail "T2: lead path allowed write role '$role' (rc=$RC, expected 2)"
@@ -94,10 +94,10 @@ for role in developer frontend-developer postgres-pro devops-engineer architect 
     T2_FAILS=$((T2_FAILS + 1))
   fi
 done
-[[ "$T2_FAILS" -eq 0 ]] && pass "T2: all 6 write-capable roles refused from the lead (rc=2, remedy named)"
+[[ "$T2_FAILS" -eq 0 ]] && pass "T2: all 7 write-capable roles refused from the lead (rc=2, remedy named)"
 
 # T3 ── read-only roles stay allowed from the lead ────────────────────────────
-for pair in "Explore:haiku" "general-purpose:haiku"; do
+for pair in "Explore:haiku" "recon:haiku"; do
   stype="${pair%%:*}"; model="${pair##*:}"
   _run_guard "$(_make_input '' "$stype" "$model" "$TMPROOT")"
   if [[ "$RC" -ne 0 ]]; then
