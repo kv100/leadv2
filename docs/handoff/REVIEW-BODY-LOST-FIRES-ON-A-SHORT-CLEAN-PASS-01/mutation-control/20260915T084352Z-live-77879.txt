@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-review-body-short-clean-pass.sh
+file=plugins/leadv2/scripts/leadv2-review-run.sh
+anchor=s|if ! review_body_has_parseable_verdict "${_out}"; then|if false; then|
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: truncated fixture did not block as body lost (rc=6)
+diff_hash=dab4768f348651f53abf97996a15341829a557dc95f6cb85b6f9a737cdb615ea
+lane_diff_hash=3d7812359c41ba9da8663c40087e8dd5c4187024bc970a49a4b4a86abd794295
+porcelain_clean=yes
+restored=yes

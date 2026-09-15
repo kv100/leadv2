@@ -489,6 +489,37 @@ _review_recover_from_codex_store() { # <review_out_file>
   return 0
 }
 
+# _review_parse_overall_verdict <review-file> -> "<verdict> <source>"
+#
+# REVIEW-BODY-LOST-FIRES-ON-A-SHORT-CLEAN-PASS-01: this is the one definition
+# of a completed review verdict.  The body-persistence guard and the terminal
+# verdict parser deliberately share it: a body must never be "complete" for
+# one stage and markerless for the other.  REVIEW_VERDICT is canonical; the
+# two Verdict forms preserve the already-supported reviewer compatibility
+# surface, including the captured legacy clean verdict `Verdict: approve`.
+_review_parse_overall_verdict() {
+  local review_file="$1" verdict="" source=""
+  verdict="$(sed -nE 's/^[[:space:]]*REVIEW_VERDICT:[[:space:]]*(FAIL|PASS_WITH_NITS|PASS)([[:space:]]|$).*/\1/p' "${review_file}" | head -n 1)"
+  if [[ -n "${verdict}" ]]; then
+    source="marker"
+  else
+    verdict="$(sed -nE 's/^[[:space:]]*(VERDICT|Verdict):[[:space:]]*(FAIL|PASS_WITH_NITS|PASS)([[:space:]]|$).*/\2/p' "${review_file}" | head -n 1)"
+    if [[ -n "${verdict}" ]]; then
+      source="alt_marker"
+    elif grep -qE '^[[:space:]]*Verdict:[[:space:]]*approve[[:space:]]*$' "${review_file}" 2>/dev/null; then
+      # Captured codex clean-pass spelling predates the structured contract.
+      verdict="PASS"
+      source="legacy_approve"
+    fi
+  fi
+  [[ -n "${verdict}" ]] || return 1
+  printf '%s %s\n' "${verdict}" "${source}"
+}
+
+review_body_has_parseable_verdict() { # <review-file>
+  _review_parse_overall_verdict "$1" >/dev/null
+}
+
 parse_review_verdict() { # review-file
   local review_file="$1"
   PARSED_VERDICT=""
@@ -500,14 +531,10 @@ parse_review_verdict() { # review-file
   FINDINGS_MEDIUM=0
   FINDINGS_LOW=0
 
-  PARSED_VERDICT="$(sed -nE 's/^[[:space:]]*REVIEW_VERDICT:[[:space:]]*(FAIL|PASS_WITH_NITS|PASS)([[:space:]]|$).*/\1/p' "${review_file}" | head -n 1)"
-  if [[ -n "${PARSED_VERDICT}" ]]; then
-    VERDICT_SOURCE="marker"
-  else
-    PARSED_VERDICT="$(sed -nE 's/^[[:space:]]*(VERDICT|Verdict):[[:space:]]*(FAIL|PASS_WITH_NITS|PASS)([[:space:]]|$).*/\2/p' "${review_file}" | head -n 1)"
-    [[ -n "${PARSED_VERDICT}" ]] && VERDICT_SOURCE="alt_marker"
-  fi
-  [[ -n "${PARSED_VERDICT}" ]] || return 1
+  local overall
+  overall="$(_review_parse_overall_verdict "${review_file}")" || return 1
+  PARSED_VERDICT="${overall%% *}"
+  VERDICT_SOURCE="${overall#* }"
 
   # Keep the historical overall marker as the gate's aggregate verdict, but
   # require independently machine-readable dimensions whenever a mission
@@ -541,6 +568,18 @@ parse_review_verdict() { # review-file
   findings_matches="$(sed -nE 's/^[[:space:]]*REVIEW_FINDINGS:[[:space:]]*critical=([0-9]+)[[:space:]]+high=([0-9]+)[[:space:]]+medium=([0-9]+)[[:space:]]+low=([0-9]+)[[:space:]]*$/\1 \2 \3 \4/p' "${review_file}")"
   findings_count="$(printf '%s\n' "${findings_matches}" | grep -c .)"
   if [[ "${findings_count}" -ne 1 ]]; then
+    # The historical `Verdict: approve` producer had no machine findings
+    # line, but its exact clean conclusion is semantically zero findings.
+    # Keep this compatibility exception narrower than the general findings
+    # contract; every other body still needs exactly one structured line.
+    if [[ "${VERDICT_SOURCE}" == legacy_approve ]] && \
+       grep -qE '^[[:space:]]*No material findings\.[[:space:]]*$' "${review_file}" 2>/dev/null; then
+      FINDINGS_CRITICAL=0
+      FINDINGS_HIGH=0
+      FINDINGS_MEDIUM=0
+      FINDINGS_LOW=0
+      return 0
+    fi
     PARSED_VERDICT=""
     return 1
   fi
@@ -1809,9 +1848,11 @@ for _ran_index in "${!ran_arms[@]}"; do
     _err="${HANDOFF}/review-${_arm}.err"
     _rc="$(cat "${HANDOFF}/review-${_arm}.rc" 2>/dev/null || printf '1')"
     if [[ "${_rc}" -eq 0 ]]; then
+      # Retained as the mutation-control baseline: the structural marker, not
+      # this threshold, decides whether a paid body was lost.
       _pc_body_min="${LEADV2_REVIEW_BODY_MIN_BYTES:-300}"
       _pc_body_bytes="$(wc -c < "${_out}" 2>/dev/null | tr -d '[:space:]')"; _pc_body_bytes="${_pc_body_bytes:-0}"
-      if ! grep -q '^[[:space:]]*REVIEW_VERDICT:' "${_out}" 2>/dev/null && [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then
+      if ! review_body_has_parseable_verdict "${_out}"; then
         if [[ -s "${_err}" ]] || grep -q 'cost recorded:' "${_err}" 2>/dev/null; then
           _pc_body_rel="${_out#"${ROOT}"/}"
           _pc_retrieval_attempts="body"

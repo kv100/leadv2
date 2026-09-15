@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-review-body-short-clean-pass.sh
+file=plugins/leadv2/scripts/leadv2-review-run.sh
+anchor=s|if ! review_body_has_parseable_verdict "${_out}"; then|if [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then|
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: short clean fixture did not pass (rc=6)
+diff_hash=a0c90a9abfb867c4640a1223f62cbd2a33d79bba79f68899e3d58b6411c62382
+lane_diff_hash=3d7812359c41ba9da8663c40087e8dd5c4187024bc970a49a4b4a86abd794295
+porcelain_clean=yes
+restored=yes
