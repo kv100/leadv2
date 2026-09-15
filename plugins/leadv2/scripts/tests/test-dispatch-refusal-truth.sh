@@ -56,6 +56,10 @@ mkdir -p "${D2_REPO}"
 mkdir -p "$(dirname "${D2_LANE}")"
 (cd "${D2_REPO}" && git worktree add -q "${D2_LANE}" -b lane)
 printf 'mission only in lane filesystem\n' > "${D2_LANE}/mission.md"
+# The dispatcher prints the physically-resolved worktree (cd + pwd -P); on macOS
+# mktemp hands out /var/... while the resolved form is /private/var/... Compare
+# the resolved spelling, not the mktemp spelling (round 3).
+D2_LANE="$(cd "${D2_LANE}" && pwd -P)"
 
 run_d2() { # <path> <output>
   local p="$1" out="$2" rc=0

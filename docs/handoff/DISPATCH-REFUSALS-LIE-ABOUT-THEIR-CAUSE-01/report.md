@@ -328,3 +328,87 @@ corruption, rather than silently re-asserting a green result this session
 could not actually reproduce.
 
 DELIVERABLE_COMPLETE
+
+## Round 3
+
+### Confirmed cause: /var vs /private/var (mission hypothesis verified)
+
+The dispatcher resolves the lane worktree with `cd "${candidate}" && pwd -P`
+(leadv2-dispatch-code.sh:1300), printing the physical path. The suite compared
+against `${D2_LANE}` built from `mktemp -d`, which here inherits
+`TMPDIR=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/` — the `/var` symlink
+spelling. Same directory, two spellings; the fixed-string grep lost. Repro (the
+failing run, both values printed):
+
+- `TMPDIR=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/` (from the failing invocation)
+- refusal: `worktree=/private/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/dispatch-refusal-truth.j8Xnas/d2-repo/.claude/worktrees/lane`
+- `bash plugins/leadv2/scripts/tests/test-dispatch-refusal-truth.sh` -> `pass=5 fail=1`
+
+`/var` is a symlink to `/private/var` on this host; the two strings differ only
+in that prefix and resolve to the same directory.
+
+### Fix
+
+In `test-dispatch-refusal-truth.sh`, after the lane worktree and mission fixture
+exist, resolve the lane path exactly the way the dispatcher does before
+asserting on it (4 added lines):
+
+```bash
+# The dispatcher prints the physically-resolved worktree (cd + pwd -P); on macOS
+# mktemp hands out /var/... while the resolved form is /private/var/... Compare
+# the resolved spelling, not the mktemp spelling (round 3).
+D2_LANE="$(cd "${D2_LANE}" && pwd -P)"
+```
+
+The assertion still checks all three parts: rc=5, `present but untracked`, and
+the full `git -C <lane> add mission.md && git -C <lane> commit -- mission.md`
+remedy. Nothing was loosened.
+
+### Run locations and verdicts
+
+- Lane worktree `.../leadv2/.claude/worktrees/9eb4c44e` (fixed bytes, unpiped):
+  `pass=6 fail=0`, rc=0.
+- Main checkout `~/Projects/leadv2` (HEAD `a449ac77`, pre-merge bytes, unpiped
+  rc=1): `pass=5 fail=1` — the same D2 /var-vs-/private/var mismatch, as
+  expected while the fix is still only on this lane; the refusal output there
+  is identical to the round-3 failure quoted by the lead. After this lane
+  merges, main reads the lane verdict above. All five previously passing cases
+  pass by name in the lane run: D1 unknown kind, D1 absent kind, D2 absent
+  mission, D3 external_id, D3 unknown id.
+
+### Negative controls
+
+Control 1 — remedy dropped from the untracked refusal -> D2 goes RED (suite
+`pass=5 fail=1`), proving the remedy assertion still bites after the fix:
+
+```
+FAIL: D2 untracked refusal mismatch rc=5: ... worktree=/private/var/.../lane
+[DISPATCH-REFUSAL-TRUTH] pass=5 fail=1
+```
+
+Control 2 — as specified (untracked case answered with the absent wording) the
+mutation is caught by the D2 assertion itself, not the :74-78 sibling:
+
+```
+FAIL: D2 untracked refusal mismatch rc=5: ... path=mission.md is absent from both lane worktree and main HEAD ...
+[DISPATCH-REFUSAL-TRUTH] pass=5 fail=1
+```
+
+Control 2b — the reverse mutation (absent case answered with the untracked
+wording) is what the sibling check directly detects, and it goes RED:
+
+```
+FAIL: D2 absent refusal mismatch rc=5: ... path=absent.md is present but untracked in lane=... and main
+[DISPATCH-REFUSAL-TRUTH] pass=5 fail=1
+```
+
+In both directions the suite is red: `absent` and `untracked` remain
+distinguishable refusals. The dispatcher was restored via `git checkout --`
+after each mutation (working tree clean; no stash, no reset --hard, no clean).
+
+Self-check: `bash -n plugins/leadv2/scripts/tests/test-dispatch-refusal-truth.sh` OK;
+changed-scope runner: `bash tests/run-all.sh --scope changed` ->
+`run-all: 5 passed, 0 failed, scope=changed` (exit 0), including
+`[PASS] .../test-dispatch-refusal-truth.sh` at `pass=6 fail=0`.
+
+DELIVERABLE_COMPLETE
