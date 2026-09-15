@@ -147,8 +147,8 @@ printf 'PID=%s LABEL=fixture SESSION_ID=fixture\\n' "$HANDOFF_WRITESET_HARNESS_P
             'LEADV2_DISPATCH_SPAWN': '1',
         })
         for key in ('DISPATCH_E2E_GATE', 'DISPATCH_REVIEW_GATE', 'DISPATCH_ARCHITECT_GATE', 'REQUIRE_PHASES',
-                    'BURN_GOVERNOR', 'ARM_EARLY_VERDICT_S', 'PULSE_MODE', 'ARM_LANE_PULSE_WATCH',
-                    'SINGLE_LEAD_BEAT', 'DISPATCH_COST_ESTIMATE'):
+                    'BURN_GOVERNOR', 'ARM_EARLY_VERDICT_S', 'PULSE_MODE',
+                    'DISPATCH_COST_ESTIMATE'):
             env['LEADV2_' + key] = '0'
         argv = ['bash', str(copied / 'scripts/leadv2-dispatch-code.sh'),
                 f'handoff-only write set probe {tag}', '--kind', 'code',

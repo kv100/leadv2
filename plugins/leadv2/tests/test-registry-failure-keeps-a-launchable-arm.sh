@@ -145,8 +145,8 @@ printf 'PID=%s LABEL=fixture SESSION_ID=fixture\\n' "$REGISTRY_FIXTURE_PID"''')
         'LEADV2_DISPATCH_SPAWN': '1',
     })
     for key in ('DISPATCH_E2E_GATE', 'DISPATCH_REVIEW_GATE', 'DISPATCH_ARCHITECT_GATE', 'REQUIRE_PHASES',
-                'BURN_GOVERNOR', 'ARM_EARLY_VERDICT_S', 'PULSE_MODE', 'ARM_LANE_PULSE_WATCH',
-                'SINGLE_LEAD_BEAT', 'DISPATCH_COST_ESTIMATE'):
+                'BURN_GOVERNOR', 'ARM_EARLY_VERDICT_S', 'PULSE_MODE',
+                'DISPATCH_COST_ESTIMATE'):
         env['LEADV2_' + key] = '0'
     rc, out, err = run(['bash', str(dispatch), 'registry failure recovery probe', '--kind', 'code',
                         '--task-class', 'standard', '--pin-arm', 'sonnet', '--writes', 'src/fixture.py'], repo, env)
