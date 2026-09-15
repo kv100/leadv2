@@ -76,9 +76,15 @@ test-core-offline-lock-01.sh     → subject not resolved by grep; the lane name
 ## Plugin bugs seen during the session that are NOT in the 27
 These were observed, not inferred. Each gets a row before it gets a lane.
 
-1. **A refused lane re-dispatches itself in a loop.** `e589f406` emitted
-   `terminal=refused cause=writeset_overlap` at 14:15, 14:20 and 14:21 — three identical refusals
-   for work that had already landed under `ce3da635`. Nothing reaps the retry.
+1. ~~**A refused lane re-dispatches itself in a loop.**~~ **WITHDRAWN — misattributed, corrected
+   2026-09-15 before any work was dispatched against it.** `e589f406` is not our lane. Its journal
+   lives under `~/.claude/leadv2-state/getmany-followup-bot/`, and its write set is
+   `src/booking/cancel-rebook-*.ts` — another session, another repo, retrying its own work against
+   its own `blocked_by=89`. It also releases cleanly each time
+   (`active_lane_released ... rows=1 removed=1`), so there is no leak. The lead's watcher globs
+   `~/.claude/leadv2-state/*/tasks/`, which is why a peer's lane appeared in our event stream at
+   all; the watcher is now scoped to `leadv2` and `persona-engine`. Recorded rather than deleted:
+   the same glob will pull in a peer's events again for whoever reads this next.
 2. **The review diff is scoped to the declared write set, so it manufactures false Highs.** Codex
    failed the quota lane with "the default refresher executable is missing" — the file was tracked
    in `HEAD` and in the index, but absent from the diff it was shown, because my `--writes` did not
