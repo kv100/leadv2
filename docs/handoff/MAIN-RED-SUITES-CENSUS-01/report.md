@@ -49,13 +49,31 @@ test-stop-gate.sh rc=1 wall=256s
   - foreign-repo-journaled: post-fix did not pass (rc=1)
 ```
 
-So for this one suite both things are true: it exceeded the ceiling AND it fails on merit. That
-does not generalise. **The 6 failures in the `serial` shard are not established as red** — they
-must be re-run individually at a budget above 256s before anyone calls them defects. The 21 in the
-parallel shards stand.
+So for this one suite both things are true: it exceeded the ceiling AND it fails on merit.
 
-Read the headline as: **21 red measured, 6 unestablished, of 93.** A count that mixes timeouts with
-failures is the same error this census exists to stop.
+### And then the caution was itself over-corrected — the original 27 holds
+Every serial suite was re-run individually at a 900s budget. The verdicts reproduce the census
+exactly: **2 green, 6 red**, the same split the sharded run reported.
+
+```
+test-codex-session-runner.sh    rc=0  wall=90s
+test-lanes-snapshot.sh          rc=0  wall=69s
+test-burn-governor.sh           rc=1  wall=149s
+test-lane-truth-batch-01.sh     rc=1  wall=164s
+test-no-work-terminal.sh        rc=1  wall=98s
+test-report-only-gate.sh        rc=1  wall=116s
+test-routing-enforcement-p1.sh  rc=1  wall=59s
+test-stop-gate.sh               rc=1  wall=256s   (foreign-repo-journaled: post-fix did not pass)
+```
+
+Only two of the eight exceed the 120s ceiling (`stop-gate` 256s, `lane-truth-batch` 164s), and
+neither changes verdict when given room. Five finish comfortably under the ceiling and were
+honestly red in the census.
+
+**The headline stands at 27 red of 93.** The ceiling risk was real, was measured, and did not move
+the number. Recorded here because a caution that turns out to be unnecessary is still worth its
+measurement — and because the next person reading "27" should know it survived a challenge rather
+than never having been questioned.
 
 Also noted: the suite names in `run-core-offline.sh` are descriptive labels, not filenames. The
 label "product-close waits for worker exit" does not correspond to
