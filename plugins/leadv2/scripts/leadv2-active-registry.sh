@@ -989,23 +989,23 @@ try:
         # check_limits's lane cap, so a merged lane's claim outlived the
         # lane itself and the next lane needing the same files was refused
         # writeset_conflict against a row nobody was running anymore.
-        # `stale: true` is the EXISTING release convention, not a new one --
-        # _lv2_ws_dead/register's admission loop and check_writes (both
-        # above) already skip `other.get("stale")` rows, and
-        # leadv2_active_check_limits's lane-cap count already filters
-        # `s.get("stale")` out. Reusing it here (instead of removing the
-        # row) means the writeset/cap release this task requires does NOT
-        # regress PULSE-01: leadv2-lane-heartbeat.sh's `status` reads
-        # terminal_status/terminal_evidence off this SAME row after finish
-        # (test-leadv2-lane-heartbeat.sh Tests 4/5 depend on that read
-        # succeeding post-finish) -- outright removal would answer
-        # not_found instead of completed/finished_empty.
+        # `stale: true` is the EXISTING release convention for the registry's
+        # own admission/cap readers.  It is NOT, by itself, a complete claim
+        # release: a stale tombstone can predate this call (the reaper's live
+        # shape does), and a reader that has already resolved the lane as
+        # alive can still inspect its `writes` field.  Leaving that material
+        # claim behind made this loop report rc=0 after changing only terminal
+        # metadata.  Keep the tombstone for PULSE-01 status reads, but remove
+        # both accepted write-set spellings so no remaining row can claim a
+        # path after a successful finish.
         for target in targets:
             target["terminal_status"] = outcome
             target["terminal_evidence"] = evidence
             target["terminal_at"] = now
             target["updated_at"] = now
             target["stale"] = True
+            target.pop("writes", None)
+            target.pop("write_set", None)
 
     elif op == "append_provider_receipt":
         task_id, receipt_json = args
@@ -1174,12 +1174,19 @@ try:
             if isinstance(s, dict) and s.get("task_id") == task_id
         ]
         _mf_live_rows = [s for s in _mf_verify_rows if not s.get("stale")]
+        _mf_claim_rows = [
+            s for s in _mf_verify_rows
+            if s.get("writes") not in (None, "", [], ())
+            or s.get("write_set") not in (None, "", [], ())
+        ]
         if (not _mf_verify_rows
                 or _mf_live_rows
+                or _mf_claim_rows
                 or any(s.get("terminal_status") != outcome for s in _mf_verify_rows)):
             print(
                 f"[registry] mark_finished: post-write verify failed task={task_id} "
-                f"rows={_mf_verify_rows!r} live_rows={_mf_live_rows!r}",
+                f"rows={_mf_verify_rows!r} live_rows={_mf_live_rows!r} "
+                f"claim_rows={_mf_claim_rows!r}",
                 file=sys.stderr,
             )
             sys.exit(9)
