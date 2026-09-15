@@ -19,8 +19,13 @@
 #       fix.
 #   T4. critic+sonnet from the LEAD -> rc=0 (the warn-only advisory path is
 #       preserved; only the write-role list blocks).
-#   T5. Nested path unchanged: caller=explore targeting developer -> rc=2,
+#   T5. Nested path unchanged: caller=developer targeting developer -> rc=2,
 #       audit reason route.subrun.write_role_denied. ONE list, both paths.
+#       (caller=developer, not explore: GUARD-READ-ONLY-IS-A-NAME-NOT-A-
+#       PROPERTY-01 round 2 made the depth-cap check — caller is itself
+#       explore|general-purpose — run before this one, since depth is
+#       caller-scoped and totalizing; explore would collide with that case
+#       and test the wrong precedence.)
 #   T6. Escape hatch: LEADV2_LEAD_WRITE_SPAWN_ALLOW=1 -> rc=0, stderr says
 #       OVERRIDE ACTIVE, and the use is journalled
 #       (verdict=override_allow, target, why) to docs/leadv2/
@@ -116,8 +121,19 @@ else
 fi
 
 # T5 ── nested path unchanged (one list, both paths) ──────────────────────────
+# Caller is "developer", not "explore": GUARD-READ-ONLY-IS-A-NAME-NOT-A-
+# PROPERTY-01 round 2 reordered the guard so a caller-scoped depth-cap check
+# (caller is itself explore|general-purpose, already nested) runs before the
+# target-scoped write-role check, because depth is totalizing (that caller
+# cannot spawn ANYTHING) while write-role only disqualifies one target — a
+# write-capable-target verdict for an already-max-depth caller would falsely
+# imply a different target could succeed. Using caller=explore here would
+# collide with that depth-cap case and assert the wrong (pre-round-2, now
+# fixed) precedence instead of isolating the write-role list this test is
+# actually about. "developer" is write-capable but not itself subject to the
+# depth cap, so this exercises the write-role check in isolation, unchanged.
 T5DIR="$TMPROOT/nested-cwd"; mkdir -p "$T5DIR"
-_run_guard "$(_make_input explore developer sonnet "$T5DIR")"
+_run_guard "$(_make_input developer developer sonnet "$T5DIR")"
 if [[ "$RC" -ne 2 ]]; then
   fail "T5: nested developer spawn no longer denied (rc=$RC, expected 2)"
 elif [[ ! -f "$T5DIR/docs/leadv2/nested-spawns.log" ]] \

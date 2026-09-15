@@ -23,7 +23,11 @@
 #      DENY all other nested spawns with actionable message (exits 2).
 #      Audit: every verdict appended to docs/leadv2/tasks/$LEADV2_TASK_ID/nested-spawns.log
 #             (or docs/leadv2/nested-spawns.log when LEADV2_TASK_ID unset).
-#      HARDENED CONTRACT (behind LEADV2_NESTED_DEPTH_GATE, default ON; "0" = unchanged):
+#      HARDENED CONTRACT (behind LEADV2_NESTED_DEPTH_GATE, default ON; "0" = unchanged).
+#      Checked IN THIS ORDER (a before b — GUARD-READ-ONLY-IS-A-NAME-NOT-A-
+#      PROPERTY-01 round 2: a caller-scoped totalizing gate must win over a
+#      target-scoped one, else a write-capable target masks a real depth
+#      violation in the audit log):
 #        a. DEPTH: max_depth=1 -- a caller that is itself explore|general-purpose
 #           (i.e. already a nested sub-run) may not spawn further. reason: route.subrun.depth_exceeded
 #        b. TOOL-CLASS: write-capable roles (developer, frontend-developer, postgres-pro,
@@ -169,17 +173,19 @@ print(tool_class)
     [[ "$_MAX_DEPTH" =~ ^[0-9]+$ ]] || _MAX_DEPTH=1
     [[ "$_MAX_SUBRUNS" =~ ^[0-9]+$ ]] || _MAX_SUBRUNS=8
 
-    # Gap #2 — TOOL-CLASS WHITELIST: write-capable roles can never be spawned as
-    # a nested sub-run, regardless of base_allowlist or escalation budget.
-    if _is_write_role "$SUBAGENT_TYPE"; then
-        _audit_log "deny" "route.subrun.write_role_denied"
-        printf -- '[leadv2-routing-guard] DENIED nested spawn: subagent_type="%s" is a write-capable role — nested sub-runs are READ/PLAN/PROBE only (Explore, recon). Return blocker to lead.\n' "$SUBAGENT_TYPE" >&2
-        exit 2
-    fi
-
-    # Gap #1 — DEPTH CAP: if the caller is itself already an Explore/general-
-    # purpose sub-run (i.e. it was spawned via this same nested-spawn path),
-    # it must not spawn a further nested sub-run. max_depth=1 enforced.
+    # Gap #1 — DEPTH CAP (checked FIRST, deliberately — GUARD-READ-ONLY-IS-A-
+    # NAME-NOT-A-PROPERTY-01 round 2): if the caller is itself already an
+    # Explore/general-purpose sub-run (i.e. it was spawned via this same
+    # nested-spawn path), it must not spawn a further nested sub-run at all,
+    # regardless of what it's trying to spawn. max_depth=1 enforced. This is a
+    # caller-scoped, totalizing gate — it disqualifies the caller before the
+    # target's role is even considered. Ordering it after the target-scoped
+    # write-role check (below) let a write-capable target mask an unrelated
+    # depth violation: a caller already at max depth cannot spawn ANYTHING,
+    # not just write-capable roles, so a "write_role_denied" verdict for such
+    # a caller falsely implies a different target would succeed, and the
+    # audit log records the wrong cause. Depth-first keeps the log honest and
+    # matches the actual disqualification: WHO before WHAT.
     if [[ "$_MAX_DEPTH" -le 1 ]]; then
       case "$CALLER_AGENT_TYPE" in
         explore|general-purpose)
@@ -188,6 +194,14 @@ print(tool_class)
           exit 2
           ;;
       esac
+    fi
+
+    # Gap #2 — TOOL-CLASS WHITELIST: write-capable roles can never be spawned as
+    # a nested sub-run, regardless of base_allowlist or escalation budget.
+    if _is_write_role "$SUBAGENT_TYPE"; then
+        _audit_log "deny" "route.subrun.write_role_denied"
+        printf -- '[leadv2-routing-guard] DENIED nested spawn: subagent_type="%s" is a write-capable role — nested sub-runs are READ/PLAN/PROBE only (Explore, recon). Return blocker to lead.\n' "$SUBAGENT_TYPE" >&2
+        exit 2
     fi
   fi
 
