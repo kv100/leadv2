@@ -30,6 +30,10 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 QUOTA_SH="${SCRIPT_DIR}/../leadv2-quota-status.sh"
+# QUOTA-PROVIDER-SIGNAL-GOES-STALE-01: quota-status.sh now refreshes the
+# rate_limit_anthropic kv row on read by default -- opt out here so this
+# suite stays hermetic (no live probe/keychain/network call).
+export LEADV2_QUOTA_REFRESH_ON_READ=0
 
 PASS=0; FAIL=0; ERRORS=()
 log()  { printf -- '[TEST] %s\n' "$*"; }
