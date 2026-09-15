@@ -2016,6 +2016,44 @@ for _arm in "${ran_arms[@]}"; do
     [[ -n "${_sev}" ]] || continue
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${_arm}" "${_sev}" "${_f}" "${_ln}" "${_dim}" "${_desc}" >> "${FINDINGS_RAW}"
   done
+  # PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01 (round 2): an arm's report can carry
+  # real findings as a flat bracket-severity list — "- [high] Title
+  # (path:line)" — the shape a Codex adversarial review actually emits (see
+  # docs/handoff/V5-M1-CI-SELECTION-R2/review-codex.md). leadv2-review-findings.sh's
+  # renderer already recognizes this shape for DISPLAY (bracket_lines); this engine's
+  # own count union above did not, so a real FAIL with real findings landed here as
+  # zero rows, tripped the "declared FAIL but zero Critical/High" impossible-state
+  # check below, and the gate reported status=blocked reason=findings_lost over a
+  # review that was never lost. Round 1 gated this branch behind "no FINDING: lines
+  # in the report", which silently dropped every bracketed finding in a MIXED-shape
+  # report (round-2 regression, Codex's own review of 1b8b0243 caught it: a report
+  # with both a `FINDING:` line and a bracket bullet lost the bracket one). Always
+  # additive, unconditional: both shapes are unioned every time, and the dedup step
+  # below (by file,line,severity,dimension, falling back to description when
+  # unanchored) collapses only genuine duplicates.
+  { grep -E '^[[:space:]]*-[[:space:]]*\[[A-Za-z]+\]' "${_file}" 2>/dev/null || :; } | while IFS= read -r _line; do
+    _sev_raw="$(printf '%s\n' "${_line}" | sed -nE 's/^[[:space:]]*-[[:space:]]*\[([A-Za-z]+)\].*/\1/p')"
+    case "${_sev_raw}" in
+      [Cc]ritical) _sev="Critical" ;;
+      [Hh]igh)     _sev="High" ;;
+      [Mm]edium)   _sev="Medium" ;;
+      [Ll]ow)      _sev="Low" ;;
+      *)           _sev="" ;;
+    esac
+    [[ -n "${_sev}" ]] || continue
+    _rest="$(printf '%s\n' "${_line}" | sed -E 's/^[[:space:]]*-[[:space:]]*\[[A-Za-z]+\][[:space:]]*//')"
+    _f=""; _ln=""
+    _loc="$(printf '%s\n' "${_rest}" | sed -nE 's/.*\(([^()]+)\)[[:space:]]*$/\1/p')"
+    if [[ "${_loc}" == *:* ]]; then
+      _f="${_loc%%:*}"
+      _ln="$(printf '%s' "${_loc#*:}" | sed -nE 's/^([0-9]+).*/\1/p')"
+    elif [[ -n "${_loc}" ]]; then
+      _f="${_loc}"
+    fi
+    _dim="review"
+    _desc="${_rest}"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${_arm}" "${_sev}" "${_f}" "${_ln}" "${_dim}" "${_desc}" >> "${FINDINGS_RAW}"
+  done
 done
 { grep -E '^FINDING:' "${HACKDETECT_OUT}" 2>/dev/null || :; } | while IFS= read -r _line; do
   _sev="$(printf '%s\n' "${_line}" | sed -nE 's/.*severity=([A-Za-z]+).*/\1/p')"
@@ -2041,8 +2079,15 @@ if [[ "${SECURITY_CRITICAL}" -gt 0 || "${SECURITY_HIGH}" -gt 0 ]]; then
 fi
 
 # Dedup by (file,line,severity,dimension) — keep the first arm to report it.
+# PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01 (round 2): a flat bracket bullet with
+# no trailing "(path:line)" anchor lands here with file="" and line="" — every
+# unanchored finding of the same severity/dimension then shared one dedup key
+# and silently collapsed to a single row (round-2 regression caught by Codex's
+# own review of 1b8b0243). When both file AND line are empty the key is not
+# location-derived to begin with, so fold in the normalized description too —
+# anchored findings (the common, cross-arm-corroborated case) are unaffected.
 FINDINGS_DEDUP="${HANDOFF}/.review-findings-dedup.tsv"
-awk -F'\t' '{key=$3"|"$4"|"$2"|"$5; if (!(key in seen)) {seen[key]=1; print}}' "${FINDINGS_RAW}" > "${FINDINGS_DEDUP}" 2>/dev/null || : > "${FINDINGS_DEDUP}"
+awk -F'\t' '{key=$3"|"$4"|"$2"|"$5; if ($3 == "" && $4 == "") { key = key "|" $6 }; if (!(key in seen)) {seen[key]=1; print}}' "${FINDINGS_RAW}" > "${FINDINGS_DEDUP}" 2>/dev/null || : > "${FINDINGS_DEDUP}"
 
 # Build review-findings.json with verification per Critical/High finding.
 FINDINGS_JSON="${HANDOFF}/review-findings.json"
@@ -2101,6 +2146,10 @@ FINDINGS_CRITICAL_TOTAL="$({ grep -oE '"severity":"Critical"' "${FINDINGS_JSON}"
 FINDINGS_HIGH_TOTAL="$({ grep -oE '"severity":"High"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; FINDINGS_HIGH_TOTAL="${FINDINGS_HIGH_TOTAL:-0}"
 FINDINGS_MEDIUM_TOTAL="$({ grep -oE '"severity":"Medium"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; FINDINGS_MEDIUM_TOTAL="${FINDINGS_MEDIUM_TOTAL:-0}"
 FINDINGS_LOW_TOTAL="$({ grep -oE '"severity":"Low"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; FINDINGS_LOW_TOTAL="${FINDINGS_LOW_TOTAL:-0}"
+# PLUGIN-REVIEW-GATE-CODEX-FLAT-LIST-01 (round 2): findings_total is the sum
+# of the same four counters printed below it, on the SAME array -- never a
+# second, independently-derived count that could disagree.
+FINDINGS_TOTAL_ALL=$((FINDINGS_CRITICAL_TOTAL + FINDINGS_HIGH_TOTAL + FINDINGS_MEDIUM_TOTAL + FINDINGS_LOW_TOTAL))
 
 # A FAIL verdict asserts Critical/High findings exist. If the union+dedup
 # array that just fed review-findings.json has none, the verdict and the
@@ -2237,8 +2286,8 @@ fi
 if [[ "${verdict}" == FAIL ]]; then
   {
     printf 'arms: %s\n%s\n%s\n%s\n%s\n' "${ARMS_CSV}" "${FANOUT_LINE}" "${UNREADABLE_LINE}" "${VERIFIED_LINE}" "${MISSION_INPUT_LINES}"
-    printf 'status: fail\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
-      "${FINDINGS_CRITICAL_TOTAL}" "${FINDINGS_HIGH_TOTAL}" "${FINDINGS_MEDIUM_TOTAL}" "${FINDINGS_LOW_TOTAL}"
+    printf 'status: fail\nfindings_total: %s\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
+      "${FINDINGS_TOTAL_ALL}" "${FINDINGS_CRITICAL_TOTAL}" "${FINDINGS_HIGH_TOTAL}" "${FINDINGS_MEDIUM_TOTAL}" "${FINDINGS_LOW_TOTAL}"
     render_gate_findings "${REVIEW_ARTIFACT:-${HANDOFF}/review-${reviewer_primary}.md}" "${FINDINGS_JSON}" \
       "${reviewer_primary}" "docs/handoff/dispatch-${TASK}/review-${reviewer_primary}.md" || true
   } > "${HANDOFF}/review-gate.md.tmp"
