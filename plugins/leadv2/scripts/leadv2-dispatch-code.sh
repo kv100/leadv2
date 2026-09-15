@@ -5696,6 +5696,84 @@ $(tail -c 262144 "${s}" 2>/dev/null)"
   printf '%s\t%s' "${cls}" "${detail}"
 }
 
+# Classify the launch result once, before journalling or fallback decisions.  A
+# prepass-owned rc=124 is a timeout even when the provider evidence is noisy;
+# its configured budget is emitted by the caller.  `rate_limited` is reserved
+# for a provider's explicit rate/quota refusal, never a generic failed launch.
+_architect_prepass_outcome_reason() {  # <rc> <admission-status> <provider-class>
+  local rc="$1" admission="$2" provider_class="$3"
+  if [[ "${rc}" == "124" ]]; then
+    printf '%s' "prepass_timeout"
+  elif [[ "${admission}" == "allowed" ]]; then
+    printf '%s' "prepass_failed_after_allowed"
+  elif [[ "${provider_class}" == "rate_limited" || "${provider_class}" == "quota_exceeded" ]]; then
+    printf '%s' "rate_limited"
+  else
+    printf '%s' "${provider_class}"
+  fi
+}
+
+_architect_prepass_admission_status() {  # <adir> <captured-out> -> allowed|quota_refused|unknown
+  local adir="$1" cap="$2" evidence="" stream
+  evidence="${cap}"
+  for stream in "${adir}"/architect.stream.jsonl "${adir}"/*.stream.jsonl; do
+    [[ -f "${stream}" ]] || continue
+    evidence="${evidence}
+$(tail -c 262144 "${stream}" 2>/dev/null)"
+  done
+  if printf '%s' "${evidence}" | grep -qiE 'status[=:][[:space:]]*allowed'; then
+    printf '%s' "allowed"
+  elif printf '%s' "${evidence}" | grep -qiE 'status[=:][[:space:]]*(quota_refused|rate_limited|quota_exceeded)'; then
+    printf '%s' "quota_refused"
+  else
+    printf '%s' "unknown"
+  fi
+}
+
+PREPASS_DESIGN_ARTIFACT_REASON=""
+PREPASS_DESIGN_ARTIFACT_PATH=""
+PREPASS_DESIGN_ARTIFACT_TEMP=0
+_prepass_verify_design_artifact() {  # <lane-root> <claimed-path>
+  local lane_root="$1" claimed="$2" rel source tmp nonblank
+  PREPASS_DESIGN_ARTIFACT_REASON=""
+  PREPASS_DESIGN_ARTIFACT_PATH=""
+  PREPASS_DESIGN_ARTIFACT_TEMP=0
+  if [[ "${claimed}" = /* ]]; then
+    case "${claimed}" in
+      "${lane_root}"/*) rel="${claimed#"${lane_root}/"}" ;;
+      *) PREPASS_DESIGN_ARTIFACT_REASON="design_artifact_missing"; return 1 ;;
+    esac
+  else
+    rel="${claimed}"
+    claimed="${lane_root}/${rel}"
+  fi
+  if [[ -f "${claimed}" && -r "${claimed}" ]]; then
+    source="${claimed}"
+  elif [[ "${rel}" != ../* && "${rel}" != */../* ]] \
+       && git -C "${lane_root}" cat-file -e "HEAD:${rel}" 2>/dev/null; then
+    tmp="$(mktemp "${TMPDIR:-/tmp}/leadv2-prepass-design.XXXXXX")" || return 1
+    if ! git -C "${lane_root}" show "HEAD:${rel}" > "${tmp}" 2>/dev/null; then
+      rm -f "${tmp}"
+      PREPASS_DESIGN_ARTIFACT_REASON="design_artifact_missing"
+      return 1
+    fi
+    source="${tmp}"
+    PREPASS_DESIGN_ARTIFACT_TEMP=1
+  else
+    PREPASS_DESIGN_ARTIFACT_REASON="design_artifact_missing"
+    return 1
+  fi
+  nonblank="$(awk 'NF { n++ } END { print n+0 }' "${source}" 2>/dev/null)"
+  if [[ ! "${nonblank}" =~ ^[0-9]+$ || "${nonblank}" -lt 8 ]]; then
+    [[ "${source}" == "${claimed}" ]] || rm -f "${source}"
+    PREPASS_DESIGN_ARTIFACT_REASON="design_artifact_stub"
+    return 1
+  fi
+  PREPASS_DESIGN_ARTIFACT_REASON="design_artifact_verified"
+  PREPASS_DESIGN_ARTIFACT_PATH="${source}"
+  return 0
+}
+
 # DISPATCH-HONESTY-01 §1: a timed-out Claude prepass is normally a real timeout,
 # but a selected credential can become exhausted after arm selection and then
 # present as a silent hang.  Re-read ONLY that selected credential before the
@@ -5916,6 +5994,19 @@ _afb_discard_workspace() {  # <ws_base> -- best-effort disposal on EVERY termina
   return 0
 }
 
+_architect_prepass_provider() {  # <architect-model> -> provider identity
+  case "$1" in
+    # Claude and Codex use distinct launchers and quota pools.  Only an arm
+    # whose provider matches this identity is a genuine same-provider retry.
+    opus|sonnet|haiku|fable|claude*) printf '%s' "anthropic" ;;
+    *) _arm_provider "$1" ;;
+  esac
+}
+
+_architect_fallback_provider_allowed() {  # <failed-provider> <candidate-provider>
+  [[ "$1" != "$2" ]]
+}
+
 _architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> <failed_provider>
   local mfile="$1" sig8="$2" failcls="$3" out_file="$4" failed_prov="$5"
   local i arm prov out rc glm_out run_out ws_base ws _afb_ok=0
@@ -5938,7 +6029,7 @@ _architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> 
   (( ${#_LADDER_IDS[@]} )) || _load_dispatch_ladder
   for i in "${!_LADDER_IDS[@]}"; do
     arm="${_LADDER_IDS[${i}]}"; prov="${_LADDER_PROVIDERS[${i}]}"
-    if [[ "${prov}" == "${failed_prov}" ]]; then
+    if ! _architect_fallback_provider_allowed "${failed_prov}" "${prov}"; then
       emit decision "architect_prepass_fallback task=${sig8} arm=${arm} outcome=skipped reason=same_provider"
       continue
     fi
@@ -6313,7 +6404,7 @@ PY
   local design="" _pp_wait_tries=0
   while :; do
     for cand in "${adir}/architect.full.md" "${adir}/architect.md" "${adir}/architect.summary.md"; do
-      [[ -s "${cand}" ]] && { design="${cand}"; break; }
+      [[ -e "${cand}" ]] && { design="${cand}"; break; }
     done
     [[ -n "${design}" ]] && break
     # ARTIFACT-LAND-AFTER-READ-01: only on a non-zero launcher rc is there any
@@ -6329,38 +6420,26 @@ PY
     # PREPASS-PROVIDER-FALLBACK-01 §1: surface the REAL failure class from the
     # launcher's stream/handoff evidence (live 17309830/321ade3a: authentication_
     # failed was on disk, the journal said failed_rc_1). rc 124 stays `timeout`.
-    local _pp_cls _pp_detail="" _pp_failed_prov
-    _pp_cls="$(_architect_failure_class "${adir}" "${out}" "${rc}")"
-    # DISPATCH-HONESTY-01 §1: rc=124 is a timeout only when a fresh probe of
-    # the credential actually selected for this architect run does NOT prove
-    # the binding quota window is exhausted.  This does not widen fallback to
-    # arbitrary timeouts: only the exact quota_exceeded class opens the existing
-    # provider-fallback list.
-    if [[ ${rc} -eq 124 ]]; then
-      _architect_selected_credential_exhausted "${adir}" || true
-      if [[ "${ARCHITECT_PREPASS_QUOTA_EXHAUSTED:-0}" == "1" ]]; then
-        _pp_cls="quota_exceeded"
-        _pp_detail="${ARCHITECT_PREPASS_QUOTA_DETAIL}"
-      else
-        _pp_cls="timeout"
-      fi
-    fi
-    if [[ "${_pp_cls}" == *$'\t'* ]]; then
-      _pp_detail="${_pp_cls#*$'\t'}"
+    local _pp_cls _pp_provider_cls _pp_detail="" _pp_failed_prov _pp_admission
+    _pp_provider_cls="$(_architect_failure_class "${adir}" "${out}" "${rc}")"
+    if [[ "${_pp_provider_cls}" == *$'\t'* ]]; then
+      _pp_detail="${_pp_provider_cls#*$'\t'}"
       _pp_detail="$(printf '%s' "${_pp_detail}" | tr -c '[:print:]' ' ' | tr -s ' ')"
     fi
-    _pp_cls="${_pp_cls%%$'\t'*}"
+    _pp_provider_cls="${_pp_provider_cls%%$'\t'*}"
+    _pp_admission="$(_architect_prepass_admission_status "${adir}" "${out}")"
+    _pp_cls="$(_architect_prepass_outcome_reason "${rc}" "${_pp_admission}" "${_pp_provider_cls}")"
+    if [[ "${_pp_cls}" == "prepass_timeout" ]]; then
+      _pp_detail="timeout_sec=${ARCHITECT_PREPASS_TIMEOUT_SEC}${_pp_detail:+ ${_pp_detail}}"
+    fi
     ARCHITECT_PREPASS_REASON="${_pp_cls}"
-    emit decision "architect_prepass task=${sig8} status=failed reason=${_pp_cls} rc=${rc} arm=claude${_pp_detail:+ detail=${_pp_detail}}"
+    emit decision "architect_prepass task=${sig8} status=failed reason=${_pp_cls} rc=${rc} arm=claude admission=${_pp_admission}${_pp_detail:+ detail=${_pp_detail}}"
     log_err "architect prepass failed (arm=claude, class=${_pp_cls}): ${out}"
     # §2: a PROVIDER-class failure (never a design-quality failure, never a
     # timeout) retries the same prompt through another configured arm's own
     # launcher before this attempt is declared failed. The fallback design is
     # validated exactly like a Claude design by the shared guards below (§3).
-    case "${architect_model}" in
-      opus|sonnet|haiku|fable|claude*) _pp_failed_prov="anthropic" ;;
-      *) _pp_failed_prov="$(_arm_provider "${architect_model}")" ;;
-    esac
+    _pp_failed_prov="$(_architect_prepass_provider "${architect_model}")"
     if [[ "${ARCHITECT_FALLBACK}" == "1" ]] \
        && [[ "${_pp_cls}" == "authentication_failed" || "${_pp_cls}" == "rate_limited" || "${_pp_cls}" == "quota_exceeded" ]] \
        && _architect_fallback_design "${mfile}" "${sig8}" "${_pp_cls}" "${f}" "${_pp_failed_prov}"; then
@@ -6370,11 +6449,32 @@ PY
       return 1
     fi
   fi
+  # A successful launcher only proves it returned, not that the claimed design
+  # exists.  Eight non-blank lines is the smallest useful floor here: it
+  # admits the compact scope/acceptance format while rejecting a title-only
+  # acknowledgement or empty handoff stub.
+  if [[ -z "${design}" ]]; then
+    design="${adir}/architect.full.md"
+  fi
+  local _pp_artifact="${design}"
+  [[ "${_pp_artifact}" == "fallback" ]] && _pp_artifact="${f}"
+  if ! _prepass_verify_design_artifact "${PROJECT_ROOT}" "${_pp_artifact}"; then
+    ARCHITECT_PREPASS_REASON="${PREPASS_DESIGN_ARTIFACT_REASON}"
+    emit decision "architect_prepass task=${sig8} status=failed reason=${PREPASS_DESIGN_ARTIFACT_REASON} artifact=${design}"
+    log_err "architect prepass refused claimed artifact (reason=${PREPASS_DESIGN_ARTIFACT_REASON}): ${design}"
+    return 1
+  fi
+  [[ "${design}" == "fallback" ]] || design="${PREPASS_DESIGN_ARTIFACT_PATH}"
+  emit decision "architect_prepass task=${sig8} status=verified reason=design_artifact_verified artifact=${_pp_artifact}"
   rm -f "${mfile}"
   if [[ "${design}" == "fallback" ]]; then
     :  # already written to ${f} by _architect_fallback_design
   elif [[ -n "${design}" ]]; then
-    cat "${design}" > "${f}" || return 1
+    if ! cat "${design}" > "${f}"; then
+      [[ "${PREPASS_DESIGN_ARTIFACT_TEMP}" == "1" ]] && rm -f "${design}"
+      return 1
+    fi
+    [[ "${PREPASS_DESIGN_ARTIFACT_TEMP}" == "1" ]] && rm -f "${design}"
   else
     printf '%s\n' "${out}" > "${f}" || return 1
   fi
