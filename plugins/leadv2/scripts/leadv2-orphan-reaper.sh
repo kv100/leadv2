@@ -56,7 +56,17 @@
 # would-kill verdicts without signalling.
 #
 # Usage: leadv2-orphan-reaper.sh [--dry-run] [--project-root <path>]
-# Env:  LEADV2_PROJECT_ROOT          project whose pulse pidfiles to scan
+# Env:  DRY_RUN=1                    same effect as --dry-run
+#                                    (REAPER-DRY-RUN-ENV-VAR-IS-SILENTLY-
+#                                    IGNORED-01: the env var used to be
+#                                    read and then unconditionally
+#                                    overwritten by the script's own
+#                                    default, so it was silently ignored.
+#                                    Either surface asking for dry-run
+#                                    wins -- env DRY_RUN=1 OR --dry-run;
+#                                    there is no way to force a live run
+#                                    when DRY_RUN=1 is exported, by design)
+#       LEADV2_PROJECT_ROOT          project whose pulse pidfiles to scan
 #       LEADV2_REAPER_PROJECTS_DIR   transcript root override (tests)
 #       LEADV2_REAPER_IDLE_MIN       transcript idle threshold (default 360,
 #                                    aligned with lane-watch-v2's
@@ -83,7 +93,15 @@
 set -uo pipefail
 
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+# REAPER-DRY-RUN-ENV-VAR-IS-SILENTLY-IGNORED-01: DRY_RUN was accepted from
+# the environment and then unconditionally clobbered by the next line's
+# default, so `DRY_RUN=1 leadv2-orphan-reaper.sh` killed anyway. Capture the
+# inherited value BEFORE the default assignment; either surface asking for
+# dry-run (env DRY_RUN=1 OR the --dry-run flag below) wins -- a safety
+# switch fails toward safe, never toward live.
+_dry_run_env="${DRY_RUN:-}"
 DRY_RUN=0
+[[ "$_dry_run_env" == "1" ]] && DRY_RUN=1
 PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-}"
 
 while [[ $# -gt 0 ]]; do
