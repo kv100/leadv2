@@ -34,7 +34,33 @@ macOS (Darwin 25.6.0), repo `~/Projects/leadv2` on `main`, sharded by the runner
 `missing=0` matters: the enumeration found every suite it names, so none of the 27 is an
 `rc_127`-style absence masquerading as a failure.
 
-Nothing here is a timeout: the whole run finished inside its 1500s outer bound.
+The whole run finished inside its 1500s outer bound — but see the correction below before treating
+all 27 as failures.
+
+## Correction (same day, by the lead): the serial shard was measured at too low a ceiling
+The 120s per-suite ceiling is below what at least one serial suite needs. `test-stop-gate.sh` was
+re-run alone at a 600s budget and took **256 seconds** — so in the census run it was cut by the
+ceiling, and its verdict there was a `timeout`, not a failure.
+
+Re-run at a budget it fits in, it is **still rc=1**, on a named case:
+
+```
+test-stop-gate.sh rc=1 wall=256s
+  - foreign-repo-journaled: post-fix did not pass (rc=1)
+```
+
+So for this one suite both things are true: it exceeded the ceiling AND it fails on merit. That
+does not generalise. **The 6 failures in the `serial` shard are not established as red** — they
+must be re-run individually at a budget above 256s before anyone calls them defects. The 21 in the
+parallel shards stand.
+
+Read the headline as: **21 red measured, 6 unestablished, of 93.** A count that mixes timeouts with
+failures is the same error this census exists to stop.
+
+Also noted: the suite names in `run-core-offline.sh` are descriptive labels, not filenames. The
+label "product-close waits for worker exit" does not correspond to
+`test-product-close-waits-for-worker-exit.sh` — that file does not exist. Map label → file through
+the runner's own table before dispatching anything against a name from this report.
 
 ## The 27, named
 ```
