@@ -85,7 +85,13 @@ arbiter journal lines to confirm behaviour, read `arbiter_pick` and the utility 
 - `grep -q prepass_timeout ~/Projects/leadv2/plugins/leadv2/scripts/leadv2-dispatch-code.sh`
 - the codex-eligibility probe for `9314a9ffdd6e` (row `human-adhoc-e433291c6126`)
 
-Those greps are necessary, never sufficient. Also required, under `plugins/leadv2/scripts/tests/`:
+Those greps are necessary, never sufficient. Also required — three tests, under
+`plugins/leadv2/scripts/tests/`, at **exactly these paths**. The lane's write set admits these and
+nothing else there, so a different filename will be refused at the write-set gate:
+
+- test 1 → `test-prepass-verifies-the-design-artifact.sh`
+- test 2 → `test-prepass-outcome-is-named.sh`
+- test 3 → `test-prepass-fallback-admits-codex.sh`
 
 1. A test driving the **real** artifact-verification step with (a) a present, non-trivial artifact
    → admitted, (b) a path in no ref → refused with `design_artifact_missing`, (c) an empty/stub
