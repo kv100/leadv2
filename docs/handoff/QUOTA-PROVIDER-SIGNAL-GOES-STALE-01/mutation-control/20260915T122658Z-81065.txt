@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-ratelimit-refresh-if-stale.sh
+file=plugins/leadv2/scripts/leadv2-ratelimit-refresh-if-stale.sh
+anchor=131s/.*/if true; then/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 4 failed refresh (prior row exists) -> row restored byte-identical (got: {"status":"unknown","state":"unauthenticated","captured_epoch":1789475212,"detail":"no credential"}, want: {"status":"ok","state":"ok","captured_epoch":1789474511,"resetsAt":"2026-09-16T05:00:00+00:00","overageStatus":"normal"})
+diff_hash=7bbdb75cd1532526cdee5542e8b8878f2cec03081a4fde674ffb0bb51aaf9528
+lane_diff_hash=2e092916d31b73b20949894e5bfa0e6ec89b5819bfc3ce9dcb4777f03403ed55
