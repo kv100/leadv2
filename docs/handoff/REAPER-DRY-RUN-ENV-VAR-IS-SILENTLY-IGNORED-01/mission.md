@@ -1,47 +1,78 @@
-# REAPER-DRY-RUN-ENV-VAR-IS-SILENTLY-IGNORED-01
+# REAPER-DRY-RUN-ENV-VAR-IS-SILENTLY-IGNORED-01 — round 2
 
-Backlog row `0ef607442f84`. All writes in **`~/Projects/leadv2`**, file
-`plugins/leadv2/scripts/leadv2-orphan-reaper.sh`.
+Backlog row `0ef607442f84`. Round 1 left an auto-checkpoint (`1fe356fe`) and was reviewed **FAIL:
+2 High, 2 Low** — see `docs/handoff/dispatch-8a0d9618-review/critic.full.md`. All writes in
+**`~/Projects/leadv2`**, in THIS worktree. Your round-1 work is still there; continue it, do not
+restart.
 
-## The defect
-`DRY_RUN` is accepted from the environment and then **unconditionally overwritten** by the
-script's own default. An operator who exports `DRY_RUN=1` — the universally understood way to ask
-a reaper not to kill anything — gets a reaper that kills processes anyway, and is told nothing.
+## H1 — the switch still fails toward live
+The fix honours only the literal string `1`:
 
-A safety switch that silently does the opposite of what it says is worse than no switch: it buys
-confidence it does not earn. `--dry-run` as a flag is reported to work; the env var is the surface
-that lies.
+```
+102:_dry_run_env="${DRY_RUN:-}"
+103:DRY_RUN=0
+104:[[ "$_dry_run_env" == "1" ]] && DRY_RUN=1
+```
 
-**Start by measuring it.** Run the reaper with `DRY_RUN=1` against a fixture that would be reaped
-and record what actually happens. Do not fix anything you have not first reproduced — paste the
-reproduction.
+Measured by the reviewer against your own lane copy:
 
-## Fix — pick one and say which
-Either (a) honour `DRY_RUN` from the environment with the same semantics as `--dry-run`, or
-(b) refuse at startup when `DRY_RUN` is set in the environment, naming the flag to use instead.
-Silently ignoring it is the one option that is off the table. State your choice and the reason.
+```
+env DRY_RUN=1    -> effective DRY_RUN=1
+env DRY_RUN=true -> effective DRY_RUN=0
+env DRY_RUN=yes  -> effective DRY_RUN=0
+env DRY_RUN=on   -> effective DRY_RUN=0
+```
 
-If the two surfaces can disagree (env says 1, flag absent; flag present, env says 0), state the
-precedence you implemented and test that case too.
+`DRY_RUN=true` is not hypothetical: `leadv2-backfill-history.sh:38-40` uses `DRY_RUN=true` /
+`DRY_RUN=false` as its own convention **in this repo**. An operator carrying that habit to the
+reaper gets exactly what the row calls "worse than no switch" — the variable is set, the run says
+nothing, processes die.
 
-## Acceptance
-- `DRY_RUN=1` against a fixture that would otherwise be reaped: **nothing is killed** (fix a), or
-  the run refuses with a message naming `--dry-run` (fix b). Show the process still alive / the
-  refusal text.
-- `--dry-run` keeps working exactly as today — a regression test that would catch it breaking.
-- The kill path still kills when neither switch is set. A dry-run fix that quietly disables the
-  reaper is the same bug with the sign flipped; prove the live path survives.
+This is the same defect class the row exists to close, one spelling to the left.
 
-## Negative control — one per independent check, RUN them
-Restore the unconditional overwrite and show the `DRY_RUN=1` test go RED. If you also added a
-precedence test, mutate the precedence and show that one go RED separately. One mutation is not a
-control for two checks. Paste red-then-restored-green for each.
+**Fix — choose one and say which:**
+- (a) accept the truthy spellings this repo already uses (`1`, `true`, `yes`, `on`, case-insensitive)
+  and treat `0`/`false`/`no`/`off`/empty as off; or
+- (b) accept only `1`/`0` and **refuse at startup** on any other non-empty value, naming the value
+  and the accepted set.
 
-## Off limits
-- Do not change WHICH processes the reaper selects — this row is about whether it acts, not about
-  its target set.
+What is not available is the current behaviour: silently discarding a value the operator set.
+A safety switch fails toward safe.
+
+**Test:** the full table above, each spelling asserted against the effective value — plus the
+refusal case if you pick (b).
+
+## H2 — no test and no report reached the diff
+`review.diff` carried neither. Your regression suite
+(`test-reaper-dry-run-env-precedence.sh`) is **uncommitted in the lane**, so from outside the lane
+it does not exist. A suite that is not committed is not delivered.
+
+**Fix:** commit the suite and the report on the lane branch. Re-diff the staged set in its own
+call immediately before committing — a check chained onto the commit is a receipt, not a check.
+
+## L2 — the controls bind to exact source bytes
+`test-reaper-dry-run-env-precedence.sh:139,157` mutate by matching exact source text. That is a
+control that rots into a permanent green the moment the line is reformatted: the mutation stops
+matching, nothing is mutated, and the suite passes while proving nothing.
+
+**Fix:** make each mutation fail loudly when its anchor does not match — an unmatched anchor is a
+test failure, never a silent skip.
+
+## L1 — trim the over-long inline rationale at `:59-69`
+Keep the reason, lose the essay. One or two lines.
+
+## Negative controls — one per independent property, all RUN
+H1 and L2 are independent, and (b) adds a third (the refusal). For each: mutate, show the matching
+test RED, restore, show green. Paste every pair. One mutation is not a control for three.
+
+Also keep round 1's live-path control: with neither switch set, the reaper still kills. A dry-run
+fix that quietly disables the reaper is the same bug with the sign flipped.
+
+## Off limits — unchanged
+- Do not change WHICH processes the reaper selects. This row is whether it acts, not its target set.
 - Do not touch the lane registry, the lane cap, or `leadv2-active-registry.sh`.
 
 ## Report
-`docs/handoff/REAPER-DRY-RUN-ENV-VAR-IS-SILENTLY-IGNORED-01/report.md`: the reproduction, the
-choice and why, the tests, the controls. End with `DELIVERABLE_COMPLETE`.
+`docs/handoff/REAPER-DRY-RUN-ENV-VAR-IS-SILENTLY-IGNORED-01/report.md` — **committed**: the
+spelling table measured after the fix, the choice and why, the tests, every control.
+End with `DELIVERABLE_COMPLETE`.
