@@ -60,7 +60,7 @@ run_arm() {
 }
 run_arm glm ''
 run_arm sonnet '--protected'
-run_arm codex '--kind codex-test'
+run_arm codex '--kind productx-test'
 
 # The direct Codex template is tested with a fake companion; the wrapper should
 # append the protocol and use the task id supplied by its caller.

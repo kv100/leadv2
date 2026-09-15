@@ -98,7 +98,7 @@ assert_v1 05 sonnet integration_critical_4subsystems sonnet_exception 0 --intera
 assert_v1 06 sonnet ui_design_judgment sonnet_exception 0 --ui-judgment
 assert_v1 07 sonnet glm_lock_busy_no_second_channel sonnet_exception 0 --glm-lock-busy
 assert_v1 08 opus opus_only_kind opus_mission_kind 3 --kind architecture
-assert_v1 09 codex codex_fitting_kind codex_fitting_mission_kind 0 --kind codex_fitting_dev
+assert_v1 09 codex codex_fitting_kind codex_fitting_mission_kind 0 --kind productx_fitting_dev
 assert_v1 10 glm none glm_default 0 --glm-failures 2
 
 # Re-run the same matrix through the immutable v1 source and compare only the captured
@@ -108,7 +108,7 @@ for id in $(seq -w 1 10); do
     01) args=() ;; 02) args=(--protected) ;; 03) args=(--safety) ;;
     04) args=(--subsystems 4) ;; 05) args=(--interactive) ;; 06) args=(--ui-judgment) ;;
     07) args=(--glm-lock-busy) ;; 08) args=(--kind architecture) ;;
-    09) args=(--kind codex_fitting_dev) ;; 10) args=(--glm-failures 2) ;;
+    09) args=(--kind productx_fitting_dev) ;; 10) args=(--glm-failures 2) ;;
   esac
   run_case baseline "$BASELINE_BIN" 0 "$id" "${args[@]}" >/dev/null
 done

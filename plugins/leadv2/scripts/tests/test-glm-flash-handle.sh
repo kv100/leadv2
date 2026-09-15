@@ -199,7 +199,7 @@ D_OUT="$(
   LEADV2_DISPATCH_KIMI_BIN=/bin/false LEADV2_DISPATCH_CODEX_BIN=/bin/false \
   LEADV2_DISPATCH_SUBSESSION_BIN=/bin/false \
   ROUTE_TEST_QUOTA="$(arb_quota 10 20 20)" \
-  bash "${DISPATCH}" 'flash handle dispatch probe: mechanical edit round' --kind code --writes src/x.py 2>&1
+  bash "${DISPATCH}" 'flash handle dispatch probe: mechanical edit round' --kind product --writes src/x.py 2>&1
 )" || true
 rm -f "${FIXTURE}/dispatch-arb-state" 2>/dev/null || true
 

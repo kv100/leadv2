@@ -103,7 +103,7 @@ with tempfile.TemporaryDirectory(prefix='fgguard-reads-') as tmp:
     # ── Case 2 (block): real foreground executions ───────────────────────────
     execs = [
         ('direct guarded path',
-         'plugins/leadv2/scripts/leadv2-dispatch-code.sh --task t1 --kind code'),
+         'plugins/leadv2/scripts/leadv2-dispatch-code.sh --task t1 --kind product'),
         ('bash + script slot',
          'bash scripts/leadv2-fanout.sh --task t1 --writes a,b'),
         ('bash -c payload',
@@ -138,7 +138,7 @@ with tempfile.TemporaryDirectory(prefix='fgguard-reads-') as tmp:
 
     # ── Case 5 (mutant h-mut-2: never a launcher) must redden case 2 ────────
     m2 = hook_copy(root / 'mut2', mutant='h-mut-2')
-    rc, err = invoke(m2, 'plugins/leadv2/scripts/leadv2-dispatch-code.sh --task t1 --kind code')
+    rc, err = invoke(m2, 'plugins/leadv2/scripts/leadv2-dispatch-code.sh --task t1 --kind product')
     check('mut2 real foreground dispatch passes (case2 assertions would be RED)',
           rc == 0, f'rc={rc} err={err[:120]}')
     rc, _ = invoke(m2, 'bash scripts/leadv2-fanout.sh --task t1')

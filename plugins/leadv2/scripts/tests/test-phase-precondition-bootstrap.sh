@@ -354,7 +354,7 @@ run_dispatch() { # <mission> <out-file> [writes]
     LEADV2_ROUTE_ARBITER_STATE_FILE="${TMP_ROOT}/arb7" \
     ROUTE_TEST_QUOTA="$QUOTA_JSON" ROUTE_TEST_FREE_RC=1 \
     LEADV2_JUDGE_DISABLE=1 \
-    timeout 120 bash "$DC" "$mission" --kind code --task-class standard \
+    timeout 120 bash "$DC" "$mission" --kind product --task-class standard \
       --writes "$writes"
   ) >"$outf" 2>&1
   return $?

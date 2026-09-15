@@ -105,7 +105,7 @@ assert_argv "fable+plan -> --model fable (never sonnet)" \
 
 assert_argv "sonnet+code standard -> --model sonnet, medium effort" \
   '["--role", "developer", "--model", "sonnet", "--effort", "medium"]' \
-  --kind code --role developer --arm sonnet --task-class standard
+  --kind product --role developer --arm sonnet --task-class standard
 
 assert_argv "haiku+recon -> --model haiku, low effort" \
   '["--role", "developer", "--model", "haiku", "--effort", "low"]' \
@@ -131,11 +131,11 @@ verdict="$(python3 "$REGISTRY" --check --arm glm --model glm-5.3 2>&1)"
 # ── Part C: refusal reasons (never a silently substituted arm) ────────────
 assert_refused "fable+code -> not_a_build_arm (fable is a plan-only arm)" \
   "not_a_build_arm" \
-  --kind code --role developer --arm fable --task-class standard
+  --kind product --role developer --arm fable --task-class standard
 
 assert_refused "glm+code -> adapter_argv_not_registered (glm family intentionally out of scope)" \
   "adapter_argv_not_registered" \
-  --kind code --role developer --arm glm --task-class standard
+  --kind product --role developer --arm glm --task-class standard
 
 # ── Part D: pool_default is DATA (opus excluded from the default pool) ────
 out="$(python3 "$REGISTRY" --kind plan --role developer --arm opus --task-class strategic --json 2>&1)"

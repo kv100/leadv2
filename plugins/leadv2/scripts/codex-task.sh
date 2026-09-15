@@ -1834,7 +1834,7 @@ if [[ "$SUB" == "__deathwatch" ]]; then
   _dw_announce() {
     bash "${LEADV2_EVENT_BIN:-${_CODEX_SCRIPT_DIR}/leadv2-event.sh}" emit \
       --repo "$(printf '%s' "${3##*/}" | tr -cd 'A-Za-z0-9._-')" \
-      --kind codex_worker_died --arm codex --handle "$1" \
+      --kind productx_worker_died --arm codex --handle "$1" \
       --detail "cause=${2:-unknown} log=${4:--}" >/dev/null 2>&1 || true
     LEADV2_ARM_COOLDOWN_JOB="$1" arm_cooldown_record codex "${2:-worker_died}" >/dev/null 2>&1 || true
   }

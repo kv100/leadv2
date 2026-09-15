@@ -196,7 +196,7 @@ run_dispatch() { # <repo_dir> <freepool_stub> <unique-mission> [dispatch_bin]
    LEADV2_DISPATCH_CODEX_BIN="$TMP/poison-codex.sh" \
    LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
    bash "${4:-$DISPATCH_BIN}" "FP-06 telemetry probe $3" \
-     --kind code --task-class bulk --writes src/x.py 2>&1 || true)
+     --kind product --task-class bulk --writes src/x.py 2>&1 || true)
 }
 
 # every field, present and parseable (shared by win and fail rows)

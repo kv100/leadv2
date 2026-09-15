@@ -280,7 +280,7 @@ dispatch_in_repo() { # <mission> [args...] -> dispatch stdout+stderr
 }
 
 # S6a: full resolve->spawn on sonnet with the REAL claude-subsession.sh.
-S6A_OUT="$(dispatch_in_repo 'balancer-every-arm S6 sonnet end to end' --kind code --writes src/main.py)" || true
+S6A_OUT="$(dispatch_in_repo 'balancer-every-arm S6 sonnet end to end' --kind product --writes src/main.py)" || true
 S6_SIG8="$(printf '%s\n' "$S6A_OUT" | sed -n 's/.*worker_spawned model=sonnet task=\([a-z0-9]*\).*/\1/p' | head -1)"
 if [[ -z "$S6_SIG8" ]]; then
   fail "S6-dispatch-sonnet-profile-journaled" "no worker_spawned line — spawn did not reach sonnet: $S6A_OUT"
@@ -305,7 +305,7 @@ else
 fi
 
 # S6c: --requested-profile on a NON-Claude arm is dropped LOUDLY, not silently.
-S6C_OUT="$(dispatch_in_repo 'balancer-every-arm S6 pin drop on glm' --kind code --writes src/main2.py \
+S6C_OUT="$(dispatch_in_repo 'balancer-every-arm S6 pin drop on glm' --kind product --writes src/main2.py \
   --requested-arm glm --requested-profile alpha)" || true
 check_grep "$S6C_OUT" 'claude_profile_pin_dropped .* arm=glm .*requested=alpha' 'S6-pin-drop-journaled: a profile pin on a non-Claude arm is journaled as dropped, never silently ignored'
 

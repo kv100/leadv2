@@ -147,7 +147,7 @@ run_dispatch() {
     LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/arb-$tag" \
     ROUTE_TEST_QUOTA="$(quota_json 1 1 1)" ROUTE_TEST_FREE_RC=1 \
     LEADV2_TEST_SPAWN_DIR="$TMP/spawn-$tag" \
-    timeout 120 bash "$DC" "$mission" --kind code --task-class standard \
+    timeout 120 bash "$DC" "$mission" --kind product --task-class standard \
       --writes src/x.py >"$TMP/$tag.out" 2>&1
   )
   return $?

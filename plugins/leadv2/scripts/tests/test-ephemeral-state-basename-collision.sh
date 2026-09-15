@@ -83,7 +83,7 @@ run_disp() {  # <dispatch-bin> <repo> <tag> -> full output of one --no-spawn dis
   LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
   LEADV2_REQUIRE_PHASES=0 LEADV2_DISPATCH_SUBSESSION_BIN="${WORKER}" \
-  bash "$1" "same-basename collision probe" --kind code --no-spawn --no-probe-yet \
+  bash "$1" "same-basename collision probe" --kind product --no-spawn --no-probe-yet \
        --writes "src/shared-$3.py" 2>&1 || true )
 }
 

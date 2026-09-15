@@ -303,7 +303,7 @@ D_OUT="$(
   LEADV2_DISPATCH_KIMI_BIN=/bin/false LEADV2_DISPATCH_CODEX_BIN=/bin/false \
   LEADV2_DISPATCH_SUBSESSION_BIN=/bin/false \
   ROUTE_TEST_QUOTA="$(arb_quota 10 20 20)" \
-  bash "${DISPATCH}" 'flash dispatch probe: mechanical edit round' --kind code --writes src/x.py 2>&1
+  bash "${DISPATCH}" 'flash dispatch probe: mechanical edit round' --kind product --writes src/x.py 2>&1
 )" || true
 rm -f "${FIXTURE}/dispatch-arb-state" 2>/dev/null || true
 if grep -q '^GLM_MODEL=glm-5.3-flash$' "${RECORD}" 2>/dev/null; then
@@ -430,7 +430,7 @@ dispatch_refusal() { # <quota|lock>
   LEADV2_DISPATCH_CODEX_BIN=/bin/false LEADV2_DISPATCH_SUBSESSION_BIN=/bin/false \
   LEADV2_ROUTER_V2_BIN="${FIXTURE}/router-v2-record.sh" LEADV2_JOURNAL_BIN="${FIXTURE}/journal.sh" JOURNAL_TASK="glm-flash-$1" \
   ROUTE_TEST_QUOTA="$(arb_quota 10 20 20)" \
-  bash "${DISPATCH}" "flash $1 refusal probe" --kind code --writes src/x.py >/dev/null 2>&1 || true
+  bash "${DISPATCH}" "flash $1 refusal probe" --kind product --writes src/x.py >/dev/null 2>&1 || true
 }
 dispatch_refusal quota
 if grep -q 'arm_refused by=router model=glm-flash.*glm_refused_quota_gate' "${JOURNAL_RECORD}" \

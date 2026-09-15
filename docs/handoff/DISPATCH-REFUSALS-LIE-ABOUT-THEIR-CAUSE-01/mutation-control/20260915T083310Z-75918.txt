@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-dispatch-refusal-truth.sh
+file=plugins/leadv2/scripts/leadv2_tasks_yaml_common.py
+anchor=s/("id", "external_id", "node_id")/("id", "node_id")/
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: D3 external_id resolution mismatch rc=8: [leadv2-dispatch-code] WARN: foreign project root detected (env=/Users/kostiantyn.vlasenko/Projects/leadv2 cwd=/Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/leadv2-mutctl.N5bCa9) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01) [leadv2-dispatch-code] premise_probe task=truthd301 verdict=refused reason=backlog_row_not_found [leadv2-dispatch-code] ERROR: premise refused: reason=backlog_row_not_found task=truthd301 founder=EXTERNAL-ROW-01 -- no docs/tasks.yaml or markdown backlog row matches this id (searched keys: id, external_id, node_id, intent); use --no-probe-yet only for deliberately ad-hoc work (audited with actor and why) 
+diff_hash=2b2c1fa4381cfc91cbe6c895c7f4b58ae024127dd17e1aad1261651f5252678c
+lane_diff_hash=926c27a3cf2980b7ad0d9692ce37627322338f894f828394c8bb4a6efe6662f0

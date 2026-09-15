@@ -78,7 +78,7 @@ expect_rc() { # <label> <actual> <want>
 check_opus_spawn() {
 # Explicit opus must reach the worker process, not the historical park.
 REPO_OPUS="$TMP/repo-opus"; setup_repo "$REPO_OPUS"
-out="$(REACH_LEGACY_RESOLVER="$TMP/legacy-opus.py" REACH_SPAWN=1 run_dispatch "$DISPATCH_BIN" "$REPO_OPUS" opus "$HEALTHY" --kind safety --pin-arm opus)"
+out="$(REACH_LEGACY_RESOLVER="$TMP/legacy-opus.py" REACH_SPAWN=1 run_dispatch "$DISPATCH_BIN" "$REPO_OPUS" opus "$HEALTHY" --kind product --safety --pin-arm opus)"
 REACH_RC=$?
 printf '%s\n' "$out" > "$TMP/opus.log"
 if ! printf '%s\n' "$out" | grep -q 'arm_resolved job=build arm=opus'; then
@@ -194,7 +194,7 @@ printf '%s\n' "$out" | grep -q 'dispatch_refused reason=pin_and_pool_conflict' \
 
 # A genuinely incapable kind stays refused through the real registry.
 REPO_G7="$TMP/repo-g7"; setup_repo "$REPO_G7"
-out="$(run_dispatch "$DISPATCH_BIN" "$REPO_G7" g7 "$HEALTHY" --kind code --pin-arm fable)"
+out="$(run_dispatch "$DISPATCH_BIN" "$REPO_G7" g7 "$HEALTHY" --kind product --pin-arm fable)"
 REACH_RC=$?
 printf '%s\n' "$out" > "$TMP/g7.log"
 if [[ "$REACH_RC" == 4 ]] && printf '%s\n' "$out" | grep -q 'requested_arm_'; then

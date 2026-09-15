@@ -111,7 +111,7 @@ EXTERNAL_GLM='d.get("ok") is False and d.get("reason") == "adapter_argv_not_regi
 
 assert_green "glm+code/worker: refused AND scoped -- glm-coder.sh owns it, not 'cannot launch'" \
   "$EXTERNAL_GLM" \
-  --kind code --role worker --arm glm --task-class standard
+  --kind product --role worker --arm glm --task-class standard
 
 assert_green "glm+review/reviewer: same honest scope (B2's cheapest_capable reviewer)" \
   "$EXTERNAL_GLM" \
@@ -119,24 +119,24 @@ assert_green "glm+review/reviewer: same honest scope (B2's cheapest_capable revi
 
 assert_green "glm-flash+code: external via the glm provider's adapter" \
   "$EXTERNAL_GLM" \
-  --kind code --role worker --arm glm-flash --task-class standard
+  --kind product --role worker --arm glm-flash --task-class standard
 
 assert_green "freepool+code: external, freepool-coder.sh" \
   'd.get("ok") is False and d.get("reason") == "adapter_argv_not_registered" and d.get("adapter_scope") == "external" and d.get("external_adapter") == "freepool-coder.sh"' \
-  --kind code --role worker --arm freepool --task-class standard
+  --kind product --role worker --arm freepool --task-class standard
 
 # Confirmed deliberate (see header) — pinned so a future change to the build
 # set or the matrix cannot silently make opus/haiku code arms.
 for _a in opus haiku; do
   assert_green "${_a}+code -> not_a_build_arm is DELIBERATE (absent from DISPATCHABLE_BUILD_ARMS; matrix row carries no code kind)" \
     'd.get("ok") is False and d.get("reason") == "not_a_build_arm"' \
-    --kind code --role worker --arm "$_a" --task-class standard
+    --kind product --role worker --arm "$_a" --task-class standard
 done
 
 # Sanity: declaring scope widened nothing — the registry's OWN arms are green.
 assert_green "sonnet+code still ok:true as itself" \
   'd.get("ok") is True and d.get("model") == "sonnet"' \
-  --kind code --role worker --arm sonnet --task-class standard
+  --kind product --role worker --arm sonnet --task-class standard
 
 assert_green "codex+review still ok:true as itself" \
   'd.get("ok") is True' \
@@ -156,7 +156,7 @@ YEOF
 export LEADV2_ROUTE_ARBITER_ROUTING_YAML="${TMPD}/fixture-routing.yaml"
 assert_green "guard: unregistered provider (madeup-provider on a build arm) is a BARE refusal — no adapter_scope" \
   'd.get("ok") is False and d.get("reason") == "adapter_argv_not_registered" and "adapter_scope" not in d' \
-  --kind code --role worker --arm glm --task-class standard
+  --kind product --role worker --arm glm --task-class standard
 
 assert_green "guard: an arm absent from the matrix entirely is refused" \
   'd.get("ok") is False' \
@@ -253,7 +253,7 @@ if mutate "$MUTANT_A" "${TMPD}/needle_a" "${TMPD}/repl_a"; then
   assert_mutant_red "$MUTANT_A" \
     "mutant A caught: glm+code scope assertion fails on the old unqualified refusal" \
     "$EXTERNAL_GLM" \
-    --kind code --role worker --arm glm --task-class standard
+    --kind product --role worker --arm glm --task-class standard
   if python3 "${TMPD}/one_answer.py" "$MUTANT_A" >/dev/null 2>&1; then
     fail "NEGATIVE CONTROL FAILED: one-answer theorem still held with the scope branch stripped (glm reads unlaunchable again)"
   else
@@ -289,12 +289,12 @@ if mutate "$MUTANT_B" "${TMPD}/needle_b1" "${TMPD}/repl_b1" \
   assert_mutant_red "$MUTANT_B" \
     "mutant B caught: glm+code must not answer ok:true (a scope refusal is not a launch)" \
     "$EXTERNAL_GLM" \
-    --kind code --role worker --arm glm --task-class standard
+    --kind product --role worker --arm glm --task-class standard
   export LEADV2_ROUTE_ARBITER_ROUTING_YAML="${TMPD}/fixture-routing.yaml"
   assert_mutant_red "$MUTANT_B" \
     "mutant B caught: unregistered provider probe must stay refused (approve-everything is worse than the bug)" \
     'd.get("ok") is False and d.get("reason") == "adapter_argv_not_registered" and "adapter_scope" not in d' \
-    --kind code --role worker --arm glm --task-class standard
+    --kind product --role worker --arm glm --task-class standard
   unset LEADV2_ROUTE_ARBITER_ROUTING_YAML
 else
   fail "mutant B setup: mutation anchor drifted (registry source shape changed, fix this test)"

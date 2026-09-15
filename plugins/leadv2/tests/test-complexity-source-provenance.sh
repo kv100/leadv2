@@ -203,7 +203,7 @@ run_dispatch() { # <bin> <repo> <suffix> -> dispatch stdout on stdout
     LEADV2_PREMISE_OVERRIDE_REASON="synthetic fixture repo has no docs/tasks.yaml backlog (ARBITER-SCORING-DESIGN-01 provenance harness)" \
     _lv2_selfcheck_timeout_run "${RUN_DISPATCH_TIMEOUT_S}" "${rd_log}" -- \
       bash "$bin" "cx-source suite $suffix ${TMP}" \
-      --kind code --no-spawn --no-probe-yet --writes src/x.py "$@")
+      --kind product --no-spawn --no-probe-yet --writes src/x.py "$@")
   local rd_rc=$?
   cat "${rd_log}" 2>/dev/null
   [[ ${rd_rc} -eq 124 ]] && printf '\n[cx-source-harness] run_dispatch TIMED OUT after %ss (suite=%s) -- treated as environment/harness limitation, not a provenance assertion failure\n' "${RUN_DISPATCH_TIMEOUT_S}" "$suffix" >&2

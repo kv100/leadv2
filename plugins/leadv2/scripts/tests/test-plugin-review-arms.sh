@@ -174,7 +174,7 @@ printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/journal-capture.txt"\n'
 chmod +x "$FAKE_JOURNAL"
 
 out3="$(dispatch_env LEADV2_JOURNAL_BIN="$FAKE_JOURNAL" bash "$STALE/leadv2-dispatch-code.sh" \
-    'stale tree refusal probe' --kind code --writes src/main.py --no-spawn 2>&1)" ; rc3=$?
+    'stale tree refusal probe' --kind product --writes src/main.py --no-spawn 2>&1)" ; rc3=$?
 if [[ "$rc3" -eq 4 ]]; then
   pass "T3a: stale-tree dispatch exits 4"
 else
@@ -200,7 +200,7 @@ fi
 rm -f "$ROOT/journal-capture.txt"
 out4="$(dispatch_env LEADV2_ALLOW_STALE_SCRIPT_TREE=1 LEADV2_JOURNAL_BIN="$FAKE_JOURNAL" \
   bash "$STALE/leadv2-dispatch-code.sh" \
-    'stale tree escape hatch probe' --kind code --writes src/main.py --no-spawn 2>&1)" ; rc4=$?
+    'stale tree escape hatch probe' --kind product --writes src/main.py --no-spawn 2>&1)" ; rc4=$?
 if [[ "$rc4" -ne 4 ]]; then
   pass "T4a: escape hatch does not refuse (rc=${rc4})"
 else
@@ -216,7 +216,7 @@ fi
 run_pass_tree() { # <script_path> <label>
   local out rc
   out="$(dispatch_env LEADV2_JOURNAL_BIN="$FAKE_JOURNAL" bash "$1" \
-      "legitimate tree probe $2" --kind code --writes src/main.py --no-spawn 2>&1)" ; rc=$?
+      "legitimate tree probe $2" --kind product --writes src/main.py --no-spawn 2>&1)" ; rc=$?
   if [[ "$rc" -eq 4 ]]; then
     fail "T5($2)" "refused (rc=4) -- legitimate tree must pass the suffix check"
     return

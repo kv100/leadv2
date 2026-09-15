@@ -139,7 +139,7 @@ run_detector() { # <fixture-file> -> hazard lines on stdout
 cat > "${WORK}/hazard.sh" <<'FIX'
 d="$(mktemp -d)"
 git -C "$d" init -q
-CLAUDE_PROJECT_ROOT="$d" bash "${DC}" "mission" --kind code
+CLAUDE_PROJECT_ROOT="$d" bash "${DC}" "mission" --kind product
 FIX
 HAZARD_OUT="$(run_detector "${WORK}/hazard.sh")"
 if [[ -n "${HAZARD_OUT}" ]]; then
@@ -152,7 +152,7 @@ fi
 cat > "${WORK}/safe-cd.sh" <<'FIX'
 d="$(mktemp -d)"
 git -C "$d" init -q
-( cd "$d" && CLAUDE_PROJECT_ROOT="$d" bash "${DC}" "mission" --kind code )
+( cd "$d" && CLAUDE_PROJECT_ROOT="$d" bash "${DC}" "mission" --kind product )
 FIX
 SAFE_CD_OUT="$(run_detector "${WORK}/safe-cd.sh")"
 if [[ -z "${SAFE_CD_OUT}" ]]; then
@@ -165,7 +165,7 @@ fi
 cat > "${WORK}/safe-stateroot.sh" <<'FIX'
 d="$(mktemp -d)"
 git -C "$d" init -q
-CLAUDE_PROJECT_ROOT="$d" LEADV2_STATE_ROOT="$d/state" bash "${DC}" "mission" --kind code
+CLAUDE_PROJECT_ROOT="$d" LEADV2_STATE_ROOT="$d/state" bash "${DC}" "mission" --kind product
 FIX
 SAFE_SR_OUT="$(run_detector "${WORK}/safe-stateroot.sh")"
 if [[ -z "${SAFE_SR_OUT}" ]]; then
@@ -179,7 +179,7 @@ cat > "${WORK}/safe-export.sh" <<'FIX'
 export LEADV2_STATE_BASE="/tmp/whatever/state"
 d="$(mktemp -d)"
 git -C "$d" init -q
-CLAUDE_PROJECT_ROOT="$d" bash "${DC}" "mission" --kind code
+CLAUDE_PROJECT_ROOT="$d" bash "${DC}" "mission" --kind product
 FIX
 SAFE_EXP_OUT="$(run_detector "${WORK}/safe-export.sh")"
 if [[ -z "${SAFE_EXP_OUT}" ]]; then
@@ -193,7 +193,7 @@ fi
 cat > "${WORK}/no-root.sh" <<'FIX'
 d="$(mktemp -d)"
 git -C "$d" init -q
-bash "${DC}" "mission" --kind code
+bash "${DC}" "mission" --kind product
 FIX
 NO_ROOT_OUT="$(run_detector "${WORK}/no-root.sh")"
 if [[ -z "${NO_ROOT_OUT}" ]]; then
