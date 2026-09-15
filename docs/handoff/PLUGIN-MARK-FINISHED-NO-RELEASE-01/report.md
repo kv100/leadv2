@@ -123,6 +123,157 @@ both standalone-with-fix and at baseline — they only "fail" inside the full co
 
 DELIVERABLE_COMPLETE
 
+## Round 3
+
+### Branch traced before the fix
+
+The successful-but-unreleased path was the stale-only terminal loop at
+`plugins/leadv2/scripts/leadv2-active-registry.sh:1001-1006`. It selected the
+correct `dispatch-2c6e1405` task id, but only stamped terminal fields and
+`stale: true`. The measured row was already `stale: true`, so this path could
+return `0` while retaining its material `writes` claim. The dispatch-time
+overlap reader can inspect that claim once liveness has resolved the row as
+alive; it does not treat the row's stale flag as a substitute for an absent
+claim.
+
+### Fix and live-shape fixture
+
+`mark_finished` now removes both supported claim keys, `writes` and the
+legacy `write_set`, for every matching non-recovery-owned duplicate at
+`leadv2-active-registry.sh:1001-1008`. Its post-write readback now refuses
+with `rc=9` if any matching row remains live, lacks the requested terminal
+status, or still carries either claim key (`:1169-1192`). The terminal
+tombstone remains, so PULSE-01 status reads are preserved.
+
+Test 2 copies the live row shape into a fixture, including:
+
+```
+session_id: s-20260915T030041Z-1-62617
+task_id: dispatch-2c6e1405
+phase: spawning
+stale: true
+dead_at: '2026-09-15T08:25:42Z'
+updated_at: '2026-09-15T08:27:14Z'
+lane_events: [{at: '2026-09-15T08:25:42Z', event: reconciled_dead}]
+```
+
+It retains the supplied `writes` string verbatim, invokes the real
+`leadv2-writes-overlap.sh` with a fixture liveness result, and re-reads
+`active.yaml` after `mark_finished`. The observed dispatch-time result is a
+conflict before finish and no conflict after finish; the re-read also requires
+that neither claim key remains. Test 3 retains the duplicate-row property;
+Test 4 retains the unregistered non-zero property; Test 5 retains the
+atomic-write corruption property.
+
+### Focused regression, restored green
+
+```
+$ bash -n plugins/leadv2/scripts/leadv2-active-registry.sh
+$ bash -n plugins/leadv2/scripts/tests/test-mark-finished-releases-writeset.sh
+$ timeout 120 bash plugins/leadv2/scripts/tests/test-mark-finished-releases-writeset.sh
+[TEST] PASS: 1: bash -n leadv2-active-registry.sh
+[TEST] PASS: 2: copied live stale/dead/spawning dispatch row loses material writes claim (overlap before=hit after=clear)
+[TEST] PASS: 3: two duplicate rows released (before a/b=5/5, after a/b=0/0, rows=2 stale=True)
+[TEST] PASS: 4: unregistered task_id -> rc=4 (non-zero), active.yaml byte-identical
+[TEST] PASS: 5: forced os.replace rc=1 and forced yaml.dump rc=1 leave active.yaml byte-identical
+
+=== Results: 5 passed, 0 failed ===
+```
+
+### Negative controls — all RUN via `leadv2-mutation-control.sh`
+
+#### 1. Restore stale-only release — RED, then restored green
+
+Artifact: `mutation-control/20260915T085645Z-live-86290.txt`.
+
+```
+suite=plugins/leadv2/scripts/tests/test-mark-finished-releases-writeset.sh
+file=plugins/leadv2/scripts/leadv2-active-registry.sh
+anchor=s/target.pop("writes", None)/target["writes"] = target.get("writes")/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 2: before=[task=CANDIDATE other=dispatch-2c6e1405 paths=plugins/leadv2/scripts/leadv2-orphan-reaper.sh] finish_rc=9 after=[task=CANDIDATE other=dispatch-2c6e1405 paths=plugins/leadv2/scripts/leadv2-orphan-reaper.sh] released=False
+porcelain_clean=yes
+restored=yes
+```
+
+Restored suite line:
+
+```
+[TEST] PASS: 2: copied live stale/dead/spawning dispatch row loses material writes claim (overlap before=hit after=clear)
+```
+
+#### 2. Restore first-match-only release — RED, then restored green
+
+Artifact: `mutation-control/20260915T085745Z-live-21919.txt`.
+
+```
+suite=plugins/leadv2/scripts/tests/test-mark-finished-releases-writeset.sh
+file=plugins/leadv2/scripts/leadv2-active-registry.sh
+anchor=s/targets = \[s for s in sessions if s.get("task_id") == task_id\]/targets = [next(s for s in sessions if s.get("task_id") == task_id)]/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 3: before_a/b=5/5 finish_rc=9 after_a/b=0/5 released=False
+porcelain_clean=yes
+restored=yes
+```
+
+Restored suite line:
+
+```
+[TEST] PASS: 3: two duplicate rows released (before a/b=5/5, after a/b=0/0, rows=2 stale=True)
+```
+
+#### 3. Restore a truncating direct write — RED, then restored green
+
+Artifact: `mutation-control/20260915T085818Z-live-43634.txt`.
+
+```
+suite=plugins/leadv2/scripts/tests/test-mark-finished-releases-writeset.sh
+file=plugins/leadv2/scripts/leadv2-active-registry.sh
+anchor=s|os.replace(tmp_path, yaml_path)|with open(yaml_path, "w", encoding="utf-8") as _trunc: yaml.dump(data, _trunc, default_flow_style=False, sort_keys=False)|
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 5: replace_rc=1 replace_intact=0 dump_rc=4 dump_intact=0
+porcelain_clean=yes
+restored=yes
+```
+
+Restored suite line:
+
+```
+[TEST] PASS: 5: forced os.replace rc=1 and forced yaml.dump rc=1 leave active.yaml byte-identical
+```
+
+### Required falsification set and changed-scope runner
+
+The shell syntax checks and focused five-property suite above are the required
+falsification set. No standalone Python files changed; the embedded Python
+writer is executed by the focused fixture.
+
+Raw bounded changed-scope command and terminal result:
+
+```
+$ LEADV2_SUITE_LOCK_WAIT_S=1 LEADV2_RUN_ALL_SUITE_TIMEOUT_S=30 timeout 180 bash tests/run-all.sh --scope changed
+[CORE-OFFLINE] FATAL lock_timeout file=/tmp/leadv2-core-offline--Users-kostiantyn-vlasenko-Projects-leadv2--claude-worktrees-05b67577.lock wait_s=1 holder=pid=68139 host=UA-K-VLASENKO-LT-2.local since=2026-09-15T09:02:12Z
+[SUITE-TIMEOUT] tests/test-status-surface-bash32.sh exceeded 30s ceiling (killed by run-all; counted as a blocking failure with a named cause)
+[TEST] FAIL: Test 1: expected rc=0, got rc=1
+[TEST] FAIL: Test 2b: control did not behave as expected (baseline_rc=1 mutated_rc=1 mutant_is_red=1 restored_rc=1)
+[SUITE-TIMEOUT] plugins/leadv2/scripts/tests/test-codex-session-runner.sh exceeded 30s ceiling (killed by run-all; counted as a blocking failure with a named cause)
+CHANGED_SCOPE_RC=124
+```
+
+The changed-scope runner did not reach a green terminal verdict: its first
+core-offline attempt was lock-refused by a stale holder record, and the bounded
+run then timed out after reporting the named unrelated failures above. The
+focused regression completed green after all mutations; no live registry file
+was read or edited by this work.
+
+DELIVERABLE_COMPLETE
+
 ## Round 2
 
 ### H1 selector decision: release every safe duplicate atomically
@@ -248,5 +399,14 @@ The aggregate runner timed out after its focused regression passed. Its 13
 other reds include sandbox-denied `/bin/ps` and `mktemp` operations and suites
 outside this diff; none name `mark_finished`'s new duplicate or atomic-write
 paths.
+
+DELIVERABLE_COMPLETE
+
+## Round 3 completion
+
+The Round 3 evidence above is the final append-only result: the stale-only
+success path was replaced with material write-claim removal, the copied live
+shape is green, all three live mutation controls went red and restored, and
+the changed-scope runner's non-green bounded result is recorded verbatim.
 
 DELIVERABLE_COMPLETE
