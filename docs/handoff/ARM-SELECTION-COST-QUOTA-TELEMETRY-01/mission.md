@@ -204,3 +204,80 @@ Re-run the three suites from the table above, paired against main, and put the t
 with real exit codes. `test-arbiter-reads-capability-floor.sh` must still be red in BOTH columns — if
 it goes green on your branch, say so, because that would mean you changed something nobody asked you
 to change.
+
+## ROUND 3 (lead, 2026-09-16) — your code is sound; the e2e death was false and the review never ran
+
+Round 2 ended `terminal=dead cause=e2e_regression`. **That verdict is false, and the lead proved it
+rather than arguing it.** Do not revert anything. This round exists for two reasons only: the review
+never happened, and one stale red suite is blocking the gate.
+
+### What the lead measured before writing this
+
+Every suite whose name mentions arbiter, routing, router, quota, headroom, reset-urgency, balancer,
+capability, effort, fable or arm-selection was run twice — once at the merge base `8e39c60b` in a
+detached worktree, once on this lane's branch. **46 suites. Zero green-to-red.** The only row that
+moved at all is your own new suite, absent at the base and green on the branch.
+
+The gate's blocking failure is named in its own log:
+
+```
+  Failures (blocking):
+    - plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
+run-all: 24 passed, 23 failed, 0 known-red (allow-listed, non-blocking), ... scope=changed
+```
+
+Paired, that suite is:
+
+| suite | merge base `8e39c60b` | this branch |
+|---|---|---|
+| `test-arm-capability-honoured.sh` | rc=1 | rc=1 |
+
+**Already red before you touched anything.** It is simply not in the allow-list, so it blocks instead
+of being tolerated. Its own failure text says the rot: `mutation did not flip the outcome -- control
+is not falsifiable` — a negative control that no longer discriminates. That is a defect in the suite,
+not in the arbiter.
+
+The lane's own three suites are green on the branch, verified by the lead directly:
+`test-fable-is-priced-from-its-own-window.sh` 12/0, `test-arm-selection-decision-fixtures-01.sh` 44/0,
+`test-arm-selection-cost-quota-telemetry-01.sh` 14/0.
+
+### Why there is no review verdict
+
+At 18:52 the journal reads `review_gate status=blocked reason=arm_quota_failed action=arm_advanced
+arm=glm` — glm hit its quota mid-lane, the arm advanced to sonnet, sonnet finished the build, and the
+lane died at the e2e gate before any reviewer ran. So round 2's diff is **unreviewed**. That is the
+real reason this round exists; the lead will not merge unreviewed code into main on its own say-so.
+
+### What round 3 must deliver
+
+1. **Get the diff reviewed.** No new feature work. If the reviewer raises findings, take each on its
+   merits — fix it, or decline it in the report with a reason.
+2. **Allow-list the stale red**, per the founder's standing decision of 2026-09-01 on
+   `SD-MAIN-CORE-SUITE-RED-01`, whose approved option is *«лендить + задача»*: land the lane, file a
+   row for the suite. Add one entry to `tests/known-red-suites.txt` in the existing format, naming
+   the paired evidence (rc=1 at `8e39c60b`, rc=1 here) and the date. Do **not** edit
+   `test-arm-capability-honoured.sh` itself — repairing a rotted negative control is its own job with
+   its own row, and doing it inside this lane would hide a real repair inside an economics change.
+3. **Report the paired table above as your own measurement**, not as a quote from this brief. Re-run
+   it if you want it to be yours; that is cheaper than being wrong about it.
+
+### Acceptance
+
+- A review verdict recorded for this diff.
+- `tests/known-red-suites.txt` carries exactly one new entry, with its paired evidence.
+- The three lane suites still green, by name with exit codes.
+- `test-arm-capability-honoured.sh` still rc=1 on BOTH sides — if it goes green on your branch, stop
+  and say so, because that would mean you changed something nobody asked you to change.
+
+### Out of scope
+
+- `plugins/leadv2/config/leadv2-routing.yaml` — the sibling lane owns it and has already landed.
+- Repairing `test-arm-capability-honoured.sh`.
+- Any new arbiter behaviour. Round 2's four changes are final.
+
+### Write set
+
+```
+tests/known-red-suites.txt
+docs/handoff/ARM-SELECTION-COST-QUOTA-TELEMETRY-01/report.md
+```
