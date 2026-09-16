@@ -1,0 +1,19 @@
+arms: glm
+fanout: 1/1 degraded=false launched=1 pool_ok=4 source=pool reason=none excluded=codex=blocked:98,kimi=excluded:safety,fable=ok:18,opus=ok:29,sonnet=ok:29
+unreadable: none
+verified: 0/0
+mission_source: docs/handoff/ARM-SELECTION-COST-QUOTA-TELEMETRY-01/mission.md
+mission_snapshot: docs/handoff/dispatch-cdd7a22b/review-mission-source.md
+mission_sha256: 5349ae5bc6453be855c7bc2db499d7e705f836a363237879f82e3c57a8c8dc05
+mission_bytes: 18883
+diff_bytes: 49541
+review_input_bytes: 68424
+correctness_verdict: PASS_WITH_NITS
+mission_verdict: PASS_WITH_NITS
+status: pass
+reviewer: glm
+diff: 5d05495b
+findings_source: none
+findings: unavailable
+findings_reason: parse_failed
+report: docs/handoff/dispatch-ARM-SELECTION-COST-QUOTA-TELEMETRY-01/review-glm.md
