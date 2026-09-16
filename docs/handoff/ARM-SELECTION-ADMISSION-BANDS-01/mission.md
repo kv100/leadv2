@@ -163,3 +163,94 @@ an explicit separately recorded choice." That is a verification and telemetry jo
 
 `plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh` — the sibling lane owns it and is mid-round-2
 there right now. Do not touch it.
+
+## ROUND 3 (lead, 2026-09-16) — the merge landed a green-to-red suite. Two assertions, no behaviour change.
+
+Round 2 is otherwise accepted. The critical is genuinely fixed and the lead verified it on main after
+the merge, not from the report:
+
+```
+$ grep -n "arm: opus, provider: claude, model:" plugins/leadv2/config/leadv2-routing.yaml
+421:    - { arm: opus, provider: claude, model: opus, ... }
+$ python3 plugins/leadv2/scripts/lib/leadv2-launch-registry.py --check --arm opus --model opus
+ok
+```
+
+`test-arm-selection-admission-bands-01.sh` is 32/0 on main. That part is done.
+
+### What was missed, and it is the lead's finding not the reviewer's
+
+`plugins/leadv2/scripts/tests/test-spawn-speakable-pool.sh` was **green before this merge and is red
+after it**. Paired by the lead in a detached worktree at the pre-merge commit `c5d425a4`:
+
+| | pre-merge `c5d425a4` | main after merge `9d496bdb` |
+|---|---|---|
+| `test-spawn-speakable-pool.sh` | rc=0, pass=26 fail=0 | rc=1, pass=24 fail=2 |
+
+It is NOT in the lane's `pre_existing_red` list, and correctly so — it was not red before. The e2e
+gate only ever names suites that were already red; a suite this lane turned red is invisible to it.
+That is exactly the shape a lane must catch itself.
+
+The two failures:
+
+```
+FAIL: D2 tokens missing: arm=refuse ... reason=pool_empty_all_excluded kind=recon ...
+FAIL: H2 mutation did not reproduce the defect: arm=glm-flash kind=recon model=glm-5.3-flash
+      tier=standard effort=low reason=cheapest_capable chain=glm-flash,co...
+```
+
+### Both have one cause, and the behaviour is CORRECT
+
+The suite hardcodes the pre-change recon membership:
+
+- `:99` — D2 asserts the exclusion list is exactly
+  `arm_excluded=freepool:not_in_pool,haiku:not_in_pool`. Recon used to be freepool/haiku-only. Item 5
+  of this mission deliberately added flash and luna, so the list legitimately grew.
+- `:151` — H2 asserts that after the mutation strips the speakable filter, **freepool** answers the
+  recon auction. Flash answers now instead, at `cost 0.33` against freepool's `1.0`, by
+  `cheapest_capable`. The mutation still bites; only the name of the arm that bites changed.
+
+The report at lines 38-40 says the bare-spawn gate's hardcoded pool
+(`hooks/leadv2-spawn-arbiter-gate.sh:62`) is unchanged, and that is true. What it missed is that this
+suite's D and H cases drive the **arbiter's** recon auction, not the hook's list, and that auction did
+change by design.
+
+So do **not** revert the recon eligibility. This round updates two assertions and nothing else.
+
+### What round 3 must deliver
+
+1. **D2** — assert the real post-change exclusion list. Produce it from an actual run rather than by
+   editing the string by hand, and leave a one-line comment saying recon membership grew by founder
+   proposal §4.1 item 5 on 2026-09-16, so the next reader does not "fix" it back.
+2. **H2** — keep the negative control discriminating. Its point is that with the speakable filter
+   stripped, an arm from OUTSIDE the speakable set `{sonnet, opus, haiku, fable}` answers. Assert
+   that property, and additionally name the arm you currently expect, so a silent membership change
+   still fails the case instead of passing on a weakened predicate. A control that now accepts any
+   arm at all is worse than the red you are clearing.
+3. **H0 must stay exactly as it is** — it asserts `arm=haiku` for the unmutated in-pool auction and it
+   passes. If your change to H2 makes H0 pass for a new reason, you have broken the pair.
+4. **Sweep for other green-to-red suites from this merge.** Pair every suite whose name mentions
+   routing, arbiter, spawn, pool, recon or capability against the pre-merge commit `c5d425a4` the same
+   way the lead did — a detached worktree, never a reset or a stash in this checkout, five sessions
+   share the index. Report a table with both columns. If another one moved, say so; fix it only if it
+   has the same suite-is-stale cause, and escalate rather than fix if it is a real behaviour defect.
+
+### Acceptance
+
+- `test-spawn-speakable-pool.sh` green, with the pre/post table in the report showing 26/0 before,
+  red at 24/2 after the merge, and green again after this round with the case count stated.
+- `test-arm-selection-admission-bands-01.sh` still 32/0 — untouched.
+- The negative control proven, not asserted: restore the speakable filter and show H2 goes red again.
+- The green-to-red sweep table, with the paired commit named.
+
+### Out of scope
+
+`plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh` — the sibling lane `dacaf22f` is live in it right
+now. Do not touch it. No config changes: `leadv2-routing.yaml` is correct as merged.
+
+### Write set
+
+```
+plugins/leadv2/scripts/tests/test-spawn-speakable-pool.sh
+docs/handoff/ARM-SELECTION-ADMISSION-BANDS-01/report.md
+```
