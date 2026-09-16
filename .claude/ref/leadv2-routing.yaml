@@ -69,3 +69,47 @@ router:
       - "plugins/leadv2/hooks/*"
       - "plugins/leadv2/config/*"
       - ".claude/settings.json"
+
+  # FOUNDER ORDER 2026-09-16: "можешь делать всю работу только на двух
+  # аккаунтах claude + glm? codex пока не трогай". List-replace rule applies,
+  # so this ladder REPLACES canonical's entirely — that is how a tenant removes
+  # an arm. Dropped: codex (named in the order), kimi (a third provider, and
+  # already being retired — see the census-red suite "dispatch arm vocabulary
+  # (kimi retirement)"), freepool (a third-party pool, `untrusted: true`).
+  # Kept: the GLM arms and the Anthropic arms, with canonical's own `when:`
+  # and `effort:` values copied unchanged.
+  #
+  # SCOPE: read only when PROJECT_ROOT resolves to this repo. Lanes dispatched
+  # from persona-engine keep the canonical ladder, so the V5-M1 lanes running
+  # there are untouched. REVERSAL is one step: delete this block.
+  dispatch_ladder:
+    - id: glm
+      provider: glm
+      model: glm-5.3
+      when: [all]
+      effort: standard
+    - id: glm-flash
+      provider: glm
+      model: glm-5.3-flash
+      when: [all]
+      effort: standard
+    - id: sonnet
+      provider: anthropic
+      model: sonnet
+      when: [all]
+      effort: standard
+    - id: haiku
+      provider: anthropic
+      model: haiku
+      when: [review]
+      effort: standard
+    - id: opus
+      provider: anthropic
+      model: opus
+      when: [review]
+      effort: high
+    - id: fable
+      provider: anthropic
+      model: fable
+      when: [architect, heavy]
+      effort: high
