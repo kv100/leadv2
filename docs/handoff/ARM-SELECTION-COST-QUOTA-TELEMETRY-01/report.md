@@ -779,3 +779,169 @@ file, so the ledger stands as written — nothing new to enumerate.
   same failure class that blocked the round-2 pipeline review.
 - Sole-owner review engine (`leadv2-review-run.sh`, the ONE-PATH-EVERYWHERE-01
   engine, self-contained per its header): verdict recorded in §10.5 below.
+
+### 10.5 Review verdict — the engine finally ran to completion (2026-09-17, session 5)
+
+Getting here took three engine invocations; each refusal is recorded because
+each one cost a round of this lane:
+
+1. **Round 1 (01:22)** — `review_gate status=fail reason=suite_not_falsifiable
+   suite=test-fable-is-priced-from-its-own-window.sh`. Real: every assertion in
+   the rewritten suite was bash-native `[[ == ]]`, which the falsifiability
+   shim cannot sabotage. Fixed by commit `ce86d4ed` (assert one probe via PATH
+   grep; probe measured `shim_invocations=1`, verdict=falsifiable afterwards).
+2. **Round 2 (01:28–01:33)** — re-invocation passed all three falsifiability
+   checks, resolved the pool (codex quota-blocked → fable), spawned critics —
+   and the hosting session stalled mid-critic (`review-fable.md` left at 0
+   bytes). The engine had already written `.review-round.state`
+   `round=2 diff=5d05495b attempts=1`, so a verdict-less dead run had consumed
+   an attempt.
+3. **Round 3 (this session)** — re-invocation was refused at exit 8,
+   `review_gate status=blocked reason=review_recheck_cap rounds: 2`: the
+   sidecar's diff hash matched, and the STALE round-1 fail gate was read as a
+   verdict already rendered on this exact diff. Cleared with the engine's own
+   documented remedy (`leadv2-review-run.sh`, repeat-fail block):
+   `LEADV2_REVIEW_MAX_ROUNDS=0` — the explicit unlimited override the source
+   names for exactly this case. No gate was edited, no state file was touched.
+
+**Evidence appendix for the `review_recheck_cap` defect row** (lead, 2026-09-17:
+"a crash that produces no verdict should not spend an attempt"). Two coupled
+defects, each pinned to source:
+
+**D1 — a pre-verdict refusal spends policy budget.** The
+`suite_not_falsifiable` exit (`leadv2-review-run.sh:1574-1585`) writes a
+`status: fail` gate AND calls `_review_state_write` in verdict mode, which
+increments `attempts` (`:1197-1200`). No reviewer ever ran; the attempt was
+spent anyway. Engine 1's log (`/tmp/r4/review-engine.out`, session 01:22):
+
+```
+[leadv2-review-run] decision review_round task=ARM-SELECTION-COST-QUOTA-TELEMETRY-01 round=1 mode=exhaustive prior_findings=0
+[leadv2-review-run] decision review_suite_falsifiability ...verdict=falsifiable   (×2)
+[leadv2-review-run] decision review_gate task=... status=fail reason=suite_not_falsifiable suite=.../test-fable-is-priced-from-its-own-window.sh
+        → state after: round=1 diff=<47317B-diff> attempts=1
+```
+
+**D2 — the repeat-fail block keys the diff on the sidecar but the verdict on
+the gate file, and the gate file is not diff-keyed.** Engine 2 advanced the
+round (diff changed 47317→49541 B) and, immediately before the fan-out, wrote
+the spawn state at 01:30:02 — then the hosting session died mid-critic and no
+gate was written. Filesystem sequence, verbatim:
+
+```
+% stat -f "%Sm %N" (as read at session-5 start)
+Sep 17 01:28     .review-start.stamp
+Sep 17 01:30:02  .review-round.state      ← round=2 diff=5d05495b attempts=1 spawns=1
+Sep 17 01:30:02  review-fable.md          ← 0 bytes: critic spawned, never wrote
+(review-gate.md still engine-1's `status: fail reason=suite_not_falsifiable`,
+ rendered for the 47317-byte round-1 diff — review-gate.round1.md preserves it)
+```
+
+Engine 2's log (`/tmp/r4/review-engine2.out`) ends without any
+`review_gate ... verdict` line — falsifiability ×3, signals, pool_resolver,
+`codex_dead_reroute from=codex to=fable`, then nothing. Engine 3 then hit the
+frozen-round branch (`:1042-1057`): sidecar diff `5d05495b` == current diff
+(this part is correct), `gate_status == fail` (read from a gate rendered for a
+DIFFERENT diff), `sidecar_attempts=1` ≥ 1 (budget spent by D1's refusal, not
+by any review) → `review_recheck_cap`, exit 8, gate overwritten `blocked`.
+Net effect on this lane: D1+D2 turned one fixable suite refusal plus one
+session crash into "this diff already failed review twice".
+
+**Verdict (engine output, unedited):**
+
+```
+REVIEW_CODE_VERDICT: PASS_WITH_NITS
+REVIEW_MISSION_VERDICT: PASS_WITH_NITS
+REVIEW_VERDICT: PASS_WITH_NITS
+REVIEW_FINDINGS: critical=0 high=0 medium=1 low=4
+```
+
+`review_gate status=pass author=lane-worker reviewer=glm verdict=PASS_WITH_NITS
+diff=5d05495b arms=glm` — full report at
+`docs/handoff/dispatch-cdd7a22b/review-glm.md`. One honesty note: the gate's
+findings parser recorded `findings_reason: parse_failed` because the reviewer
+numbered its findings in markdown instead of the contract's literal
+`FINDING: severity=…` lines; the four verdict lines parsed cleanly and the
+gate passed on them. The findings below are transcribed from the report body.
+
+The reviewer re-ran the lane's own evidence independently before ruling
+(from its report): telemetry 15/0, fixtures 44/0 (including the negative
+control's "reverting the mutation restored the baseline byte-for-byte"),
+fable 12/0, `test-arm-capability-honoured.sh` still red with the exact rot
+line quoted in the allow-list entry, and spot-verified the arbiter key-regex
+claim (`:284`/`:309`) and the `price_ratio` byte-preservation claim
+(`test-arbiter-decision-record-inputs.sh:54`, `test-exclusion-stages.sh:113,173`).
+
+Findings and dispositions:
+
+| # | sev | finding | disposition |
+|---|---|---|---|
+| R1 | Medium | report.md §10.4 dangles "§10.5 below" that was never written | **FIXED** — this section is the fix |
+| R2 | Low | telemetry suite's falsifiability rests on D1's single `grep -o`; 14 bash-native assertion sites are invisible to the shim | **DECLINED** — the assertions do fail on wrong output (reviewer's own words: "not blocking"); the gate measures the suite falsifiable today; restructuring 14 sites is risk without behavior change, and round 4's write set is report.md only. Filed below |
+| R3 | Low | stale comment `:414/:421 below` direction in `leadv2-route-arbiter.sh:614` (regex lives at `:284`/`:309`, above) | **DECLINED** — comment-only, but ANY byte change to the arbiter changes the reviewed diff hash and voids this verdict. Filed below |
+| R4 | Low | `test-arm-selection-cost-quota-telemetry-01.sh:450` (B1) first pattern arm `'"fable": "capped"'` can never match; assertion survives on the loose fallback | **DECLINED** — same reason as R3: the suite is outside round 4's write set and a byte change invalidates the diff hash. Harmless dead pattern arm. Filed below |
+| R5 | Low | only 3 of the 10 §5 vocabulary tokens appear as new `loser_detail` reasons; the rest reuse pre-existing stage names | **NO ACTION** — reviewer itself classifies this accepted-by-mission (the round-2 lead brief endorsed the shape) |
+
+The orphaned round-2 hack-detect critic (haiku, completed 01:33 seconds before
+the session died, never counted into any verdict —
+`docs/handoff/dispatch-ARM-SELECTION-COST-QUOTA-TELEMETRY-01-review-hackdetect/critic.full.md`)
+also produced findings; dispositions, on their merits:
+
+- **H1 Medium** — `loser_detail` append sits inside the pre-existing
+  `try/except Exception: pass` block, so a persistently failing
+  `decisions.jsonl` append drops §5 telemetry silently. **DECLINED** — the
+  block is pre-existing context, not this diff's code, and round 4 freezes the
+  arbiter ("Do not touch behaviour. It is final."). Filed below.
+- **H2 Medium** — `globals().get('_loser_detail')` is a silent fallback. 
+  **DECLINED** — the glm reviewer examined the same line and ruled it safe on
+  early-refuse rows (explicit `None` beats a crash before any decision).
+- **H3 Medium** — `cost_unknown` classification re-parses the human-facing
+  `_cost_src()` display token (`.split(' ',1)[0].endswith((':median',':unpriced_all'))`)
+  instead of testing `_key in _cost_numeric` directly. **DECLINED** — real
+  fragility, but arbiter bytes are frozen this round. Filed below.
+- **H4 Low** — allow-list of the rotted negative control is a band-aid.
+  **ACCEPTED AS-IS** — that is the founder's standing decision
+  (`SD-MAIN-CORE-SUITE-RED-01`), with a row filed; repairing the control is
+  its own lane.
+
+Follow-ups filed (named, not silenced — none blocks this lane):
+
+1. `ARBITER-SUITE-FALSIFIABILITY-BREADTH-01` — telemetry suite: move
+   assertions off bash-native compares or add PATH-grep probes beyond D1
+   (covers R2).
+2. `ARBITER-STALE-COMMENT-614-01` — fix the ":421 below" comment direction
+   plus, in the same edit, the H3 display-token re-parse → test
+   `_cost_numeric` membership directly (covers R3, H3).
+3. `ARBITER-DURABLE-RECORD-SILENT-DROP-01` — stderr breadcrumb (or explicit
+   absent-marker) when the `decisions.jsonl` append fails (covers H1).
+4. `TELEMETRY-B1-DEAD-PATTERN-ARM-01` — delete the spaced-JSON pattern arm at
+   B1 `:450` (covers R4).
+
+### 10.6 Self-check — falsification set, raw output (2026-09-17, session 5)
+
+`bash -n` over every shell file this lane changed (no Python file is in the
+lane diff, so `py_compile` has nothing to check — `git diff --stat main...HEAD
+-- '*.py'` is empty):
+
+```
+bash -n plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh            → rc=0
+bash -n plugins/leadv2/scripts/tests/test-arm-selection-cost-quota-telemetry-01.sh → rc=0
+bash -n plugins/leadv2/scripts/tests/test-arm-selection-decision-fixtures-01.sh    → rc=0
+bash -n plugins/leadv2/scripts/tests/test-fable-is-priced-from-its-own-window.sh   → rc=0
+```
+
+Changed-scope runner, this lane's tree at `ce86d4ed`:
+
+```
+run-all: 28 passed, 23 failed, 0 known-red (allow-listed, non-blocking),
+1 known-red-skipped (budget mode, still run by --scope all),
+0 gone-green (remove from allow-list), scope=changed      rc=1
+```
+
+All three lane suites PASSED inside that run. All 23 blocking failures are
+inherited, each accounted for one of three ways: the 22 suites pair-measured
+branch-vs-main rc-identical in §7; `run-core-offline.sh` rc=124/rc=124 in
+§10.1; and `test-gate-reaches-a-verdict-inside-budget.sh` — the one suite not
+in §7's list, selection shifted because the lane merge moved the range — was
+pair-measured this session in a detached worktree at `main` (`ce0548c0`):
+`MAIN_RC=1`, `BRANCH_RC=1`, fail lines byte-identical. Zero green-to-red
+against main anywhere in the changed scope.
