@@ -45,6 +45,10 @@
 #   LEADV2_CLAUDE_PROFILE_PROBE    probe override (hermetic tests)
 #   LEADV2_CLAUDE_PROFILE_TIMEOUT  TOTAL probe budget, s (default 12, 1..60)
 #   LEADV2_QUOTA_CACHE_DIR         base for per-profile cache dirs
+#   LEADV2_CLAUDE_PROFILE_DEGRADED_FILE  override for the degraded-select
+#                                   marker path (default
+#                                   ${LEADV2_QUOTA_CACHE_DIR}/degraded-select.json);
+#                                   the lock sits beside it at <marker>.lock
 #   LEADV2_CLAUDE_PROFILE_SECURITY_BIN  override for `security` (hermetic tests
 #                                        inject a fixture reader here; the
 #                                        stub must accept `find-generic-password
@@ -149,13 +153,104 @@ warn() {
 # fallback guard, not a blanket ban on a registry row with a stale expiresAt:
 # the latter may refresh in-process and must be decided by its live probe.
 DEFAULT_FALLBACK_REASON=""
+# A-DEGRADED-PROFILE-SELECT-EXITS-ZERO-01 (founder 2026-09-16): the soft
+# single_profile fallback used to be indistinguishable from a real ranked
+# selection -- exit 0, one stdout line, and only a stderr WARN the caller
+# drops by contract.  The 2026-09-16 09:33/09:34 incident sat two repos on
+# one account for exactly that reason.  The exit code and the stdout line
+# stay BYTE-IDENTICAL (fail-open is a pinned contract: claude-subsession's
+# soft fallback, quota-status's `|| true`, and the T8/requested-#4 suite
+# pins all depend on it); what changes is that every degraded entrance now
+# also writes a machine-readable sidecar beside the quota cache, cleared by
+# the next ranked selection that starts after it, so a caller or status
+# surface that wants to notice degradation has something to read that a
+# ranked pick never produces.  Marker writes are best-effort and never fatal.
+DEGRADED_MARKER="${LEADV2_CLAUDE_PROFILE_DEGRADED_FILE:-${CACHE_BASE}/degraded-select.json}"
+# Round 2 (2026-09-16, reviewer High): up to six lanes select concurrently on
+# one machine, so every marker read and write is serialized through
+# leadv2-portable-lock.sh (the arm-cooldown pattern: source the RELATIVE
+# sibling only, never an env-selected path; a missing helper degrades to an
+# unlocked op rather than breaking the selection).  Lock file:
+# ${DEGRADED_MARKER}.lock -- consumers wanting a consistent read hold it too.
+command -v lv2_lock_wait >/dev/null 2>&1 || {
+  if [[ -n "${BASH_SOURCE[0]:-}" && -r "${BASH_SOURCE[0]%/*}/leadv2-portable-lock.sh" ]]; then
+    source "${BASH_SOURCE[0]%/*}/leadv2-portable-lock.sh" 2>/dev/null || true
+  fi
+}
+# Round 3 (2026-09-16, reviewer Critical): both functions below run AFTER the
+# contract line is already on stdout (see the two call sites) -- nothing
+# downstream reads the marker within the same call, so neither may cost the
+# caller any part of its own patience budget. A `lv2_lock_wait` timeout is
+# handled deliberately per op, not swallowed by a blanket `|| true`:
+#   write: proceed unlocked and say so (best-effort visibility is the whole
+#     point of this row -- a marker that failed to serialize is still more
+#     information than no marker).
+#   clear: SKIP the clear and say so (the safe direction matches the existing
+#     unparseable-mtime default -- proceeding unlocked here is exactly the
+#     round-2 race this lock exists to close, re-entered through the timeout
+#     branch; a later ranked pick gets another chance to clear it).
+write_degraded_marker() { # <reason_code>
+  local dir
+  dir="$(dirname "$DEGRADED_MARKER")"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  (
+    locked=1
+    if command -v lv2_lock_wait >/dev/null 2>&1; then
+      if ! lv2_lock_wait "${DEGRADED_MARKER}.lock" 5 2>/dev/null; then
+        locked=0
+        warn "WARN: degraded_marker_lock_timeout op=write reason_code=${1} -- proceeding unlocked (best-effort)"
+      fi
+    fi
+    tmpf="$(mktemp "${dir}/.degraded-select.XXXXXX" 2>/dev/null)" || exit 1
+    printf '{"kind":"degraded_select","reason_code":"%s","stdout":"profile=- reason=single_profile","exit":0,"detected_at":"%s","locked":%s}\n' \
+      "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([[ $locked -eq 1 ]] && printf true || printf false)" > "$tmpf" 2>/dev/null \
+      && mv -f "$tmpf" "$DEGRADED_MARKER" 2>/dev/null || { rm -f "$tmpf" 2>/dev/null; exit 1; }
+  ) 9>"${DEGRADED_MARKER}.lock" 2>/dev/null || true
+}
+# A healthy ranked pick clears only a marker that PREDATES the selection
+# (mtime < SELECT_START_EPOCH, captured sub-second right after the opt-in
+# gate): a degraded write that landed while this selection was probing is a
+# fresher signal and must survive it.  The stat, the decision and the rm all
+# sit inside one critical section, so a concurrent degraded write either
+# lands before the stat (kept: newer than this selection) or queues on the
+# lock and lands after the rm.  Unparseable/missing python -> keep (no rm):
+# visibility is the safe direction for a best-effort marker.
+#
+# Cheap existence check BEFORE the lock (round 3): the overwhelming common
+# case is no marker at all (nothing degraded happened), and a healthy pick
+# must never pay a lock wait for a clear it doesn't need. A marker that
+# appears between this check and the lock attempt is simply picked up by
+# whichever selection runs the lock-guarded section next -- correctness does
+# not depend on this check seeing a consistent snapshot, only cost does.
+clear_degraded_marker() {
+  [[ -e "$DEGRADED_MARKER" ]] || return 0
+  (
+    if command -v lv2_lock_wait >/dev/null 2>&1; then
+      if ! lv2_lock_wait "${DEGRADED_MARKER}.lock" 5 2>/dev/null; then
+        warn "WARN: degraded_marker_lock_timeout op=clear -- skipping clear this round (visibility over promptness; a later ranked pick retries)"
+        exit 0
+      fi
+    fi
+    if python3 -c 'import os, sys; sys.exit(0 if os.stat(sys.argv[1]).st_mtime < float(sys.argv[2]) else 1)' \
+        "$DEGRADED_MARKER" "${SELECT_START_EPOCH:-0}" 2>/dev/null; then
+      rm -f "$DEGRADED_MARKER" 2>/dev/null || true
+    fi
+  ) 9>"${DEGRADED_MARKER}.lock" 2>/dev/null || true
+}
 single_profile() {
   if [[ -n "$DEFAULT_FALLBACK_REASON" ]]; then
     warn "FATAL: ${DEFAULT_FALLBACK_REASON} -- refusing inherited single-profile fallback"
     printf 'profile=- reason=%s\n' "$DEFAULT_FALLBACK_REASON"
     exit 4
   fi
+  # Round 3: the contract line goes out FIRST. write_degraded_marker's lock
+  # wait (up to 5s, see above) must never sit between the caller and the
+  # answer this selection already computed.
   printf 'profile=- reason=single_profile\n'
+  if [[ -n "${1:-}" ]]; then
+    write_degraded_marker "$1"
+    warn "WARN: degraded_select reason_code=${1} -- fell back to the inherited single profile; machine-readable marker written (cleared by a later ranked selection)"
+  fi
   exit 0
 }
 
@@ -220,6 +315,12 @@ REQUESTED_PROFILE="${LEADV2_CLAUDE_PROFILE_REQUESTED:-}"
 # Opt-in gate: unset or != 1 (and no explicit request) => print nothing, exit 0.
 [[ "${LEADV2_CLAUDE_MULTIPROFILE:-}" == "1" || -n "$REQUESTED_PROFILE" ]] || exit 0
 
+# Sub-second selection start (round 2): clear_degraded_marker compares marker
+# mtimes against it.  Integer seconds would mis-order back-to-back selections
+# (T2's degraded-then-healthy pair can land inside one second), and the
+# date(1) fallback only runs where python3 is already unusable for probing.
+SELECT_START_EPOCH="$(python3 -c 'import time; print(time.time())' 2>/dev/null || date +%s)"
+
 # TOTAL probe-budget clamp (QUOTA-GATE-PARITY-01 F4 pattern: the configured
 # timeout is untrusted operator input; accept a positive integer only and
 # clamp 1..60 so a typo can neither zero the budget nor stall every spawn).
@@ -265,7 +366,7 @@ ACCOUNT_UUIDS=()
 DIGESTS=()
 expired_count=0
 re_label='^[a-z0-9][a-z0-9_-]{0,31}$'
-[[ -r "$REGISTRY" ]] || single_profile
+[[ -r "$REGISTRY" ]] || single_profile registry_unreadable
 lineno=0
 while IFS=$'\t' read -r label config_dir cred expect || [[ -n "${label:-}" ]]; do
   lineno=$((lineno + 1))
@@ -456,15 +557,15 @@ n=${#LABELS[@]}
 # hard-exited on an unknown label) -- that single candidate is legitimate,
 # not the "multi-profile is inert" case the >=2 gate exists to catch.
 if [[ -z "$REQUESTED_PROFILE" ]]; then
-  (( n >= 2 )) || single_profile
+  (( n >= 2 )) || single_profile fewer_than_two_candidates
 else
   if [[ ! -r "$PROBE" || ! -r "$PICK" ]]; then
     printf 'profile=- reason=requested_profile_unavailable requested=%s\n' "$REQUESTED_PROFILE"
     exit 3
   fi
 fi
-[[ -r "$PROBE" ]] || single_profile
-[[ -r "$PICK" ]] || single_profile
+[[ -r "$PROBE" ]] || single_profile dependency_missing_probe
+[[ -r "$PICK" ]] || single_profile dependency_missing_picker
 
 # --- independent probes, bounded by one TOTAL budget -------------------------
 # Each profile is probed in its own subprocess with its own cache dir and (for
@@ -512,7 +613,7 @@ except Exception:
 ' "$f" 2>/dev/null)" || age="-"
   printf '%s\t%s' "${age:--}" "$b64"
 }
-recs="$(mktemp "${TMPDIR:-/tmp}/claude-profile-recs.XXXXXX")" || single_profile
+recs="$(mktemp "${TMPDIR:-/tmp}/claude-profile-recs.XXXXXX")" || single_profile records_temp_unavailable
 deadline=$(( $(date +%s) + timeout_s ))
 completed=0
 i=0
@@ -786,12 +887,12 @@ if (( completed == 0 )); then
     printf 'profile=- reason=requested_profile_unavailable requested=%s\n' "$REQUESTED_PROFILE"
     exit 3
   fi
-  single_profile
+  single_profile no_probe_completed
 fi
 eligible_recs="$(mktemp "${TMPDIR:-/tmp}/claude-profile-eligible.XXXXXX")" || eligible_recs=""
 if [[ -z "$eligible_recs" ]] || ! filter_exhausted_candidates "$recs" "$eligible_recs"; then
   rm -f "$recs" "$eligible_recs"
-  single_profile
+  single_profile exhausted_filter_failed
 fi
 if (( EXHAUSTED_COUNT > 0 )) && [[ ! -s "$eligible_recs" ]]; then
   rm -f "$recs" "$eligible_recs"
@@ -806,7 +907,7 @@ if [[ -z "$result" ]]; then
     printf 'profile=- reason=requested_profile_unavailable requested=%s\n' "$REQUESTED_PROFILE"
     exit 3
   fi
-  single_profile
+  single_profile picker_no_result
 fi
 # If a readable window was excluded and the remaining candidates are unknown,
 # `all_unknown` would falsely claim that no quota window was read.  Name the
@@ -819,5 +920,27 @@ if (( READABLE_WINDOW_COUNT > 0 )); then
     result="$(printf '%s\n' "$result" | sed 's/ reason=all_unknown / reason=quota_window_read /')"
   fi
 fi
+# Round 3 (reviewer Critical): the contract line is emitted BEFORE any marker
+# I/O. Nothing downstream reads the marker within this call, so the sidecar
+# has no claim on the critical path -- a caller whose own patience is shorter
+# than the marker lock's 5s wait must still get the pick it was owed.
 printf '%s\n' "$result"
+# The picker itself has one more single_profile entrance of its own (zero
+# parseable records in eligible_recs): catch its output shape here so this
+# entrance is marked too, and clear the marker only on a real ranked pick.
+#
+# Round 3 Medium 2 (reviewer): a REQUESTED_PROFILE run narrows the candidate
+# set to that one profile by construction, so an empty eligible_recs there is
+# an already-loud requested-profile miss (handled above at the
+# requested_profile_unavailable sites), never balancer degradation -- skip
+# ONLY the write for it. A requested run that DID land a real ranked pick
+# still clears a stale marker like any other healthy selection.
+if [[ "$result" == profile=-* ]]; then
+  if [[ -z "$REQUESTED_PROFILE" ]]; then
+    write_degraded_marker no_rankable_records
+    warn "WARN: degraded_select reason_code=no_rankable_records -- picker returned no rankable record"
+  fi
+else
+  clear_degraded_marker
+fi
 exit 0

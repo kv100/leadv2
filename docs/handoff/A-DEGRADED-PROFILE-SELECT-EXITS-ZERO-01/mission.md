@@ -115,3 +115,54 @@ the 4/4 pinned suites passed, shellcheck was clean. Keep that and add to it.
 
 The row's registered probe, plus the new concurrency test shown red-then-green. Report both in
 `report.md` with the commands and their output, not as a claim.
+
+## ROUND 3 (lead, 2026-09-16) — the critical is real, and the lead's round-2 brief caused it
+
+Round 2 did what it was told: the marker is now serialized through
+`leadv2-portable-lock.sh`, the way `leadv2-arm-cooldown.sh` does it, and the suite grew to 350 lines.
+The sonnet reviewer then returned `critical=1 high=0 medium=2 low=3`, and the critical stands. The
+lead verified it line by line rather than trusting the verdict:
+
+- `printf '%s\n' "$result"` — the contract output — is at `leadv2-claude-profile-select.sh:902`.
+- `write_degraded_marker` / `clear_degraded_marker` are called at `:896-900`, i.e. **before** it, on
+  BOTH the degraded branch and the healthy one.
+- Inside those functions, `:186` and `:205` call `lv2_lock_wait "${DEGRADED_MARKER}.lock" 5`.
+
+So every selection — including the entirely healthy path that has nothing to record — now waits on a
+machine-wide lock for up to five seconds before emitting a pick it has already computed. If the
+caller's kill timeout is shorter than that wait, the pick is computed and then thrown away, and a
+`--requested-profile` dispatch can FATAL-abort. The fix for a lost signal must not become a way to
+lose the answer itself.
+
+**This came from the round-2 brief, which said "serialize every read and write of the marker through
+`leadv2-portable-lock.sh`" and said nothing about where in the sequence that may happen.** The lane
+implemented the instruction as written. Recording that here so the next reader does not read the
+critical as carelessness by the worker.
+
+### What round 3 must deliver
+
+1. **Emit the contract line first, do the marker I/O after.** `printf '%s\n' "$result"` moves above
+   the `write_degraded_marker` / `clear_degraded_marker` block. Nothing downstream reads the marker
+   within the same call, so the sidecar has no claim on the critical path. Keep the exit code
+   semantics exactly as they are.
+2. **Never block the healthy path at all.** On a successful ranked pick, `clear_degraded_marker`
+   should not cost a lock wait in the common case — check cheaply whether there is anything to
+   clear before taking the lock.
+3. **Medium 1 — the silent unlocked fallback.** `lv2_lock_wait ... || true` currently swallows a
+   timeout and proceeds unlocked, which is the exact race round 2 existed to close, re-entered
+   quietly. A lock timeout must be visible: name it in the marker payload or on stderr, and decide
+   deliberately whether to proceed or skip the write. Do not leave it as `|| true`.
+4. **Medium 2 — `--requested-profile` must be excluded from the new `no_rankable_records` check**,
+   as the reviewer notes: a request narrows the candidate set by construction, so the absence of
+   other rankable records is not a degraded condition there.
+5. The three lows: address or explicitly decline each in the report, with a reason.
+
+### Acceptance
+
+The row's registered probe, plus the lane's own suite, plus **a new test that fails on round 2's
+ordering**: assert that the contract line is emitted even when the marker lock is held by another
+process for longer than the caller's patience. Hold the lock in the test, run the selection with a
+short timeout, and require the pick on stdout. Show it RED against round 2's code and GREEN after.
+
+Without that test this round is a claim, not a fix — and this is the third attempt at this row, so
+the standard is higher, not lower.

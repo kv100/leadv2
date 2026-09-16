@@ -2614,6 +2614,12 @@ _LADDER_IDS=()
 _LADDER_PROVIDERS=()
 _LADDER_UNTRUSTED=()
 _LADDER_WHEN=()
+# PREPASS-CLASSIFIER-MISREADS-AN-ALLOWED-PAYLOAD-01 (defect 3): per-entry
+# `architect_launcher:` style from the SAME routing yaml ("codex"|"glm" --
+# which of the two launch styles may run the prepass prompt for this arm).
+# Empty = the entry declares none; only codex/glm carry built-in defaults,
+# so fallback eligibility is decided by CONFIG, not a hardcoded name list.
+_LADDER_ARCH_LAUNCHER=()
 
 # Read the dispatch_ladder from router: in the routing YAML.
 # Populates _LADDER_IDS, _LADDER_PROVIDERS, _LADDER_UNTRUSTED and _LADDER_WHEN
@@ -2632,6 +2638,7 @@ _load_dispatch_ladder() {
   _LADDER_PROVIDERS=()
   _LADDER_UNTRUSTED=()
   _LADDER_WHEN=()
+  _LADDER_ARCH_LAUNCHER=()
   local _parsed
   _parsed="$(python3 -c '
 import sys, yaml
@@ -2651,7 +2658,10 @@ for e in ladder:
     if isinstance(when, str):
         when = [when]
     when_field = ",".join(str(w) for w in when) or "all"
-    print(eid + "\t" + e.get("provider", eid) + "\t" + untrusted + "\t" + when_field)
+    launcher = e.get("architect_launcher") or ""
+    if launcher not in ("codex", "glm"):
+        launcher = ""
+    print(eid + "\t" + e.get("provider", eid) + "\t" + untrusted + "\t" + when_field + "\t" + launcher)
 ' "${ROUTING_YAML}" 2>/dev/null)" || _parsed=""
   # T19 fix-round (H2b / critic H3), corrected 2026-09-10 by
   # PLUGIN-REPO-CARRIES-A-SHADOW-ROUTING-CONFIG-01: the claim below that "All
@@ -2694,16 +2704,20 @@ for e in ladder:
     if isinstance(when, str):
         when = [when]
     when_field = ",".join(str(w) for w in when) or "all"
-    print(eid + "\t" + e.get("provider", eid) + "\t" + untrusted + "\t" + when_field)
+    launcher = e.get("architect_launcher") or ""
+    if launcher not in ("codex", "glm"):
+        launcher = ""
+    print(eid + "\t" + e.get("provider", eid) + "\t" + untrusted + "\t" + when_field + "\t" + launcher)
 ' "${_plugin_ladder_yaml}" 2>/dev/null)" || _parsed=""
     fi
   fi
   if [[ -n "${_parsed}" ]]; then
-    while IFS=$'\t' read -r _id _prov _untrusted _when; do
+    while IFS=$'\t' read -r _id _prov _untrusted _when _arch; do
       _LADDER_IDS+=("${_id}")
       _LADDER_PROVIDERS+=("${_prov}")
       _LADDER_UNTRUSTED+=("${_untrusted:-0}")
       _LADDER_WHEN+=("${_when:-all}")
+      _LADDER_ARCH_LAUNCHER+=("${_arch:-}")
     done <<< "${_parsed}"
   fi
   # Fallback: legacy hardcoded order.
@@ -2717,6 +2731,7 @@ for e in ladder:
     _LADDER_PROVIDERS=(glm codex anthropic)
     _LADDER_UNTRUSTED=(0 0 0)
     _LADDER_WHEN=(all all all)
+    _LADDER_ARCH_LAUNCHER=("" "" "")
   fi
 }
 
@@ -5669,7 +5684,17 @@ except Exception:
 #     tests/test-dispatch-prepass-provider-fallback.sh (auth/rate/quota/opaque
 #     matrix + precedence).
 _ARCH_FAIL_AUTH_RE='authentication_failed|OAuth session expired|could not be refreshed|api[ _-]?key (expired|invalid|not valid)|HTTP 401|unauthorized'
-_ARCH_FAIL_RATE_RE='rate[ _-]?limit|HTTP 429|too many requests|overloaded_error'
+# PREPASS-CLASSIFIER-MISREADS-AN-ALLOWED-PAYLOAD-01 (defect 1): the old
+# `rate[ _-]?limit` matched the NAME of informational telemetry -- live
+# 2026-09-15 dispatch 598ff1eb: a stream whose only rate strings were
+# "rate_limit_event"/"rate_limit_info" (payload said "status":"allowed")
+# was classed rate_limited and parked a provider that had said go ahead.
+# Prose-shaped now, mirroring the in-repo quota classifier (_QUOTA_SHAPED_RE
+# `rate limit(ed)?` in lib/leadv2-lockout-classify.py): rate limit(ed) with
+# a real separator AND a non-identifier boundary, plus the two explicit
+# error identifiers (rate_limit_error is Anthropic's REFUSAL event type,
+# distinct from the telemetry names; overloaded_error pre-existing).
+_ARCH_FAIL_RATE_RE='rate[ _-]limit(ed)?([^_[:alnum:]]|$)|rate_limit_error|HTTP 429|too many requests|overloaded_error'
 _ARCH_FAIL_QUOTA_RE='usage limit|quota exceeded|exceeded your current|plan limit'
 _architect_failure_class() {  # <adir> <captured_out> <rc> -> "<class>[\t<detail>]"
   local adir="$1" cap="$2" rc="$3" ev="" s cls detail
@@ -5721,9 +5746,17 @@ _architect_prepass_admission_status() {  # <adir> <captured-out> -> allowed|quot
     evidence="${evidence}
 $(tail -c 262144 "${stream}" 2>/dev/null)"
   done
-  if printf '%s' "${evidence}" | grep -qiE 'status[=:][[:space:]]*allowed'; then
+  # PREPASS-CLASSIFIER-MISREADS-AN-ALLOWED-PAYLOAD-01 (defect 2): the old
+  # 'status[=:][[:space:]]*allowed' is quote-blind -- against JSON
+  # "status":"allowed" the char after the colon is a quote, BOTH branches
+  # fell through to unknown, and a provider that said allowed was journalled
+  # as a quota silence (live 598ff1eb). Tolerate the JSON quote on both
+  # sides of the separator, and anchor `status` so camelCase relatives
+  # (overageStatus) cannot satisfy an admission check. Both branches, or a
+  # fix that only widens `allowed` re-opens the quota_refused hole.
+  if printf '%s' "${evidence}" | grep -qiE '(^|[^[:alnum:]_])status["]?[[:space:]]*[=:][[:space:]]*["]?[[:space:]]*allowed'; then
     printf '%s' "allowed"
-  elif printf '%s' "${evidence}" | grep -qiE 'status[=:][[:space:]]*(quota_refused|rate_limited|quota_exceeded)'; then
+  elif printf '%s' "${evidence}" | grep -qiE '(^|[^[:alnum:]_])status["]?[[:space:]]*[=:][[:space:]]*["]?[[:space:]]*(quota_refused|rate_limited|quota_exceeded)'; then
     printf '%s' "quota_refused"
   else
     printf '%s' "unknown"
@@ -6009,7 +6042,7 @@ _architect_fallback_provider_allowed() {  # <failed-provider> <candidate-provide
 
 _architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> <failed_provider>
   local mfile="$1" sig8="$2" failcls="$3" out_file="$4" failed_prov="$5"
-  local i arm prov out rc glm_out run_out ws_base ws _afb_ok=0
+  local i arm prov out rc glm_out run_out ws_base ws _afb_style _afb_ok=0
   # R5 H1: disposable isolated workspace -- never ${PROJECT_ROOT} as cwd.
   ws_base="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-afb.XXXXXX")" || return 1
   # Arm process-global EXIT/signal cleanup immediately: a signal between this
@@ -6033,17 +6066,27 @@ _architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> 
       emit decision "architect_prepass_fallback task=${sig8} arm=${arm} outcome=skipped reason=same_provider"
       continue
     fi
+    # PREPASS-CLASSIFIER-MISREADS-AN-ALLOWED-PAYLOAD-01 (defect 3): the old
+    # `case ${arm} in codex|glm` hardcoded which arms MAY fall back -- no
+    # tenant yaml could change it (live 598ff1eb: 7 of 8 ladder arms skipped
+    # no_architect_launcher). Eligibility now comes from the ladder entry
+    # itself (`architect_launcher: codex|glm` in router.dispatch_ladder),
+    # with built-in defaults for the two arms that always had launchers. An
+    # entry declaring no style is skipped as a CONFIG fact, not a name list.
+    _afb_style="${_LADDER_ARCH_LAUNCHER[${i}]:-}"
     case "${arm}" in
-      codex|glm) : ;;
-      *)
-        emit decision "architect_prepass_fallback task=${sig8} arm=${arm} outcome=skipped reason=no_architect_launcher"
-        continue ;;
+      codex) [[ -n "${_afb_style}" ]] || _afb_style="codex" ;;
+      glm)   [[ -n "${_afb_style}" ]] || _afb_style="glm" ;;
     esac
+    if [[ -z "${_afb_style}" ]]; then
+      emit decision "architect_prepass_fallback task=${sig8} arm=${arm} outcome=skipped reason=no_architect_launcher"
+      continue
+    fi
     if ! _provider_available "${prov}"; then
       emit decision "architect_prepass_fallback task=${sig8} arm=${arm} outcome=skipped reason=provider_locked_out"
       continue
     fi
-    case "${arm}" in
+    case "${_afb_style}" in
       codex)
         run_out="$(mktemp "${TMPDIR:-/tmp}/leadv2-architect-codex.XXXXXX")" || break
         # Do not command-substitute the supervisor: Bash defers the parent's
