@@ -294,3 +294,194 @@ One step each, all in `plugins/leadv2/config/leadv2-routing.yaml`: flash
 `capability: 4 -> 2`, remove `recon` from flash's and luna's kinds, restore
 `model: opus` on the opus matrix row and ladder entry. The suite then fails 9 cases
 (= the pre-change red block), which is the rollback verification.
+
+## Round 3 (2026-09-16) — the merge turned `test-spawn-speakable-pool.sh` green->red
+
+Write set this round: `plugins/leadv2/scripts/tests/test-spawn-speakable-pool.sh` and this
+report. No config or arbiter edits — `leadv2-routing.yaml` is unchanged from round 2.
+
+### The suite, before vs after
+
+Paired against the pre-merge commit `c5d425a4` in the lead's already-checked-out detached
+worktree (`/private/tmp/.../scratchpad/pre-bands`), never reset/stashed here:
+
+| tree | commit | pass | fail |
+|---|---|---|---|
+| pre-merge | `c5d425a4` | 26 | 0 |
+| main after merge (this worktree, before this round's fix) | `9d496bdb`-equivalent | 24 | 2 |
+| this worktree, after this round's fix | HEAD | 27 | 0 |
+
+Both round-1/2 failures traced to one cause: item 5 of the original mission deliberately
+grew recon pool membership from `{freepool, haiku}` to `{freepool, haiku, glm-flash, codex}`
+(glm-flash and luna became recon-eligible). Two assertions in this suite hardcoded the old,
+narrower membership. The arbiter behaviour that changed is correct and intentional; the test
+was stale.
+
+**D2** (`:96-103`, emptied-pool refusal) hardcoded `arm_excluded=freepool:not_in_pool,haiku:not_in_pool`.
+Real post-change output names all four: `arm_excluded=codex:not_in_pool,freepool:not_in_pool,glm-flash:not_in_pool,haiku:not_in_pool`.
+Fixed by asserting the real four-arm list, produced from an actual run
+(pasted above in the D-section PASS line), not hand-edited, with a comment dating the
+membership growth to this proposal so a future reader does not revert it.
+
+**H2** (`:140-151`, the brief-mandated mutation that strips the speakable filter inside
+`_pool_contains`) asserted the winner is literally `freepool`. Real post-change winner is
+`glm-flash` (`reason=cheapest_capable`, `cost 0.33` vs freepool's `1.0`) — flash now outbids
+freepool on recon cost once it is reachable at all, which is exactly what item 5 was for.
+Fixed with a two-part assertion instead of a single string match:
+- **H2** — property check: the winning arm is one of `{glm-flash, codex, freepool, ...}`
+  (anything OUTSIDE the speakable set `{sonnet, opus, haiku, fable}`), via a `case` on the
+  parsed `arm=` token. This is the actual invariant the mutation test protects: an arm the
+  built-in Agent tool cannot pronounce must never win once the filter is gone.
+- **H3** — named check: the winner is specifically `glm-flash`, so a silent future membership
+  change (e.g. codex re-ordered ahead of flash) still fails the case instead of silently
+  passing on the weakened "any outside arm" predicate alone.
+
+`H0` (the unmutated in-pool auction, asserts `arm=haiku`) was not touched and still passes —
+confirmed by direct diff of the file (only the D2 line and the H-section tail changed) and by
+the run above.
+
+### Negative control, proven not asserted
+
+Ran H2/H3's exact arbiter call against the REAL (unmutated) arbiter — i.e. with the speakable
+filter intact — outside the suite:
+
+```
+$ ROUTE_TEST_QUOTA=<ok> bash lib/leadv2-route-arbiter.sh worker \
+    '{"work_kind":"recon","size":"standard","subtype":"Explore","task":"auction inside pool","speakable_models":["sonnet","opus","haiku","fable"]}'
+arm=haiku kind=recon model=haiku tier=standard effort=low reason=cheapest_capable ...
+```
+
+`arm_won=haiku` -> hits the `sonnet|opus|haiku|fable)` branch of H2's `case`, which is the
+`fail` branch. With the filter intact, the new H2/H3 assertions go red exactly as the old H2
+did against H0's premise — the control discriminates; it is not vacuously true.
+
+### Header comment corrected
+
+`:9-11` claimed the mutation makes "the arbiter... answer freepool again". Also stale for the
+same reason as D2/H2. Reworded to state the property (an arm outside the speakable pool
+answers) and name the current winner (glm-flash), with a pointer to H2/H3.
+
+### Sweep for other green-to-red suites from this merge
+
+Every suite under `plugins/leadv2/scripts/tests/` whose name mentions routing, arbiter, spawn,
+pool, recon or capability (44 suites, `test-spawn-speakable-pool.sh` excluded — handled above),
+run in both trees with a 60s per-suite timeout, exit code only:
+
+```
+$ nohup /tmp/sweep.sh "$POST_TREE" "$PRE_TREE" > /tmp/sweep-out.log 2>&1 &
+# for each suite: `timeout 60 bash <tree>/plugins/leadv2/scripts/tests/<suite>` in PRE then POST, exit code only
+```
+
+| suite | pre_rc | post_rc | verdict |
+|---|---|---|---|
+| nc-arbiter-observed-cost.sh | 0 | 0 | same-pass |
+| nc-think-model-arbiter-wins.sh | 0 | 0 | same-pass |
+| probe-lead-write-role-spawn-gate.sh | 0 | 0 | same-pass |
+| test-arbiter-decision-record-inputs.sh | 0 | 0 | same-pass |
+| test-arbiter-seam-plugin-kind.sh | 1 | 1 | same-fail (pre-existing) |
+| test-arbiter-uses-observed-cost.sh | 1 | 1 | same-fail (pre-existing) |
+| test-arm-capability-honoured.sh | 1 | 1 | same-fail (pre-existing) |
+| test-codex-task-spawn-failure.sh | 1 | 1 | same-fail (pre-existing) |
+| test-complexity-routing.sh | 1 | 1 | same-fail (pre-existing) |
+| test-direct-spawn-gate-warnmode.sh | 0 | 0 | same-pass |
+| test-effort-routing.sh | 8 | 8 | same-fail (identical fail count, pre-existing) |
+| test-freepool-capability-floor.sh | 1 | 124 | same-fail (both nonzero; sweep's 60s cap, not a diff regression) |
+| test-freepool-gets-work.sh | 1 | 124 | same-fail (both nonzero; sweep's 60s cap, not a diff regression) |
+| test-freepool-install.sh | 0 | 0 | same-pass |
+| test-freepool-model-liveness.sh | 0 | 0 | same-pass |
+| test-freepool-model-selector.sh | 0 | 0 | same-pass |
+| test-freepool-pin-drift.sh | 1 | 1 | same-fail (pre-existing) |
+| test-freepool-pulse.sh | 0 | 0 | same-pass |
+| test-freepool-turncap-checkpoint.sh | 0 | 0 | same-pass |
+| test-landed-at-spawn.sh | 124 | 124 | same-fail (both time out at the sweep's 60s cap, pre-existing per `run-all-changed-preexisting-reds` memory) |
+| test-lead-write-role-spawn-gate.sh | 0 | 0 | same-pass |
+| test-leadv2-freepool-gate.sh | 0 | 0 | same-pass |
+| test-leadv2-review-routing.sh | 0 | 0 | same-pass |
+| test-leadv2-routing-config.sh | 0 | 0 | same-pass |
+| test-phase-precondition-bootstrap.sh | 1 | 124 | same-fail (both nonzero; sweep's 60s cap, not a diff regression) |
+| test-phase-precondition.sh | 1 | 124 | same-fail (both nonzero; sweep's 60s cap, not a diff regression) |
+| test-quota-lockout-postspawn.sh | 124 | 124 | same-fail (60s cap both sides) |
+| test-quota-reset-arbiter.sh | 1 | 1 | same-fail (pre-existing) |
+| test-review-engine-pool-degrades.sh | 0 | 0 | same-pass |
+| test-review-pool-empty-rootcause.sh | 124 | 124 | same-fail (60s cap both sides) |
+| test-review-pool-never-empty.sh | 124 | 124 | same-fail (60s cap both sides) |
+| test-route-arbiter-failure-memory.sh | 0 | 0 | same-pass |
+| test-route-arbiter-loud-refusal.sh | 0 | 0 | same-pass |
+| test-route-arbiter-spend-forecast.sh | 1 | 1 | same-fail (pre-existing) |
+| test-route-arbiter-symlink-install.sh | 0 | 0 | same-pass |
+| test-route-arbiter.sh | 124 | 124 | same-fail (60s cap both sides) |
+| test-routing-canonical-protected-glm.sh | 0 | 0 | same-pass |
+| test-routing-enforcement-p1.sh | 1 | 124 | same-fail (both nonzero; sweep's 60s cap, not a diff regression) |
+| test-session-spawner.sh | 0 | 0 | same-pass |
+| test-spawn-arbiter-gate.sh | 1 | 1 | same-fail (pre-existing) |
+| test-spawn-gate-composition.sh | 0 | 0 | same-pass |
+| test-spawn-handle-parse.sh | 0 | 0 | same-pass |
+| test-think-model-arbiter-wins.sh | 0 | 0 | same-pass |
+| test-think-through-arbiter.sh | 1 | 1 | same-fail (pre-existing) |
+
+**44 suites: 0 NEWLY-RED, 0 NEWLY-GREEN.** Every row's `pre_rc` and `post_rc` land in the same
+bucket (both 0, or both nonzero) — `test-spawn-speakable-pool.sh` (handled above, excluded from
+this table since it was already known and fixed) was the ONLY suite this merge turned
+green-to-red among everything whose name mentions routing, arbiter, spawn, pool, recon or
+capability. Six rows show a different nonzero code between trees (`1` vs `124`) rather than the
+same code — those suites' fail signature genuinely differs, but neither side is `0`, so none is
+a regression this diff caused; they are flagged here rather than silently collapsed into
+"same-fail" because a differing failure *code* between two already-red trees still deserves a
+name. The `124` side is the sweep script's own `timeout 60` firing (both invocations use the
+identical wrapper; the PRE-tree run for the same suite sometimes fails fast on an unrelated
+missing fixture/seam before reaching the slow path, while POST reaches it and runs past 60s) —
+a sweep-methodology artifact, not evidence about this lane's diff. No suite in this list was
+re-run with a longer cap; all six were already failing (nonzero) on both sides at 60s, which is
+sufficient to rule out this lane's change as the cause of their color.
+
+### Suites named in round 2's acceptance criteria that do not exist
+
+`test-launch-registry-argv.sh`, named in round 2's acceptance bullet ("run and reported by
+name with exit codes"), does not exist anywhere in the repo — confirmed:
+`ls plugins/leadv2/scripts/tests/ | grep -i "launch-registry\|registry-argv"` returns nothing,
+and `grep -rln leadv2-launch-registry plugins/leadv2/scripts/tests/*.sh` lists
+`test-arm-selection-admission-bands-01.sh`, `test-codex-tier-model-table.sh`,
+`test-codex-tiers-selectable.sh`, `test-launcher-refusal-event.sh`, `test-workflow-step-runner.sh`
+— none matches that name. This mirrors round 1's item-8 mis-wording: a named entity that was
+never verified to exist. Since this round's write set is limited to
+`test-spawn-speakable-pool.sh` and this report, no suite was created or renamed to match; ran
+the closest existing guard on the same file instead:
+
+```
+$ bash plugins/leadv2/scripts/tests/test-launcher-refusal-event.sh
+launcher-refusal-event: PASS=4 FAIL=0
+```
+
+### Registry checks re-verified this round (unchanged from round 2, re-run fresh)
+
+```
+$ python3 plugins/leadv2/scripts/lib/leadv2-launch-registry.py --check --arm opus --model claude-opus-5
+refuse
+$ python3 plugins/leadv2/scripts/lib/leadv2-launch-registry.py --check --arm opus --model opus
+ok
+```
+
+`leadv2-routing.yaml:421` still reads `{ arm: opus, provider: claude, model: opus, ... }` —
+byte-unchanged this round (not in this round's write set).
+
+### This lane's own suite, re-confirmed untouched
+
+```
+$ bash plugins/leadv2/scripts/tests/test-arm-selection-admission-bands-01.sh
+...
+PASS=32 FAIL=0
+```
+
+32/0, matching the lead's post-merge measurement on main. No fixtures-baseline suite
+(`test-arm-selection-decision-fixtures*`) exists yet under
+`plugins/leadv2/scripts/tests/` — sibling lane `ARM-SELECTION-DECISION-FIXTURES-01` still has
+not landed; nothing to reconcile against this round.
+
+### Falsification set (round 3, raw)
+
+```
+$ bash -n plugins/leadv2/scripts/tests/test-spawn-speakable-pool.sh   # no output, rc 0
+$ bash plugins/leadv2/scripts/tests/test-spawn-speakable-pool.sh      # SUMMARY: pass=27 fail=0
+```
+
+No Python files touched this round.
