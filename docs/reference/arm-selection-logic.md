@@ -20,7 +20,7 @@ Five filters run in order. An arm must survive all five.
 | 2 | **Size eligibility** — standard / heavy / bulk | `capability_matrix[].sizes` | haiku and codex/luna from anything above `standard` |
 | 3 | **Ladder window** — which classes the dispatcher will even offer it | `dispatch_ladder[].when` | freepool from `heavy`/`strategic` |
 | 4 | **Protected-path gate** | `protected:` + `protected_path_patterns` | `protected: false` arms from safety/publish/payments |
-| 5 | **Arbiter economics** — `ecost` = price ÷ (headroom × reset-urgency), plus penalties | `router_v2.cost`, `complexity_penalty` | **this is where flash actually dies** |
+| 5 | **Arbiter fit + economics** — sorted by fit bucket first (`_fit_key`), then `ecost` = price ÷ (headroom × reset-urgency) | `capability_matrix[].capability`, `router_v2.cost` | **this is where flash actually loses** — by demotion, not exclusion |
 
 Filters 1–4 are policy and are easy to read off the yaml. Filter 5 is where the surprises live.
 
@@ -41,7 +41,9 @@ config. It encodes our own judgement, entered by hand, and last touched 2026-09-
 | 2 | haiku, **glm-flash**, freepool |
 
 A task carries a required-effort number (`req_eff`, visible in every `route_resolved` line). An arm
-below that number is not "slightly short" — it is out.
+below that number is **demoted, not removed**: under `FIT_MODE=on` the shortfall becomes a fit
+bucket and the arm sorts later. It can still win if nothing better is admissible. Other gates
+(role, size, ladder, protected) do remove arms outright — this one does not.
 
 **This is the single most consequential table in the system and the least evidence-backed.**
 glm-flash sits at 2, level with haiku, while glm sits at 4. That one integer is what decides most of
@@ -142,7 +144,10 @@ How often does that fire? Measured over all journals:
 | trivial | 206 |
 | unknown | 89 |
 
-A third of all classified work is `complex`, and flash cannot win any of it.
+A third of all classified work is labelled `complex`. Under `FIT_MODE=on` that label no longer
+applies a penalty, but it does raise the required capability, which puts flash two buckets down
+and effectively out of contention. Whether so much work deserves the `complex` label is a
+separate question worth sampling by hand — see §8-C.
 
 ---
 
