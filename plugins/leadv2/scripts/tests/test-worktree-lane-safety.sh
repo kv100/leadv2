@@ -149,6 +149,11 @@ YAML
   cp "${SCRIPT_DIR}/../lib/leadv2-worktree-protected.sh" "$drift/lib/"
   # The gate resolves its state-path sibling relative to its own location.
   cp "${SCRIPT_DIR}/../leadv2-state-path.sh" "$drift/"
+  # state-path.sh itself sources leadv2-portable-lock.sh as its own sibling;
+  # omitting it made every probe fail on THAT missing file, never reaching
+  # the R4 pid-birth-import contract this case exists to pin. Only
+  # lib/leadv2_pid_birth.py is meant to be absent here.
+  : # MUTATION-CONTROL-P14 (portable-lock copy removed)
   export LEADV2_STATE_ROOT="$repo/state"
   source "$drift/lib/leadv2-worktree-protected.sh"
   lv2_wt_protect_prime "$repo"
@@ -175,6 +180,18 @@ _run() { # <kind:hook|dead> <bin> <repo>  (env: caller-exported)
 }
 
 _gone() { [[ ! -d "$1/.claude/worktrees/lane" ]]; }
+# LIVE-LANES-RUN-WITHOUT-A-JOURNAL-01 (2026-09-06, leadv2-journal.sh:8-20)
+# superseded the old ${PROJECT_ROOT}/docs/leadv2/tasks/<id>/journal.md layout:
+# journal.md is now resolved through leadv2-state-path.sh's canonical,
+# worktree-invariant control-plane root (LEADV2_STATE_ROOT when the caller
+# sandboxes it, as every case here does). Both sweepers hand the journal
+# writer CLAUDE_PROJECT_ROOT=<repo> (hook: JOURNAL_ROOT via git-common-dir;
+# --sweep-dead: _lv2_wt_journal_root via the same), so the resolver, not a
+# hardcoded guess, is the only honest way to find where a case's journal
+# entry landed.
+_journal_path() { # <lane-id> <repo>
+  CLAUDE_PROJECT_ROOT="$2" bash "${SCRIPT_DIR}/../leadv2-journal.sh" path "$1"
+}
 _lane() { printf '%s/.claude/worktrees/lane' "$1"; }
 _gitdir_stamp() { git -C "$1" rev-parse --git-dir 2>/dev/null; }
 _set_mtime() { # <path> <epoch>; portable across BSD/GNU touch variants
@@ -240,11 +257,12 @@ case_p5_young() { # <kind> <bin>
 # P6: true orphan — no row, no handoff, old, merged, clean -> swept, AND the
 # sweep journals worktree_swept so a human can tell why without git forensics.
 case_p6_orphan_swept_and_journaled() { # <kind> <bin>
-  local repo="${WORK}/p6-$RANDOM$RANDOM"; _mk "$repo" || return 2
+  local repo="${WORK}/p6-$RANDOM$RANDOM" jpath; _mk "$repo" || return 2
   export LEADV2_STATE_ROOT="$repo/state" LEADV2_SWEEP_MIN_AGE_H=0
   _run "$1" "$2" "$repo"
   _gone "$repo" || return 1
-  grep -q 'worktree_swept id=lane reason=' "$repo/docs/leadv2/tasks/lane/journal.md" 2>/dev/null
+  jpath="$(_journal_path lane "$repo")"
+  grep -q 'worktree_swept id=lane reason=' "$jpath" 2>/dev/null
 }
 
 # P7: corrupted active.yaml -> NOTHING swept (a P6-grade orphan present in the
