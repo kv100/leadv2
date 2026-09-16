@@ -40,8 +40,10 @@
 #   C4b FIT_MODE=off (env flip): the retained complexity_penalty block still
 #       fires on flash's [cheap, mechanical] tags; the winner is not flash and
 #       the line says complexity_policy=penalty.
-#   C9  opus route resolves to the real Opus 5 id claude-opus-5 (matrix row +
-#       --pin-arm decision line); no 4.8 route exists anywhere in the config.
+#   C9  opus launches AS the alias `opus` (registry argv contract: --check
+#       opus/opus ok, claude-opus-5 refused, decision line model=opus); the
+#       effective id claude-opus-5 is read from the worker's own stream rows;
+#       no 4.8 route exists anywhere in the config.
 #   R   recon eligibility (proposal §4.1): flash and luna pin-selectable on
 #       kind=recon (codex's recon cell resolves gpt-5.6-luna); negative control:
 #       sonnet (no recon in kinds) still refused requested_arm_incapable.
@@ -50,9 +52,9 @@
 #       luna stays 3, haiku stays 2; the opus build exclusion (no `code` kind)
 #       and the dead complexity_penalty block are byte-intact.
 #
-# Live-identity evidence for C9 (claude CLI alias probes) is NOT hermetic and
-# lives in this lane's report, not here: docs/handoff/ARM-SELECTION-
-# ADMISSION-BANDS-01/report.md.
+# Live-identity evidence for C9 (real opus worker streams, alias probes) is
+# NOT hermetic and lives in this lane's report, not here: docs/handoff/
+# ARM-SELECTION-ADMISSION-BANDS-01/report.md.
 
 set -uo pipefail
 
@@ -112,7 +114,10 @@ run_case() {
 line_arm() { printf '%s\n' "$1" | grep -o 'arm=[^ ]*' | head -1; }
 
 # ── P: founder declarations preserved (config-level, python-pinned) ──────────
-python3 - "$ROUTING" <<'PY' || fail "(P) config preservation" "python asserts below"
+# (round 2, reviewer L-1): `python3 ... || fail` followed by `[[ $? -eq 0 ]]`
+# tested the || compound, not the python call -- restructured as a plain
+# if/else so the python exit code is the thing that is asserted.
+if python3 - "$ROUTING" <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 rv, rt = d['router_v2'], d['router']
@@ -132,8 +137,11 @@ if len(lad) != 1 or lad[0].get('when') != ['all'] or 'untrusted' in lad[0]:
 # ARM-SELECTION-ADMISSION-BANDS-01: luna 3, haiku 2 (no promotion on this lane)
 if rows[('codex', 'gpt-5.6-luna')].get('capability') != 3: errs.append('luna capability != 3')
 if rows[('haiku', 'haiku')].get('capability') != 2: errs.append('haiku capability != 2')
-# Opus build exclusion kept (kinds carry no code); identity resolved to Opus 5
-opus = rows[('opus', 'claude-opus-5')]
+# Opus build exclusion kept (kinds carry no code); the cell keeps the alias
+# (round 2: the arm name IS the registry --model value -- a versioned id here
+# made every opus spawn refuse at the launch-registry check)
+if ('opus', 'opus') not in rows: errs.append('opus row lost model: opus alias')
+opus = rows.get(('opus', 'opus')) or {}
 if 'code' in opus['kinds']: errs.append('opus kinds gained code (build exclusion removed)')
 if rows[('glm', 'glm-5.3')].get('capability') != 4: errs.append('glm capability changed')
 # The legacy +100 block is retained byte-for-byte as the FIT_MODE=off path
@@ -145,7 +153,11 @@ if rv.get('cost', {}).get('glm-flash') != 0.33: errs.append('cost.glm-flash != 0
 if errs:
     sys.exit('; '.join(errs))
 PY
-if [[ $? -eq 0 ]]; then pass "(P) flash/luna/haiku/opus declarations + dead-penalty block preserved"; fi
+then
+  pass "(P) flash/luna/haiku/opus declarations + dead-penalty block preserved"
+else
+  fail "(P) config preservation" "python asserts above"
+fi
 
 # ── C1: standard task, healthy quota -- flash wins on cheaper credit ────────
 OUT="$(run_case c1 20 20 20 on '{"kind":"code","size":"standard","complexity":"standard","complexity_source":"judge","task":"bands-c1-standard-build"}')"
@@ -317,11 +329,47 @@ else
   fail "(C4b) off-mode penalty token missing" "$(line_arm "$OUT"); log: $TMP/c4b.log"
 fi
 
-# ── C9: opus resolves to the real Opus 5; no 4.8 route exists ───────────────
-if grep -q 'arm: opus, provider: claude, model: claude-opus-5,' "$ROUTING"; then
-  pass "(C9) opus matrix row pronounces the versioned id claude-opus-5"
+# ── C9: opus launches AS the alias; identity is measured, not renamed ────────
+# Round 2 (2026-09-16): the launch registry's contract is "the arm name IS the
+# --model value" for the Claude family (_CLAUDE_ARMS) and dispatch-code.sh
+# re-validates the argv with --check --arm opus --model <cell>. Round 1 renamed
+# the cell to claude-opus-5 and every arbiter-selected opus spawn refused
+# (critical C-1 + high H-1, docs/handoff/dispatch-650ec59b-review). The alias
+# stays; the effective identity comes from the running process's own stream.
+if grep -q 'arm: opus, provider: claude, model: opus,' "$ROUTING"; then
+  pass "(C9) opus matrix row keeps model: opus (the registry argv contract)"
 else
-  fail "(C9) opus matrix row does not carry model: claude-opus-5"
+  fail "(C9) opus matrix row does not carry model: opus"
+fi
+REGISTRY="${SCRIPTS_ROOT}/lib/leadv2-launch-registry.py"
+if [[ "$(python3 "$REGISTRY" --check --arm opus --model opus)" == "ok" ]]; then
+  pass "(C9) registry --check --arm opus --model opus -> ok (spawn path unblocked)"
+else
+  fail "(C9) registry --check opus/opus not ok" "the exact round-1 regression, live again"
+fi
+if [[ "$(python3 "$REGISTRY" --check --arm opus --model claude-opus-5)" == "refuse" ]]; then
+  pass "(C9) registry --check --arm opus --model claude-opus-5 -> refuse (mismatch still caught)"
+else
+  fail "(C9) registry accepted a non-alias model for arm opus"
+fi
+# Effective identity from the worker's own stream rows: fixture carries the
+# exact per-message model field real opus workers emit (measured live
+# 2026-09-16: three architect streams, all model claude-opus-5).
+cat > "$TMP/c9-opus.stream.jsonl" <<'EOS'
+{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":5}}}
+{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":11,"output_tokens":6}}}
+EOS
+C9IDS="$(python3 "$REGISTRY" --resolved-model-from-stream "$TMP/c9-opus.stream.jsonl")"
+if printf '%s\n' "$C9IDS" | grep -qx 'model_id=claude-opus-5'; then
+  pass "(C9) stream extraction reads effective id claude-opus-5 from the worker's own rows"
+else
+  fail "(C9) stream extraction did not report claude-opus-5" "$C9IDS"
+fi
+: > "$TMP/c9-empty.stream.jsonl"
+if [[ "$(python3 "$REGISTRY" --resolved-model-from-stream "$TMP/c9-empty.stream.jsonl")" == "model_id=none" ]]; then
+  pass "(C9) stream without model fields reports model_id=none (absent, not invented)"
+else
+  fail "(C9) empty stream did not report model_id=none"
 fi
 # NOTE: grep for a MODEL FIELD carrying 4.8, not the bare number -- this
 # suite's own config comment says "No opus-4.8 route exists" and a bare-text
@@ -333,12 +381,14 @@ else
 fi
 OUT="$(run_case c9 20 20 20 on '{"kind":"review","size":"standard","complexity":"standard","complexity_source":"judge","requested_arm":"opus","task":"bands-c9-sig"}')"
 printf '%s\n' "$OUT" > "$TMP/c9.log"
-# decision-line shape is `arm=opus kind=review model=claude-opus-5 ...` -- the
-# kind token sits between, so assert the two tokens independently
-if printf '%s\n' "$OUT" | grep -q 'arm=opus ' && printf '%s\n' "$OUT" | grep -q 'model=claude-opus-5 '; then
-  pass "(C9) --pin-arm opus decision line carries model=claude-opus-5 (the spawn string, dispatch-code _MS_MODEL)"
+# decision-line shape is `arm=opus kind=review model=opus ...` -- the kind
+# token sits between, so assert the two tokens independently. model=opus is
+# the spawn string the launcher passes to the claude CLI, which resolves the
+# alias itself (effective id verified above from the stream).
+if printf '%s\n' "$OUT" | grep -q 'arm=opus ' && printf '%s\n' "$OUT" | grep -q 'model=opus '; then
+  pass "(C9) --pin-arm opus decision line carries model=opus (the spawn string, dispatch-code _MS_MODEL)"
 else
-  fail "(C9) pinned opus did not resolve to claude-opus-5" "$(line_arm "$OUT"); log: $TMP/c9.log"
+  fail "(C9) pinned opus decision line does not carry model=opus" "$(line_arm "$OUT"); log: $TMP/c9.log"
 fi
 
 # ── R: recon eligibility for flash and luna (proposal §4.1) ──────────────────

@@ -37,6 +37,9 @@ CLI:
     leadv2-launch-registry.py --kind <kind> --role <role> --arm <arm> \\
         --task-class <class> [--json]
     leadv2-launch-registry.py --check --arm <arm> --model <model>
+    leadv2-launch-registry.py --resolved-model-from-stream <stream.jsonl>
+        (prints model_id=<id> per distinct model the running worker reported;
+        model_id=none + rc=1 when the stream carries no model field)
 
 Env overrides (hermetic tests):
     LEADV2_ROUTE_ARBITER_ROUTING_YAML   routing.yaml path (mirrors the
@@ -640,6 +643,42 @@ def resolve_decision(decision, step_context):
             "pool_default": desc["pool_default"], "argv": desc["argv"]}
 
 
+def resolved_model_from_stream(path):
+    """Distinct model ids a claude worker's stream-json ACTUALLY ran, in order.
+
+    ARM-SELECTION-ADMISSION-BANDS-01 round 2 (2026-09-16, proposal §2
+    correction 6: "Confirm actual launched Opus5; do not infer its version
+    from the arm label"): the registry's argv and costs.yaml both record the
+    LABEL (`--model opus` -- the alias the CLI is required to receive, see
+    _CLAUDE_ARMS); the resolution happens inside the claude CLI and the only
+    place the running process reports it back is the per-message `model`
+    field of the stream-json file the worker itself writes. This reads THAT
+    field, so the answer comes from the running process, not the label:
+        python3 leadv2-launch-registry.py --resolved-model-from-stream \
+            <handoff_dir>/<role>.stream.jsonl
+    Returns () when the stream carries no model field (glm-adapter streams,
+    truncated/empty streams) -- an absent answer is reported as absent,
+    never substituted or invented. Non-fatal on unreadable files (same ()).
+    """
+    seen = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                m = obj.get("model") or (obj.get("message", {}) or {}).get("model")
+                if m and m not in seen:
+                    seen.append(m)
+    except OSError:
+        return ()
+    return tuple(seen)
+
+
 def _cli(argv):
     args = {}
     i = 0
@@ -665,6 +704,15 @@ def _cli(argv):
         verdict = check(arm, model)
         print(verdict)
         return 0 if verdict != "refuse" else 1
+
+    if "resolved_model_from_stream" in args:
+        models = resolved_model_from_stream(args["resolved_model_from_stream"])
+        if not models:
+            print("model_id=none")
+            return 1
+        for m in models:
+            print("model_id=%s" % m)
+        return 0
 
     kind = args.get("kind")
     role = args.get("role")

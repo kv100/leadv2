@@ -398,16 +398,27 @@ router_v2:
     - { arm: sol, provider: codex, model: gpt-5.6-sol, tier: top, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], think_tiers: [strategic], tags: [adversarial, exhaustive], review: true, protected: true, capability: 5 }
     - { arm: haiku, provider: claude, model: haiku, tier: standard, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true, capability: 2, pool_default: true } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
     - { arm: sonnet, provider: claude, model: sonnet, tier: standard, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], think_tiers: [light, standard], tags: [integration, ui_judgment], review: true, protected: true, capability: 4 }
-    # ARM-SELECTION-ADMISSION-BANDS-01 (2026-09-16, proposal §4.1 "Resolve opus
-    # to actual 5"): `model: opus` was an alias; resolved to claude-opus-5, the id
-    # model-capability.yaml already pins (model_id/underlying_model: claude-opus-5,
-    # sourced to Anthropic's own model page). NO opus-4.8 route exists anywhere in
-    # this config, so there is no 4.8 exception to record; if one is ever added it
-    # needs its own explicit versioned route, a recorded reason, and an availability
-    # check -- a failed Opus 5 launch must never silently fall back to 4.8. The
-    # build exclusion (kinds carry no `code`) is untouched: removing it is a separate
-    # product decision, not needed to promote flash.
-    - { arm: opus, provider: claude, model: claude-opus-5, tier: high, kinds: [review, plan, audit, safety], sizes: [standard, heavy], think_tiers: [heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 5, pool_default: false }
+    # ARM-SELECTION-ADMISSION-BANDS-01 round 2 (2026-09-16): `model: opus` stays
+    # THE ALIAS, on purpose. The launch registry's contract is "the arm name IS
+    # the --model value" for the whole Claude family (_CLAUDE_ARMS,
+    # lib/leadv2-launch-registry.py; claude-subsession.sh:124 threads it to the
+    # claude CLI, which resolves the alias itself), and dispatch-code.sh
+    # re-validates the argv with --check --arm opus --model <cell> -- a
+    # versioned id in this cell made every arbiter-selected opus spawn refuse
+    # (round-1 defect, reverted here). Effective identity is a MEASURED fact,
+    # not a config rename: real opus workers' stream-json files report
+    # "model":"claude-opus-5" (3 architect spawns probed 2026-09-16, launched
+    # with the label costs.yaml model: opus, e.g.
+    # docs/handoff/dispatch-078b3f79-architect/architect.stream.jsonl);
+    # leadv2-launch-registry.py --resolved-model-from-stream reads it back from
+    # any spawn's stream. NO opus-4.8 route exists anywhere (grep opus-4 over
+    # config+scripts: zero hits), so there is no 4.8 exception to record; if
+    # one is ever added it needs its own explicit versioned route, a recorded
+    # reason, and an availability check -- a failed Opus 5 launch must never
+    # silently fall back to 4.8. The build exclusion (kinds carry no `code`)
+    # is untouched: removing it is a separate product decision, not needed to
+    # promote flash.
+    - { arm: opus, provider: claude, model: opus, tier: high, kinds: [review, plan, audit, safety], sizes: [standard, heavy], think_tiers: [heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 5, pool_default: false }
     # FABLE-RESTORE-01 (founder permission, 2026-09-06 open-threads.md, entry
     # [FABLE-RESTORE-01]): fable had ZERO capability_matrix cells since
     # FABLE-RETIRE-01 (2026-07-07), so the arbiter could never select it as a
@@ -759,7 +770,7 @@ router:
       review_rank: 1
     - id: opus
       provider: anthropic
-      model: claude-opus-5  # alias `opus` resolved 2026-09-16, ARM-SELECTION-ADMISSION-BANDS-01
+      model: opus  # alias stays: registry/CLI resolve it; measured effective id claude-opus-5 (ARM-SELECTION-ADMISSION-BANDS-01 r2)
       when: [review]
       effort: high
       review_rank: 3
