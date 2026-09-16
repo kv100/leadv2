@@ -78,3 +78,40 @@ docs/handoff/A-DEGRADED-PROFILE-SELECT-EXITS-ZERO-01/report.md
 (row `7ea4fed65451`, the account-picker fix). A live lane's write set cannot be widened and a second
 lane cannot take the same file. This row waits for that lane to reach terminal. Ledger:
 `SD-DEGRADED-SELECT-WAITS-FOR-THE-PICKER-LANE-01`.
+
+## ROUND 2 (lead, 2026-09-16) — the reviewer's High is CORRECT; fix it, do not argue it
+
+Round 1 was blocked by a sonnet review at `critical=0 high=1`, and the lead verified the finding
+independently rather than taking the verdict on trust. It stands:
+
+- `DEGRADED_MARKER` resolves to a single machine-wide path
+  (`leadv2-claude-profile-select.sh:164`, `${CACHE_BASE}/degraded-select.json`), and the script
+  contains **no** lock of any kind — grep for `lock` in it returns only an unrelated comment.
+- `plugins/leadv2/scripts/leadv2-portable-lock.sh` exists and is already used by
+  `leadv2-dispatch-code.sh`, `leadv2-dispatch-ledger.sh` and `leadv2-event.sh`.
+- Up to six lanes run on this machine at once, so two selections overlapping is the normal case,
+  not a corner case: a healthy pick clearing the marker between a degraded write and a consumer's
+  read silently destroys exactly the signal this row exists to create.
+
+Round 1's base is sound and must not be rewritten: the byte-identical contract held, 152/152 plus
+the 4/4 pinned suites passed, shellcheck was clean. Keep that and add to it.
+
+### What round 2 must deliver
+
+1. **Serialize every read and write of the marker through `leadv2-portable-lock.sh`.** Use the
+   existing helper the way `leadv2-arm-cooldown.sh` does — do not hand-roll a lock, and do not
+   invent a second lock file next to the marker.
+2. **A test that fails without the lock.** This is the part that decides the round: spawn two
+   concurrent selections, one degraded and one healthy, and assert the degraded marker survives to
+   be read. Run it once with the lock removed and show it RED — a concurrency test that has never
+   been seen to fail is not evidence of anything.
+3. **Cover the six untested reason codes** the reviewer listed: `dependency_missing_probe`,
+   `dependency_missing_picker`, `records_temp_unavailable`, `exhausted_filter_failed`,
+   `picker_no_result`, `no_rankable_records`. One assertion each is enough; they are cheap.
+4. The two Low findings: document the new env var, and say plainly in the report that no consumer
+   is wired up yet and which row owns wiring one. Do not wire a consumer in this round.
+
+### Acceptance
+
+The row's registered probe, plus the new concurrency test shown red-then-green. Report both in
+`report.md` with the commands and their output, not as a claim.
