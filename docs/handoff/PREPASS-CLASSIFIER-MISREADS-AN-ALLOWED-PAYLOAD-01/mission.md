@@ -115,3 +115,49 @@ a separate lane.** That bundle (rows `28c85708da3e`, `09714c4fc3a7`, `9314a9ffdd
 
 Honest note on provenance: the duplicate gate fired when this row was filed and was overridden
 without its candidates being read. The gate would have been substantially right.
+
+## AMENDED 2026-09-16 (lead) — the ordering constraint above is VOID; dispatch this row
+
+The "DECIDED: folds into the bundle, do not dispatch" instruction rested on one premise:
+`leadv2-dispatch-code.sh` being held by the live lane `8dde34a2`. That premise was measured again
+and is false on both counts.
+
+1. **Lane `8dde34a2` (A1) is dead**, and released its claim at 2026-09-16T12:56:05Z
+   (`active_lane_released ... rows=1 removed=1 live_worker_kept=0`). It is also NOT landing: run
+   paired against main, its branch leaves `test-lane-placement-pin.sh` red (its own acceptance) and
+   turns `test-journal-honours-the-pinned-root.sh` from green to red, because the root-resolution
+   rung it adds overrides an explicit `CLAUDE_*` pin — two negative controls fail on exactly that.
+   A1 goes back for a fix round; nothing of it reaches this file.
+2. **The real holders of the file were two dead rows**, not A1: `13d1c86d` (2026-09-08, pid 1 =
+   launchd, reparented) and `DISPATCH-HONESTY-01` (2026-09-10, pid 27360, gone). Both were 6-8 days
+   stale and both are now marked stale by `leadv2-stale-sweeper.sh --mark-only`.
+
+No bundle lane is in flight and no bundle row is dispatched, so there is nothing to fold into right
+now. This row carries the only behavioural probe of the three, so it leads rather than follows.
+When a bundle lane is later dispatched it must reconcile against whatever lands here, not re-fix it.
+
+## The acceptance probe was REPLACED (lead, 2026-09-16)
+
+The probe this mission points at was a stub: it referenced `$OUT`, which nothing set, so under
+`set -u` it exited 1 having measured nothing. It could never have gone green. The replacement makes
+three measurements and is red on main at `pass=1 fail=2`:
+
+```
+json "status":"allowed"            -> expect allowed        got unknown
+json "status":"quota_refused"      -> expect quota_refused  got unknown
+bare status=allowed (control)      -> expect allowed        got allowed
+```
+
+Two corrections to the mission body above, both measured, neither cosmetic:
+
+- Defect 2 is **wider than stated**. The quote-blindness breaks both branches of the function, not
+  just the `allowed` one: a payload saying `"status":"quota_refused"` also returns `unknown`. So the
+  prepass cannot tell a real quota refusal from a silence either. Fix both.
+- The third case above is a **positive control on the instrument**, and it must keep passing. It
+  already passes on main, so if it ever fails, the probe has lost its grip on the function rather
+  than the fix having regressed. And case 2 must not become `allowed` — that is what stops a "fix"
+  that just returns `allowed` for everything from looking correct.
+
+Defect 1 was also confirmed at runtime on main, independently of the probe: the payload whose only
+occurrence of the string is the event NAME (`"type":"rate_limit_event"`) is classed as rate-limited,
+while a real limit message is still classed correctly. Both halves, as the controls section demands.
