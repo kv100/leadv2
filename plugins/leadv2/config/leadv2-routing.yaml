@@ -247,11 +247,13 @@ router_v2:
     #   kinds += review, plan, safety — раньше ячейка не бралась за эти виды работ
     #     вовсе, независимо от цены.
     #
-    # Не изменено намеренно: glm-flash и freepool остаются protected: false. Оба
-    # помечены `untrusted: true` в лестнице диспатчера, и лестница снимает их на
-    # защищённом пути раньше арбитра — так что правка одной ячейки их всё равно не
-    # пустила бы, а править лестницу основатель не просил. Речь шла о GLM, а
-    # glm-flash это его дешёвый тариф для механической работы, не он сам.
+    # Не изменено намеренно: freepool остаётся protected: false и `untrusted: true`
+    # в лестнице диспатчера. [Corrected 2026-09-16, ARM-SELECTION-ADMISSION-BANDS-01:
+    # this comment previously claimed glm-flash shared that state — it has been
+    # FALSE since GLM-FLASH-DOES-ANY-WORK-01 (founder 2026-09-10): flash's matrix
+    # row is protected: true and its ladder entry carries no `untrusted:`. The
+    # sentence survived the very change it describes and was deleted by this lane.]
+    #
     #
     # Откат — один шаг: вернуть в этой строке protected: false, review: false и
     # исходный список kinds. Ледгер: SD-GLM-DOES-ANY-WORK-ROLLBACK-01.
@@ -269,7 +271,9 @@ router_v2:
     # price_key(row)='glm-flash' (not 'glm') is what makes the arbiter read
     # this ratio instead of the shared glm provider price. Good for mechanical
     # edits, small fixes, doc rounds,
-    # test authoring. NOT for protected/safety/publish (protected: false here
+    # test authoring. [Superseded by GLM-FLASH-DOES-ANY-WORK-01 below -- the
+    # protected/review/kinds/sizes restrictions named in the rest of this sentence
+    # were ALL opened by the founder on 2026-09-10; kept for history only.]
     # plus `untrusted: true` on the ladder entry below), NOT review/audit/plan,
     # and sizes stop at standard — heavy/bulk stay on glm-5.3/codex/sonnet.
     # GLM-FLASH-DOES-ANY-WORK-01 — прямое решение основателя 2026-09-10, дословно:
@@ -285,21 +289,47 @@ router_v2:
     # `untrusted: true` снят с его ЛЕСТНИЧНОЙ записи ниже — иначе лестница снимала бы
     # flash на защищённой цепи раньше, чем арбитр вообще что-то решит.
     #
-    # НЕ изменено намеренно: `capability: 2` (у glm-5.3 и sonnet — 4). Это и есть
-    # «пусть решают механизмы»: capability_fit держит flash в стороне от работы,
-    # которой он не тянет, по ИЗМЕРЕННОМУ признаку, а не по списку имён. Поднять эту
-    # цифру можно только с замером, а замера нет.
+    # ARM-SELECTION-ADMISSION-BANDS-01 (founder order 2026-09-16, proposal §4.1,
+    # docs/reference/arm-selection-proposal-2026-09-16.md): capability 2 -> 4 — the
+    # provisional ordinary-engineering band, alongside glm-5.3, sonnet and codex/terra.
+    # Verbatim from the proposal: this is "a policy correction to coarse eligibility,
+    # NOT a derived benchmark number or a statement of equal quality." No benchmark
+    # citation exists for the 4 and none is implied. What the integer actually moves
+    # is the fit bucket (ceil(required_capability - capability - slack), arbiter
+    # sort at :2066): at 2 flash sat one bucket below glm on standard work and two
+    # below on complex; at 4 it competes in the bucket and price decides (cost 0.33
+    # vs glm 1.0, GLM-EFFICIENCY-01). The legacy +100 complexity_penalty stays dead
+    # on the live path (FIT_MODE=on clears complexity_penalty_rules, arbiter :1720)
+    # and is retained below only as the FIT_MODE=off behaviour. No name-based ban on
+    # complex work exists here and none is introduced. luna stays 3, haiku stays 2 —
+    # the proposal forbids promoting them on this lane's evidence, and equally
+    # forbids equating flash with untrusted/freepool behaviour.
+    #
+    # ARM-SELECTION-ADMISSION-BANDS-01, recon: `recon` added to kinds. Proposal §4.1:
+    # "Add/reconcile recon eligibility for Flash/Luna when those transports support
+    # read-only execution." The GLM session-runner transport already executes the
+    # read-only-consumption kinds (review, audit) on this exact row today, so a
+    # read-only recon mission is transport-supported. This makes flash reachable for
+    # kind=recon consults on the dispatcher path (default auction: no pool_default
+    # key => member; the bare-spawn gate's speakable pool sonnet/opus/haiku/fable is
+    # unchanged, so lead-side bare recon still rides haiku).
+    #
     #
     # Откат — один шаг: вернуть в этой строке protected: false, review: false,
     # прежние kinds/sizes и `untrusted: true` в лестничную запись.
     # Ледгер: SD-GLM-FLASH-DOES-ANY-WORK-ROLLBACK-01.
-    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [cheap, mechanical], review: true, protected: true, capability: 2 }
+    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, kinds: [code, docs, review, plan, audit, safety, recon, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [cheap, mechanical], review: true, protected: true, capability: 4 }
     # recon (ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01, founder 2026-09-04):
     # recon is cheap, high-volume, READ-ONLY exploration — routing intent lives
     # here as rows, not in arbiter code branches. freepool (cost 1) is the
     # winner while its gate is healthy; haiku (cost 2) is the capable fallback
-    # when the gate benches freepool. No glm/codex/sonnet/opus cell carries
-    # recon — the doctrine is "the cheapest capable arm", exactly these two.
+    # when the gate benches freepool. [Corrected 2026-09-16,
+    # ARM-SELECTION-ADMISSION-BANDS-01: the closing claim "No glm/codex/sonnet/opus
+    # cell carries recon" is no longer true -- glm-flash and codex/luna gained `recon`
+    # per proposal §4.1 ("Add/reconcile recon eligibility for Flash/Luna when those
+    # transports support read-only execution"), because the freepool/haiku-only policy
+    # kept the intended cheap candidates out of the role they suit best. The doctrine
+    # "the cheapest capable arm" is unchanged; the capable set for recon grew by two.]
     - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, kinds: [code, docs, recon, fanout-class-funnel, backlog-pump], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false, capability: 2 }
     # CODEX-TIERS-COLLAPSED-ONTO-ASTRA part B (2026-09-09): one row per real
     # tier. Part A taught the launcher the tier->model chain (codex-task.sh:1445:
@@ -322,7 +352,14 @@ router_v2:
     # opus 9. Capabilities stay 3/4/4 and sizes stay unchanged on purpose:
     # heavy code must resolve terra at 4, never sol at 7 — sol is the
     # sizes:[heavy]-only adversarial/exhaustive arm.
-    - { arm: codex, provider: codex, model: gpt-5.6-luna, tier: volume, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true, capability: 3 }
+    # ARM-SELECTION-ADMISSION-BANDS-01 (2026-09-16): `recon` added to luna's kinds
+    # (proposal §4.1: recon eligibility where the transport supports read-only
+    # execution). The codex session runner already executes the read-only-consumption
+    # kinds review/audit on this row, so a read-only recon mission is
+    # transport-supported. capability stays 3 — the proposal forbids promoting luna
+    # on this lane's evidence; recon membership is an admission change, not a band
+    # change.
+    - { arm: codex, provider: codex, model: gpt-5.6-luna, tier: volume, kinds: [code, docs, review, plan, audit, recon, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true, capability: 3 }
     - { arm: codex, provider: codex, model: gpt-5.6-terra, tier: standard, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], think_tiers: [heavy], tags: [review, adversarial], review: true, protected: true, capability: 4 }
     - { arm: codex, provider: codex, model: gpt-5.6-sol, tier: top, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true, capability: 5 }
     # ASTRA-MUST-BE-SELECTABLE-01 (founder 2026-09-14, verbatim: "Астра точно
@@ -361,7 +398,16 @@ router_v2:
     - { arm: sol, provider: codex, model: gpt-5.6-sol, tier: top, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], think_tiers: [strategic], tags: [adversarial, exhaustive], review: true, protected: true, capability: 5 }
     - { arm: haiku, provider: claude, model: haiku, tier: standard, kinds: [docs, audit, plan, recon], sizes: [standard], tags: [classify, audit], review: true, protected: true, capability: 2, pool_default: true } # recon fallback per ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01
     - { arm: sonnet, provider: claude, model: sonnet, tier: standard, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], think_tiers: [light, standard], tags: [integration, ui_judgment], review: true, protected: true, capability: 4 }
-    - { arm: opus, provider: claude, model: opus, tier: high, kinds: [review, plan, audit, safety], sizes: [standard, heavy], think_tiers: [heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 5, pool_default: false }
+    # ARM-SELECTION-ADMISSION-BANDS-01 (2026-09-16, proposal §4.1 "Resolve opus
+    # to actual 5"): `model: opus` was an alias; resolved to claude-opus-5, the id
+    # model-capability.yaml already pins (model_id/underlying_model: claude-opus-5,
+    # sourced to Anthropic's own model page). NO opus-4.8 route exists anywhere in
+    # this config, so there is no 4.8 exception to record; if one is ever added it
+    # needs its own explicit versioned route, a recorded reason, and an availability
+    # check -- a failed Opus 5 launch must never silently fall back to 4.8. The
+    # build exclusion (kinds carry no `code`) is untouched: removing it is a separate
+    # product decision, not needed to promote flash.
+    - { arm: opus, provider: claude, model: claude-opus-5, tier: high, kinds: [review, plan, audit, safety], sizes: [standard, heavy], think_tiers: [heavy], tags: [architecture, safety, adversarial], review: true, protected: true, capability: 5, pool_default: false }
     # FABLE-RESTORE-01 (founder permission, 2026-09-06 open-threads.md, entry
     # [FABLE-RESTORE-01]): fable had ZERO capability_matrix cells since
     # FABLE-RETIRE-01 (2026-07-07), so the arbiter could never select it as a
@@ -713,7 +759,7 @@ router:
       review_rank: 1
     - id: opus
       provider: anthropic
-      model: opus
+      model: claude-opus-5  # alias `opus` resolved 2026-09-16, ARM-SELECTION-ADMISSION-BANDS-01
       when: [review]
       effort: high
       review_rank: 3
