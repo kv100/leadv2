@@ -1,0 +1,9 @@
+--- a/plugins/leadv2/scripts/tests/test-journal-honours-the-pinned-root.sh
++++ b/plugins/leadv2/scripts/tests/test-journal-honours-the-pinned-root.sh
+@@ -51,5 +51,5 @@ jpath() { # <env assignments...> -> resolved journal path
+   ( cd "${CWD_REPO}" && \
+-    env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR -u LEADV2_PROJECT_ROOT \
++    env -u CLAUDE_PROJECT_ROOT -u LEADV2_PROJECT_ROOT \
+         -u LEADV2_STATE_ROOT -u LEADV2_STATE_BASE \
+         LEADV2_STATE_BASE="${STATE_BASE}" "$@" \
+         bash "${JOURNAL}" path fixture-task 2>/dev/null )

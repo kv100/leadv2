@@ -11,13 +11,12 @@
 # > cwd, and LEADV2_PROJECT_ROOT was not in it at all, so the write fell through
 # to the cwd repo -- the real one.
 #
-# DECLARED NEGATIVE CONTROLS (apply INSIDE leadv2-journal.sh; each must turn
-# this suite RED):
-#   N1  delete the LEADV2_PROJECT_ROOT rung from both sites => case (b) fails:
-#       a pinned root falls through to cwd again.
-#   N2  move the rung AHEAD of CLAUDE_PROJECT_ROOT => case (a) fails: an
-#       ambient LEADV2_PROJECT_ROOT overrides an explicit CLAUDE_* pin, which is
-#       the foreign-root regression this ordering exists to avoid.
+# DECLARED NEGATIVE CONTROLS (apply inside the fixture functions below; each
+# must turn this suite RED):
+#   N1 remove jpath's inherited-CLAUDE scrub => case (b) sees the caller's
+#      CLAUDE_PROJECT_DIR and fails instead of testing LEADV2_PROJECT_ROOT alone.
+#   N2 replace keyed's hashed-ephemeral shape with the old bare-key shape =>
+#      the selected root is right but every format assertion fails.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,6 +29,7 @@ bad() { FAIL=$((FAIL+1)); echo "  FAIL — $1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/journal-root.XXXXXX")" || exit 2
 trap 'rm -rf "${WORK}"' EXIT
+STATE_BASE="${WORK}/state-base"
 
 mkrepo() { # <dir>
   mkdir -p "$1" && git init -q "$1" >/dev/null 2>&1 || return 1
@@ -43,17 +43,29 @@ mkrepo "${PINNED}"   || { echo FATAL; exit 2; }
 mkrepo "${CLAUDE_ROOT}" || { echo FATAL; exit 2; }
 
 # Every case runs FROM the cwd repo -- that is the trap: the cwd repo stands in
-# for the real checkout a suite must never write into.
+# for the real checkout a suite must never write into.  The suite itself must
+# clear inherited root pins: each case below deliberately supplies the complete
+# precedence input it is asserting.  A sandbox state base both keeps fixture
+# writes out of the user's control plane and makes the state-path result stable.
 jpath() { # <env assignments...> -> resolved journal path
-  ( cd "${CWD_REPO}" && env "$@" bash "${JOURNAL}" path fixture-task 2>/dev/null )
+  ( cd "${CWD_REPO}" && \
+    env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR -u LEADV2_PROJECT_ROOT \
+        -u LEADV2_STATE_ROOT -u LEADV2_STATE_BASE \
+        LEADV2_STATE_BASE="${STATE_BASE}" "$@" \
+        bash "${JOURNAL}" path fixture-task 2>/dev/null )
 }
 # The journal does NOT live inside the repo: leadv2-state-path.sh maps a root to
-# a central control-plane directory keyed by that root's basename
-# (~/.claude/leadv2-state/<key>/tasks/...), identical from every worktree of the
-# same repo. So "did the pin win" is answered by which KEY the path carries, not
-# by filesystem containment. Measured while writing this suite -- the first
-# version asserted containment and failed for its own reason, not the product's.
-keyed() { case "$2" in */"$1"/tasks/*) return 0;; *) return 1;; esac; }
+# a central control-plane directory keyed by its basename plus an eight-hex
+# digest of its full path (<state>/.ephemeral/<key>-<digest>/tasks/...). So
+# "did the pin win" is answered by that complete ephemeral key, not filesystem
+# containment or the obsolete bare-basename layout.
+keyed() { # <root basename> <resolved journal path>
+  local key="$1" path="$2"
+  case "${path}" in
+    "${STATE_BASE}"/.ephemeral/"${key}"-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]/tasks/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 echo "== the journal writes where the caller pinned it"
 
@@ -91,10 +103,17 @@ fi
 
 # (d) the whole point, end to end: a real append must not touch the cwd repo.
 echo "== a real write, and the repo it must not touch"
-( cd "${CWD_REPO}" && LEADV2_PROJECT_ROOT="${PINNED}" \
-    bash "${JOURNAL}" append fixture-task note "pinned-root write" ) >/dev/null 2>&1
+( cd "${CWD_REPO}" && \
+  env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR -u LEADV2_PROJECT_ROOT \
+      -u LEADV2_STATE_ROOT -u LEADV2_STATE_BASE \
+      LEADV2_STATE_BASE="${STATE_BASE}" LEADV2_PROJECT_ROOT="${PINNED}" \
+      bash "${JOURNAL}" append fixture-task note "pinned-root write" ) >/dev/null 2>&1
 LEAK="$(find "${CWD_REPO}" -name 'journal.md' 2>/dev/null | wc -l | tr -d ' ')"
-WROTE="$( cd "${CWD_REPO}" && LEADV2_PROJECT_ROOT="${PINNED}" bash "${JOURNAL}" path fixture-task 2>/dev/null )"
+WROTE="$( cd "${CWD_REPO}" && \
+  env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR -u LEADV2_PROJECT_ROOT \
+      -u LEADV2_STATE_ROOT -u LEADV2_STATE_BASE \
+      LEADV2_STATE_BASE="${STATE_BASE}" LEADV2_PROJECT_ROOT="${PINNED}" \
+      bash "${JOURNAL}" path fixture-task 2>/dev/null )"
 LANDED=0
 [[ -n "${WROTE}" && -f "${WROTE}" ]] && LANDED=1
 if [[ "${LEAK}" == "0" ]]; then

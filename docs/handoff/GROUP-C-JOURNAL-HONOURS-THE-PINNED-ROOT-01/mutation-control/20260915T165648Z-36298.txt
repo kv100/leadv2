@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-journal-honours-the-pinned-root.sh
+file=plugins/leadv2/scripts/tests/test-journal-honours-the-pinned-root.sh
+anchor=docs/handoff/GROUP-C-JOURNAL-HONOURS-THE-PINNED-ROOT-01/mutation-control/precedence-isolation.patch
+baseline_rc=0
+mutated_rc=1
+red_line=  FAIL — (b) pin ignored, resolved to '/Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/journal-root.wSwrc9/state-base/leadv2/tasks/fixture-task/journal.md'
+diff_hash=616913b3b4af19ea91066d04ea4101be74db531814c114914364387238cf97f0
+lane_diff_hash=d5900eb559ff0fe767a6ec6551bb1d8d1842bed8814308e3607d4a1fb10303f9
