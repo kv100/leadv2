@@ -38,10 +38,18 @@ contract_case() { # <scripts>
   local s="$1" body
   [[ -f "${s}/leadv2-helpers.sh" && -f "${s}/leadv2-dispatch-code.sh" ]] || return 2
   body="$(awk '/^_spawn_worker_body\(\) \{/{p=1} p{print} p && /^}/{exit}' "${s}/leadv2-dispatch-code.sh")"
+  # Arm case-labels merged after this suite was authored (2026-08-23): sonnet
+  # absorbed haiku/opus/fable as "registry-resolved Claude arms" (c4ea2afb,
+  # 2026-09-08, leadv2-dispatch-code.sh:7169) and codex absorbed astra/sol
+  # under ASTRA-MUST-BE-SELECTABLE-01 (b9b0755a, 2026-09-14,
+  # leadv2-dispatch-code.sh:7317). Matching the merged labels still proves
+  # the same claim the suite was written for -- all four arm families reach
+  # the single, no-per-arm-drift injection site (LANE-PLACEMENT-01 comment,
+  # leadv2-dispatch-code.sh:6837).
   grep -q '_LEADV2_FOREGROUND_CONTRACT_MISSION' "${s}/leadv2-helpers.sh" \
     && grep -q '_LEADV2_FOREGROUND_CONTRACT_MISSION' <<<"${body}" \
     && grep -q 'glm|glm-flash)' <<<"${body}" && grep -q 'kimi)' <<<"${body}" \
-    && grep -q 'sonnet)' <<<"${body}" && grep -q 'codex)' <<<"${body}" \
+    && grep -q 'sonnet|haiku|opus|fable)' <<<"${body}" && grep -q 'codex|astra|sol)' <<<"${body}" \
     && [[ "$(grep -n '_LEADV2_FOREGROUND_CONTRACT_MISSION' <<<"${body}" | head -1 | cut -d: -f1)" -lt "$(grep -n '_LEADV2_EVIDENCE_CONTRACT_MISSION' <<<"${body}" | head -1 | cut -d: -f1)" ]]
 }
 contract_case "${SCRIPT_DIR}" >/dev/null 2>&1; post=$?
