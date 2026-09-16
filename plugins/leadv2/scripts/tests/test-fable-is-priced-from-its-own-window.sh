@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
-# FABLE-IS-PRICED-FROM-A-WINDOW-IT-DOES-NOT-BURN-01 (row 0485ea90c9e0):
-# the acceptance suite for model-scoped quota windows. Pins BOTH directions
-# of the mispricing plus the shared-window bind, across all three halves of
-# the change -- publisher (leadv2-quota-read.py parses limits[] into
+# FABLE-IS-PRICED-FROM-A-WINDOW-IT-DOES-NOT-BURN-01 (row 0485ea90c9e0) --
+# HISTORICAL NAME, kept only because CI suite-selection maps key on the
+# path. Decision 0485 (2026-09-13) built the model-scoped weekly window end
+# to end: publisher (leadv2-quota-read.py parses limits[] into
 # weekly_scoped), arbiter (leadv2-route-arbiter.sh prices a scoped arm from
-# its OWN weekly window, session still binding), resolver
-# (leadv2-glm-policy-resolve.py prices fable by max(session, scoped), never
-# the account weekly_all). A suite proving only the "not penalised"
-# direction would turn the mispricing into an exemption; every case here
-# names which direction it pins.
+# its own window beside the shared session), resolver
+# (leadv2-glm-policy-resolve.py prices fable by max(session, scoped)). Its
+# ARBITER half let the scoped window REPLACE the account's seven_day
+# aggregate for that arm.
+#
+# FOUNDER RULING 2026-09-16 (ARM-SELECTION-COST-QUOTA-TELEMETRY-01 round 2):
+# keep BOTH windows -- Fable draws down the scoped meter AND the account
+# weekly aggregate simultaneously. The worst readable window binds; an
+# exhausted account weekly caps Fable even when its own scoped window is
+# free (C1), and the mirror -- an exhausted scoped window caps it while the
+# aggregate is healthy (C2) -- must hold too: one direction alone would let
+# a replace-shaped bug back in unnoticed. C5 pins the same rule at pricing
+# level, under the ceiling so cap logic cannot mask the number. The
+# resolver half (R-cases) pins leadv2-glm-policy-resolve.py, which still
+# implements 0485 substitution and was not part of this ruling's patch --
+# see the lane report's follow-up. Every case names which direction it
+# pins.
 # run-all-triggers: leadv2-quota-read leadv2-route-arbiter leadv2-glm-policy-resolve.py
 # NB token shapes: scripts/*.py stems strip their extension (leadv2-quota-read),
 # lib/leadv2-glm-policy-resolve.py keeps it (run-all.sh special case, FABLE-
@@ -242,23 +254,27 @@ PY
 )"
 if [[ "$v" == "ok"* ]]; then pass 'R3 pool: no scoped key -> aggregate still blocks fable (no exemption)'; else fail "R3 pool: $v"; fi
 
-# ── arbiter half: scoped substitution inside util()/capped() ─────────────────
-# C1 (NOT penalised): weekly_all=96 (over the claude work ceiling 80) with
+# ── arbiter half: both windows bind, worst wins (founder ruling 2026-09-16) ──
+# C1 (account weekly binds): weekly_all=96 (over every claude ceiling) with
 # the scoped Fable window at 2 and session at 7. fable must read
-# util_claude_fable=7 -- priced by the meter the provider enforces for it --
-# while sonnet, which genuinely shares the aggregate, reads util_claude=96
-# and is capped. fable is NOT excluded.
+# util_claude_fable=96 -- the WORST of its three readable windows, priced by
+# the account weekly it also draws down -- and be capped beside sonnet.
+# This is the ruled flip of the old C1 (which asserted the scoped window
+# alone freed fable here); a replace-shaped regression reads 7 and admits
+# it.
 rm -f "$TMP/state"
 out="$(run "$(qjson 1 1 7 96 2)" 1 '{"kind":"review","size":"standard","protected":true}' || true)"
 exc="$(exc_of "$out")"
-if [[ "$out" == *'util_claude=96 '* && "$out" == *'util_claude_fable=7 '* && "$out" == *'scoped_window_fable=weekly_scoped(fable)'* \
-      && ",${exc}," == *',sonnet:capped,'* && ",${exc}," != *',fable:capped,'* ]]; then
-  pass 'C1 arbiter: weekly_all 96 + scoped 2 -> util_claude_fable=7, sonnet capped, fable not penalised'
+if [[ "$out" == *'util_claude=96 '* && "$out" == *'util_claude_fable=96 '* && "$out" == *'scoped_window_fable=weekly_scoped(fable)'* \
+      && ",${exc}," == *',sonnet:capped,'* && ",${exc}," == *',fable:capped,'* && "$out" == *'arm=codex '* ]]; then
+  pass 'C1 arbiter: weekly_all 96 + scoped 2 -> util_claude_fable=96 (worst binds), fable+sonnet capped, codex wins'
 else fail "C1 arbiter output=$out"; fi
 
-# C2 (withdrawn): scoped exhausted (100), aggregate cool (30) -> fable priced
-# 100, capped, and the review work goes to sonnet. Aggregate healthy must NOT
-# keep a scoped-exhausted arm alive.
+# C2 (mirror of the ruling): scoped exhausted (100), aggregate cool (30) ->
+# fable priced 100, capped, and the review work goes to sonnet. A healthy
+# aggregate must NOT keep a scoped-exhausted arm alive -- this is the mirror
+# the founder ruling demands beside C1, so a replace-shaped bug cannot slip
+# back in from either direction.
 rm -f "$TMP/state"
 out="$(run "$(qjson 1 99 10 30 100)" 1 '{"kind":"review","size":"standard","protected":true}' || true)"
 exc="$(exc_of "$out")"
@@ -289,6 +305,24 @@ exc="$(exc_of "$out")"
 if [[ "$out" == *'util_claude=96 '* && ",${exc}," == *',sonnet:capped,'* && "$out" == *'arm=glm '* ]]; then
   pass 'C4 arbiter: non-scoped claude arm still priced by the aggregate (96, capped)'
 else fail "C4 arbiter output=$out"; fi
+
+# C5 (worst binds, pricing level): both weeklies mid-range and under every
+# ceiling, so cap logic cannot mask the number. The scoped arm's price must
+# follow the WORST readable window whichever side it is on: aggregate 60 vs
+# scoped 30 reads 60 (a replace-shaped bug reads 30), aggregate 30 vs scoped
+# 60 reads 60. Session is 10 in both, well clear.
+rm -f "$TMP/state"
+out="$(run "$(qjson 1 1 10 60 30)" 1 '{"kind":"review","size":"standard","protected":true}' || true)"
+exc="$(exc_of "$out")"
+if [[ "$out" == *'util_claude_fable=60 '* && "$out" == *'util_claude=60 '* && ",${exc}," != *',fable:capped,'* ]]; then
+  pass 'C5a arbiter: aggregate 60 > scoped 30 -> util_claude_fable=60 (the aggregate participates in the price)'
+else fail "C5a arbiter output=$out"; fi
+rm -f "$TMP/state"
+out="$(run "$(qjson 1 1 10 30 60)" 1 '{"kind":"review","size":"standard","protected":true}' || true)"
+exc="$(exc_of "$out")"
+if [[ "$out" == *'util_claude_fable=60 '* && "$out" == *'util_claude=30 '* && ",${exc}," != *',fable:capped,'* ]]; then
+  pass 'C5b arbiter: scoped 60 > aggregate 30 -> util_claude_fable=60 (the scoped window still binds the price)'
+else fail "C5b arbiter output=$out"; fi
 
 SUMMARY_PRINTED=1
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"

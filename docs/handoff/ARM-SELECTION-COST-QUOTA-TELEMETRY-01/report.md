@@ -321,3 +321,179 @@ bands/pool membership/opus identity/recon eligibility/review pools, any
 bandit/training/auto-policy-learning loop, review counters, caps, flash
 permissions. `_observed_rounds` logic and NNLS/provider-drain inference were
 read but not modified.
+
+## ROUND 2 (2026-09-16) — the code stands; two artefacts catch up with it
+
+Round 1's arbiter code is untouched this round: `git diff fc36ecad HEAD --
+plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh` is empty. What moved is
+the two artefacts the round-2 brief names, plus three pin re-anchors inside
+the fixtures suite (declared in §5 below).
+
+### 1. The Fable suite now asserts the founder ruling
+
+`plugins/leadv2/scripts/tests/test-fable-is-priced-from-its-own-window.sh`
+keeps its PATH (CI suite-selection keys on it) and opens with a header
+saying the name is HISTORICAL: decision 0485 (2026-09-13) built the
+model-scoped weekly window end to end and let the scoped window REPLACE the
+account weekly for the scoped arm; the founder ruling of 2026-09-16 (this
+lane, round 2) keeps BOTH windows — the worst readable window binds.
+
+- **C1 flipped to the ruled direction**: weekly_all=96, scoped=2, session=7
+  → `util_claude_fable=96` (the worst of its three readable windows), fable
+  AND sonnet capped, codex wins. The old C1 asserted the opposite (scoped
+  alone frees fable) and was the round-1 red the lead's table recorded.
+- **C2 kept unchanged — it IS the required mirror** (scoped exhausted=100,
+  aggregate=30 healthy → fable capped, sonnet wins); its comment now names
+  it the ruled mirror so the next reader knows the pair is deliberate.
+- **C5a/C5b are new**: the same rule pinned at PRICING level, under every
+  ceiling so cap logic cannot mask the number — aggregate 60 vs scoped 30
+  reads `util_claude_fable=60` (a replace-shaped regression reads 30);
+  aggregate 30 vs scoped 60 also reads 60.
+- P1/P2 (publisher) and R-live/R1/R2/R3 (resolver) halves are unchanged —
+  see follow-up §6.
+
+Post-rewrite: `SUMMARY: pass=12 fail=0`, rc=0.
+
+### 2. Baseline re-frozen — every changed field, enumerated
+
+Regenerated from the post-change tree with
+`test-arm-selection-decision-fixtures-01.sh --record .../baseline/`, then
+acceptance mode proves twice-run determinism, byte-identity to the committed
+baseline, and the negative control (mutation moves the winner
+glm→codex, revert restores byte-for-byte). Field-level enumeration of the
+re-freeze diff (old → new, all 13 recordings, 20 invocations):
+
+| where | field | old → new | why |
+|---|---|---|---|
+| all 13 files, all invocations | `arb_rev` | `a488efe537bf` → `1e4bd06dee6c` | content hash of the arbiter file; round 1 edited it, so this necessarily moved. Not a decision. |
+| 10 of 20 invocations (01, 02, 03, 04×2, 05, 06×2, 07, 08-complex, 10-scoped-out, 10-scoped-stale, 11) | `loser_detail` | absent → e.g. `codex:cost_unknown,glm-flash:insufficient_fit,sonnet:cost_unknown` | §5 telemetry: the additive loser-reason token. `arm_excluded`/`price_ratio` stays byte-identical beside it. Not a decision. |
+| case05 | winner | `arm=beta model=glm-5.3-flash chain=beta,alpha` → `arm=alpha model=glm-5.3 chain=alpha,beta` | **intended §4.4**: the baseline had frozen the OLD un-constrained rotation (equal ecost, seeded `last`=alpha, jumped to worse-fit beta). Round 1 constrains rotation to the winner's fit bucket, so alpha keeps winning. Loser relabelled `alpha:price_ratio` → `beta:price_ratio` + `loser_detail=beta:insufficient_fit`. |
+| case10 scoped-free+general-out | decision | `rc=0 arm=fable reason=cheapest_capable` → `rc=3 arm=refuse reason=all_arms_capped`; `util_claude_Fable` 10 → 97; `arm_excluded sonnet:capped` → `fable:capped,sonnet:capped` | **intended §4.3 / founder ruling 2026-09-16**: the exhausted account weekly now binds fable though its scoped window reads 0. The fixture's only review arms are fable and sonnet (both claude), so the task refuses instead of re-routing. |
+| case10 scoped-stale | `reset_urgency` | `claude:1.257[seven_day]` → adds `claude/fable:1.257[seven_day]` | keep-both makes the LIVE aggregate legible to the scoped arm's urgency pricing; the expired scoped window still contributes nothing. Winner unchanged. |
+| case10 scoped-stale | candidate `effective_cost` (claude) | 1.6667 → 1.3258 | the added `[seven_day]` urgency weight re-prices claude's ecost — ranking-only, bounded [1,2], exclusion cliffs untouched. Winner unchanged (sonnet). |
+| case09, case12, case13 | — | `arb_rev` only | decision-identical |
+
+That is the complete list. Beyond `arb_rev`, `loser_detail`, and the three
+case05/case10 entries above, not one byte moved in the other eleven
+scenarios — the round-1 verification ("not one routing decision moved" on
+cases 1-4, 6-9, 11-13) survives re-freezing verbatim.
+
+### 3. Paired table vs main (real exit codes, 2026-09-16)
+
+| suite | main | branch pre-round-2 | branch post-round-2 |
+|---|---|---|---|
+| `test-arm-selection-decision-fixtures-01.sh` | rc=0 (pass=44 fail=0) | rc=1 (pass=41 fail=3) | **rc=0 (pass=44 fail=0)** — baseline re-frozen, changes enumerated in §2 |
+| `test-fable-is-priced-from-its-own-window.sh` | rc=0 (pass=10 fail=0) | rc=1 (pass=9 fail=1) | **rc=0 (pass=12 fail=0)** — rewritten to the ruling |
+| `test-arbiter-reads-capability-floor.sh` (`tests/`) | rc=1 (5 passed, 1 failed) | rc=1 (5 passed, 1 failed) | rc=1 (5 passed, 1 failed) — still red in BOTH columns, as required; this lane touched nothing it reads |
+
+Raw evidence: main-column runs executed from
+`/Users/kostiantyn.vlasenko/Projects/leadv2` (main checkout, only
+runtime-state dirt); branch-column runs from this worktree.
+
+### 4. Falsification set (raw)
+
+```
+$ bash -n plugins/leadv2/scripts/tests/test-fable-is-priced-from-its-own-window.sh && echo BASH_N_OK
+BASH_N_OK
+$ bash -n plugins/leadv2/scripts/tests/test-arm-selection-decision-fixtures-01.sh && echo BASH_N_OK
+BASH_N_OK
+```
+
+No Python file was changed this round, so `python3 -m py_compile` has no new
+target (round 1 compiled the embedded heredoc; nothing moved since).
+
+`bash tests/run-all.sh --scope changed` — rc=1, reconciled suite-by-suite in
+§7: every blocking failure is pre-existing on main or tree-independent; both
+of this lane's suites passed inside the same run.
+
+### 5. Write-set deviation, declared: three pins in the fixtures suite
+
+The round-2 write set names the baseline DIRECTORY but not
+`test-arm-selection-decision-fixtures-01.sh`. Three pin re-anchors were made
+in it anyway, because the re-freeze mandate is otherwise unreachable or
+hollow:
+
+1. **case10 stale check (required for green)**: the old grep treated ANY
+   `claude/fable` urgency in the stale block as fabricated. Under keep-both,
+   `claude/fable:1.257[seven_day]` is legitimate (live aggregate), so the
+   check re-anchors to: no urgency sourced `[weekly_scoped...]` (the expired
+   window), and the aggregate-sourced token present. Leaving it un-edited
+   kept the suite red against the re-frozen baseline for a false reason.
+2. **case10 scoped-free+general-out either/or → hard pin**: both branches
+   used to `pass`. Now admission is a FAIL (replace-shaped regression,
+   founder ruling 2026-09-16) and refusal is the rule.
+3. **case05 either/or → hard pin**: `BASELINE FINDING` acceptance of the
+   worse-fit rotation became a FAIL (§4.4 regression).
+
+No recording mechanics, fixtures, or normalization were touched — the
+re-frozen bytes are pure arbiter output. Byte-identity (acceptance check 4)
+remains the real guard; the pins now name regressions instead of shrugging
+at them.
+
+### 6. Follow-up (named, not silenced): the resolver half still substitutes
+
+`leadv2-glm-policy-resolve.py` (`live_anthropic_pct`) still prices fable by
+max(session, scoped) — 0485's substitution — so its review-pool path
+(R-live/R1/R2/R3, unchanged and green in the rewritten suite) admits fable
+while the account aggregate is exhausted. That file is outside this lane's
+write set and outside the ruling's patch (the ruling concerned the arbiter's
+window set); the suite header names the split. The owner of
+`leadv2-glm-policy-resolve.py` should decide whether the ruling extends
+there.
+
+### 7. Run-all changed-scope (2026-09-16, this lane's final tree)
+
+```
+run-all: 25 passed, 22 failed, 0 known-red (allow-listed, non-blocking),
+1 known-red-skipped (budget mode, still run by --scope all),
+0 gone-green (remove from allow-list), scope=changed      rc=1
+```
+
+Inside the SAME run, all three of this lane's suites PASSED:
+`test-arm-selection-decision-fixtures-01.sh` (re-frozen baseline),
+`test-fable-is-priced-from-its-own-window.sh` (rewritten), and round-1's
+`test-arm-selection-cost-quota-telemetry-01.sh` (14/0).
+
+All 22 blocking failures are inherited, each verified one of two ways:
+
+- **Pair-measured today, branch vs main checkout, rc identical in every
+  case** (the changed-scope selection ran them because round 1's arbiter
+  diff is in this lane's range — none of them reads this round's files):
+
+  ```
+  test-arm-pool-reachability.sh        branch=1 main=1 SAME
+  test-arm-admission.sh                branch=1 main=1 SAME
+  test-arm-capability-honoured.sh      branch=1 main=1 SAME
+  test-freepool-capability-floor.sh    branch=1 main=1 SAME
+  test-freepool-gets-work.sh           branch=1 main=1 SAME
+  test-glm-flash-arm.sh                branch=1 main=1 SAME
+  test-launch-uses-the-chosen-arm.sh   branch=2 main=2 SAME
+  test-router-v2-capability-fit.sh     branch=2 main=2 SAME
+  test-router-v2-shadow-mode.sh        branch=1 main=1 SAME
+  tests/test-arbiter-reads-capability-floor.sh branch=1 main=1 SAME  (§3)
+  ```
+
+- **Documented pre-existing in round 1's sweep** (swap-tested there against
+  the pristine pre-lane arbiter, pass/fail counts identical pre/post):
+  `test-arbiter-seam-plugin-kind.sh`, `test-arbiter-uses-observed-cost.sh`,
+  `test-quota-reset-arbiter.sh` (the three the mission named),
+  `test-complexity-routing.sh`, `test-effort-routing.sh` (environmental),
+  `test-exclusion-stages.sh` (stale anchor string),
+  `test-route-arbiter-spend-forecast.sh`, `test-route-arbiter.sh`,
+  `test-spawn-arbiter-gate.sh`, `test-think-through-arbiter.sh`,
+  `test-t13-slice2.sh` (baseline changed-scope red, measured 2026-09-01),
+  and the `run-core-offline.sh` aggregate whose children are the same set.
+
+Additionally verified tree-independent today (passed standalone on BOTH
+trees after flaking inside the runner): `test-unmetered-account-not-
+penalised.sh`, `test-think-model-arbiter-wins.sh`, and the
+`test-status-surface-*` trio — none appears in the blocking list.
+
+### 8. Mutation controls (leadv2-mutation-control.sh artifacts)
+
+Two worker-mode controls re-introduce the exact 0485 replace-shape —
+`windows.pop('seven_day', None)` appended back at the scoped-window site —
+into a scratch copy, one per suite, and prove each suite goes red because of
+it. Artifacts under `docs/handoff/ARM-SELECTION-COST-QUOTA-TELEMETRY-01/
+mutation-control/` (committed; gitignore force-add). Run after the code
+commit so lane_diff_hash binds the committed HEAD.

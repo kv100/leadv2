@@ -535,10 +535,13 @@ PY
   fi
   f="${o}/case05-rotation-keeps-fit.txt"
   pin 'case05: both buckets recorded' "$f" 'fit_bucket=alpha:0,beta:1'
+  # §4.4 fix (2026-09-16 round 1): rotation at equal ecost must keep the
+  # winner's own fit bucket — alpha (bucket 0) seeded as `last` must still
+  # win. Picking beta again is the §4.4 regression, no longer a finding.
   if grep -q '^arm=alpha ' "$f"; then
     pass 'case05: rotation kept the better fit (alpha)'
   elif grep -q '^arm=beta ' "$f"; then
-    pass 'case05: BASELINE FINDING — rotation picked the WORSE-fit arm at equal ecost (proposal §4.4 verification item; see report)'
+    fail 'case05: rotation picked the WORSE-fit arm at equal ecost (§4.4 regression — round-1 fix no longer holding)'
   else
     fail 'case05: no winner line recorded'
   fi
@@ -569,20 +572,31 @@ PY
   f="${o}/case10-fable-scoped-weekly.txt"
   pin 'case10 scoped-out: sonnet unaffected, wins' "$f" 'arm=sonnet '
   pin 'case10 scoped-out: fable excluded capped on its OWN window' "$f" '"fable": "capped"'
+  # Founder ruling 2026-09-16 (round 2): keep BOTH windows — an exhausted
+  # account weekly caps fable even with scoped headroom. Refusal here is the
+  # RULE now; admission is the replace-shaped regression this pin catches.
   if grep -q '^arm=fable ' "$f"; then
-    pass 'case10 scoped-free+general-out: BASELINE FINDING — fable admitted while general weekly is 97% (scoped REPLACES, not sums; proposal §2.5/§4.3; see report)'
+    fail 'case10 scoped-free+general-out: fable admitted while the general weekly is 97% (replace-shaped regression — founder ruling 2026-09-16 keeps both windows)'
   else
-    pass 'case10 scoped-free+general-out: fable refused on the general window'
+    pass 'case10 scoped-free+general-out: fable refused on the general window (both windows bind)'
   fi
-  # the stale check reads ONLY the scoped-stale invocation block: the
-  # scoped-free invocation legitimately prices claude/fable urgency, and a
-  # whole-file grep would false-red on it.
-  local stale_block
+  # the stale check reads ONLY the scoped-stale invocation block: the other
+  # invocations legitimately price claude/fable urgency, and a whole-file
+  # grep would false-red on them. Re-anchored 2026-09-16 (round 2, founder
+  # ruling keep-both): claude/fable urgency may now legitimately appear,
+  # sourced [seven_day] — the aggregate stays readable for a scoped arm.
+  # What must NEVER appear is urgency sourced from the EXPIRED scoped window
+  # itself (hours_to_reset=0 contributes nothing), and the keep-both rule
+  # means the live aggregate-sourced token should be present.
+  local stale_block urg
   stale_block="$(sed -n '/^## invocation: scoped-stale$/,$p' "$f")"
-  if printf '%s\n' "$stale_block" | grep -q 'reset_urgency=.*claude/fable'; then
+  urg="$(printf '%s\n' "$stale_block" | sed -n 's/.*reset_urgency=\([^ ]*\).*/\1/p' | head -1)"
+  if printf '%s' "$urg" | grep -q 'claude/fable:[0-9.]*\[weekly_scoped'; then
     fail 'case10 stale: fabricated urgency from an expired reading'
+  elif printf '%s' "$urg" | grep -q 'claude/fable:[0-9.]*\[seven_day'; then
+    pass 'case10 stale: no urgency from hours_to_reset=0; fable urgency sourced from the live aggregate [seven_day]'
   else
-    pass 'case10 stale: no urgency fabricated from hours_to_reset=0'
+    fail 'case10 stale: expected fable urgency from the live [seven_day] window under keep-both (founder ruling 2026-09-16)'
   fi
   f="${o}/case11-weekly-preservation.txt"
   pin 'case11: weekly reserve decided (glm won)' "$f" 'arm=glm '
