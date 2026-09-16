@@ -3,8 +3,12 @@
 # says otherwise? Founder order 2026-09-16: weekly is the allocation key, the
 # five-hour window is an admission constraint only.
 set -uo pipefail
-LV2="$HOME/Projects/leadv2"
+# Resolve the repo from THIS file, so a lane worktree probes ITS OWN arbiter,
+# not main's. A hardcoded $HOME path would silently grade the wrong tree.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LV2="$(cd "$HERE/../../.." && pwd)"
 ARBITER="$LV2/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh"
+[ -f "$ARBITER" ] || { echo "no arbiter at $ARBITER"; exit 2; }
 TMP="$(mktemp -d /private/tmp/probe-arb5h.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
 
 cat >"$TMP/free.sh" <<'EOF'
