@@ -496,4 +496,21 @@ Two worker-mode controls re-introduce the exact 0485 replace-shape —
 into a scratch copy, one per suite, and prove each suite goes red because of
 it. Artifacts under `docs/handoff/ARM-SELECTION-COST-QUOTA-TELEMETRY-01/
 mutation-control/` (committed; gitignore force-add). Run after the code
-commit so lane_diff_hash binds the committed HEAD.
+commit (8b271082) so lane_diff_hash binds the committed HEAD.
+
+```
+MUTATION-CONTROL ok suite=test-arm-selection-decision-fixtures-01.sh
+  red_line=FAIL: case10 scoped-free+general-out: fable admitted while the
+  general weekly is 97% (replace-shaped regression — founder ruling
+  2026-09-16 keeps both windows)
+  artifact=mutation-control/20260916T185104Z-15292.txt
+
+MUTATION-CONTROL ok suite=test-fable-is-priced-from-its-own-window.sh
+  red_line=FAIL: C1 arbiter output=... util_claude_fable=7 ...
+  arm_excluded=fable:price_ratio ...   (the pop makes fable read 7 and be
+  ADMITTED as a candidate — the replace shape, caught by C1)
+  artifact=mutation-control/20260916T185124Z-24248.txt
+
+diff_hash=8eb22cb7ccf1... (both runs: identical mutant, identical hash)
+lane_diff_hash=2c459d9d7114... (both runs: the committed lane diff)
+```
