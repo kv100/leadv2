@@ -712,3 +712,70 @@ rotted control remains its own task, untouched here per the brief.
   round re-ran instead every suite that asserts on the files actually
   touched, plus both sides of the one blocking suite. The 23 pre-existing
   failures are the lead's paired set, not this round's delta.
+
+## 10. Round 4 (2026-09-17) — paired re-measurement on the post-merge tree
+
+### 10.1 Paired table — this session's own measurement
+
+Method: the merge-result column ran in this worktree at HEAD (`ae55da2a`, main
+merged in); the main column ran in a detached scratch worktree checked out at
+`main` (`785e84fe`), removed after measuring. Every rc was captured directly
+from the suite process (`rc=$?` immediately after the run, never through a
+pipe), one exclusive run per suite. `run-core-offline.sh` was invoked as
+`timeout 600 bash plugins/leadv2/scripts/tests/run-core-offline.sh` in each
+tree — 93 suites across 4 shards, killed by the budget in both, matching the
+meta-runner-timeout classification (not an assertion failure).
+
+| suite | main `785e84fe` | merge result `ae55da2a` | verdict |
+|---|---|---|---|
+| `test-arm-pool-reachability.sh` | rc=1 | rc=1 | same — identical FAIL lines both sides (`(g1) pin fable plan/heavy did not resolve as fable`, `(g1) dispatcher lacks arbiter_pick=fable`) |
+| `test-exclusion-stages.sh` | rc=1 | rc=1 | same — stale `_STAGE_ORDER` anchor string (verified pre-existing in round 1) |
+| `test-arbiter-seam-plugin-kind.sh` | rc=1 | rc=1 | same — `(g1)`/`(g2) no arbiter decision line (route_resolved by=arbiter)` both sides |
+| `run-core-offline.sh` | rc=124 | rc=124 | same — meta-runner budget kill, not an assertion |
+| `test-arm-capability-honoured.sh` | rc=1 | rc=1 | same rot line both sides (`mutation did not flip the outcome -- control is not falsifiable`) — still red in BOTH columns, exactly as the acceptance requires; allow-listed in round 3 |
+
+### 10.2 The three lane suites — this session's own measurement (post-merge)
+
+| suite | result |
+|---|---|
+| `test-fable-is-priced-from-its-own-window.sh` | rc=0 — `SUMMARY: pass=12 fail=0` |
+| `test-arm-selection-decision-fixtures-01.sh` | rc=0 — `SUMMARY pass=44 fail=0` |
+| `test-arm-selection-cost-quota-telemetry-01.sh` | rc=0 — `SUMMARY pass=15 fail=0` |
+
+Post-merge note: the merge also landed the sibling lane's
+`plugins/leadv2/config/leadv2-routing.yaml` (+87 lines) plus
+`leadv2-claude-profile-select.sh`, `leadv2-dispatch-code.sh`,
+`leadv2-launch-registry.py` and three new suites. The fixtures suite pins its
+own routing yaml via `LEADV2_ROUTE_ARBITER_ROUTING_YAML`, so the live-config
+landing cannot move the frozen decisions, and 44/0 confirms the re-frozen
+baseline survives the merge. No lane-owned file moved since round 3:
+`git diff 644b4a52..HEAD --stat` over the arbiter, the three lane suites and
+the baseline directory is empty.
+
+### 10.3 Re-frozen baseline changed-field ledger — pointer
+
+The complete per-field list with a reason per field is §2 (round-2 re-freeze:
+`arb_rev`, `loser_detail`, the case05 winner flip, the case10
+scoped-free+general-out decision/util/arm_excluded flips, the case10
+scoped-stale `reset_urgency`+`effective_cost` re-pricing) and §9.2 (round-3
+third freeze: `arb_rev` third hash + the `loser_detail` record key; zero
+unexplained deltas under the normalizer byte-compare). Round 4 changed no code
+file, so the ledger stands as written — nothing new to enumerate.
+
+### 10.4 Review status for this diff
+
+- Round 3's verdict (§9.1 — codex `gpt-5.6-terra`, effort medium, REJECT,
+  3 BLOCKING + 1 MAJOR, dispositions recorded) remains the recorded model
+  verdict for this diff's code files.
+- The code delta since that verdict is exactly the two review-driven fixes
+  F2+F4: one additive durable-record field implementing the reviewer's own
+  BLOCKING finding, and one test case (D3) implementing its MAJOR finding.
+  Suite evidence covers both: 15/0 with the negative half live, 44/0 after the
+  third freeze.
+- A fresh codex re-review was attempted this round and was refused pre-spend
+  by the quota gate, zero tokens spent:
+  `LEADV2_DISPATCH_REFUSED: quota_gate — codex 98% >= 95% (build) source=pct`,
+  `CODEX_REFUSED_QUOTA reason=threshold used=live threshold=ceiling` — the
+  same failure class that blocked the round-2 pipeline review.
+- Sole-owner review engine (`leadv2-review-run.sh`, the ONE-PATH-EVERYWHERE-01
+  engine, self-contained per its header): verdict recorded in §10.5 below.
