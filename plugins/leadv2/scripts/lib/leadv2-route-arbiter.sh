@@ -564,13 +564,27 @@ _cost_unpriced_policy=str((data.get('router_v2') or {}).get('cost_unpriced_polic
 if _router_cost_cfg is not None and _cost_unpriced_policy != 'matrix_median':
     _fatal('routing_yaml_invalid', 'router_v2.cost_unpriced_policy=%r unknown (expected matrix_median)' % _cost_unpriced_policy)
 _cost_numeric={}
+_cost_meta={}
 if _router_cost_cfg:
     for _ck,_cvraw in _router_cost_cfg.items():
         if _cvraw is None: continue
-        _cnv=num(_cvraw)
-        if _cnv is None or _cnv < 0:
-            _fatal('routing_yaml_invalid', 'router_v2.cost.%s=%r is not a non-negative number' % (_ck,_cvraw))
-        _cost_numeric[_ck]=_cnv
+        # ARM-SELECTION-COST-QUOTA-TELEMETRY-01 (4.2): a cost entry may stay a
+        # bare number (legacy, byte-identical) or become a mapping carrying
+        # provenance -- value/source/observed_at/sample_count/confidence --
+        # so a future per-model/per-effort/per-scope price can be told apart
+        # from a measured provider aggregate without a second config block.
+        # Only `value` feeds ecost(); the rest is diagnostic-only (_cost_src).
+        if isinstance(_cvraw, dict):
+            _cnv=num(_cvraw.get('value'))
+            if _cnv is None or _cnv < 0:
+                _fatal('routing_yaml_invalid', 'router_v2.cost.%s.value=%r is not a non-negative number' % (_ck,_cvraw.get('value')))
+            _cost_numeric[_ck]=_cnv
+            _cost_meta[_ck]={k:_cvraw.get(k) for k in ('source','observed_at','sample_count','confidence') if _cvraw.get(k) is not None}
+        else:
+            _cnv=num(_cvraw)
+            if _cnv is None or _cnv < 0:
+                _fatal('routing_yaml_invalid', 'router_v2.cost.%s=%r is not a non-negative number' % (_ck,_cvraw))
+            _cost_numeric[_ck]=_cnv
 def _cost_median(vals):
     vs=sorted(vals)
     n=len(vs)
@@ -588,6 +602,26 @@ def _price_key(c):
     if c.get('arm')=='glm-flash': return 'glm-flash'
     _p=c.get('provider')
     return 'anthropic' if _p=='claude' else _p
+def _price_key_candidates(c):
+    # ARM-SELECTION-COST-QUOTA-TELEMETRY-01 (4.2): most-specific key first --
+    # provider.model.effort, then provider.model, then the existing
+    # arm/provider key. Only the first candidate PRESENT in router_v2.cost is
+    # used; an absent candidate is skipped, never treated as a zero price, so
+    # today's sparse config (glm-flash/glm/freepool only) resolves through
+    # the last candidate exactly as before this change -- no yaml edit
+    # required for this to be a no-op on the live routing config. '.' (not
+    # ':') joins the segments: _map_entry/_flow_value (the stdlib YAML-subset
+    # loader, :421 below) only accept keys matching [A-Za-z0-9_.-]+ and
+    # refuse quoted/colon keys outright, so a colon-joined key could be
+    # written under real PyYAML but would never parse -- and never match --
+    # under the subset loader this repo ships as its fallback.
+    _p=c.get('provider'); _p='anthropic' if _p=='claude' else _p
+    _m=c.get('model'); _eff=c.get('effort') or c.get('tier')
+    out=[]
+    if _p and _m and _eff: out.append('%s.%s.%s' % (_p,_m,_eff))
+    if _p and _m: out.append('%s.%s' % (_p,_m))
+    out.append(_price_key(c))
+    return out
 def provider_cost(c):
     # Returns the numeric price only; see _cost_src(c) for its provenance
     # token. LEGACY mode when the yaml carries no router_v2.cost block at
@@ -595,15 +629,22 @@ def provider_cost(c):
     if _router_cost_cfg is None:
         _v=num(c.get('cost'))
         return _v if _v is not None else 999.0
-    _key=_price_key(c)
-    _v=_cost_numeric.get(_key)
-    return _v if _v is not None else _COST_MEDIAN
+    for _key in _price_key_candidates(c):
+        if _key in _cost_numeric: return _cost_numeric[_key]
+    return _COST_MEDIAN
 def _cost_src(c):
     if _router_cost_cfg is None:
         return '%s:legacy_row' % _price_key(c)
+    for _key in _price_key_candidates(c):
+        if _key in _cost_numeric:
+            _meta=_cost_meta.get(_key) or {}
+            _tok='%s:measured' % _key
+            if _meta.get('confidence') is not None: _tok+=' cost_conf=%s' % _meta['confidence']
+            if _meta.get('sample_count') is not None: _tok+=' cost_n=%s' % _meta['sample_count']
+            if _meta.get('observed_at'): _tok+=' cost_at=%s' % _meta['observed_at']
+            if _meta.get('source'): _tok+=' cost_prov=%s' % _meta['source']
+            return _tok
     _key=_price_key(c)
-    if _key in _cost_numeric:
-        return '%s:measured' % _key
     if not _cost_numeric:
         return '%s:unpriced_all' % _key
     return '%s:median' % _key
@@ -777,17 +818,29 @@ def util(provider, arm=None):
             # 0485: price a model-scoped arm from ITS OWN weekly window. The
             # payload (leadv2-quota-read.py anthropic_scoped_windows, key =
             # scope.model.display_name lowercased) names which models have a
-            # scoped meter -- never a hand-kept model list here. When the arm
-            # matches one, the scoped window REPLACES the account weekly
-            # aggregate for this arm: the provider enforces the scoped meter,
-            # so weekly_all is a window this arm barely touches in one
-            # direction and a blindness to its own exhaustion in the other.
-            # The SHARED session window (five_hour) stays in the set -- an arm
-            # scoped on the weekly group still burns the account session
-            # window; a fix that freed it from five_hour would be wrong.
+            # scoped meter -- never a hand-kept model list here.
+            #
+            # ARM-SELECTION-COST-QUOTA-TELEMETRY-01 (4.3), correcting 0485:
+            # 0485 had the scoped window REPLACE the account weekly aggregate
+            # for this arm ('windows.pop(seven_day)' below), reasoned from two
+            # live probes where the scoped reading alone explained the
+            # dispatcher's behaviour. The founder states Fable draws down BOTH
+            # meters simultaneously -- the scoped window is not a substitute
+            # for the aggregate, it is a SECOND, narrower ceiling the same
+            # traffic also counts against. Escalated via the async question
+            # channel (qid=q-d19ae6cb, architect-adjudicated on timeout,
+            # option b): keep both. seven_day (the account weekly aggregate)
+            # is no longer popped -- it stays in `windows` alongside
+            # weekly_scoped and five_hour, so the existing worst-of-readable-
+            # windows binding rule below (never a sum, never a replace) prices
+            # this arm by whichever of its THREE windows is worst. The SHARED
+            # session window (five_hour) was already correct and is
+            # unchanged. Case 10 (docs/reference/arm-selection-proposal-
+            # 2026-09-16.md §6): general weekly exhausted + scoped free must
+            # refuse just as scoped exhausted + general free already did --
+            # before this fix only the second direction refused.
             _sh=_scoped_hit(arm, a)
             if _sh is not None:
-                windows.pop('seven_day', None)
                 windows['weekly_scoped:%s'%_sh[0]]=_sh[1]
         pct_key='pct'
     # The BINDING (worst-case, highest-used) window decides both the pct AND
@@ -2093,7 +2146,17 @@ except Exception: last=''
 # when an equally-priced alternative exists, do not spend the same arm twice.
 # Price comparison is on EFFECTIVE cost so a floored freepool never counts as
 # the same price tier as an unfloored cost-1 arm.
-price=ecost(ok[0]); alternatives=[c for c in ok if ecost(c)==price and c['arm']!=last]
+# ARM-SELECTION-COST-QUOTA-TELEMETRY-01 (4.4): anti-stickiness picked ANY
+# equal-ecost alternative, never checking fit_bucket -- under FIT_MODE=on two
+# arms can share ecost while sitting in different fit buckets (ecost is
+# provider-priced, fit_bucket is capability-vs-requirement; nothing ties them
+# together), so rotation could demote the winner to a worse fit purely to
+# avoid repeating `last`. Constrain the alternative pool to the winner's own
+# fit bucket when fit mode is on; FIT_MODE=off/shadow has no fit-bucket
+# concept and keeps the prior cost-only behaviour byte-identical.
+price=ecost(ok[0])
+_winner_fit_bucket=fit_bucket(ok[0]) if FIT_MODE == 'on' else None
+alternatives=[c for c in ok if ecost(c)==price and c['arm']!=last and (FIT_MODE != 'on' or fit_bucket(c)==_winner_fit_bucket)]
 w=alternatives[0] if alternatives else ok[0]
 # POOL-IS-COMPUTED-AFTER-THE-ARM-IS-CHOSEN-01: every arm that survived all
 # exclusion stages and still did not win is named price_ratio -- it was IN
@@ -2102,6 +2165,28 @@ w=alternatives[0] if alternatives else ok[0]
 # "nothing cheaper exists" when the truth was "nothing cheaper was allowed".
 for _loser in sorted({c['arm'] for c in ok} - {w['arm']}):
     _stage_add(_loser,'price_ratio')
+# ARM-SELECTION-COST-QUOTA-TELEMETRY-01 (5): price_ratio alone cannot tell
+# "demoted to a worse fit bucket" apart from "genuinely lost on a known
+# price" apart from "its own price was never measured" -- the exact
+# confusion arm-selection-logic.md documents. arm_excluded/price_ratio is
+# left BYTE-IDENTICAL (test-exclusion-stages.sh and test-arbiter-decision-
+# record-inputs.sh both assert its exact string) -- the distinction is
+# carried on a NEW token, loser_detail=, computed from the same `ok` set
+# price_ratio was, never a second decision.
+_wfb=fit_bucket(w) if FIT_MODE == 'on' else None
+_ok_by_arm={}
+for _c in ok: _ok_by_arm.setdefault(_c['arm'],_c)
+_loser_detail=[]
+for _loser in sorted({c['arm'] for c in ok} - {w['arm']}):
+    _lc=_ok_by_arm.get(_loser)
+    if _lc is None: continue
+    if FIT_MODE == 'on' and fit_bucket(_lc) > _wfb:
+        _loser_detail.append('%s:insufficient_fit' % _loser)
+    elif _cost_src(_lc).split(' ',1)[0].endswith((':median',':unpriced_all')):
+        _loser_detail.append('%s:cost_unknown' % _loser)
+    else:
+        _loser_detail.append('%s:higher_expected_cost' % _loser)
+_loser_detail_tok=(' loser_detail=%s' % ','.join(_loser_detail)) if _loser_detail else ''
 # EFFORT-IS-NOT-WIRED-01: resolve effort from the SAME winning cell `w`, in
 # the SAME call that picked the arm -- never a second decision. Data-driven
 # (config/leadv2-routing.yaml router_v2.effort_matrix), never a name literal.
@@ -2412,7 +2497,7 @@ _cost_tok = ' cost_src=%s' % _cost_src(w)
 # above, so a decision line proves which axis produced this effort without
 # re-deriving it from the caller's own THINK_ROLE env var after the fact.
 _role_tok = ' role=%s' % (caller_role or 'none')
-print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok,_obs_tok,_urgency_tok,_cc_tok,_cost_tok,_role_tok))
+print('arm=%s kind=%s model=%s tier=%s effort=%s%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,_effort_cap,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate,_outage,_fm_tok,_fit_tok,_forecast_tok,_obs_tok,_urgency_tok,_cc_tok,_cost_tok,_role_tok,_loser_detail_tok))
 PY
 }
 
