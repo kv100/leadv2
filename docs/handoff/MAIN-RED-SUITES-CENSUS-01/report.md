@@ -152,3 +152,55 @@ beneath it and serialises the whole board.
 4. Everything else: classify before touching. Several are plausibly `environment_dependent`
    (macOS), and the rows `TWELVE-LINUX-ONLY-SUITES-01` / `LAST-LINUX-RED-FAST-NAMES-01` already
    claim some of that ground — check them before opening anything new.
+
+## Third correction (2026-09-16): two more of the 27 are green from main
+
+Measured from `main` at `fa378236`, macOS Darwin 25.6.0, each suite run alone at a 600s ceiling:
+
+```
+test-dispatch-refusal-truth.sh      rc=0  wall=55s
+test-writeset-admission-block.sh    rc=0  wall=17s
+```
+
+- `test-dispatch-refusal-truth.sh` is the suite behind the census label "dispatch refusal fallback
+  chain". Its redness is **stale**: row `DISPATCH-REFUSALS-LIE-ABOUT-THEIR-CAUSE-01` was fixed and
+  merged after this census was taken. The census was right when it ran and is wrong now.
+- `test-writeset-admission-block.sh` is green **alone**. That is a weaker statement — it may be a
+  fourth sharding-only red like the three named in the first correction. Not established either way;
+  do not report it as fixed.
+
+Running total of the 27 that are **not live defects in their own subject**: three sharding-only
+(`test-core-offline-lock-01.sh`, `test-dod-gate-suite-registration.sh`,
+`test-shared-sink-test-guard.sh`), one already-fixed (`test-dispatch-refusal-truth.sh`), one
+superseded requirement encoded in a test (`test-burn-governor.sh`), and one unestablished
+(`test-writeset-admission-block.sh`).
+
+This does **not** mean "27 was wrong". The census measured what the gate does, and the gate really
+did fail 27 suites that day. It means the number a lane must drive to zero is smaller than the
+number of red lines, and the difference is made of stale reds, harness self-interference, and tests
+that outlived their requirement. The closing number still comes from a re-measurement, never from
+this arithmetic.
+
+## A cluster the census could not see: the premise gate refuses the suites' own fixtures
+
+Three measured suites fail for one shared reason that has nothing to do with their subject:
+
+| Suite | Evidence |
+|---|---|
+| `test-landed-at-spawn.sh` | `premise_probe verdict=refused reason=backlog_row_not_found`, `dispatch exited 8 (expected 0)` — Face 3 of the Wave-0 diagnosis, which also verified the subject's target keying at `:481-495` is correct |
+| `test-phase-precondition-bootstrap.sh` | every failure carries the same refusal at rc=8, across fresh Standard, after-remedies, false-claim and fresh Heavy cases |
+| `test-glm-deferred-ladder.sh` | park rows and `codex_credits_empty` lines are all `<missing>` / `got 0`, because the dispatch that would write them was refused first |
+
+`PREMISE-PROBE-BEFORE-A-LANE-IS-DISPATCHED-01` was added to stop a lane being spent on a dead
+premise. It also refuses every test fixture that dispatches an ad-hoc mission, because a fixture has
+no row in `docs/tasks.yaml`. The gate documents its own way out — `--no-probe-yet`, "the explicit,
+audited escape hatch for an intentionally ad-hoc dispatch with no backlog row" — and the fixtures
+were never taught to use it.
+
+Cause class `never_reaches_subject` for all three. The fix is in the fixtures, and it should be **one
+technique used three times**, not three inventions: Group A1 is establishing it for
+`test-landed-at-spawn.sh`, and Group A2's mission requires reading what A1 landed before writing its
+own.
+
+Two suites from the original Group A list are therefore no longer A2's work, and two of A2's five
+remaining suites collapse into this single cluster.
