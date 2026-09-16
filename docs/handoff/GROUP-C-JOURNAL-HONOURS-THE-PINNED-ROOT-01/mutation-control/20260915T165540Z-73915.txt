@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-journal-honours-the-pinned-root.sh
+file=plugins/leadv2/scripts/tests/test-journal-honours-the-pinned-root.sh
+anchor=docs/handoff/GROUP-C-JOURNAL-HONOURS-THE-PINNED-ROOT-01/mutation-control/ephemeral-key-format.patch
+baseline_rc=0
+mutated_rc=1
+red_line=  FAIL — (b) pin ignored, resolved to '/Users/kostiantyn.vlasenko/.claude/plugins/data/codex-openai-codex/tmp/journal-root.CfsU6h/state-base/.ephemeral/pinned-8d3d49a4/tasks/fixture-task/journal.md'
+diff_hash=4ecde5824fc4c23fa85726fc55a781de602e56e27f0f443d43112497b2390609
+lane_diff_hash=d5900eb559ff0fe767a6ec6551bb1d8d1842bed8814308e3607d4a1fb10303f9

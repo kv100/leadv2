@@ -1,0 +1,10 @@
+--- a/plugins/leadv2/scripts/tests/test-journal-honours-the-pinned-root.sh
++++ b/plugins/leadv2/scripts/tests/test-journal-honours-the-pinned-root.sh
+@@ -63,7 +63,7 @@ keyed() { # <root basename> <resolved journal path>
+   local key="$1" path="$2"
+   case "${path}" in
+-    "${STATE_BASE}"/.ephemeral/"${key}"-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]/tasks/*) return 0 ;;
++    "${STATE_BASE}"/.ephemeral/"${key}"/tasks/*) return 0 ;;
+     *) return 1 ;;
+   esac
+ }
