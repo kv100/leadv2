@@ -7,8 +7,10 @@
 # emptied pool refuses loudly by name, and the gate consults ONCE itself so
 # the FIRST spawn attempt can pass. Fixtures are the brief's acceptance
 # pairs; section H is the brief-mandated mutation -- strip the speakable
-# filter inside _pool_contains and the arbiter must answer freepool again,
-# turning H0 red.
+# filter inside _pool_contains and an arm OUTSIDE the speakable pool answers
+# again, turning H0 red (ARM-SELECTION-ADMISSION-BANDS-01, 2026-09-16: after
+# recon eligibility grew to include glm-flash/luna, the arm that answers is
+# glm-flash, not freepool -- H2/H3 assert the property and the named arm).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -96,7 +98,11 @@ after="$(wc -l < "$LEADV2_ROUTE_ARBITER_DECISIONS_FILE" | tr -d ' ')"
 echo "== D: emptied speakable pool -> the refusal NAMES the emptiness, never a fallback model =="
 out="$(arb '{"work_kind":"recon","size":"standard","subtype":"Explore","task":"empty pool probe","speakable_models":["nonexistent-model"]}' 2>&1)" || true
 [[ "$out" == *'reason=pool_empty_all_excluded'* ]] && pass 'D1 emptied pool -> arbiter refuses pool_empty_all_excluded' || fail "D1 out=$out"
-[[ "$out" == *'arm_excluded=freepool:not_in_pool,haiku:not_in_pool'* ]] && pass 'D2 refusal names every excluded arm and stage' || fail "D2 tokens missing: $out"
+# Recon membership grew by founder proposal arm-selection-proposal-2026-09-16.md
+# §4.1 item 5 (ARM-SELECTION-ADMISSION-BANDS-01, 2026-09-16): flash and luna
+# (codex/glm-flash) now sit in the recon pool alongside freepool/haiku, so an
+# emptied pool excludes all four -- do not "fix" this back to the old pair.
+[[ "$out" == *'arm_excluded=codex:not_in_pool,freepool:not_in_pool,glm-flash:not_in_pool,haiku:not_in_pool'* ]] && pass 'D2 refusal names every excluded arm and stage' || fail "D2 tokens missing: $out"
 sed 's/^SPEAKABLE_MODELS=.*/SPEAKABLE_MODELS="nonexistent-model"/' "$HOOK" > "$TMP/hook.emptypool"
 mkdir -p "$TMP/etree/hooks" "$TMP/etree/scripts/lib"
 cp "$TMP/hook.emptypool" "$TMP/etree/hooks/leadv2-spawn-arbiter-gate.sh"
@@ -148,7 +154,16 @@ assert s.count(needle)==1, 'mutation anchor not unique: %d' % s.count(needle)
 open(dst,'w').write(s.replace(needle,''))
 PY
 out="$(arb '{"work_kind":"recon","size":"standard","subtype":"Explore","task":"auction inside pool","speakable_models":["sonnet","opus","haiku","fable"]}' "$OKQ" "$TMP/mtree/scripts/lib/leadv2-route-arbiter.sh" 2>&1)" || true
-[[ "$out" == 'arm=freepool '* ]] && pass 'H2 mutation bites: freepool answers again (H0 would be red -- the filter is the operative part)' || fail "H2 mutation did not reproduce the defect: $out"
+arm_won="$(sed -n 's/^arm=\([^ ]*\).*/\1/p' <<<"$out")"
+case "$arm_won" in
+  sonnet|opus|haiku|fable) fail "H2 mutation did not reproduce the defect: winner '$arm_won' is still inside the speakable pool: $out" ;;
+  *) pass "H2 mutation bites: winner '$arm_won' is outside the speakable pool {sonnet,opus,haiku,fable} (H0 would be red -- the filter is the operative part)" ;;
+esac
+# ARM-SELECTION-ADMISSION-BANDS-01 promoted glm-flash to band 4, so it now
+# outbids freepool on recon cost (cheapest_capable) once the filter is
+# stripped -- name the arm so a silent membership change still fails loudly
+# instead of passing on a weakened "any arm outside the pool" predicate.
+[[ "$arm_won" == "glm-flash" ]] && pass 'H3 winner is named: glm-flash (cheapest_capable), not a wildcard' || fail "H3 expected winner glm-flash, got '$arm_won': $out"
 
 printf 'SUMMARY: pass=%d fail=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
