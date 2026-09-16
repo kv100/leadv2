@@ -265,8 +265,16 @@ if [[ "$v" == "ok"* ]]; then pass 'R3 pool: no scoped key -> aggregate still blo
 rm -f "$TMP/state"
 out="$(run "$(qjson 1 1 7 96 2)" 1 '{"kind":"review","size":"standard","protected":true}' || true)"
 exc="$(exc_of "$out")"
-if [[ "$out" == *'util_claude=96 '* && "$out" == *'util_claude_fable=96 '* && "$out" == *'scoped_window_fable=weekly_scoped(fable)'* \
-      && ",${exc}," == *',sonnet:capped,'* && ",${exc}," == *',fable:capped,'* && "$out" == *'arm=codex '* ]]; then
+# Assertions go through PATH grep, not bash [[ substring ]] compares: the
+# suite-falsifiability gate (SUITE-THAT-CANNOT-FAIL-01) breaks grep/diff/cmp
+# generically and demands the suite notice; a bash-native comparison never
+# engages those shims, so it reads green with every assertion tool broken.
+if printf '%s\n' "$out" | grep -qF 'util_claude=96 ' \
+   && printf '%s\n' "$out" | grep -qF 'util_claude_fable=96 ' \
+   && printf '%s\n' "$out" | grep -qF 'scoped_window_fable=weekly_scoped(fable)' \
+   && printf '%s\n' ",${exc}," | grep -qF ',sonnet:capped,' \
+   && printf '%s\n' ",${exc}," | grep -qF ',fable:capped,' \
+   && printf '%s\n' "$out" | grep -qF 'arm=codex '; then
   pass 'C1 arbiter: weekly_all 96 + scoped 2 -> util_claude_fable=96 (worst binds), fable+sonnet capped, codex wins'
 else fail "C1 arbiter output=$out"; fi
 
@@ -278,8 +286,10 @@ else fail "C1 arbiter output=$out"; fi
 rm -f "$TMP/state"
 out="$(run "$(qjson 1 99 10 30 100)" 1 '{"kind":"review","size":"standard","protected":true}' || true)"
 exc="$(exc_of "$out")"
-if [[ "$out" == *'util_claude_fable=100 '* && ",${exc}," == *',fable:capped,'* \
-      && "$out" == *'arm=sonnet '* && "$out" != *'arm=fable '* ]]; then
+if printf '%s\n' "$out" | grep -qF 'util_claude_fable=100 ' \
+   && printf '%s\n' ",${exc}," | grep -qF ',fable:capped,' \
+   && printf '%s\n' "$out" | grep -qF 'arm=sonnet ' \
+   && ! printf '%s\n' "$out" | grep -qF 'arm=fable '; then
   pass 'C2 arbiter: scoped exhausted (100) withdraws fable though weekly_all=30; sonnet wins'
 else fail "C2 arbiter output=$out"; fi
 
@@ -290,8 +300,10 @@ else fail "C2 arbiter output=$out"; fi
 rm -f "$TMP/state"
 out="$(run "$(qjson 1 1 99 20 2)" 1 '{"kind":"review","size":"standard","protected":true}' || true)"
 exc="$(exc_of "$out")"
-if [[ "$out" == *'util_claude_fable=99 '* && ",${exc}," == *',fable:capped,'* \
-      && "$out" == *'arm=codex '* && "$out" != *'arm=fable '* ]]; then
+if printf '%s\n' "$out" | grep -qF 'util_claude_fable=99 ' \
+   && printf '%s\n' ",${exc}," | grep -qF ',fable:capped,' \
+   && printf '%s\n' "$out" | grep -qF 'arm=codex ' \
+   && ! printf '%s\n' "$out" | grep -qF 'arm=fable '; then
   pass 'C3 arbiter: session 99 still binds the scoped arm (util_claude_fable=99, capped)'
 else fail "C3 arbiter output=$out"; fi
 
@@ -302,7 +314,9 @@ else fail "C3 arbiter output=$out"; fi
 rm -f "$TMP/state"
 out="$(run "$(qjson 1 1 7 96 2)" 1 '{"kind":"code","size":"standard","protected":true}' || true)"
 exc="$(exc_of "$out")"
-if [[ "$out" == *'util_claude=96 '* && ",${exc}," == *',sonnet:capped,'* && "$out" == *'arm=glm '* ]]; then
+if printf '%s\n' "$out" | grep -qF 'util_claude=96 ' \
+   && printf '%s\n' ",${exc}," | grep -qF ',sonnet:capped,' \
+   && printf '%s\n' "$out" | grep -qF 'arm=glm '; then
   pass 'C4 arbiter: non-scoped claude arm still priced by the aggregate (96, capped)'
 else fail "C4 arbiter output=$out"; fi
 
@@ -314,13 +328,17 @@ else fail "C4 arbiter output=$out"; fi
 rm -f "$TMP/state"
 out="$(run "$(qjson 1 1 10 60 30)" 1 '{"kind":"review","size":"standard","protected":true}' || true)"
 exc="$(exc_of "$out")"
-if [[ "$out" == *'util_claude_fable=60 '* && "$out" == *'util_claude=60 '* && ",${exc}," != *',fable:capped,'* ]]; then
+if printf '%s\n' "$out" | grep -qF 'util_claude_fable=60 ' \
+   && printf '%s\n' "$out" | grep -qF 'util_claude=60 ' \
+   && ! printf '%s\n' ",${exc}," | grep -qF ',fable:capped,'; then
   pass 'C5a arbiter: aggregate 60 > scoped 30 -> util_claude_fable=60 (the aggregate participates in the price)'
 else fail "C5a arbiter output=$out"; fi
 rm -f "$TMP/state"
 out="$(run "$(qjson 1 1 10 30 60)" 1 '{"kind":"review","size":"standard","protected":true}' || true)"
 exc="$(exc_of "$out")"
-if [[ "$out" == *'util_claude_fable=60 '* && "$out" == *'util_claude=30 '* && ",${exc}," != *',fable:capped,'* ]]; then
+if printf '%s\n' "$out" | grep -qF 'util_claude_fable=60 ' \
+   && printf '%s\n' "$out" | grep -qF 'util_claude=30 ' \
+   && ! printf '%s\n' ",${exc}," | grep -qF ',fable:capped,'; then
   pass 'C5b arbiter: scoped 60 > aggregate 30 -> util_claude_fable=60 (the scoped window still binds the price)'
 else fail "C5b arbiter output=$out"; fi
 
