@@ -152,3 +152,119 @@ The new suite self-selects via the `test-*.sh` path convention
 - `plugins/leadv2/scripts/tests/test-degraded-select-is-distinguishable-01.sh`
   — new suite (12 checks).
 - `docs/handoff/A-DEGRADED-PROFILE-SELECT-EXITS-ZERO-01/report.md` — this file.
+
+---
+
+# Round 2 (2026-09-16) — reviewer High: marker races
+
+The round-1 reviewer's High (verified independently by the lead) stands: the
+marker is one machine-wide path and up to six lanes select concurrently, so an
+unlocked read/write lets a healthy pick destroy a degraded marker written
+moments earlier — exactly the signal this row exists to create.
+
+## What round 2 changed
+
+1. **Every marker read and write is serialized through
+   `leadv2-portable-lock.sh`** (the arm-cooldown pattern, not a hand-rolled
+   lock and not a second lock file): the selector sources only its RELATIVE
+   sibling `${BASH_SOURCE[0]%/*}/leadv2-portable-lock.sh` — never an
+   env-selected path — and both `write_degraded_marker` and
+   `clear_degraded_marker` run their whole critical section inside
+   `( lv2_lock_wait "${DEGRADED_MARKER}.lock" 5 ... ) 9>"${DEGRADED_MARKER}.lock"`.
+   A missing/unsourceable helper degrades to an unlocked best-effort op rather
+   than breaking the selection (fail-open preserved); a lock timeout is the
+   same fail-open. There is exactly one lock file, `<marker>.lock`.
+2. **Clear semantics tightened so the lock protects a meaningful invariant.**
+   A ranked pick now clears only a marker that PREDATES the selection: the
+   selector captures `SELECT_START_EPOCH` sub-second (`python3 -c 'import
+   time; print(time.time())'`) right after the opt-in gate, and
+   `clear_degraded_marker` — with stat, comparison and `rm` inside ONE
+   critical section — removes the marker only if its mtime is older. A
+   degraded write that lands while a healthy selection is probing is a fresher
+   signal and survives it. Unparseable/missing python3 → keep the marker
+   (visibility is the safe direction for a best-effort marker).
+3. **Six untested reason codes covered** (T12–T17): `dependency_missing_probe`,
+   `dependency_missing_picker`, `records_temp_unavailable`,
+   `exhausted_filter_failed`, `picker_no_result`, `no_rankable_records` — one
+   assertion each, all pinned to `rc=0` + byte-identical stdout + the correct
+   `reason_code` in the marker.
+4. **Low findings:** the new env var
+   `LEADV2_CLAUDE_PROFILE_DEGRADED_FILE` (marker-path override; the lock sits
+   beside it at `<marker>.lock`) is documented in the selector's header
+   comment block alongside the other overrides.
+
+## No consumer is wired yet — and who owns wiring one
+
+Plainly: **nothing reads the marker yet.** No caller
+(`claude-subsession.sh`, `leadv2-dispatch-code.sh`, status surfaces) consumes
+`degraded-select.json` as of this round; round 2 deliberately did not wire
+one (reviewer instruction). No open row in `docs/tasks.yaml` owns the wiring
+either — checked at commit time (`grep -i degraded docs/tasks.yaml` → 0
+matches). The wiring belongs in a NEW row (suggested owner surface:
+`claude-subsession.sh` at its profile-decision site, or
+`leadv2-status-surface.sh` surfacing marker age); it must be opened by the
+lead, not smuggled into this lane's write set.
+
+## Round-2 falsification set (raw)
+
+```
+$ bash -n plugins/leadv2/scripts/leadv2-claude-profile-select.sh  -> ok
+$ bash -n plugins/leadv2/scripts/tests/test-degraded-select-is-distinguishable-01.sh -> ok
+$ shellcheck -S error <both files>                                       -> clean
+   (style/info-level findings unchanged in kind from the committed round-1
+    state: SC2015 `A && pass || fail`, SC2094 fd-9/lock-file, SC2034 —
+    error-severity is the repo's gate and is clean)
+
+$ bash plugins/leadv2/scripts/tests/test-degraded-select-is-distinguishable-01.sh
+=== T9: concurrent healthy pick must NOT destroy the degraded marker ===
+[degraded-select-01] PASS: T9: degraded side contract bytes intact
+[degraded-select-01] PASS: T9: healthy side made a ranked pick
+[degraded-select-01] PASS: T9: degraded marker SURVIVED the concurrent healthy pick
+[degraded-select-01] PASS: T9: survivor is the degraded signal (reason=no_probe_completed)
+=== T10: marker writes are serialized through ${MARKER}.lock ===
+[degraded-select-01] PASS: T10: no marker while the lock is held (write serialized)
+[degraded-select-01] PASS: T10: blocked write lands after release
+=== T11: lock removed (selector copy without the sibling helper) -> write NOT serialized ===
+[degraded-select-01] PASS: T11: helper-less copy writes during the hold (unlocked by design -- the red side)
+=== T12..T17: dependency_missing_probe / dependency_missing_picker /
+              records_temp_unavailable / exhausted_filter_failed /
+              picker_no_result / no_rankable_records ===
+[degraded-select-01] PASS: T12: dependency_missing_probe marked, contract bytes intact
+[degraded-select-01] PASS: T13: dependency_missing_picker marked, contract bytes intact
+[degraded-select-01] PASS: T14: records_temp_unavailable marked, contract bytes intact
+[degraded-select-01] PASS: T15: exhausted_filter_failed marked, contract bytes intact
+[degraded-select-01] PASS: T16: picker_no_result marked, contract bytes intact
+[degraded-select-01] PASS: T17: no_rankable_records marked, contract bytes intact
+[degraded-select-01] All checks passed          (25 PASS assertions, rc=0)
+```
+
+### Red-then-green for the lock (how "red with the lock removed" is measured)
+
+Removing the lock means running selector bytes WITHOUT the sibling
+`leadv2-portable-lock.sh` next to them — the guarded `source` finds nothing,
+`lv2_lock_wait` is undefined, and the write runs unlocked. T11 does exactly
+this as a permanent in-suite control:
+
+- **RED side (T11)**: hold `${MARKER}.lock` via `lv2_lock_wait`, run the
+  helper-less selector copy — its degraded marker APPEARS while the lock is
+  still held (`PASS: helper-less copy writes during the hold`), i.e. the write
+  was not serialized. This is the observed failure mode of round 1's unlocked
+  marker, pinned forever as the red side.
+- **GREEN side (T10)**: same hold, the real selector — no marker while the
+  lock is held; the blocked write lands after release
+  (`PASS: no marker while the lock is held` + `PASS: blocked write lands
+  after release`).
+- **T9** is the end-to-end form the reviewer described: a degraded and a
+  healthy selection racing on one marker path; the degraded signal survives.
+
+### Controls (round 2, before → after)
+
+| suite | before (HEAD 34438bab) | after (this diff) |
+|---|---|---|
+| test-degraded-select-is-distinguishable-01.sh | n/a (round-2 tests new) | rc=0, 25 PASS / 0 FAIL |
+| test-claude-profile-select.sh | rc=0, PASS=152 FAIL=0 | rc=0, PASS=152 FAIL=0 |
+| test-claude-profile-requested.sh | rc=0, all checks passed | rc=0, all checks passed |
+| test-profile-select-skips-exhausted.sh | rc=0, green | rc=0, green |
+| nc-claude-profile-select.sh | rc=2 (NC1 red-side PASS at PASS=139 FAIL=13; NC2-SETUP-FAIL: the `rexp` mutation pattern exists ONLY in the NC itself — `credential_health`/`rexp` appear in no production script, so NC2 cannot build its mutated copy; pre-existing) | rc=2 — identical |
+| registered probe.sh | rc=1 (unbound RC2 — truncated at commit, see round 1) | rc=1 — still unfixable from this lane's write set |
+| tests/run-all.sh --scope changed | — | rc=1: 9 passed, 2 failed; BOTH failures reproduced at HEAD with this lane's diff reverted (files reset to 34438bab): `test-balancer-every-arm.sh` PASS=17 FAIL=5 (same 5 S6 spawn/journal failures at HEAD — the ENV-PIN family), `run-core-offline.sh` rc=1 (nested `15 passed, 1 failed` / `12 passed(red->green), 1 failed` at HEAD too — concurrent-runner noise, 3 other lanes live). Neither is caused by this diff. |

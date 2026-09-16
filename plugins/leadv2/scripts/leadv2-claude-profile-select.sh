@@ -45,6 +45,10 @@
 #   LEADV2_CLAUDE_PROFILE_PROBE    probe override (hermetic tests)
 #   LEADV2_CLAUDE_PROFILE_TIMEOUT  TOTAL probe budget, s (default 12, 1..60)
 #   LEADV2_QUOTA_CACHE_DIR         base for per-profile cache dirs
+#   LEADV2_CLAUDE_PROFILE_DEGRADED_FILE  override for the degraded-select
+#                                   marker path (default
+#                                   ${LEADV2_QUOTA_CACHE_DIR}/degraded-select.json);
+#                                   the lock sits beside it at <marker>.lock
 #   LEADV2_CLAUDE_PROFILE_SECURITY_BIN  override for `security` (hermetic tests
 #                                        inject a fixture reader here; the
 #                                        stub must accept `find-generic-password
@@ -158,20 +162,54 @@ DEFAULT_FALLBACK_REASON=""
 # soft fallback, quota-status's `|| true`, and the T8/requested-#4 suite
 # pins all depend on it); what changes is that every degraded entrance now
 # also writes a machine-readable sidecar beside the quota cache, cleared by
-# the next healthy ranked selection, so a caller or status surface that
-# wants to notice degradation has something to read that a ranked pick
-# never produces.  Marker writes are best-effort and never fatal.
+# the next ranked selection that starts after it, so a caller or status
+# surface that wants to notice degradation has something to read that a
+# ranked pick never produces.  Marker writes are best-effort and never fatal.
 DEGRADED_MARKER="${LEADV2_CLAUDE_PROFILE_DEGRADED_FILE:-${CACHE_BASE}/degraded-select.json}"
+# Round 2 (2026-09-16, reviewer High): up to six lanes select concurrently on
+# one machine, so every marker read and write is serialized through
+# leadv2-portable-lock.sh (the arm-cooldown pattern: source the RELATIVE
+# sibling only, never an env-selected path; a missing helper degrades to an
+# unlocked op rather than breaking the selection).  Lock file:
+# ${DEGRADED_MARKER}.lock -- consumers wanting a consistent read hold it too.
+command -v lv2_lock_wait >/dev/null 2>&1 || {
+  if [[ -n "${BASH_SOURCE[0]:-}" && -r "${BASH_SOURCE[0]%/*}/leadv2-portable-lock.sh" ]]; then
+    source "${BASH_SOURCE[0]%/*}/leadv2-portable-lock.sh" 2>/dev/null || true
+  fi
+}
 write_degraded_marker() { # <reason_code>
-  local dir tmpf
+  local dir
   dir="$(dirname "$DEGRADED_MARKER")"
   mkdir -p "$dir" 2>/dev/null || return 0
-  tmpf="$(mktemp "${dir}/.degraded-select.XXXXXX" 2>/dev/null)" || return 0
-  printf '{"kind":"degraded_select","reason_code":"%s","stdout":"profile=- reason=single_profile","exit":0,"detected_at":"%s"}\n' \
-    "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmpf" 2>/dev/null \
-    && mv -f "$tmpf" "$DEGRADED_MARKER" 2>/dev/null || rm -f "$tmpf" 2>/dev/null || true
+  (
+    if command -v lv2_lock_wait >/dev/null 2>&1; then
+      lv2_lock_wait "${DEGRADED_MARKER}.lock" 5 2>/dev/null || true
+    fi
+    tmpf="$(mktemp "${dir}/.degraded-select.XXXXXX" 2>/dev/null)" || exit 1
+    printf '{"kind":"degraded_select","reason_code":"%s","stdout":"profile=- reason=single_profile","exit":0,"detected_at":"%s"}\n' \
+      "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmpf" 2>/dev/null \
+      && mv -f "$tmpf" "$DEGRADED_MARKER" 2>/dev/null || { rm -f "$tmpf" 2>/dev/null; exit 1; }
+  ) 9>"${DEGRADED_MARKER}.lock" 2>/dev/null || true
 }
-clear_degraded_marker() { rm -f "$DEGRADED_MARKER" 2>/dev/null || true; }
+# A healthy ranked pick clears only a marker that PREDATES the selection
+# (mtime < SELECT_START_EPOCH, captured sub-second right after the opt-in
+# gate): a degraded write that landed while this selection was probing is a
+# fresher signal and must survive it.  The stat, the decision and the rm all
+# sit inside one critical section, so a concurrent degraded write either
+# lands before the stat (kept: newer than this selection) or queues on the
+# lock and lands after the rm.  Unparseable/missing python -> keep (no rm):
+# visibility is the safe direction for a best-effort marker.
+clear_degraded_marker() {
+  (
+    if command -v lv2_lock_wait >/dev/null 2>&1; then
+      lv2_lock_wait "${DEGRADED_MARKER}.lock" 5 2>/dev/null || true
+    fi
+    if python3 -c 'import os, sys; sys.exit(0 if os.stat(sys.argv[1]).st_mtime < float(sys.argv[2]) else 1)' \
+        "$DEGRADED_MARKER" "${SELECT_START_EPOCH:-0}" 2>/dev/null; then
+      rm -f "$DEGRADED_MARKER" 2>/dev/null || true
+    fi
+  ) 9>"${DEGRADED_MARKER}.lock" 2>/dev/null || true
+}
 single_profile() {
   if [[ -n "$DEFAULT_FALLBACK_REASON" ]]; then
     warn "FATAL: ${DEFAULT_FALLBACK_REASON} -- refusing inherited single-profile fallback"
@@ -180,7 +218,7 @@ single_profile() {
   fi
   if [[ -n "${1:-}" ]]; then
     write_degraded_marker "$1"
-    warn "WARN: degraded_select reason_code=${1} -- fell back to the inherited single profile; machine-readable marker written (cleared by the next ranked selection)"
+    warn "WARN: degraded_select reason_code=${1} -- fell back to the inherited single profile; machine-readable marker written (cleared by a later ranked selection)"
   fi
   printf 'profile=- reason=single_profile\n'
   exit 0
@@ -246,6 +284,12 @@ REQUESTED_PROFILE="${LEADV2_CLAUDE_PROFILE_REQUESTED:-}"
 
 # Opt-in gate: unset or != 1 (and no explicit request) => print nothing, exit 0.
 [[ "${LEADV2_CLAUDE_MULTIPROFILE:-}" == "1" || -n "$REQUESTED_PROFILE" ]] || exit 0
+
+# Sub-second selection start (round 2): clear_degraded_marker compares marker
+# mtimes against it.  Integer seconds would mis-order back-to-back selections
+# (T2's degraded-then-healthy pair can land inside one second), and the
+# date(1) fallback only runs where python3 is already unusable for probing.
+SELECT_START_EPOCH="$(python3 -c 'import time; print(time.time())' 2>/dev/null || date +%s)"
 
 # TOTAL probe-budget clamp (QUOTA-GATE-PARITY-01 F4 pattern: the configured
 # timeout is untrusted operator input; accept a positive integer only and
