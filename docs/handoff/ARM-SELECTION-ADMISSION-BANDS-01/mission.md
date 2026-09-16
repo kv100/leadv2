@@ -99,3 +99,67 @@ Run the suites that guard the FILE you changed, not only the ones your change ta
 `test-leadv2-routing-config.sh` and every suite whose name mentions routing, arbiter, balancer or
 effort. Report each by name with its exit code. A suite that was red before your change must be
 shown red before, not silently inherited.
+
+## ROUND 2 (lead, 2026-09-16) — the critical is real, and item 8 of this mission was worded wrongly
+
+The fable reviewer returned `critical=1 high=1 medium=2 low=1` and blocked. The critical stands, and
+the lead reproduced it directly rather than trusting the verdict:
+
+```
+$ python3 lib/leadv2-launch-registry.py --check --arm opus --model claude-opus-5
+refuse
+$ python3 lib/leadv2-launch-registry.py --check --arm opus --model opus
+ok
+```
+
+Reviewer's summary of the rest, which the lead accepts: **"glm-flash band-4 promotion and the new
+suite are fine."** That is the heart of this lane and it survives. Do not touch it in this round.
+
+### What went wrong, and whose fault it is
+
+Item 8 of this mission said *"resolve it to the actual Opus 5 model id"*. **That instruction was
+wrong, and the lane implemented it faithfully.** The registry header states the design in its own
+words: it launches every Claude-family worker with the LITERAL short name (`--model sonnet`,
+`--model opus`), and the Claude CLI resolves that alias to the current model itself. The allowed set
+is `{"codex", "sonnet", "opus", "fable"}` — arm-shaped names, not published model ids. So
+`model: opus` in `capability_matrix` is not an alias left lying around by accident; it is the argv
+the launcher is required to emit. Renaming the cell made every arbiter-selected opus spawn refuse,
+and dropped opus from the spawn gate's speakable pool.
+
+The proposal's actual requirement (§2 correction 6) is about **effective identity, not naming**:
+"Confirm actual launched Opus5; do not infer its version from the arm label. Historical 4.8 must be
+an explicit separately recorded choice." That is a verification and telemetry job.
+
+### What round 2 must deliver
+
+1. **Revert the cell to `model: opus`.** Restore the exact prior value so
+   `--check --arm opus --model opus` returns `ok` and the speakable pool contains opus again. Prove
+   it with both registry invocations in the report.
+2. **Satisfy the real requirement instead of the mis-worded one.** Record, at spawn time, which
+   model the `opus` alias actually resolved to, so the answer comes from the running process rather
+   than from the routing label. If the launcher already surfaces the resolved model, log it into the
+   dispatch journal beside the arm; if it does not, say so plainly in the report and do not invent a
+   value. `plugins/leadv2/scripts/lib/leadv2-launch-registry.py` is added to your write set for this
+   and for nothing else.
+3. **The 4.8 question.** Confirm by grep whether any opus-4.8 route exists anywhere. The round-1
+   report claims none does. If that holds, state it as a measured fact with the command; if a route
+   does exist, it needs an explicit versioned entry and a recorded exception reason, never a silent
+   fallback from a failed 5.
+4. **Address the high, the two mediums and the low** from `docs/handoff/dispatch-650ec59b-review/critic.full.md`.
+   Take each on its merits: fix it, or decline it in the report with a reason. Do not fix a finding
+   you disagree with just to clear the gate.
+
+### Acceptance
+
+- Both registry checks above, pasted with their real output.
+- The lane's own suite `test-arm-selection-admission-bands-01.sh` green, and the parts the reviewer
+  already blessed (glm-flash band 4, the suite itself) unchanged.
+- `test-spawn-speakable-pool.sh` and `test-launch-registry-argv.sh` run and reported by name with
+  exit codes — those two guard exactly what round 1 broke.
+- The fixtures baseline suite reconciled: say which decisions moved and why. A band promotion is
+  SUPPOSED to move decisions; an unexplained one is a defect.
+
+### Still explicitly out of scope
+
+`plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh` — the sibling lane owns it and is mid-round-2
+there right now. Do not touch it.
