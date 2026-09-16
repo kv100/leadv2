@@ -227,6 +227,19 @@ setup_env() {
   export LEADV2_DISPATCH_REVIEW_GATE=0
   export LEADV2_DISPATCH_PENDING_TTL_S=5
   export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
+  # GROUP-A1-01: same never_reaches_subject-adjacent hang class documented for
+  # test-landed-at-spawn.sh. This suite's admitted (non-refused) dispatches
+  # (P-a/P-b/P-g/D3/P-i) reach cmd_resolve's pre-admission ledger sweep
+  # (leadv2-dispatch-ledger.sh sweep -> leadv2-lane-liveness.sh --all ->
+  # REAL, unstubbed codex-task.sh) and _admission_classify() (REAL, unstubbed
+  # leadv2-task-judge.sh, a GLM/Haiku model call). Both are live external
+  # dependencies unrelated to this suite's placement/pin-line assertions;
+  # under host contention both were observed to hang the suite past its
+  # 240s budget (rc=124, only a handful of PASS lines emitted). Disable both
+  # via their own documented rollback flags, exactly as
+  # test-landed-at-spawn.sh does for the same reason.
+  export LEADV2_LEDGER_SWEEP_ENABLE=0
+  export LEADV2_JUDGE_DISABLE=1
 }
 
 # Resolve the reservation ledger path for a given slug.
@@ -429,7 +442,12 @@ dispatch_rc=0
 # PROJECT_ROOT away from TARGET, so `ensure` operates on the wrong repo entirely and
 # the WORK_ROOT != PROJECT_ROOT precondition the pin-line assertions depend on never
 # holds for the right reason.
-( cd "${TARGET}" && bash "${DC}" --kind tooling \
+# GROUP-A1-01: this ad-hoc mission text has no backlog row, so
+# _premise_probe_gate refuses (exit 8, reason=backlog_row_not_found) before
+# placement/pin-line logic is ever reached -- the same never_reaches_subject
+# cause fixed in test-landed-at-spawn.sh. --no-probe-yet is the audited
+# escape hatch for exactly this fixture shape.
+( cd "${TARGET}" && bash "${DC}" --kind tooling --no-probe-yet \
   "P-g regression no flag fresh tree test fix the linter" >/dev/null 2>&1 ) || dispatch_rc=$?
 
 if [[ ${dispatch_rc} -eq 0 ]]; then
@@ -471,7 +489,9 @@ setup_env
 export LEADV2_STUB_CWD_OUT="${SANDBOX}/plan-cwd.txt"
 export LEADV2_STUB_MISSION_OUT="${SANDBOX}/plan-mission.txt"
 dispatch_rc=0
-( cd "${TARGET}" && bash "${DC}" --kind tooling --task-id "${PLAN_TASK}" \
+# GROUP-A1-01: same premise-gate refusal as P-g above -- this mission text
+# has no backlog row either.
+( cd "${TARGET}" && bash "${DC}" --kind tooling --no-probe-yet --task-id "${PLAN_TASK}" \
   "D3 ensure-created plan delivery test" >/dev/null 2>&1 ) || dispatch_rc=$?
 PLAN_CWD="$(cat "${SANDBOX}/plan-cwd.txt" 2>/dev/null || printf '')"
 if [[ ${dispatch_rc} -eq 0 && -f "${PLAN_CWD}/docs/handoff/${PLAN_TASK}/context.yaml" ]] \
@@ -508,8 +528,9 @@ export LEADV2_DISPATCH_LANE_WORKTREE_BIN="${LANE_WT_STUB}"
 # without this cd the guard sees cwd's real git root (this worktree checkout) as foreign
 # to TARGET and swaps PROJECT_ROOT away from TARGET, breaking the WORK_ROOT==PROJECT_ROOT
 # equality this assertion depends on.
+# GROUP-A1-01: same premise-gate refusal as P-g/D3 above.
 dispatch_rc=0
-( cd "${TARGET}" && bash "${DC}" --kind tooling \
+( cd "${TARGET}" && bash "${DC}" --kind tooling --no-probe-yet \
   "P-i shared tree no pin test fix the validator" >/dev/null 2>&1 ) || dispatch_rc=$?
 
 if [[ ${dispatch_rc} -eq 0 ]]; then

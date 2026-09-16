@@ -123,6 +123,29 @@ setup_env() {
   # Short TTLs so stale rows from a prior case don't block
   export LEADV2_DISPATCH_PENDING_TTL_S=5
   export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
+  # GROUP-A1-01: cmd_resolve's pre-admission sweep (leadv2-dispatch-ledger.sh
+  # sweep -> leadv2-lane-liveness.sh --all) shells out to the REAL,
+  # unstubbed codex-task.sh to probe for a live Codex session. On a host
+  # running other concurrent leadv2 sessions (this suite has no control over
+  # that) that probe was observed to take well past a minute, hanging a
+  # dispatch this suite needs to return in seconds. The sweep is best-effort
+  # maintenance unrelated to the terminal-ledger/target-keying assertions
+  # this suite makes, so disable it via its own documented rollback flag
+  # rather than stub yet another live binary.
+  export LEADV2_LEDGER_SWEEP_ENABLE=0
+  # GROUP-A1-01: with the premise gate and ledger sweep both cleared,
+  # cmd_resolve's admission path reaches _admission_classify(), which shells
+  # out to the REAL, unstubbed leadv2-task-judge.sh (a GLM/Haiku model call,
+  # default 90s timeout). That is a third live external dependency this
+  # never-reaches-subject fixture never exercised before, because the premise
+  # gate always refused first. leadv2-task-judge.sh documents its own
+  # explicit escape hatch for exactly this ("LEADV2_JUDGE_DISABLE  1 = never
+  # call the model; estimate_source=fallback always" -- checked FIRST, before
+  # cache or the model call, so it always exits fast and deterministic).
+  # Terminal-ledger/target-keying assertions do not depend on the judge's
+  # estimate, so disable it via its own documented flag rather than add a
+  # fourth stub binary.
+  export LEADV2_JUDGE_DISABLE=1
 }
 
 # Resolve the terminal ledger path for a given repo root.
@@ -153,7 +176,28 @@ SIG_A="$(printf '%s' "${MISSION_A}" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -
 SIG8_A="${SIG_A:0:8}"
 
 dispatch_rc=0
-bash "${DC}" --kind tooling "${MISSION_A}" >/dev/null 2>&1 || dispatch_rc=$?
+# LANDED-AT-SPAWN-01 / GROUP-A1-01 (never_reaches_subject), two independent
+# fixture gaps stacked in front of the subject:
+#  1. This fixture's ad-hoc mission has no docs/tasks.yaml backlog row, so
+#     without an explicit route the premise gate exits 8
+#     (reason=backlog_row_not_found) before this suite's own assertions ever
+#     run. --no-probe-yet is the audited, row-status="none" escape hatch
+#     (see _premise_probe_gate's decision tree); it is honoured only when no
+#     row is found at all, which is exactly this fixture's shape.
+#  2. With (1) fixed, dispatch-code.sh's FOREIGN-PROJECT-ROOT-GUARD-01 (its
+#     own header: "most suites in tests/ that git init a throwaway repo ...
+#     ALSO cd into it before invoking this script") fires because this
+#     fixture set CLAUDE_PROJECT_DIR=DECOY but never cd'd there -- cwd stayed
+#     the real leadv2 worktree, so the guard discarded DECOY as foreign and
+#     rooted PROJECT_ROOT at the REAL checkout. That sends the sweep this
+#     dispatch runs (leadv2-dispatch-ledger.sh sweep -> leadv2-lane-
+#     liveness.sh --project-root) against the real, live lane registry
+#     instead of the sandbox -- which both defeats the isolation this suite
+#     exists to prove and was observed to hang for minutes scanning real
+#     concurrent lanes. cd into DECOY before dispatching, matching every
+#     other fixture's pattern, so cwd's git toplevel agrees with the env
+#     root and the guard is a no-op.
+( cd "${DECOY}" && bash "${DC}" --kind tooling --no-probe-yet "${MISSION_A}" ) >/dev/null 2>&1 || dispatch_rc=$?
 
 if [[ ${dispatch_rc} -eq 0 ]]; then
   ok "T-a: dispatch exited 0 (spawn succeeded)"
@@ -203,14 +247,22 @@ setup_env
 # Exclude ALL arms → pre-spawn refusal (all_arms_excluded)
 # GLM-53-FLASH-ARM-01: glm-flash joined the dispatchable set — excluding the
 # old four leaves it as the last arm standing and the refusal never happens.
-export LEADV2_EXCLUDED_ARMS="glm glm-flash kimi codex sonnet"
+# GROUP-A1-01: same trap, a second time. DISPATCHABLE_BUILD_ARMS
+# (leadv2-glm-policy-resolve.py:67) is {glm, glm-flash, codex, sonnet,
+# freepool, astra, sol} -- with the premise-gate fix above unblocking this
+# dispatch far enough to reach real arm selection, the old 5-arm exclusion
+# list left freepool/astra/sol standing, and the router picked freepool: a
+# REAL (unstubbed) freepool-coder.sh bg call that hung this suite for
+# minutes instead of refusing in milliseconds. Only GLM is stubbed
+# (LEADV2_DISPATCH_GLM_BIN); every other arm must be excluded, not stubbed.
+export LEADV2_EXCLUDED_ARMS="glm glm-flash kimi codex sonnet freepool astra sol"
 
 MISSION_B="LAS01-T-b: refactor the plugin cache validator scripts/sync.sh"
 SIG_B="$(printf '%s' "${MISSION_B}" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print $1}')"
 SIG8_B="${SIG_B:0:8}"
 
 dispatch_rc_b=0
-bash "${DC}" --kind tooling "${MISSION_B}" >/dev/null 2>&1 || dispatch_rc_b=$?
+( cd "${DECOY}" && bash "${DC}" --kind tooling --no-probe-yet "${MISSION_B}" ) >/dev/null 2>&1 || dispatch_rc_b=$?
 
 if [[ ${dispatch_rc_b} -eq 4 ]]; then
   ok "T-b: dispatch exited 4 (pre-spawn refusal)"

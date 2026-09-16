@@ -1290,6 +1290,37 @@ _resume_mission_visibility_preflight() { # <raw-mission> <resume-ref>
   p="${raw#@}"
   [[ -n "${p}" ]] || return 0
 
+  if [[ "${p}" == /* ]]; then
+    # RESUME-LANE-REJECTS-AN-ABSOLUTE-MISSION-PATH-01: git ls-tree, the
+    # untracked-file check below, and `cat-file -e main:<path>` all want a
+    # repository-relative tree path, not an absolute filesystem path -- an
+    # absolute @mission was being sent through unconverted and always missed.
+    # Compare PHYSICAL paths (cd + pwd -P): a bare string-prefix test would
+    # miss the /var vs /private/var alias on macOS.
+    local _p_dir="" _p_base="" _p_dir_phys="" _proot_phys=""
+    _p_base="$(basename -- "${p}")"
+    _p_dir="$(dirname -- "${p}")"
+    _proot_phys="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P || true)"
+    _p_dir_phys="$(cd "${_p_dir}" 2>/dev/null && pwd -P || true)"
+    if [[ -z "${_proot_phys}" || -z "${_p_dir_phys}" ]]; then
+      printf '[leadv2-dispatch-code] REFUSE mission: path=%s has a directory that does not exist; an absolute mission path must resolve to a real directory\n' "${p}" >&2
+      exit 5
+    fi
+    if [[ "${_p_dir_phys}" == "${_proot_phys}" || "${_p_dir_phys}" == "${_proot_phys}"/* ]]; then
+      if [[ "${_p_dir_phys}" == "${_proot_phys}" ]]; then
+        p="${_p_base}"
+      else
+        p="${_p_dir_phys#${_proot_phys}/}/${_p_base}"
+      fi
+    else
+      # Outside PROJECT_ROOT can never become a Git tree path -- say that,
+      # not "absent from both", which was the wrong-cause refusal this row
+      # (RESUME-LANE-REJECTS-AN-ABSOLUTE-MISSION-PATH-01) exists to fix.
+      printf '[leadv2-dispatch-code] REFUSE mission: path=%s resolves outside repository root=%s; an absolute mission path cannot become a Git tree path unless it lives under the repository\n' "${p}" "${_proot_phys}" >&2
+      exit 5
+    fi
+  fi
+
   if [[ "${ref}" == /* ]]; then
     [[ -d "${ref}" ]] || return 0
     candidate="$(cd "${ref}" 2>/dev/null && pwd -P || true)"
