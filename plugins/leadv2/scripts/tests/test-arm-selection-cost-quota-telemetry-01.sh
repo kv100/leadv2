@@ -335,6 +335,7 @@ cat >>"${d}/routing.yaml" <<'YAML'
     - {arm: costlyfit, provider: codex, model: gpt-5.6-terra, tier: standard, kinds: [code], sizes: [standard], protected: true, capability: 2}
 YAML
 arb_record "$OUT" d1-loser-detail-reasons worker "$DESC" "${d}/routing.yaml" "{$Q_GLM_OK,$Q_CODEX_OK}" -
+d1_dec="$DECISIONS_FILE"
 if [[ "$LAST_STDOUT" == *"arm=cheap "* ]]; then
   pass "D1: winner is cheap (glm, bucket0, lowest known price)"
 else
@@ -382,6 +383,37 @@ if [[ "$LAST_STDOUT" == *"arm=glm "* ]] && [[ "$LAST_STDOUT" == *"loser_detail=c
   pass "D2: single genuinely-costlier loser -> loser_detail=codex:higher_expected_cost"
 else
   fail "D2: single loser detail mismatch -- $(printf '%s' "$LAST_STDOUT" | head -c 400)"
+fi
+
+# D3 (round-3 review findings 2+4): the DURABLE record must carry the same
+# loser_detail the stdout line carries. stdout is ephemeral -- §5 telemetry
+# exists to be analysed from decisions.jsonl afterwards; asserting stdout
+# alone is a false-green once the record drops the field.
+if [[ -s "$d1_dec" ]]; then
+  rec="$(python3 - "$d1_dec" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+win = [r for r in rows if r.get('arm') == 'cheap']
+if not win:
+    print('NO_WIN_RECORD')
+else:
+    print('loser_detail=%s' % ','.join(win[-1].get('loser_detail') or []))
+PY
+)"
+  case "$rec" in
+    *costlyfit:insufficient_fit*)
+      if [[ "$rec" == *pricey:higher_expected_cost* ]] && [[ "$rec" == *unknownprice:cost_unknown* ]]; then
+        pass "D3: decisions.jsonl win record carries the same loser_detail (${rec})"
+      else
+        fail "D3: durable record loser_detail partial -- got: ${rec}"
+      fi
+      ;;
+    *)
+      fail "D3: durable record loser_detail wrong -- got: ${rec}"
+      ;;
+  esac
+else
+  fail "D3: decisions.jsonl missing or empty at ${d1_dec}"
 fi
 
 echo "SUMMARY pass=$PASS fail=$FAIL"

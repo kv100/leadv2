@@ -514,3 +514,201 @@ MUTATION-CONTROL ok suite=test-fable-is-priced-from-its-own-window.sh
 diff_hash=8eb22cb7ccf1... (both runs: identical mutant, identical hash)
 lane_diff_hash=2c459d9d7114... (both runs: the committed lane diff)
 ```
+
+## 9. Round 3 — review verdict, findings, third baseline freeze, allow-list row
+
+Round 3's mandate: get the round-2 diff reviewed, allow-list the stale red
+`test-arm-capability-honoured.sh`, re-measure the paired table. No new
+arbiter behaviour beyond what the review forced.
+
+### 9.1 Review verdict — REJECT, 3 BLOCKING + 1 MAJOR; two fixed, two declined
+
+Reviewer: codex CLI `gpt-5.6-terra`, reasoning effort `medium`, read-only
+sandbox, direct-CLI transport (the companion app-server path dies
+`transport_gone_app_server_absent` on this host — recurring, see memory
+codex-review-app-server-dies). Input: review prompt + full
+`8e39c60b..HEAD` diff restricted to the three code files, 41,655 bytes;
+reviewer spent 81,059 tokens and read the tree itself. Verdict verbatim:
+
+```
+VERDICT: REJECT
+FINDINGS:
+- [BLOCKING] .../test-arm-selection-decision-fixtures-01.sh:535 — committed
+  range changes a fourth code file outside the declared three-file scope —
+  remove it from this range or explicitly re-scope the review.
+- [BLOCKING] .../leadv2-route-arbiter.sh:1579 — durable decision records
+  omit `loser_detail`, contradicting the required decision-record delta and
+  losing telemetry after stdout — persist the computed loser-detail value
+  in `_rec`.
+- [BLOCKING] .../leadv2-route-arbiter.sh:2179 — `loser_detail` is generated
+  only for admitted `ok` losers and can emit only three of the required
+  vocabulary values, never reasons such as `not_in_pool`, `quota_exhausted`,
+  or `explicit_override` — derive detail for every excluded/overridden arm
+  using the full §5 vocabulary.
+- [MAJOR] .../test-arm-selection-cost-quota-telemetry-01.sh:350 — telemetry
+  tests assert only stdout despite claiming decisions.jsonl coverage, so
+  the missing persisted field is false-green — parse and assert
+  `DECISIONS_FILE`, including the full vocabulary mappings.
+NOTES: `bash -n` passes for all three reviewed scripts. Both quota suites
+are hermetic by inspection.
+```
+
+Dispositions, each taken on its merits:
+
+**F1 (fourth file) — re-scoped, not blocking.** The `+23/−9` delta in
+`test-arm-selection-decision-fixtures-01.sh` is the round-2 lead-ordered
+re-freeze landing: two `BASELINE FINDING` passes flipped into hard
+assertions of the new behaviour (case05 §4.4 rotation, case10 keep-both)
+plus the re-anchored stale-urgency grep. It contains zero arbiter behaviour;
+it is the fixtures suite agreeing with the founder ruling. Review re-scoped
+to four code files here; nothing removed.
+
+**F2 (loser_detail absent from the durable record) — CONFIRMED, FIXED.**
+Verified before fixing: `_rec` ended at `arm_excluded`;
+`_loser_detail` reached only the stdout token (arbiter `:2500`), so the
+journal — the thing §5 telemetry exists for — lost it. Fix: one additive
+record field `'loser_detail':globals().get('_loser_detail')` — `None` on
+early refuse rows (the `ok` set does not exist at those call sites), the
+computed list on the win row (`:2465`, which runs after the `:2168`
+computation). `record_schema_version` stays `2` (additive field; the
+required-keys assertion `test-arbiter-decision-record-inputs.sh:50-51`
+re-ran green 6/0); the byte-identical `arm_excluded`/`price_ratio`
+contracts are untouched.
+
+**F3 (full 10-value vocabulary on every excluded arm) — DECLINED.**
+(a) §5's stated confusion is barred-vs-ranked-second, and the same record
+already separates them: `arm_excluded` carries the bar stages
+(`not_in_pool`, `capped`, …) per arm while a ranked-second arm carries the
+`price_ratio` stage — deriving `loser_detail` for barred arms would not
+make anything newly distinguishable. (b) The round-1 code pins
+`loser_detail` to "the same `ok` set price_ratio was, never a second
+decision" (`leadv2-route-arbiter.sh:2172-2175`); extending it to
+excluded/overridden arms is new arbiter behaviour, and round 2's four
+changes are final per the round-3 brief. (c) The §5 vocabulary is realized
+distributed across record fields, not one token:
+
+| §5 name | where it lives in the record |
+|---|---|
+| not_in_pool | `arm_excluded` stage `not_in_pool` |
+| unsupported_role | role gate refusal reason |
+| insufficient_fit | `loser_detail` |
+| quota_exhausted | `arm_excluded` stage `capped` |
+| weekly_pacing_preference | `reset_urgency` + `headroom_priced` (+ `capped`) |
+| cost_unknown | `loser_detail` (`cost_src` median/unpriced_all) |
+| higher_expected_cost | `loser_detail` |
+| latency_preference | no live signal in the arbiter — nothing emits it |
+| infrastructure_unavailable | `probe_outage` |
+| explicit_override | `requested_arm` + win/refuse `reason` |
+
+Historical `price_ratio` journal lines stay readable untouched — the
+migration-note requirement is met by the byte-identical preservation the
+round-2 lead verified.
+
+**F4 (telemetry suite stdout-only) — CONFIRMED, FIXED.** The suite already
+exported `LEADV2_ROUTE_ARBITER_DECISIONS_FILE` but never read the file
+back. New case D3 parses the D1 scenario's `decisions.jsonl`, finds the win
+record (`arm=cheap`), and asserts its `loser_detail` carries the same three
+entries the stdout assertion checks (`costlyfit:insufficient_fit`,
+`pricey:higher_expected_cost`, `unknownprice:cost_unknown`). Suite now
+**15/0** (was 14/0); with F2 reverted D3 fails, so the false-green the
+reviewer described is closed in both directions.
+
+### 9.2 Third baseline freeze — forced by F2, fully explained
+
+`arb_rev` is a content hash of the arbiter bytes *by design* (fixtures
+suite header: "content hashes naming the exact arbiter and fixture bytes
+that produced the decision"), so the F2 edit moved it and acceptance went
+red `42/2` ("fresh recordings DIFFER from committed baseline"). Re-freeze
+per the round-2 ritual:
+
+- `--record` into a scratch dir from the post-fix tree; diff against the
+  committed baseline: 42 changed lines carry only the `arb_rev` token, 18
+  add the `loser_detail` record key.
+- Stricter check (a winner line could hide a second change behind its
+  `arb_rev=`): normalizer strips the `arb_rev` token and the
+  `loser_detail` key from BOTH trees, then byte-compares all 13 files —
+  **zero unexplained deltas**. Winners, fit buckets, effective costs,
+  exclusions: all identical.
+- Baseline replaced under
+  `docs/handoff/ARM-SELECTION-DECISION-FIXTURES-01/baseline/`
+  (`git add -f` — `.gitignore` drops `docs/handoff/*/*` except `*.md`).
+- Post-freeze acceptance: **44/0**, including the negative control
+  ("reverting the mutation restored the baseline byte-for-byte") — the
+  control still discriminates after re-freezing, because any mutation
+  moves the self-hash.
+
+Changed-field ledger after this round (round-2 rule: every entry carries
+its reason): `arb_rev` → third hash, mechanical consequence of the F2
+record field; `loser_detail` on record rows → the F2 fix itself. Nothing
+else.
+
+### 9.3 Paired table — my own measurement, final tree
+
+Run by this session, not quoted from the brief. Merge-base side in a
+detached worktree at `8e39c60b`; branch side re-measured **after** the
+round-3 arbiter edit.
+
+| suite | `8e39c60b` | branch (final tree) |
+|---|---|---|
+| `test-arm-capability-honoured.sh` | rc=1 | rc=1 |
+| `test-fable-is-priced-from-its-own-window.sh` | — | rc=0 (12/0) |
+| `test-arm-selection-decision-fixtures-01.sh` | — | rc=0 (44/0) |
+| `test-arm-selection-cost-quota-telemetry-01.sh` | — | rc=0 (15/0) |
+
+Both capability rows fail identically: `FAIL: (red) mutation did not flip
+the outcome -- control is not falsifiable`, PASS=2 FAIL=2 — red before this
+lane touched anything, red now, exactly as the acceptance requires.
+
+Inherited reds re-measured by me, both sides, while testing the
+record-shape blast radius of F2 (neither is this lane's):
+
+| suite | `8e39c60b` | branch |
+|---|---|---|
+| `test-dispatch-arm-vocabulary.sh` | rc=1 (5 fails) | rc=1 (5 fails) |
+| `test-arbiter-uses-observed-cost.sh` | rc=1 (1 fail) | rc=1 (1 fail) |
+
+(`test-arbiter-uses-observed-cost` is on the lead's already-red-on-main list
+of 2026-09-16; the vocabulary suite's failures are freepool-chain/mismatch
+expectations, not record shape.) Contract suites guarding the F2 edit,
+green on the branch: `test-arbiter-decision-record-inputs.sh` rc=0 (6/0).
+
+### 9.4 `tests/known-red-suites.txt` — the one new entry
+
+```
+path:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh  # plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh — red 2026-09-16; rotted negative control: "FAIL: (red) mutation did not flip the outcome -- control is not falsifiable" (PASS=2 FAIL=2); paired evidence measured by ARM-SELECTION-COST-QUOTA-TELEMETRY-01 round 3: rc=1 at merge-base 8e39c60b (detached worktree) and rc=1 on branch worktree-26647d0efbb6, same failure line both sides; keyed path: not core: because it fails as a top-level run-all suite (triggers: leadv2-dispatch-code leadv2-route-arbiter) and is not in run-core-offline.sh's curated set; repairing the control is its own task, deliberately not done inside the arbiter economics lane; see SD-MAIN-CORE-SUITE-RED-01
+```
+
+Keying, verified against both consumers: the suite fails as a TOP-LEVEL
+run-all suite (its `# run-all-triggers:` header selects it whenever
+`leadv2-dispatch-code` or `leadv2-route-arbiter` changes) and is not in
+`run-core-offline.sh`'s curated set, so no `core:` label can ever match it;
+`tests/ci-gate.sh:52` keys top-level `[FAIL]` rows as `path:<rel>`. The
+entry matches the exact `sed`+`grep -qxF` derivation both consumers run.
+
+Honest mechanics note, so nobody expects more of this row than it does:
+`tests/run-all.sh`'s `is_known_red` has exactly one call site (`:776`) and
+classifies only run-core-offline NESTED failures (`core:`); a top-level
+failure still enters `Failures (blocking)` regardless of the allow-list.
+The phase-8 e2e gate's tolerance path for this suite is
+`leadv2-e2e-ownership.sh`'s merge-base baseline check (the
+`pre_existing` subtraction), not the allow-list. The row is the
+founder-ruled registry entry («лендить + задача»,
+SD-MAIN-CORE-SUITE-RED-01) plus the ci-gate classification; repairing the
+rotted control remains its own task, untouched here per the brief.
+
+### 9.5 Self-check
+
+- `bash -n` on both edited shell files
+  (`plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh`,
+  `plugins/leadv2/scripts/tests/test-arm-selection-cost-quota-telemetry-01.sh`):
+  OK. No Python files changed, `py_compile` n/a.
+- Red→green artifact for this round's fix chain: fixtures suite rc=1
+  (42/2, stale-baseline diff quoted in §9.2) → rc=0 (44/0) after the
+  re-freeze; telemetry suite 14/0 → 15/0 with D3 added; with the F2 record
+  field reverted, D3 alone fails — the negative half is live.
+- Changed-scope runner NOT re-run full this round, deliberately: the lead's
+  round-3 measurement (46 suites paired, zero green→red; gate log 24
+  passed / 23 failed) already fixes the changed-scope state, and this
+  round re-ran instead every suite that asserts on the files actually
+  touched, plus both sides of the one blocking suite. The 23 pre-existing
+  failures are the lead's paired set, not this round's delta.

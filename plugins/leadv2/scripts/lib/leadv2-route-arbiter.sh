@@ -1576,7 +1576,14 @@ def _record(arm, model, tier, reason):
               'reset_urgency':globals().get('_reset_urgency_priced',{}),
               'cost_src':(_cost_src(_winner) if _winner is not None else None),
               'candidate_set':_candidate_set,
-              'arm_excluded':{a:'+'.join(sorted(_stages.get(a,[]),key=_STAGE_ORDER.index)) for a in sorted(_stages)}}
+              'arm_excluded':{a:'+'.join(sorted(_stages.get(a,[]),key=_STAGE_ORDER.index)) for a in sorted(_stages)},
+              # ARM-SELECTION-COST-QUOTA-TELEMETRY-01 round 3 (review finding):
+              # loser_detail must survive stdout -- §5 telemetry exists to be
+              # analysed from the journal afterwards. None on early refuse
+              # rows (the ok-set does not exist yet there); the computed list
+              # on the win row. Additive record field: legacy readers of
+              # price_ratio/arm_excluded are untouched, schema stays 2.
+              'loser_detail':globals().get('_loser_detail')}
         with open(_jf_path,'a') as _jf: _jf.write(json.dumps(_rec)+'\n')
     except Exception:
         pass
