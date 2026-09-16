@@ -103,20 +103,34 @@ That unlock is visible in the data. glm-flash exclusion reasons, dated either si
 | `capped` | — | 62 |
 | `not_launchable` | 1 | 21 |
 
-The old gate went away and a new one took its place. **`price_ratio` is now the dominant reason
-glm-flash does not run.** The cheapest arm in the fleet, at a third of glm's price, is being
-excluded on price — because the ratio is capability-adjusted, and `capability: 2` cancels the
-discount.
+The old gate went away. **CORRECTED 2026-09-16:** this section previously read the rise of
+`price_ratio` as a new gate that replaced it. That misreads the token.
+`leadv2-route-arbiter.sh:2099-2104` assigns `price_ratio` to *every arm that survived all exclusion
+stages and still did not win* - the comment there says so outright ("it was IN the pool, launchable,
+trusted and uncapped, and lost on effective cost"). It is a **loser label, not a refusal**, and it
+cannot tell "excluded on price" apart from "ranked second". The 175 count therefore means flash
+reached the final comparison 175 times and lost it - a different and far more tractable fact than
+being barred. The counts in the table stand; the causal reading of them does not.
 
-The second brake is `complexity_penalty`:
+**CORRECTED 2026-09-16** (founder's proposal, then verified against the source by the lead).
+This section previously claimed a second brake, `complexity_penalty`, applying `+100` ecost to
+glm-flash's `[cheap, mechanical]` tags on complex work. **That rule is not active on the live path.**
+`leadv2-route-arbiter.sh:1720` reads:
 
-```yaml
-complexities: [complex]
-penalize_tags: [cheap, mechanical]   # +100 ecost
+```python
+complexity_penalty_rules = ([] if FIT_MODE == 'on' else ((data.get('router_v2') or {}).get('complexity_penalty') or []))
 ```
 
-glm-flash carries `tags: [cheap, mechanical]`; glm carries `tags: [bulk, background]` and is not
-penalised. A `+100` penalty against a 3× price advantage is not a tilt, it is an exclusion.
+and `FIT_MODE` is `on` (`:1697`, from `capability_fit.enabled`; `fit_mode=on` appears in every live
+`route_resolved` line). With fit mode on that list is EMPTY and `ok.sort()` uses `_fit_key`
+(`:2066`) instead. The `+100` rule still sits in the yaml, but nothing reads it today.
+
+The real mechanism is a demotion, not a penalty: `_fit_key` sorts by fit bucket, roughly
+`ceil(required_capability - capability - slack)`. At a standard requirement of 3 with slack 0.5,
+`capability: 4` gives bucket 0 while flash's `capability: 2` gives bucket 1; at a complex
+requirement of 4, flash gives bucket 2. A higher bucket sorts later and loses. One integer -
+`capability` - carries the whole effect, which is why the capability band is the lever and the tags
+are not.
 
 How often does that fire? Measured over all journals:
 
