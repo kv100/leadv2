@@ -1755,11 +1755,13 @@ UNKNOWN_PROBE_PENALTY=50.0
 # providers in ONE basket, the gradient blind between them, raw cost deciding.
 # The inputs were continuous all along and ecost already divided by the weight,
 # so the table quantised information that arrived unquantised -- it added no
-# intelligence, it threw away the runway number. It is now ONE monotone bounded
-# ramp inside headroom_weight, and the config key is deleted (a live config
-# carrying a dead key is a lie to the reader):
+# intelligence, it threw away the runway number. It became ONE monotone bounded
+# ramp inside headroom_weight (2026-09-10; the ramp itself was retired
+# 2026-09-16 by WEEKLY-ALLOCATES-FIVE-HOUR-ONLY-ADMITS-01 -- see the block at
+# headroom_weight), and the config key is deleted (a live config carrying a
+# dead key is a lie to the reader):
 #
-#     weight(u) = 0.2 + 0.8 * min(u, 8) / 8        (u = usable_now)
+#     weight(u) = 0.2 + 0.8 * min(u, 8) / 8        (u = usable_now; 2026-09-10..2026-09-16, superseded)
 #
 # a clipped linear ramp: w(0)=0.2, w(8)=1.0, flat 1.0 above 8, held at the 0.2
 # floor for degenerate u<0. The EDGES are the table's edges (1.0 and 0.2), so
@@ -1798,16 +1800,28 @@ UNKNOWN_PROBE_PENALTY=50.0
 #     to predict a refusal without running the arbiter. Smoothness is confined
 #     to the ranking key.
 # Rollback is one flag: LEADV2_ARBITER_HEADROOM_GRADIENT=0 restores the cliff.
-_HEADROOM_W_MIN=0.2; _HEADROOM_W_MAX=1.0; _HEADROOM_U_SAT=8.0
+# _HEADROOM_U_SAT (8.0, the ramp's saturation point, tuned against the
+# five_hour scale) was DELETED 2026-09-16 with the ramp it served: its last
+# domain after THE-BALANCER moved long windows to the reserve was exactly the
+# five-hour-scale rates WEEKLY-ALLOCATES-FIVE-HOUR-ONLY-ADMITS-01 removed from
+# ranking. _HEADROOM_W_MIN/_HEADROOM_W_MAX keep their meaning unchanged -- they
+# bound the reserve below.
+_HEADROOM_W_MIN=0.2; _HEADROOM_W_MAX=1.0
 _HEADROOM_ON=(os.environ.get('LEADV2_ARBITER_HEADROOM_GRADIENT','1')!='0')
 _headroom_unknown={}; _headroom_priced={}
-def _headroom_ramp(un):
-    # One formula, both clips explicit: monotone non-decreasing, bounded
-    # [_HEADROOM_W_MIN, _HEADROOM_W_MAX], no steps. Mutation control: a stepped
-    # basket re-introduced here must redden the separation case of
+def _long_window(key):
+    # -> (name, pct) of the WORST (most-used) readable LONG-period window for
+    # this pricing key, or None. Same skip rule as util()'s binding loop
+    # (an unreadable pct never enters _allwin at all), restricted to
+    # weekly-scale periods. Mutation control: dropping the period filter here
+    # must redden the five-hour-neutrality case of
     # tests/test-headroom-continuous.sh.
-    _u=min(un,_HEADROOM_U_SAT)
-    return max(_HEADROOM_W_MIN, min(_HEADROOM_W_MAX, _HEADROOM_W_MIN + (_HEADROOM_W_MAX-_HEADROOM_W_MIN)*_u/_HEADROOM_U_SAT))
+    _best=None
+    for name,pct,window in (_allwin.get(key) or []):
+        _h,_period,_basis=window_reset(name,window)
+        if _period is None or _period<_HEADROOM_LONG_PERIOD_HOURS: continue
+        if _best is None or pct>_best[1]: _best=(name,pct)
+    return _best
 # THE-BALANCER-CONCENTRATES-ON-THE-EMPTIEST-BUCKET-01 (founder, 2026-09-14):
 # `usable_now` is remaining-percentage-points PER HOUR (leadv2-quota-read.py),
 # so its own achievable ceiling scales with 100/period_hours -- a fresh
@@ -1835,54 +1849,86 @@ def _headroom_ramp(un):
 # carries meaningful information because it is dominated by 1/hours_to_reset
 # regardless of remaining) by its remaining FRACTION directly -- a quantity
 # that is period-invariant by construction and already computed as `pct` on
-# the SAME binding window usable_now came from. Short-period windows (the
-# five_hour scale the constant was tuned against, and anything whose period
-# is unreadable) are UNTOUCHED: the existing rate ramp still runs exactly as
-# before, so every fixture that never carries a real >=24h period stays
-# byte-identical. _HEADROOM_LONG_PERIOD_HOURS=24 draws the line comfortably
-# above five_hour (5) and comfortably below weekly (168) -- there is no
-# window kind in this repo between them. Rollback is the same flag as the
-# ramp itself, LEADV2_ARBITER_HEADROOM_GRADIENT=0.
+# the binding window. Until 2026-09-16 short-period windows (the five_hour
+# scale the constant was tuned against, and anything whose period is
+# unreadable) still rode the rate ramp below; WEEKLY-ALLOCATES-FIVE-HOUR-
+# ONLY-ADMITS-01 (founder order 2026-09-16) ended that: the weekly window is
+# the ALLOCATION KEY, the five-hour window is an ADMISSION constraint, so a
+# five-hour rate may never become a preference. Headroom is now priced from
+# the worst readable long-period window whether or not it binds, and short
+# windows contribute nothing to this term at all (see headroom_weight).
+# _HEADROOM_LONG_PERIOD_HOURS=24 draws the line comfortably above five_hour
+# (5) and comfortably below weekly (168) -- there is no window kind in this
+# repo between them. Its meaning WIDENED 2026-09-16 (value unchanged): it
+# gates reset_urgency_weight too. Rollback is the same flag as the ramp it
+# replaced, LEADV2_ARBITER_HEADROOM_GRADIENT=0.
 _HEADROOM_LONG_PERIOD_HOURS=24.0
+# WEEKLY-ALLOCATES-FIVE-HOUR-ONLY-ADMITS-01 (founder order 2026-09-16): the
+# weekly window is the ALLOCATION KEY and the five-hour window is an ADMISSION
+# constraint -- it answers "can this arm take work right now", never "who
+# deserves this task". The deleted rate ramp was the second place (after
+# reset_urgency_weight) where a five-hour rate became a preference: tuned
+# against five_hour-scale usable_now (fresh 5h reaches 20/h, a 168h window can
+# never exceed ~0.6/h), it either masked weekly scarcity or invented weekly
+# room whenever a short window supplied the rate. headroom_weight now prices
+# the WORST readable LONG-period window (>= _HEADROOM_LONG_PERIOD_HOURS) via
+# _allwin -- the same period-invariant remaining-fraction reserve
+# THE-BALANCER-CONCENTRATES-ON-THE-EMPTIEST-BUCKET-01 (founder, 2026-09-14)
+# established, now the ONLY ranking signal in this term, taken from the
+# weekly-scale window itself instead of only when it happens to bind. Short
+# windows (five_hour scale, and any unreadable period) contribute NOTHING
+# here: their whole job is admission, and it stays where it already is -- the
+# capped/forecast exclusion stages and the near-reset wait run BEFORE ecost()
+# and are cliffs a human can predict. usable_now therefore no longer ranks AT
+# ALL (it remains telemetry on the decision line): a rate in
+# percentage-points-per-hour is incomparable between a 5h and a 168h window,
+# and the only safe ranking use of an incomparable number is none. An arm
+# with no readable long window (freepool; a test 'primary' window) is NEUTRAL
+# 1.0, named headroom_unknown=no_long_window -- no weekly evidence, no
+# allocation preference; the arm still competes on cost and is still
+# admitted/excluded by its short windows' cliffs.
 def headroom_weight(provider, arm=None):
-    # 0485: arm-aware -- a scoped arm's gradient is priced from ITS OWN
-    # binding window (session or scoped weekly, whichever binds it), so the
-    # winner's headroom_w= reads back off the same meter that priced the arm.
+    # 0485: arm-aware -- a scoped arm's reserve is priced from ITS OWN
+    # long-period window set (the session window never counts, a scoped
+    # weekly does), so the winner's headroom_w= reads back off the same meter
+    # that priced the arm.
     _lbl=_hw_label(provider,arm)
-    _info=_raw_for(provider,arm)
+    _info=_raw_for(provider,arm)   # also populates _allwin[_lbl] for scoped arms
     if not _HEADROOM_ON: return 1.0
     if _info.get('account_state')=='unmetered':
         # Configured matrix cost, charged at the least generous point of the
-        # ramp (its floor). No fabricated usage/reset rate or unknown penalty.
+        # reserve (its floor). No fabricated usage/reset rate or unknown penalty.
         return _HEADROOM_W_MIN
     if _info.get('unknown'):
         _headroom_unknown[_lbl]='probe'; return 1.0
-    un=_info.get('usable_now')
-    if un is None:
-        _headroom_unknown[_lbl]='no_usable_now'; return 1.0
-    try: un=float(un)
-    except (TypeError, ValueError):
-        _headroom_unknown[_lbl]='unreadable'; return 1.0
-    _period=num(_info.get('period_hours'))
-    _pct=num(_info.get('pct'))
-    if _period is not None and _period>=_HEADROOM_LONG_PERIOD_HOURS and _pct is not None:
-        _remaining_fraction=max(0.0,min(1.0,(100.0-_pct)/100.0))
-        _w=_HEADROOM_W_MIN+(_HEADROOM_W_MAX-_HEADROOM_W_MIN)*_remaining_fraction
-    else:
-        _w=_headroom_ramp(un)
+    _lp=_long_window(_lbl)
+    if _lp is None:
+        _headroom_unknown[_lbl]='no_long_window'; return 1.0
+    _remaining_fraction=max(0.0,min(1.0,(100.0-float(_lp[1]))/100.0))
+    _w=_HEADROOM_W_MIN+(_HEADROOM_W_MAX-_HEADROOM_W_MIN)*_remaining_fraction
     if _w != 1.0: _headroom_priced[_lbl]=_w
     return _w
 # ARBITER-DECISION-INPUTS-01 D1: quota that expires before it can be used is
 # different from ordinary headroom.  Score the *wasted* fraction of every
-# readable window, not the provider's binding window alone: a five-hour
-# session bucket can expire while a weekly bucket is the utilisation binding
-# constraint, and dispatch burns both.  For one window:
+# readable WEEKLY-SCALE window (period >= _HEADROOM_LONG_PERIOD_HOURS), not
+# the provider's binding window alone: the weekly bucket can expire while a
+# short session window is the utilisation binding constraint, and dispatch
+# burns both.  WEEKLY-ALLOCATES-FIVE-HOUR-ONLY-ADMITS-01 (founder order
+# 2026-09-16) removed short windows from this loop: the near-reset burn rule
+# was ordered for the WEEKLY quota, and a five-hour bucket nearing reset is an
+# admission fact (capped / forecast / near-reset wait -- all cliffs before
+# ecost), never a reason to PREFER an arm.  Before that order this loop took
+# the max over every readable window, so an arm whose five-hour bucket was
+# 0.2h from reset could outrank the arm the weekly key pointed at (measured
+# 2026-09-16: reset_urgency codex:1.816[five_hour] flipping a decision the
+# weekly reserve had already made).  For one window:
 #
 #   waste = remaining_fraction * clamp(1 - hours_to_reset / period, 0, 1)
 #
-# The maximum is the next real opportunity loss among the windows this arm
-# burns.  A reset that is absent, at/past zero (stale cache), or on an unknown
-# period has no trustworthy urgency and remains neutral.  This is deliberately
+# The maximum is the next real opportunity loss among the weekly-scale
+# windows this arm burns.  A reset that is absent, at/past zero (stale
+# cache), or on an unknown period has no trustworthy urgency and remains
+# neutral.  This is deliberately
 # a ranking-only, bounded discount: 1.0 <= weight <= 2.0, therefore it can at
 # most halve an admitted arm's effective matrix cost.  Capability admission
 # and all exclusion cliffs happen before ecost(), so urgency cannot buy an
@@ -1897,6 +1943,14 @@ def reset_urgency_weight(provider, arm=None):
     for name,pct,window in (_allwin.get(key) or []):
         h,period,_basis=window_reset(name,window)
         if h is None or period is None or period<=0 or h<=0:
+            continue
+        if period<_HEADROOM_LONG_PERIOD_HOURS:
+            # WEEKLY-ALLOCATES-FIVE-HOUR-ONLY-ADMITS-01 (founder order
+            # 2026-09-16): urgency is priced from the WEEKLY quota only. A
+            # five-hour bucket about to reset is an admission question
+            # (capped/forecast/near-reset wait, all before ecost), never a
+            # preference. Mutation control: dropping this filter must redden
+            # case (e) of tests/test-reset-urgency.sh.
             continue
         remaining=max(0.0,min(1.0,(100.0-float(pct))/100.0))
         proximity=max(0.0,min(1.0,1.0-(float(h)/float(period))))

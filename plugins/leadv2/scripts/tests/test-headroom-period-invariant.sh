@@ -10,9 +10,12 @@
 # term, concentrating picks on whichever weekly provider a coin-flip favours.
 # This suite pins: (1) the fixed spread is wide, (2) paired resolves flip
 # both ways, (3) the fix actually changes the OUTCOME under adversarial
-# price noise (not just the raw number), (4) short-period windows are
-# byte-identical to before, (5) a negative control proves the specific code
-# is responsible.
+# price noise (not just the raw number), (4) the five-hour window is
+# admission-only -- its state never moves the headroom weight
+# (WEEKLY-ALLOCATES-FIVE-HOUR-ONLY-ADMITS-01, founder order 2026-09-16,
+# superseded the earlier "short-period windows ride the rate ramp unchanged"
+# pin; cause class test_encodes_superseded_requirement), (5) a negative
+# control proves the specific code is responsible.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -126,9 +129,15 @@ else
   fail "(c) adversarial price noise flipped the pick to the WRONG (near-exhausted) arm: $out_c"
 fi
 
-# (d) Short-period windows (five_hour scale, the constant _HEADROOM_U_SAT was
-# tuned against) are untouched -- byte-identical ramp behaviour to before
-# this fix, pinned against the same values test-headroom-continuous.sh uses.
+# (d) WEEKLY-ALLOCATES-FIVE-HOUR-ONLY-ADMITS-01 (founder order 2026-09-16).
+# Cause class test_encodes_superseded_requirement: until 2026-09-16 this case
+# pinned "five_hour-scale window still rides the original rate ramp,
+# unchanged (weight=0.6)" -- a five-hour rate as a PREFERENCE. Under the
+# order the five-hour window is admission-only, so its state must not move
+# the headroom weight at all. glm is priced from weekly 10pct used
+# (0.2 + 0.8*0.9 = 0.92) with (i) a BURNT five_hour (80pct used, 5h) and
+# (ii) a FRESH five_hour (10pct used, 5h): both runs must carry the SAME
+# glm:0.92 token. On the pre-order code (i) priced ramp((100-80)/5=4)=0.6.
 cat >"$TMP/routing-five.yaml" <<'YML'
 router_v2:
   quota_ceilings: {glm: {work_pct: 95, review_pct: 95}, claude: {work_pct: 95, review_pct: 95}, codex: {work_pct: 95, review_pct: 95}}
@@ -155,33 +164,28 @@ print(json.dumps({
 }))
 PY
 }
-# glm 20% remaining on a fresh 5h window: usable_now=20/5=4.0, which is
-# under _HEADROOM_U_SAT(8.0) -- unsaturated, so this pins the exact rate-ramp
-# arithmetic (0.2 + 0.8*4/8 = 0.6), not just "some value under 1.0".
-out_d="$(env LEADV2_ROUTE_ARBITER_ROUTING_YAML="$TMP/routing-five.yaml" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-five" LEADV2_ARBITER_SPEND_FORECAST=0 LEADV2_ARBITER_OBSERVED_COST=0 ROUTE_TEST_QUOTA="$(five_quota 80 5)" bash -c 'source "$0"; route_arbiter worker "$1"' "$ARBITER" '{"kind":"code","size":"standard","allowed_arms":["glm","codex"]}')"
-if [[ "$out_d" == *'headroom_priced=glm:0.6'* || "$out_d" == *',glm:0.6 '* ]]; then
-  pass '(d) five_hour-scale window still rides the original rate ramp, unchanged (weight=0.6)'
+# Burnt five_hour (80pct used) vs fresh (10pct used): identical weekly-priced
+# weight in both runs -- the five-hour state cannot move it.
+out_d1="$(env LEADV2_ROUTE_ARBITER_ROUTING_YAML="$TMP/routing-five.yaml" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-five-burnt" LEADV2_ARBITER_SPEND_FORECAST=0 LEADV2_ARBITER_OBSERVED_COST=0 ROUTE_TEST_QUOTA="$(five_quota 80 5)" bash -c 'source "$0"; route_arbiter worker "$1"' "$ARBITER" '{"kind":"code","size":"standard","allowed_arms":["glm","codex"]}')"
+out_d2="$(env LEADV2_ROUTE_ARBITER_ROUTING_YAML="$TMP/routing-five.yaml" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-five-fresh" LEADV2_ARBITER_SPEND_FORECAST=0 LEADV2_ARBITER_OBSERVED_COST=0 ROUTE_TEST_QUOTA="$(five_quota 10 5)" bash -c 'source "$0"; route_arbiter worker "$1"' "$ARBITER" '{"kind":"code","size":"standard","allowed_arms":["glm","codex"]}')"
+if [[ "$out_d1" == *'glm:0.92'* && "$out_d2" == *'glm:0.92'* ]]; then
+  pass '(d) five-hour window is admission-only: burnt (80pct) and fresh (10pct) five_hour both price glm:0.92 from weekly alone'
 else
-  fail "(d) five_hour ramp value changed unexpectedly: $out_d"
+  fail "(d) five-hour state moved the weekly-priced weight: burnt=$out_d1 fresh=$out_d2"
 fi
 
-# (e) NEGATIVE CONTROL: mutate the long-period branch away on a private copy.
-# The founder case (a) must go RED (collapse back to the ~0.037-wide old
-# spread and lose the wide-spread assertion); the unmodified binary must
-# then be GREEN again.
+# (e) NEGATIVE CONTROL: neutralise the weekly-reserve branch on a private
+# copy (a constant weight for every arm). The founder case (a) must go RED
+# (the spread collapses to 0 and loses the wide-spread assertion); the
+# unmodified binary must then be GREEN again.
 mut="$TMP/arbiter-without-period-invariant.sh"
 python3 - "$ARBITER" "$mut" <<'PY'
 import sys
 s=open(sys.argv[1]).read()
-old="""    _period=num(_info.get('period_hours'))
-    _pct=num(_info.get('pct'))
-    if _period is not None and _period>=_HEADROOM_LONG_PERIOD_HOURS and _pct is not None:
-        _remaining_fraction=max(0.0,min(1.0,(100.0-_pct)/100.0))
-        _w=_HEADROOM_W_MIN+(_HEADROOM_W_MAX-_HEADROOM_W_MIN)*_remaining_fraction
-    else:
-        _w=_headroom_ramp(un)"""
+old="""    _remaining_fraction=max(0.0,min(1.0,(100.0-float(_lp[1]))/100.0))
+    _w=_HEADROOM_W_MIN+(_HEADROOM_W_MAX-_HEADROOM_W_MIN)*_remaining_fraction"""
 if s.count(old)!=1: raise SystemExit('period-invariant anchor count=%d' % s.count(old))
-open(sys.argv[2],'w').write(s.replace(old, '    _w=_headroom_ramp(un)'))
+open(sys.argv[2],'w').write(s.replace(old, '    _w=0.5'))
 PY
 if [[ -f "$mut" ]]; then
   out_e="$(run mut-founder "$TMP/routing-tied.yaml" "$(quota 83 36.8 17 100)" "$mut")"

@@ -99,14 +99,21 @@ else
   fail "(d) stale reset handling neg=$out_dneg zero=$out_dzero"
 fi
 
-# (e) Five-hour urgency counts even when weekly (60pct used) is binding.  The
-# token names the winning five_hour term; it is not silently discarded because
-# the weekly meter supplied the provider-level utilisation value.
-out_e="$(run nonbinding-five "$(quota 20 0.25 60 120 20 140)" "$DESC")"
-if [[ "$out_e" == arm=sonnet\ * && "$out_e" == *'reset_urgency=claude:1.760[five_hour]'* ]]; then
-  pass '(e) non-binding five-hour meter supplies urgency while weekly remains binding'
+# (e) WEEKLY-ALLOCATES-FIVE-HOUR-ONLY-ADMITS-01 (founder order 2026-09-16).
+# Cause class test_encodes_superseded_requirement: until 2026-09-16 this case
+# asserted reset_urgency=claude:1.760[five_hour] and arm=sonnet -- that an
+# expiring five-hour bucket BUYS the arm. The order makes the five-hour window
+# admission-only (capped/forecast/near-reset wait, all before ecost): it must
+# not enter the ranking. Fixture: claude five_hour 20pct used/0.25h to reset
+# (the old 1.760[five_hour] term), seven_day 20pct used/120h; codex weekly
+# 20pct/140h. Urgency is now priced from seven_day alone
+# (0.8 * (1-120/168) = 0.229 -> 1.229) and codex -- cheaper with equally
+# healthy weekly headroom -- must win.
+out_e="$(run nonbinding-five "$(quota 20 0.25 20 120 20 140)" "$DESC")"
+if [[ "$out_e" == arm=codex\ * && "$out_e" == *'reset_urgency=claude:1.229[seven_day]'* && "$out_e" != *'[five_hour]'* ]]; then
+  pass '(e) five-hour window is admission-only: expiring 5h bucket does not buy the arm; urgency priced from seven_day'
 else
-  fail "(e) non-binding five-hour urgency missing or ignored: $out_e"
+  fail "(e) five-hour urgency still ranks: $out_e"
 fi
 
 # (f) The score is deterministic with a frozen fixture and no equal-price tie.
@@ -159,6 +166,38 @@ if [[ "$out_i2" == arm=sonnet\ * ]]; then
   pass '(i GREEN) unmutated arbiter restores the founder-case Claude pick'
 else
   fail "(i GREEN) reverting mutation did not restore sonnet: $out_i2"
+fi
+
+# (j) NEGATIVE CONTROL for the 2026-09-16 five-hour exclusion: restore the
+# pre-order loop (neutralise the long-period filter) on a private copy and the
+# admission-only case (e) must go RED -- the expiring five-hour bucket buys
+# sonnet again (urgency 1.760[five_hour] beats codex's 1.133[weekly]). The
+# unmodified binary must then stay GREEN. One control for one claim: this
+# proves the FILTER is what keeps five-hour urgency out, where (i) proves the
+# formula is what puts weekly urgency in.
+mut5="$TMP/arbiter-with-five-hour-urgency.sh"
+python3 - "$ARBITER" "$mut5" <<'PY'
+import sys
+s=open(sys.argv[1]).read()
+old="        if period<_HEADROOM_LONG_PERIOD_HOURS:"
+if s.count(old)!=1: raise SystemExit('five-hour filter anchor count=%d' % s.count(old))
+open(sys.argv[2],'w').write(s.replace(old, '        if False:'))
+PY
+if [[ -f "$mut5" ]]; then
+  out_j="$(env LEADV2_ROUTE_ARBITER_ROUTING_YAML="$TMP/routing.yaml" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-mut5" LEADV2_ARBITER_SPEND_FORECAST=0 LEADV2_ARBITER_OBSERVED_COST=0 ROUTE_TEST_QUOTA="$(quota 20 0.25 20 120 20 140)" bash -c 'source "$0"; route_arbiter worker "$1"' "$mut5" "$DESC")"
+  if [[ "$out_j" == arm=sonnet\ * && "$out_j" == *'reset_urgency=claude:1.760[five_hour]'* ]]; then
+    pass '(j RED) restoring the five-hour urgency term flips (e) back to sonnet'
+  else
+    fail "(j RED) mutation did not re-admit five-hour urgency: $out_j"
+  fi
+else
+  fail '(j) mutation copy was not created'
+fi
+out_j2="$(run five-filter-revert "$(quota 20 0.25 20 120 20 140)" "$DESC")"
+if [[ "$out_j2" == arm=codex\ * && "$out_j2" != *'[five_hour]'* ]]; then
+  pass '(j GREEN) unmutated arbiter keeps five-hour urgency out'
+else
+  fail "(j GREEN) reverting mutation did not restore admission-only: $out_j2"
 fi
 
 printf 'SUMMARY: pass=%d fail=%d\n' "$PASS" "$FAIL"
