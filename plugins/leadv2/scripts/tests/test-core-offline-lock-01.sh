@@ -21,6 +21,19 @@ TEST_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 unset _src _dir
 RUNNER="$TEST_DIR/run-core-offline.sh"
 
+# RUNNER-LEAKS-ITS-LOCK-FLAG-INTO-THE-SUITES-IT-RUNS-01: this suite launches
+# the runner as its own subject under test. `_LV2_CORE_OFFLINE_LOCK_HELD` is
+# an internal, never-caller-set flag the runner uses to recognise its own
+# flock re-exec child; if it is already present in THIS process's inherited
+# environment -- e.g. this suite is itself run as a body under a locked
+# run-core-offline.sh (the real end-to-end shape of the defect), or the
+# variable is injected directly (this suite's own regression probe) -- every
+# `bash "$RUNNER"` call below would silently inherit it and skip real lock
+# acquisition, making every case here falsely believe the lock was already
+# held. Scrub it so each case exercises a genuine, fresh top-level
+# invocation of the runner, matching how every real caller invokes it.
+unset _LV2_CORE_OFFLINE_LOCK_HELD
+
 pass=0
 fail=0
 cleanup_items=()
