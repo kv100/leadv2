@@ -346,5 +346,35 @@ OUT="$(env LEADV2_CLAUDE_MULTIPROFILE=1 \
   && pass "T17: no_rankable_records marked, contract bytes intact" \
   || fail "T17" "rc=$RC out='$OUT' reason=$(marker_reason)"
 
+echo "=== T18: the contract line must not wait behind the marker lock (round 3, reviewer Critical) ==="
+# Round 2's ordering ran clear_degraded_marker -- which can block up to 5s on
+# ${MARKER}.lock -- BEFORE printf, so a caller whose own patience is shorter
+# than that internal wait was killed before ever seeing the pick the selector
+# had already computed (report.md round 3: the fix for a lost signal must not
+# become a way to lose the answer itself). This holds the lock for 6s (longer
+# than the internal 5s wait) and gives the selector only a 2s caller-side
+# budget: the pick must already be on stdout well before either deadline.
+two_row_registry
+rm -f "$MARKER"
+# Pre-seed a degraded marker so clear_degraded_marker has something to do --
+# the round-3 cheap existence check skips the lock entirely on an absent
+# marker, which would pass this test for the wrong reason.
+printf '{"kind":"degraded_select","reason_code":"no_probe_completed","stdout":"profile=- reason=single_profile","exit":0,"detected_at":"2026-01-01T00:00:00Z"}\n' > "$MARKER"
+(
+  lv2_lock_wait "${MARKER}.lock" 10 >/dev/null 2>&1 || exit 3
+  sleep 6
+) 9>"${MARKER}.lock" &
+T18_HOLDER=$!
+sleep 1   # T10's own idiom: let the backgrounded holder actually take the lock first
+OUT="$(env LEADV2_CLAUDE_MULTIPROFILE=1 \
+      LEADV2_CLAUDE_PROFILES_FILE="$REG" LEADV2_QUOTA_CACHE_DIR="$CACHE" \
+      LEADV2_CLAUDE_PROFILE_DEFAULT_DIR="$tmp/dir-a" LEADV2_CLAUDE_PROFILE_DEMOTE_DIR=off \
+      LEADV2_CLAUDE_PROFILE_PROBE="$tmp/goodprobe.py" \
+      timeout 2 bash "$SEL" 2>/dev/null)"
+kill "$T18_HOLDER" 2>/dev/null; wait "$T18_HOLDER" 2>/dev/null
+[[ "$OUT" == profile=a* ]] \
+  && pass "T18: ranked pick reached stdout despite a 6s-held marker lock and a 2s caller timeout" \
+  || fail "T18" "out='$OUT' -- pick never reached stdout before the caller's patience ran out (marker I/O ran BEFORE the contract line)"
+
 if [[ "$FAIL" == "1" ]]; then echo "[degraded-select-01] FAILED"; exit 1; fi
 echo "[degraded-select-01] All checks passed"

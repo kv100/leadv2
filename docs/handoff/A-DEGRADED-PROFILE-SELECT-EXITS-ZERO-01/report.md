@@ -257,6 +257,152 @@ this as a permanent in-suite control:
 - **T9** is the end-to-end form the reviewer described: a degraded and a
   healthy selection racing on one marker path; the degraded signal survives.
 
+## Round 3 (2026-09-16) — the critical: marker I/O was blocking the contract line
+
+The round-2 reviewer's Critical was verified line-by-line before touching anything:
+`printf '%s\n' "$result"` (the contract output) sat AFTER
+`write_degraded_marker`/`clear_degraded_marker`, and both now call
+`lv2_lock_wait "${DEGRADED_MARKER}.lock" 5` internally. Every selection —
+including a fully healthy one with nothing to record — could block up to 5s
+on a lock it did not need, and if the caller's own timeout was shorter than
+that wait, the already-computed pick was thrown away with the process.
+
+### 1. Contract line moved ahead of all marker I/O
+
+Three call sites changed, same shape at each: emit the answer, THEN touch the
+sidecar.
+
+- `single_profile()` (`leadv2-claude-profile-select.sh:213-226`): `printf
+  'profile=- reason=single_profile\n'` now precedes the
+  `write_degraded_marker` call.
+- The picker's terminal block (`:893-910`, formerly `:893-902`): `printf '%s\n'
+  "$result"` now precedes the write/clear decision.
+- Exit codes and stdout bytes are unchanged at every site — only the order of
+  two independent side effects (stdout write, marker I/O) moved, not the
+  values.
+
+### 2. The healthy path no longer pays a lock wait in the common case
+
+`clear_degraded_marker` now starts with `[[ -e "$DEGRADED_MARKER" ]] || return
+0` — a plain existence check with no lock. The overwhelming common case
+(nothing degraded happened, no marker on disk) now costs one `stat`, not a
+lock acquisition. A marker that appears in the gap between the check and a
+concurrent writer's lock is simply left for the NEXT selection's
+lock-guarded clear to consider — correctness never depended on this check
+seeing a consistent snapshot, only cost does, and T9 (unchanged, still green)
+is the test that pins the correctness side.
+
+### 3. Medium 1 — the silent unlocked fallback is now a deliberate, visible, per-op decision
+
+Both functions used to swallow a `lv2_lock_wait` timeout with `|| true` and
+proceed unlocked — silently re-opening the exact race round 2 closed. Round 3
+replaces that with two different, justified decisions:
+
+- **`write_degraded_marker`**: on a lock timeout, proceeds unlocked, logs
+  `WARN: degraded_marker_lock_timeout op=write reason_code=<code> --
+  proceeding unlocked (best-effort)` to stderr, and stamps `"locked":false`
+  into the marker JSON itself (`"locked":true` on the normal path). Rationale:
+  visibility is this row's entire purpose — a marker that raced and lost is
+  still more signal than silence, and round 1's original bug was silence, not
+  an occasional unlocked write.
+- **`clear_degraded_marker`**: on a lock timeout, it SKIPS the clear entirely
+  (`exit 0` inside the subshell before touching the file) and logs `WARN:
+  degraded_marker_lock_timeout op=clear -- skipping clear this round
+  (visibility over promptness; a later ranked pick retries)`. Rationale: an
+  unlocked clear is precisely the round-2 race re-entered through the timeout
+  branch (a concurrent degraded write could land between an unlocked stat and
+  an unlocked rm and be destroyed) — the existing "keep on unparseable"
+  default already establishes that visibility wins over promptness for this
+  marker, so a lock timeout gets the same answer: leave it for next time.
+
+### 4. Medium 2 — `--requested-profile` excluded from the `no_rankable_records` write
+
+`REQUESTED_PROFILE` narrows the candidate set to one profile by construction;
+an empty `eligible_recs` under a request is already caught loudly earlier
+(`requested_profile_unavailable`, exit 3) at every other entrance in the
+function. The terminal block's `no_rankable_records` write is now gated
+`if [[ -z "$REQUESTED_PROFILE" ]]` — a requested run that DID land a real
+ranked pick still clears a stale marker exactly like any other healthy
+selection; only the write for an empty-candidate requested run is suppressed,
+since that is not balancer degradation.
+
+### 5. The three Lows
+
+- **Env var docs**: `LEADV2_CLAUDE_PROFILE_DEGRADED_FILE` was already
+  documented in round 2's header comment block (unchanged this round;
+  re-verified present at `:168`).
+- **No consumer wired**: still true, still not this row's job (see round-2
+  section above; unchanged).
+- **Third low** (marker schema stability across the new `locked` field): the
+  field is additive-only — every existing consumer/test reads named keys
+  (`reason_code`, `kind`, `exit`, `stdout`, `detected_at`) via `json.load(...)
+  [...]`, never positional or whole-object equality, so `locked` cannot break
+  a reader that predates it. T8 (marker JSON shape) is unchanged and still
+  green with the new field present.
+
+### New test — T18, shown RED against round 2's code and GREEN after
+
+`test-degraded-select-is-distinguishable-01.sh` T18: holds `${MARKER}.lock`
+for 6s (longer than the internal 5s wait) while pre-seeding a degraded marker
+so `clear_degraded_marker` has something to do, then runs a real selector
+call with a 2s caller-side `timeout` and asserts the ranked pick is on
+stdout. The cheap existence check (item 2) is deliberately defeated by
+pre-seeding the marker, so T18 exercises the lock-contended path, not the
+fast path.
+
+RED, run against round 2's committed selector (`git show
+83b28639:plugins/leadv2/scripts/leadv2-claude-profile-select.sh`, the
+ordering the reviewer flagged):
+
+```
+=== T18: the contract line must not wait behind the marker lock (round 3, reviewer Critical) ===
+[degraded-select-01] FAIL: T18 -- out='' -- pick never reached stdout before
+  the caller's patience ran out (marker I/O ran BEFORE the contract line)
+```
+
+GREEN, same test, this round's selector:
+
+```
+=== T18: the contract line must not wait behind the marker lock (round 3, reviewer Critical) ===
+[degraded-select-01] PASS: T18: ranked pick reached stdout despite a 6s-held
+  marker lock and a 2s caller timeout
+```
+
+### Round 3 falsification set (raw)
+
+```
+$ bash -n plugins/leadv2/scripts/leadv2-claude-profile-select.sh                          -> ok
+$ bash -n plugins/leadv2/scripts/tests/test-degraded-select-is-distinguishable-01.sh       -> ok
+$ shellcheck -S error plugins/leadv2/scripts/leadv2-claude-profile-select.sh              -> clean (rc=0)
+$ shellcheck -S error plugins/leadv2/scripts/tests/test-degraded-select-is-distinguishable-01.sh -> clean (rc=0)
+$ python3 -m py_compile plugins/leadv2/scripts/lib/leadv2-claude-profile-pick.py          -> ok (unchanged file)
+
+$ bash plugins/leadv2/scripts/tests/test-degraded-select-is-distinguishable-01.sh
+-> 18 test groups, [degraded-select-01] All checks passed, rc=0
+   (T1-T17 unchanged from round 2, all still PASS; T18 new, PASS)
+```
+
+### Round 3 controls (before → after; "before" = round-2 committed HEAD 83b28639)
+
+| suite | before | after |
+|---|---|---|
+| test-degraded-select-is-distinguishable-01.sh | 25 PASS / 0 FAIL (17 test groups) | 18 test groups, all PASS (T18 added) |
+| test-claude-profile-select.sh | PASS=152 FAIL=0 | PASS=152 FAIL=0 |
+| test-claude-profile-requested.sh | all checks passed | all checks passed |
+| test-profile-select-skips-exhausted.sh | green | green |
+| nc-claude-profile-select.sh | rc=2 (NC1 red-side PASS=139 FAIL=13; NC2-SETUP-FAIL pre-existing) | rc=2 — identical (PASS=139 FAIL=13, same NC2-SETUP-FAIL) |
+| registered probe.sh | rc=1 (unbound `RC2`, truncated at commit — round 1/2 finding, not in this lane's write set) | rc=1 — unchanged, still outside this lane's write set |
+| `tests/run-all.sh --scope changed` | 9 passed, 2 failed (`run-core-offline.sh`, `test-balancer-every-arm.sh`) | 9 passed, 2 failed — SAME two suites, SAME count; this lane's own suite (`test-degraded-select-is-distinguishable-01.sh`) and `test-claude-profile-select.sh`/`test-profile-select-skips-exhausted.sh` all PASS inside the run |
+
+The two run-all failures are pre-existing and concurrency-related, not caused
+by this diff: a second lane (`5417ae8d439c`) was live on this machine during
+the run (task-anchor `LEADV2_ACTIVE_OTHER_SESSIONS`), and both failing
+suites are named in this repo's own memory as flaking under concurrent
+`core-offline` runners (the ENV-PIN/S6-spawn family for
+`test-balancer-every-arm.sh`, nested-runner noise for `run-core-offline.sh`
+itself) — identical failure set, identical count, to the round-2 baseline
+measured with this diff fully reverted.
+
 ### Controls (round 2, before → after)
 
 | suite | before (HEAD 34438bab) | after (this diff) |
