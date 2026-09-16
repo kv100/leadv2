@@ -149,11 +149,38 @@ warn() {
 # fallback guard, not a blanket ban on a registry row with a stale expiresAt:
 # the latter may refresh in-process and must be decided by its live probe.
 DEFAULT_FALLBACK_REASON=""
+# A-DEGRADED-PROFILE-SELECT-EXITS-ZERO-01 (founder 2026-09-16): the soft
+# single_profile fallback used to be indistinguishable from a real ranked
+# selection -- exit 0, one stdout line, and only a stderr WARN the caller
+# drops by contract.  The 2026-09-16 09:33/09:34 incident sat two repos on
+# one account for exactly that reason.  The exit code and the stdout line
+# stay BYTE-IDENTICAL (fail-open is a pinned contract: claude-subsession's
+# soft fallback, quota-status's `|| true`, and the T8/requested-#4 suite
+# pins all depend on it); what changes is that every degraded entrance now
+# also writes a machine-readable sidecar beside the quota cache, cleared by
+# the next healthy ranked selection, so a caller or status surface that
+# wants to notice degradation has something to read that a ranked pick
+# never produces.  Marker writes are best-effort and never fatal.
+DEGRADED_MARKER="${LEADV2_CLAUDE_PROFILE_DEGRADED_FILE:-${CACHE_BASE}/degraded-select.json}"
+write_degraded_marker() { # <reason_code>
+  local dir tmpf
+  dir="$(dirname "$DEGRADED_MARKER")"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  tmpf="$(mktemp "${dir}/.degraded-select.XXXXXX" 2>/dev/null)" || return 0
+  printf '{"kind":"degraded_select","reason_code":"%s","stdout":"profile=- reason=single_profile","exit":0,"detected_at":"%s"}\n' \
+    "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmpf" 2>/dev/null \
+    && mv -f "$tmpf" "$DEGRADED_MARKER" 2>/dev/null || rm -f "$tmpf" 2>/dev/null || true
+}
+clear_degraded_marker() { rm -f "$DEGRADED_MARKER" 2>/dev/null || true; }
 single_profile() {
   if [[ -n "$DEFAULT_FALLBACK_REASON" ]]; then
     warn "FATAL: ${DEFAULT_FALLBACK_REASON} -- refusing inherited single-profile fallback"
     printf 'profile=- reason=%s\n' "$DEFAULT_FALLBACK_REASON"
     exit 4
+  fi
+  if [[ -n "${1:-}" ]]; then
+    write_degraded_marker "$1"
+    warn "WARN: degraded_select reason_code=${1} -- fell back to the inherited single profile; machine-readable marker written (cleared by the next ranked selection)"
   fi
   printf 'profile=- reason=single_profile\n'
   exit 0
@@ -265,7 +292,7 @@ ACCOUNT_UUIDS=()
 DIGESTS=()
 expired_count=0
 re_label='^[a-z0-9][a-z0-9_-]{0,31}$'
-[[ -r "$REGISTRY" ]] || single_profile
+[[ -r "$REGISTRY" ]] || single_profile registry_unreadable
 lineno=0
 while IFS=$'\t' read -r label config_dir cred expect || [[ -n "${label:-}" ]]; do
   lineno=$((lineno + 1))
@@ -456,15 +483,15 @@ n=${#LABELS[@]}
 # hard-exited on an unknown label) -- that single candidate is legitimate,
 # not the "multi-profile is inert" case the >=2 gate exists to catch.
 if [[ -z "$REQUESTED_PROFILE" ]]; then
-  (( n >= 2 )) || single_profile
+  (( n >= 2 )) || single_profile fewer_than_two_candidates
 else
   if [[ ! -r "$PROBE" || ! -r "$PICK" ]]; then
     printf 'profile=- reason=requested_profile_unavailable requested=%s\n' "$REQUESTED_PROFILE"
     exit 3
   fi
 fi
-[[ -r "$PROBE" ]] || single_profile
-[[ -r "$PICK" ]] || single_profile
+[[ -r "$PROBE" ]] || single_profile dependency_missing_probe
+[[ -r "$PICK" ]] || single_profile dependency_missing_picker
 
 # --- independent probes, bounded by one TOTAL budget -------------------------
 # Each profile is probed in its own subprocess with its own cache dir and (for
@@ -512,7 +539,7 @@ except Exception:
 ' "$f" 2>/dev/null)" || age="-"
   printf '%s\t%s' "${age:--}" "$b64"
 }
-recs="$(mktemp "${TMPDIR:-/tmp}/claude-profile-recs.XXXXXX")" || single_profile
+recs="$(mktemp "${TMPDIR:-/tmp}/claude-profile-recs.XXXXXX")" || single_profile records_temp_unavailable
 deadline=$(( $(date +%s) + timeout_s ))
 completed=0
 i=0
@@ -786,12 +813,12 @@ if (( completed == 0 )); then
     printf 'profile=- reason=requested_profile_unavailable requested=%s\n' "$REQUESTED_PROFILE"
     exit 3
   fi
-  single_profile
+  single_profile no_probe_completed
 fi
 eligible_recs="$(mktemp "${TMPDIR:-/tmp}/claude-profile-eligible.XXXXXX")" || eligible_recs=""
 if [[ -z "$eligible_recs" ]] || ! filter_exhausted_candidates "$recs" "$eligible_recs"; then
   rm -f "$recs" "$eligible_recs"
-  single_profile
+  single_profile exhausted_filter_failed
 fi
 if (( EXHAUSTED_COUNT > 0 )) && [[ ! -s "$eligible_recs" ]]; then
   rm -f "$recs" "$eligible_recs"
@@ -806,7 +833,7 @@ if [[ -z "$result" ]]; then
     printf 'profile=- reason=requested_profile_unavailable requested=%s\n' "$REQUESTED_PROFILE"
     exit 3
   fi
-  single_profile
+  single_profile picker_no_result
 fi
 # If a readable window was excluded and the remaining candidates are unknown,
 # `all_unknown` would falsely claim that no quota window was read.  Name the
@@ -818,6 +845,15 @@ if (( READABLE_WINDOW_COUNT > 0 )); then
   else
     result="$(printf '%s\n' "$result" | sed 's/ reason=all_unknown / reason=quota_window_read /')"
   fi
+fi
+# The picker itself has one more single_profile entrance of its own (zero
+# parseable records in eligible_recs): catch its output shape here so this
+# entrance is marked too, and clear the marker only on a real ranked pick.
+if [[ "$result" == profile=-* ]]; then
+  write_degraded_marker no_rankable_records
+  warn "WARN: degraded_select reason_code=no_rankable_records -- picker returned no rankable record"
+else
+  clear_degraded_marker
 fi
 printf '%s\n' "$result"
 exit 0
