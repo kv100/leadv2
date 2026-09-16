@@ -1,9 +1,11 @@
 verdict: APPROVE
 next_action: review_round_2
 
-Implemented all 4 arbiter fixes (§4.2 cost provenance, §4.3 quota keep-both,
-§4.4 rotation fit-bucket, §5 loser_detail telemetry). New suite 14/14 green.
-Baseline reconciled: only case05/case10 decisions changed, both intended and
-explained; one pre-existing-red suite gets one new, documented, intended red.
+Round 1 (4 arbiter fixes) + round 2 (Fable-window founder ruling, suite
+rewrite, baseline re-freeze) both committed and verified.
+- Fable suite now asserts keep-both windows (12/12); fixtures baseline
+  re-frozen and reconciled (44/44); telemetry suite 14/14.
+- Arbiter code unchanged this round; only test + baseline + report touched.
+- Post-commit mutation-control evidence committed (b6654d69).
 
 Full: developer.full.md

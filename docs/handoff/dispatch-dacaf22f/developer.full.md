@@ -111,6 +111,65 @@ touched/added files pass.
 - `plugins/leadv2/scripts/tests/test-arm-selection-cost-quota-telemetry-01.sh` (new)
 - `docs/handoff/ARM-SELECTION-COST-QUOTA-TELEMETRY-01/report.md` (new)
 
-Committed on the lane branch before ending this session.
+## Round 2 (2026-09-16) — Fable ruling + baseline re-freeze
+
+Lead's round-2 brief resolved the lane's own `q-d19ae6cb` decision conflict:
+founder ruled **keep both Fable windows** (round 1's §4.3 fix stands,
+`seven_day` stays un-popped) and ordered the 0485-era
+`test-fable-is-priced-from-its-own-window.sh` rewritten to assert the new
+rule instead of reverted against it.
+
+- Arbiter code (`leadv2-route-arbiter.sh`) is **untouched this round** — the
+  founder ruling confirmed round 1's fix as correct, so there was nothing to
+  fix in code.
+- Rewrote `test-fable-is-priced-from-its-own-window.sh` in place (same path,
+  CI suite-selection keys on it) with a header naming decision 0485, the
+  founder ruling, and its date. Added the mirror case (scoped exhausted /
+  account weekly healthy also caps) so a replace-shaped regression can't
+  sneak back in from either direction. 12/12 green (was 10/10 pre-round-2,
+  1 red mid-round after the code fix and before the suite rewrite).
+- Re-froze `ARM-SELECTION-DECISION-FIXTURES-01/baseline/` from the
+  post-round-1 tree. Reconciled every changed field in
+  `docs/handoff/ARM-SELECTION-COST-QUOTA-TELEMETRY-01/report.md` §2: only
+  `arb_rev` and `loser_detail` plus the case05/case10 decisions already
+  explained in round 1. Negative control (mutate → decision moves → revert →
+  byte-identical restore) re-verified: `test-arm-selection-decision-fixtures-01.sh`
+  44/44 green.
+- Paired all three suites against main (report.md §3):
+  `test-arm-selection-decision-fixtures-01.sh` rc=0/rc=0,
+  `test-fable-is-priced-from-its-own-window.sh` rc=0/rc=0,
+  `test-arbiter-reads-capability-floor.sh` rc=1/rc=1 (still red in both
+  columns, confirmed untouched by this lane).
+- Post-commit mutation-control evidence (`leadv2-mutation-control.sh`
+  artifacts under `mutation-control/`, committed) appended to report.md §8
+  after the round-2 commit (`8b271082`) so `lane_diff_hash` binds the actual
+  committed HEAD — this final commit (`b6654d69`) is that append, done by
+  this session on resume.
+
+Verification re-run this session (raw, foreground):
+```
+$ bash plugins/leadv2/scripts/tests/test-arm-selection-decision-fixtures-01.sh
+SUMMARY pass=44 fail=0 (rc=0)
+$ bash plugins/leadv2/scripts/tests/test-fable-is-priced-from-its-own-window.sh
+SUMMARY: pass=12 fail=0 (rc=0)
+$ bash plugins/leadv2/scripts/tests/test-arm-selection-cost-quota-telemetry-01.sh
+SUMMARY pass=14 fail=0 (rc=0)
+$ bash -n plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh && echo OK
+OK
+$ bash -n plugins/leadv2/scripts/tests/test-arm-selection-cost-quota-telemetry-01.sh && echo OK
+OK
+$ bash -n plugins/leadv2/scripts/tests/test-fable-is-priced-from-its-own-window.sh && echo OK
+OK
+```
+
+Write set this round: `test-fable-is-priced-from-its-own-window.sh`,
+`ARM-SELECTION-DECISION-FIXTURES-01/baseline/*`, `report.md`. No arbiter
+code change. `docs/leadv2/.compact-freeze.md` and the untracked
+anti-silence-pulse heartbeat/stderr files present in the worktree on resume
+are background-process artifacts, outside this task's write set — left
+untouched, not committed.
+
+Committed on the lane branch before ending this session
+(`8b271082`, `b6654d69`).
 
 DELIVERABLE_COMPLETE
