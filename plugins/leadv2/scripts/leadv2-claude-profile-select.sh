@@ -744,6 +744,19 @@ for line_no, raw in enumerate(open(path), 1):
                 exhausted = True
                 reset = (window.get("reset_iso") or
                          account.get(binding + "_reset_iso") or "unknown")
+        # FIVE-HOUR-WINDOW-NEVER-ENTERS-THE-ACCOUNT-CHOICE-01 (founder
+        # 2026-09-16): an account whose five-hour RESERVE is empty cannot
+        # take work now regardless of which window binds it -- declare it
+        # exhausted from the reserve directly instead of relying on the
+        # binding-window rate inference (reserve 0 -> rate 0 -> binding
+        # flips to five_hour) surviving future metric changes.
+        fh = account.get("five_hour")
+        fh_remaining = fh.get("remaining_pct") if isinstance(fh, dict) else None
+        if isinstance(fh_remaining, (int, float)) and not isinstance(fh_remaining, bool):
+            readable = True
+            if float(fh_remaining) == 0.0:
+                exhausted = True
+                reset = (fh.get("reset_iso") or reset)
     kind = "exhausted" if exhausted else ("window" if readable else "eligible")
     print("%s\t%s\t%s" % (kind, reset, line_no))
 ' "$input")" || return 1

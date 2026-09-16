@@ -119,18 +119,36 @@ UNKNOWN_COOLING = 101
 UNKNOWN = UNKNOWN_COOLING  # back-compat alias -- keep the old name resolvable
 
 
+def _num(value):
+    """Return value as float, or None for missing/bool/non-numeric."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
 def score_payload(payload):
-    """Rank ONE probe payload -> (order_key, source, window, pct, usable_now).
+    """Rank ONE probe payload -> (order_key, source, window, pct, usable_now,
+    weekly_usable_now).
 
     source is "live" only when the payload itself is a readable window;
     otherwise "unknown" and the caller picks the sentinel.  Shared by the
     live read (score_record) and the last-known-good fallback (half two), so
     a stale payload ranks by exactly the same arithmetic as a live one.
 
-    order_key IS the availability comparison (lower ranks first):
-      live + readable usable_now -> -usable_now (MORE remaining pct-points
-        per hour ranks FIRST -- f1 #2);
-      live, no readable rate     -> the window's consumed pct (pre-D2
+    order_key IS the availability comparison (lower ranks first); every key
+    is a tuple so live and unknown keys always compare:
+      five-hour reserve readable (FIVE-HOUR-WINDOW-NEVER-ENTERS-THE-
+        ACCOUNT-CHOICE-01, founder 2026-09-16) -> (-five_hour
+        remaining_pct, -seven_day usable_now).  The five-hour window is
+        compared as a RESERVE (remaining percentage), never divided by
+        hours-to-reset: it answers "how much work can this account absorb
+        now".  The weekly window keeps the rate metric -- the near-reset
+        burn rule is the founder's and stays -- as the tiebreak, so two
+        accounts never rank against each other on different windows;
+      live + readable usable_now, no five-hour reserve (legacy binding
+        path) -> (-usable_now,) (MORE remaining pct-points per hour ranks
+        FIRST -- f1 #2);
+      live, no readable rate     -> (the window's consumed pct,) (pre-D2
         proxy, lower first -- legacy payloads keep their old order);
       unknown (NEVER 0 -- f1 #4) -> decided by the caller's sentinel.
     """
@@ -145,7 +163,43 @@ def score_payload(payload):
             account = accounts[0]
     if not (isinstance(payload, dict) and payload.get("status") == "ok"
             and isinstance(account, dict) and account.get("status") == "ok"):
-        return UNKNOWN_TRIABLE, "unknown", None, None, None
+        return UNKNOWN_TRIABLE, "unknown", None, None, None, None
+    # FIVE-HOUR-WINDOW-NEVER-ENTERS-THE-ACCOUNT-CHOICE-01 (founder
+    # 2026-09-16): the "burn it when the reset is near" rule was ordered for
+    # the WEEKLY quota only.  The five-hour window decides how much work an
+    # account can absorb now and is compared as a reserve (remaining pct),
+    # never as a rate -- remaining/168 vs remaining/5 is not commensurable,
+    # which is why binding_window (lowest usable_now) was seven_day in every
+    # normal state and the five-hour number never reached this comparison.
+    _fh = account.get("five_hour")
+    fh_reserve = _num(_fh.get("remaining_pct")) if isinstance(_fh, dict) else None
+    _sd = account.get("seven_day")
+    weekly_usable = _num(_sd.get("usable_now")) if isinstance(_sd, dict) else None
+    if fh_reserve is not None:
+        # Keep the probe's binding-window fields as display metadata.  They
+        # are not the account-to-account order key below, but retaining them
+        # keeps the diagnostic surface about the probe itself (and legacy
+        # callers) accurate.
+        binding = account.get("binding_window")
+        binding_window = account.get(binding) if binding in ("five_hour", "seven_day") else None
+        binding_usable = (_num(binding_window.get("usable_now"))
+                          if isinstance(binding_window, dict) else None)
+        try:
+            binding_pct = float(account.get(binding + "_pct"))
+        except (TypeError, ValueError):
+            binding_pct = fh_pct = None
+        try:
+            fh_pct = float(account.get("five_hour_pct"))
+        except (TypeError, ValueError):
+            fh_pct = 100.0 - fh_reserve
+        # Tiebreak is the weekly rate (founder's allocation key, unchanged
+        # units); -1.0 ranks a missing weekly reading below any known one
+        # (rates are >= 0).
+        return ((-fh_reserve, -(weekly_usable if weekly_usable is not None else -1.0)),
+                "live", binding or "five_hour",
+                binding_pct if binding_pct is not None else fh_pct,
+                binding_usable if binding_usable is not None else weekly_usable,
+                weekly_usable)
     binding = account.get("binding_window")
     if binding in ("five_hour", "seven_day"):
         window = account.get(binding)
@@ -154,12 +208,12 @@ def score_payload(payload):
             try:
                 u = float(usable)
                 pct = float(account.get(binding + "_pct"))
-                return -u, "live", binding, pct, u
+                return (-u,), "live", binding, pct, u, weekly_usable
             except (TypeError, ValueError):
                 pass
         try:
             pct = float(account.get(binding + "_pct"))
-            return pct, "live", binding, pct, None
+            return (pct,), "live", binding, pct, None, weekly_usable
         except (TypeError, ValueError):
             pass  # fall through to worst-of-both below
     values = []
@@ -169,9 +223,9 @@ def score_payload(payload):
         except (TypeError, ValueError):
             pass
     if not values:
-        return UNKNOWN_TRIABLE, "unknown", None, None, None
+        return UNKNOWN_TRIABLE, "unknown", None, None, None, None
     worst = max(values)
-    return worst, "live", "worst_of_both", worst, None
+    return (worst,), "live", "worst_of_both", worst, None, None
 
 
 def score_record(record):
@@ -180,20 +234,21 @@ def score_record(record):
     Same contract as score_payload, plus the record-level sentinel: an
     unreadable live read is UNKNOWN_TRIABLE, or UNKNOWN_COOLING when the
     selector's cooldown marker says the last live probe returned a confirmed
-    credential verdict.
+    credential verdict.  The sentinel keys are 1-tuples so they compare
+    against every live key shape.
     """
     label, config_dir, cred, payload_b64 = record[:4]
     cooling = len(record) > 5 and record[5] == "1"
-    unknown_key = UNKNOWN_COOLING if cooling else UNKNOWN_TRIABLE
+    unknown_key = (UNKNOWN_COOLING,) if cooling else (UNKNOWN_TRIABLE,)
     payload = None
     try:
         payload = json.loads(base64.b64decode(payload_b64).decode())
     except Exception:
         payload = None
-    key, source, window, pct, usable = score_payload(payload)
+    key, source, window, pct, usable, weekly = score_payload(payload)
     if source != "live":
-        return unknown_key, "unknown", None, None, None
-    return key, source, window, pct, usable
+        return unknown_key, "unknown", None, None, None, None
+    return key, source, window, pct, usable, weekly
 
 
 def _fmt_pct(pct):
@@ -255,9 +310,9 @@ def main():
                 _spayload = json.loads(base64.b64decode(_r[8]).decode())
             except Exception:
                 continue
-            _k, _src, _w, _p, _u = score_payload(_spayload)
+            _k, _src, _w, _p, _u, _wk = score_payload(_spayload)
             if _src == "live":
-                scored[_i] = ((_k, "stale", _w, _p, _u), scored[_i][1], scored[_i][2])
+                scored[_i] = ((_k, "stale", _w, _p, _u, _wk), scored[_i][1], scored[_i][2])
 
     # SELF-SLOT-DEMOTION-YIELDS-01 (founder 2026-09-12). The demotion above
     # corrects for ONE thing -- the dispatching session's own spend reaching
@@ -276,7 +331,18 @@ def main():
     _yielded = []
 
     def _usable_of(idx):
-        u = scored[idx][0][4]
+        # SELF-SLOT-DEMOTION-YIELDS-01 units restatement (founder 2026-09-12
+        # order, margin 0.15 UNCHANGED): the margin compares the WEEKLY rate
+        # (seven_day usable_now, pct-points/hour) so every record enters the
+        # comparison in the same units -- FIVE-HOUR-WINDOW-NEVER-ENTERS-THE-
+        # ACCOUNT-CHOICE-01 made the ranked quantity a five-hour RESERVE for
+        # some records, which would silently rescale a founder-set margin.
+        # weekly_usable falls back to the ranked usable only where they are
+        # the same number (legacy seven_day-binding records).
+        u = scored[idx][0][5]
+        if (u is None or isinstance(u, bool) or not isinstance(u, (int, float))) \
+                and scored[idx][0][2] == "seven_day":
+            u = scored[idx][0][4]
         if isinstance(u, bool) or not isinstance(u, (int, float)):
             return None
         return float(u)
@@ -318,12 +384,25 @@ def main():
     # ranks ahead of the number, so a demoted/cooling profile loses
     # regardless of its usable_now.
     pick = min(range(len(records)), key=lambda i: (tiers[i], scored[i][0][0], i))
-    (order_key, source, window, pct, usable), _order, record = scored[pick]
+    (order_key, source, window, pct, usable, weekly), _order, record = scored[pick]
+    _reserve_ranked = isinstance(order_key, tuple) and len(order_key) == 2
+    _reserve_live = [s[0][0] for s in scored
+                     if s[0][1] in ("live", "stale")
+                     and isinstance(s[0][0], tuple) and len(s[0][0]) == 2]
+    # If every comparable reserve is identical, the weekly rate alone made
+    # the decision; say that rather than claiming the reserve broke the tie.
+    _reserve_tie_only = (_reserve_ranked and len(_reserve_live) > 1
+                         and len({key[0] for key in _reserve_live}) == 1)
+    _sole_live = source == "live" and sum(s[0][1] == "live" for s in scored) == 1
     # The minimum can only reach UNKNOWN_TRIABLE when EVERY record is unknown.
     if source == "unknown":
         reason = "all_unknown"
     elif source == "stale":
         reason = "last_known"  # ranked from the last-known-good sidecar, not live
+    elif _reserve_ranked and not (_reserve_tie_only or _sole_live):
+        # FIVE-HOUR-WINDOW-NEVER-ENTERS-THE-ACCOUNT-CHOICE-01: the winner was
+        # gated on the five-hour reserve with the weekly rate as tiebreak.
+        reason = "five_hour_reserve"
     elif window in ("five_hour", "seven_day"):
         reason = "binding_window"
     else:
@@ -333,6 +412,9 @@ def main():
     # bare score=67 was a consumed percentage posing as a score).
     if source == "unknown":
         rank_by = "none"              # nothing numeric was compared
+    elif _reserve_ranked and not (_reserve_tie_only or _sole_live):
+        # more five-hour reserve first, weekly usable_now rate breaks ties
+        rank_by = "five_hour_reserve_max"
     elif usable is not None:
         rank_by = "usable_now_max"    # more remaining pct-points/hour first
     else:
@@ -343,12 +425,19 @@ def main():
     else:
         binding_field = "%s:consumed_pct=%d" % (window or "-", int(round(pct)))
         if usable is not None:
-            binding_field += ",usable_now=" + usable_str
+            # Name the metric: under five_hour the printed rate is the
+            # WEEKLY tiebreak, never the window's own (superseded) rate.
+            _label = "weekly_usable_now" if window == "five_hour" else "usable_now"
+            binding_field += "," + _label + "=" + usable_str
     windows_field = "|".join(
-        "%s:%s=%s%s%s" % (r[0], w or "-", _fmt_pct(p),
-                          "" if u is None else ",usable_now=" + _fmt_u(u),
-                          ",stale" if src == "stale" else "")
-        for (_k, src, w, p, u), _o, r in scored
+        "%s:%s=%s%s%s" % (
+            r[0], w or "-", _fmt_pct(p),
+            "" if u is None else (
+                (",weekly_usable_now=" if (isinstance(_k, tuple) and len(_k) == 2
+                                           and w == "five_hour")
+                 else ",usable_now=") + _fmt_u(u)),
+            ",stale" if src == "stale" else "")
+        for (_k, src, w, p, u, _wk), _o, r in scored
     )
     # §1.3: printed ONLY when a demote column is present and matched a
     # candidate -- absent means "no demotion in play", which keeps the line
