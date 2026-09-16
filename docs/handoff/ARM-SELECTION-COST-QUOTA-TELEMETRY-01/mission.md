@@ -123,3 +123,84 @@ headroom, reset-urgency or balancer, and report each by name with its exit code.
 (`test-arbiter-seam-plugin-kind`, `test-arbiter-uses-observed-cost`, `test-quota-reset-arbiter`) were
 already red on main as of 2026-09-16 — show them red before your change too, so an inherited failure
 is never reported as yours and yours is never hidden behind theirs.
+
+## ROUND 2 (lead, 2026-09-16) — the change stands; two artefacts must catch up with it
+
+Round 1 landed the four changes and the lead verified them against the frozen baseline. The result
+was better than the terminal suggests. The lane died `terminal=dead cause=e2e_regression`, and that
+verdict is **partly false and partly true** — it was resolved suite by suite, paired against main:
+
+| suite | main | branch | verdict |
+|---|---|---|---|
+| `test-arm-selection-decision-fixtures-01.sh` | rc=0 | rc=1 | INTENDED — the baseline predates this change |
+| `test-fable-is-priced-from-its-own-window.sh` | rc=0 | rc=1 | REAL, and now resolved by a founder ruling |
+| `test-arbiter-reads-capability-floor.sh` | rc=1 | rc=1 | pre-existing, not this lane |
+
+What the baseline proved about round 1, and it is the important part: **not one routing decision
+moved.** Across all thirteen frozen scenarios the winning arm, every fit bucket, every effective
+cost to sixteen decimals and every exclusion are identical to main. The only differences are
+`arb_rev` (the file changed, so of course it did) and one added field:
+`loser_detail=glm-flash:higher_expected_cost,sonnet:cost_unknown` — which is precisely the §5
+telemetry vocabulary, doing exactly what it was asked to do. The legacy `price_ratio` contract is
+preserved byte-identical alongside it, so no historical reader breaks. The lane's own suite is 14/0.
+
+So round 1's code is sound. Two artefacts around it now disagree with it, and that is all.
+
+### 1. The Fable window conflict — RULED ON BY THE FOUNDER, 2026-09-16
+
+Round 1 implemented correction 5: `windows.pop('seven_day', None)` is gone, so the account weekly
+aggregate stays in `windows` beside `weekly_scoped` and `five_hour`, and the existing
+worst-of-readable-windows rule prices the arm — never a sum, never a replace.
+
+`test-fable-is-priced-from-its-own-window.sh` encodes the OPPOSITE, from decision 0485: Fable is
+priced from its own scoped window and the account aggregate does not bind it. That suite was green
+on main, so this is not a bug — it is two deliberate decisions in direct contradiction. The lead put
+it to the founder with both consequences stated rather than picking one.
+
+**Founder's ruling: keep BOTH windows; rewrite the suite.** The consequence he accepted explicitly:
+when the account weekly is exhausted (it reads 96% used right now) Fable is `capped` and takes no
+work, even when its own scoped window is free.
+
+Therefore:
+
+- **Do not revert the `seven_day` change.** It is now the intended behaviour.
+- **Rewrite `test-fable-is-priced-from-its-own-window.sh`** so it asserts the new rule: both windows
+  are readable, the worst one binds, and an exhausted account weekly caps Fable even with scoped
+  headroom. Keep the existing file PATH — CI suite-selection maps key on it — and open the file with
+  a header saying the name is historical, naming decision 0485, this founder ruling and its date, so
+  the next reader is not misled by the filename.
+- **Give it the mirror case too**: scoped exhausted while the account weekly is healthy must also
+  cap. One direction alone would let a replace-shaped bug back in unnoticed.
+
+### 2. Re-freeze the fixtures baseline, with reasons
+
+`ARM-SELECTION-DECISION-FIXTURES-01` deliberately froze the PRE-change decisions, so it is supposed
+to go red exactly once, here, and then be re-frozen. Do that:
+
+- Regenerate the baseline under `docs/handoff/ARM-SELECTION-DECISION-FIXTURES-01/baseline/` from the
+  post-change tree (`git add -f` — `.gitignore` carries `docs/handoff/*/*` with an exception only
+  for `*.md`).
+- In `report.md`, list **every field that changed and why**, per the proposal's §7: "first freeze
+  baseline decisions, then show changed outcomes with reasons." Today that list is exactly two
+  entries, `arb_rev` and `loser_detail`, plus whatever the Fable rewrite moves. If it grows beyond
+  that, each new entry needs its own justification — an unexplained changed decision is a defect,
+  not a side effect.
+- The negative control must still work after re-freezing: mutate, see the decision move, revert, see
+  the baseline restored byte-for-byte.
+
+### Write set — unchanged from round 1, plus the two artefacts
+
+```
+plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+plugins/leadv2/scripts/tests/test-arm-selection-cost-quota-telemetry-01.sh
+plugins/leadv2/scripts/tests/test-fable-is-priced-from-its-own-window.sh
+docs/handoff/ARM-SELECTION-COST-QUOTA-TELEMETRY-01/report.md
+docs/handoff/ARM-SELECTION-DECISION-FIXTURES-01/baseline/
+```
+
+### Before you finish
+
+Re-run the three suites from the table above, paired against main, and put the table in the report
+with real exit codes. `test-arbiter-reads-capability-floor.sh` must still be red in BOTH columns — if
+it goes green on your branch, say so, because that would mean you changed something nobody asked you
+to change.
