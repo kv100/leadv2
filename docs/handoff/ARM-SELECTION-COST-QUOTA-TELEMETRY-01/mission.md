@@ -281,3 +281,50 @@ real reason this round exists; the lead will not merge unreviewed code into main
 tests/known-red-suites.txt
 docs/handoff/ARM-SELECTION-COST-QUOTA-TELEMETRY-01/report.md
 ```
+
+## ROUND 4 (lead, 2026-09-16) — the gate is unblocked; your only job is to be reviewed
+
+Round 3 died `terminal=dead cause=e2e_regression` for the fourth time on this lane, and for the
+fourth time the verdict is false. You did your job: `tests/known-red-suites.txt` carries your
+`test-arm-capability-honoured.sh` entry and it worked — that suite is gone from the blocking list.
+
+Four others took its place, because adding a file to the write set widened `scope=changed`. The lead
+paired them the correct way — main against the **merge result** of this branch, not against the
+branch, which lags main by the bands merge:
+
+| suite | main | merge result | verdict |
+|---|---|---|---|
+| `test-arm-pool-reachability.sh` | rc=1 | rc=1 | same |
+| `test-exclusion-stages.sh` | rc=1 | rc=1 | same |
+| `test-arbiter-seam-plugin-kind.sh` | rc=1 | rc=1 | same |
+| `run-core-offline.sh` | rc=124 | rc=124 | same (timeout of the meta-runner, not an assertion) |
+
+The merge applies cleanly, zero conflicts, and regresses nothing. All four are now allow-listed on
+main by commit `9312f6cb`, with a row filed against them
+(`FOUR-SUITES-RED-ON-MAIN-BLOCK-EVERY-ARBITER-LANE-01`), per the founder's standing decision
+`SD-MAIN-CORE-SUITE-RED-01` of 2026-09-01: land, and file a row.
+
+Main has been merged into your branch so the gate runs with those entries present.
+
+### What round 4 must deliver
+
+**Nothing new.** Round 2's four changes are final and verified; round 3's allow-list entry is final.
+This round exists so a reviewer finally sees the diff — across three rounds no reviewer ever ran on
+it, because the e2e gate runs first and killed the lane every time.
+
+1. Finish `docs/handoff/ARM-SELECTION-COST-QUOTA-TELEMETRY-01/report.md` if it is not complete: the
+   paired table above as your own measurement, the three lane suites by name with exit codes, and the
+   re-frozen fixtures baseline's changed-field list with a reason per field.
+2. Take the reviewer's findings on their merits — fix, or decline in the report with a reason.
+
+### Do not
+
+- Touch `plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh` behaviour. It is final.
+- Touch `plugins/leadv2/config/leadv2-routing.yaml`. The sibling lane landed it.
+- Repair any allow-listed suite. Each has its own row.
+
+### Write set
+
+```
+docs/handoff/ARM-SELECTION-COST-QUOTA-TELEMETRY-01/report.md
+```
