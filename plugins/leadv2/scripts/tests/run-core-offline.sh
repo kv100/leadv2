@@ -210,6 +210,17 @@ if [[ "${_LV2_CORE_OFFLINE_LOCK_HELD:-0}" == "1" ]]; then
   printf 'pid=%s host=%s since=%s\n' "$$" "$(hostname 2>/dev/null || printf unknown)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$LEADV2_SUITE_LOCK_FILE" 2>/dev/null || true
 fi
+# RUNNER-LEAKS-ITS-LOCK-FLAG-INTO-THE-SUITES-IT-RUNS-01: this flag's only job
+# is telling THIS process it is the flock-held re-exec child (checked above,
+# nowhere below). It is exported into this process's environment by the
+# parent's `env _LV2_CORE_OFFLINE_LOCK_HELD=1 bash ...` re-exec, which means
+# every suite body run_check later launches -- including a suite that itself
+# invokes this very script as ITS subject under test, e.g.
+# test-core-offline-lock-01.sh probing real flock acquisition -- inherits it
+# too, and silently believes IT already holds the lock, skipping real
+# acquisition. Unset it now, once its job is done and before any suite runs,
+# so it cannot leak past this point.
+# MUTATION-CONTROL: unset disabled
 
 if [ -n "${LEADV2_SUITE_LOCK_PROBE:-}" ]; then
   printf -- '[CORE-OFFLINE] lock-probe acquired file=%s\n' "$LEADV2_SUITE_LOCK_FILE"

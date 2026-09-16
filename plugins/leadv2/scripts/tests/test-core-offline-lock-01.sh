@@ -34,6 +34,7 @@ trap cleanup EXIT
 LOCK_FILE="$(mktemp -u "${TMPDIR:-/tmp}/lv2-lock-test.XXXXXX")"
 cleanup_items+=("$LOCK_FILE")
 
+
 # --- case (a)+(b): hold the lock externally, verify a bounded wait times out --
 echo "[LOCK-01] case (a)/(b): held lock -> bounded wait times out"
 (
