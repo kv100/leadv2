@@ -4596,7 +4596,17 @@ except Exception:
 # exercise the same path.
 _dispatch_register_writes_row() {  # <task> <class> <worktree> <branch> <writes> <reason>
   local task_id="$1" cls="$2" worktree="$3" branch="$4" writes="$5" reason="$6"
-  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register \
+  # WRITES-PERSIST-01: honor an already-exported LEADV2_PROJECT_ROOT (an explicit
+  # caller pin per leadv2-helpers.sh; deploy-verify-check/deploy-classify use the
+  # same "${LEADV2_PROJECT_ROOT:-${PROJECT_ROOT}}" idiom) instead of force-overwriting
+  # it with ambient PROJECT_ROOT. Sourcing this file re-resolves PROJECT_ROOT from
+  # CLAUDE_PROJECT_ROOT/CLAUDE_PROJECT_DIR (line ~329) and the foreign-root guard may
+  # rewrite it again, so a caller that pinned the root had the pin silently discarded
+  # HERE -- the one call that must persist --writes into the row. The discarded pin
+  # made the registration ABORT on a foreign root (state-path guard) or land in
+  # another checkout's registry, and the row's write set was lost before any lock was
+  # taken. Unset pin => identical to the old behavior.
+  LEADV2_PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-${PROJECT_ROOT}}" leadv2_active_register \
     "${task_id}" "${cls}" "${worktree}" "${branch}" "" "" "" "${writes}" "${reason}"
 }
 
