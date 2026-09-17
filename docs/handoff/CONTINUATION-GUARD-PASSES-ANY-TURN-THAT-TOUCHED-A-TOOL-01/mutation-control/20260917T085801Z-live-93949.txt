@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-continuation-guard.sh
+file=plugins/leadv2/hooks/leadv2-continuation-guard.sh
+anchor=s|if _birth and _birth != _lstart:  # cg-mut-M3: reused-pid ghost gate|if False:  # cg-mut-M3|
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] PASS: Case 2: tool-call turn with no waker now BLOCKS (superseded requirement asserted new)
+diff_hash=e75fd0c7b3d1a5bdff05bdc201f7f3d84369db30c3842a793f136be788f4bee8
+lane_diff_hash=ad61dbe7f9e837890e28ec6a83d29c6460da5c08c2135855778d2fb93b0cefe5
+porcelain_clean=yes
+restored=yes

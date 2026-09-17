@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-continuation-guard.sh
+file=plugins/leadv2/hooks/leadv2-continuation-guard.sh
+anchor=s|waker_any = w1 or w2 or w3  # cg-mut-M1: waker aggregation|waker_any = True  # cg-mut-M1|
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: Case 1: should block on silent-stop with non-repeating recovery instruction (got: )
+diff_hash=89413a12898233af167cc276213fd0e2aba3376ba30700fbdcbd9d67ad674402
+lane_diff_hash=ad61dbe7f9e837890e28ec6a83d29c6460da5c08c2135855778d2fb93b0cefe5
+porcelain_clean=yes
+restored=yes
