@@ -1884,6 +1884,24 @@ _pc_lane_commits_ahead() {  # <root> -> stdout "N" | "unknown"; always rc0
     fi
     if [[ -n "${base}" ]]; then
       count="$(git -C "${root}" rev-list --count "${base}..HEAD" 2>/dev/null || true)"
+      # BOOTSTRAP-ANCHOR-IS-NOT-PRODUCTION-01 (2026-09-17): leadv2-lane-worktree.sh
+      # births EVERY lane branch with one --allow-empty "lane <id> anchor" commit
+      # (T11-F2, see the anchor fast path below). When the base resolves through the
+      # start-sha / merge-base(main, HEAD) chain above, that anchor sits between
+      # base and HEAD, so a genuinely-empty lane reads "1 commit ahead" -- a false
+      # NOT-silent that demotes arm_produced_nothing to empty_diff (reproduced:
+      # test-lane-diff-single-repo.sh C5-registered-arm-silent at 8949c0a4). The
+      # T11-F2 fast path below only covers lanes with NO resolvable base; subtract
+      # anchor commits here so the resolved-base answer follows the same rule:
+      # only commits that are not birth bookkeeping count as production.
+      if [[ "${count}" =~ ^[0-9]+$ ]] && (( count > 0 )); then
+        local _anchor_c _prod=0
+        while IFS= read -r _anchor_c; do
+          [[ -n "${_anchor_c}" ]] || continue
+          _pc_commit_is_anchor "${root}" "${_anchor_c}" || _prod=$((_prod + 1))
+        done < <(git -C "${root}" rev-list "${base}..HEAD" 2>/dev/null)
+        count="${_prod}"
+      fi
       [[ "${count}" =~ ^[0-9]+$ ]] && { printf '%s' "${count}"; return 0; }
     fi
     # GATE-FALSE-SILENT-01 round 3: a base is not required to prove ZERO. A linked
@@ -2842,14 +2860,6 @@ pc_stop_gate_autocommit() {
   # aborts the whole script here — exactly the paths (timeout reap) where the
   # populate step in pc_scope_diff may not have run. Declare-if-unset first.
   declare -p PC_STOP_GATE_FOREIGN_REPOS >/dev/null 2>&1 || PC_STOP_GATE_FOREIGN_REPOS=()
-  if [[ ${#PC_STOP_GATE_FOREIGN_REPOS[@]} -gt 0 ]]; then
-    local _sg_foreign="" _sg_repo
-    for _sg_repo in "${PC_STOP_GATE_FOREIGN_REPOS[@]}"; do
-      [[ -n "${_sg_foreign}" ]] && _sg_foreign+=","
-      _sg_foreign+="$(basename "${_sg_repo}")"
-    done
-    emit decision "stop_gate_skipped_foreign_repo task=${TASK} repos=${_sg_foreign}"
-  fi
 
   local _sg_lane_root="${LEADV2_LANE_WORK_ROOT:-}"
   if [[ -z "${_sg_lane_root}" || ! -d "${_sg_lane_root}" ]]; then
@@ -2861,6 +2871,61 @@ pc_stop_gate_autocommit() {
   local _sg_paths=()
   IFS=',' read -r -a _sg_paths <<< "${_PC_SCOPE_WRITES_CSV}"
   [[ ${#_sg_paths[@]} -gt 0 ]] || return 0
+
+  # WRITESET-FOREIGN-SCAN-NORMAL-PATH-01 (2026-09-17): pc_stop_gate_capture_diff
+  # populates PC_STOP_GATE_FOREIGN_REPOS only on the timeout paths, and
+  # pc_scope_diff's CROSS_REPO_DIFF arm only for entries its candidate resolver
+  # maps into a sibling repo -- a RELATIVE traversal entry ("../../sibling/x")
+  # escapes both (`_pc_resolve_write` refuses any declared path that leaves the
+  # candidate root), so on the clean-exit path the array reached this function
+  # empty and the skip journal never fired: the foreign file was dropped from
+  # the checkpoint silently (reproduced: test-stop-gate.sh
+  # case_foreign_repo_journaled at 8949c0a4 -- stop_gate_autocommit files=1,
+  # no stop_gate_skipped_foreign_repo line). Classify HERE, on every path that
+  # reaches the gate: resolve each declared entry (absolute, or relative to the
+  # lane root) to its containing repository and treat a different toplevel as
+  # foreign. Membership-checked so the capture-path populate is not duplicated;
+  # foreign entries are then excluded from the staging list deliberately, not
+  # as a side effect of a failed `git status` pathspec.
+  local _sg_lane_phys _sg_p _sg_cand _sg_dir _sg_r _sg_seen _sg_prev
+  _sg_lane_phys="$(_lv2_phys "${_sg_lane_root}")"
+  local _sg_in=()
+  for _sg_p in "${_sg_paths[@]}"; do
+    [[ -n "${_sg_p}" ]] || continue
+    case "${_sg_p}" in
+      /*) _sg_cand="${_sg_p}" ;;
+      *) _sg_cand="${_sg_lane_root}/${_sg_p}" ;;
+    esac
+    _sg_r=""
+    _sg_dir="$(dirname "${_sg_cand}" 2>/dev/null || true)"
+    if [[ -n "${_sg_dir}" && -d "${_sg_dir}" ]]; then
+      _sg_r="$(cd "${_sg_dir}" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
+    fi
+    if [[ -n "${_sg_r}" && "${_sg_r}" != "${_sg_lane_phys}" ]]; then
+      _sg_seen=0
+      for _sg_prev in "${PC_STOP_GATE_FOREIGN_REPOS[@]:-}"; do
+        [[ "${_sg_prev}" == "${_sg_r}" ]] && { _sg_seen=1; break; }
+      done
+      if [[ ${_sg_seen} -eq 1 ]]; then :; else
+        PC_STOP_GATE_FOREIGN_REPOS+=("${_sg_r}")
+      fi
+    else
+      _sg_in+=("${_sg_p}")
+    fi
+  done
+  _sg_paths=()
+  if [[ ${#_sg_in[@]} -gt 0 ]]; then
+    _sg_paths=("${_sg_in[@]}")
+  fi
+
+  if [[ ${#PC_STOP_GATE_FOREIGN_REPOS[@]} -gt 0 ]]; then
+    local _sg_foreign="" _sg_repo
+    for _sg_repo in "${PC_STOP_GATE_FOREIGN_REPOS[@]}"; do
+      [[ -n "${_sg_foreign}" ]] && _sg_foreign+=","
+      _sg_foreign+="$(basename "${_sg_repo}")"
+    done
+    emit decision "stop_gate_skipped_foreign_repo task=${TASK} repos=${_sg_foreign}"
+  fi
 
   # A write-set entry resolving OUTSIDE _sg_lane_root (a cross-repo path) makes
   # `git status -- <pathspec...>` fail its ENTIRE invocation (exit 128, "outside
@@ -3606,6 +3671,20 @@ if [[ -n "${blocked_reason}" ]]; then
       esac
       fi
     fi
+  fi
+  # BOTH-KILLS-OFF-EMPTY-DIFF-LANDS-01 (2026-09-17): with both downstream arms off
+  # (E2E_ON=0 and REVIEW_ON=0) no gate is left that a no_work verdict protects --
+  # the close is bookkeeping-only and must reach the same landed/review_gate_disabled
+  # verdict the REVIEW_ON!=1 branch at the bottom of this script emits, instead of
+  # exiting 5 here before REVIEW_ON is ever consulted (reproduced:
+  # test-dispatch-product-close-exit-trap.sh Test (a) at 8949c0a4 -- expected
+  # exit 0, got rc=5, row no_work/empty_diff). Scoped to terminal=no_work ONLY:
+  # refused/dead/parked report unsafe tree states, not gate outcomes, and stay
+  # blocked with the review gate off.
+  if [[ "${E2E_ON}" == 0 && "${REVIEW_ON}" != 1 && "${_pc_terminal}" == "no_work" ]]; then
+    emit decision "review_gate task=${TASK} status=disabled reason=kill_switch"
+    _dl_note landed review_gate_disabled
+    exit 0
   fi
   # review-gate.md reason mirrors the ledger word so the on-disk artifact and the
   # row agree (was unscopable_diff for the empty case). base= names the diff base

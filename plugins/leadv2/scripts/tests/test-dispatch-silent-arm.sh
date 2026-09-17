@@ -178,10 +178,23 @@ if grep -q 'reason: arm_produced_nothing' "$HANDOFF3/review-gate.md" 2>/dev/null
 else
   pass "Case 3: fresh (within growth window) stream falls through as NOT silent"
 fi
-if grep -q 'reason: no_work' "$HANDOFF3/review-gate.md" 2>/dev/null; then
-  pass "Case 3: existing empty-diff path still produces reason: no_work"
+# BOTH-KILLS-OFF-EMPTY-DIFF-LANDS-01 (2026-09-17, leadv2-dispatch-product-close.sh,
+# blocked_reason tail): with E2E_ON=0 and REVIEW_ON=0 a no_work verdict no longer
+# blocks with "reason: no_work" -- it lands as review_gate_disabled (the close is
+# bookkeeping-only; no downstream gate is left to protect). The old assertion here
+# (review-gate.md shows reason: no_work) encoded exactly that superseded contract and
+# went red the day the branch landed (measured 2026-09-17: 12/0 green on the
+# pre-branch tree, Case 3 fail at 409fe388). The landed contract's production path is
+# guarded by test-dispatch-product-close-exit-trap.sh Test (a); the growth guard
+# itself (fresh stream is NOT silent) stays guarded end-to-end by
+# test-silent-arm-commits-ahead.sh Case C. Pin the same landed contract here for the
+# fresh-stream fall-through shape: rc 0, one row, landed/review_gate_disabled.
+row3="$(grep "\"task_sig\":\"${SIG3}\"" "$LEDGER3" 2>/dev/null)"
+if [[ "$rc3" -eq 0 ]] && printf '%s\n' "$row3" | grep -q '"terminal":"landed"' \
+   && printf '%s\n' "$row3" | grep -q '"cause":"review_gate_disabled"'; then
+  pass "Case 3: empty-diff path lands as review_gate_disabled with both gates off (BOTH-KILLS-OFF-EMPTY-DIFF-LANDS-01)"
 else
-  fail "Case 3: expected reason: no_work on the existing path -- $(cat "$HANDOFF3/review-gate.md" 2>/dev/null)"
+  fail "Case 3: expected rc=0 + landed/review_gate_disabled row with both gates off, rc=${rc3} -- row=${row3}"
 fi
 
 # ── Case 4: stream present, zero assistant events, STALE mtime, clean worktree
