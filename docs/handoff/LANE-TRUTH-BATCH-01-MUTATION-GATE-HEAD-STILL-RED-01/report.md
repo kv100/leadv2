@@ -108,5 +108,18 @@ how far dispatch got before refusing (whether `docs/handoff/<lane>` exists yet).
 
 Machine-backed control via `leadv2-mutation-control.sh --live` (same sed, same
 harness env, applied to the real lane file and restored by the tool):
-`mutation-control/<run-id>.txt` — added after the report commit (the tool refuses
-an empty lane diff; see artifact for mode=live + porcelain_clean).
+**`MUTATION-CONTROL ok mode=live … red_line=[TEST] FAIL: Row 1 mutation gate HEAD
+must resolve stamped stream alive … porcelain_clean=yes`** (rc=0, wall 121 s) —
+artifact `mutation-control/20260917T091803Z-live-48459.txt`, bound to report
+commit `b9c05c3b` (`lane_diff_hash=39568b4c…`). The tool refuses an empty lane
+diff, which is why the control ran after the report commit.
+
+## Self-check (falsification set)
+
+- Shell files changed by this lane: **none** in production code (`git diff
+  --name-only 68849682..HEAD` = report + artifacts only); `bash -n` run on the
+  two committed probe scripts instead — both clean (`bash -n` rc=0).
+- Python files changed: none — `py_compile` N/A.
+- Changed-scope selection: lane diff is `docs/handoff/<lane>/*` only — no
+  production file changed, so no suite selection is owed; the one suite this
+  mission names was run four times in full anyway (R1–R3 green, control red).
