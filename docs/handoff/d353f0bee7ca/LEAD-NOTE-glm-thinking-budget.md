@@ -22,3 +22,21 @@ Two cheap checks that settle it, and they must be run before this explanation is
 If both point the same way, the fix is budget plus a parser that treats
 `stop_reason: max_tokens` with no text block as a **named** failure — never as "no verdict".
 A silence must be distinguishable from a verdict.
+
+## Corroboration, same day, from the review engine itself
+
+Re-running review over this branch produced:
+
+```
+status: blocked
+reason: empty_response
+```
+
+That is the same shape the direct probe produced: the arm answered, the transport was fine,
+and there was no text. It is not proof that the thinking budget is the cause — the probe and
+this run share a suspect but not a measurement — yet it does rule out "the reviewer never ran".
+Something returns, and what it returns is empty.
+
+Also recorded from the same run: the reviewer pool showed `glm=blocked:lockout` on every
+attempt today, so GLM was excluded from review by quota while this row is about GLM as a
+reviewer. Any re-measurement has to wait for the lockout to clear, or it measures the lockout.
