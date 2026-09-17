@@ -52,8 +52,16 @@ _sid=""; _tpath=""
 #   LEADV2_TASK_ID         — exported by claude-subsession.sh into every lane
 #     / dev-worker subsession, which does NOT carry the var above;
 #   transcript_path under /subagents/ — the in-process Agent-tool fork, which
-#     carries neither env var (precedent: leadv2-pulse-json.sh).
-if [[ -n "${LEADV2_ASYNC_QUESTIONS:-}" ]] || [[ -n "${LEADV2_TASK_ID:-}" ]] || [[ "$_tpath" == *"/subagents/"* ]]; then
+#     carries neither env var (precedent: leadv2-pulse-json.sh);
+#   LEADV2_PULSE_MODE=0    — the documented off switch. A fourth case the three
+#     above do not cover: an UNATTENDED lead session (the VPS fleet), which is a
+#     top-level session with no task id and no async-question flag, yet has no
+#     human watching a chat to prove liveness to. Measured 2026-09-18: such a
+#     session spent whole steps re-arming a Monitor on its own pulse file and
+#     reasoning about the 1800s tick interval, having exported LEADV2_PULSE_MODE=0
+#     and been ignored — the var was documented in the command file but read by
+#     nothing on this path.
+if [[ "${LEADV2_PULSE_MODE:-1}" == "0" ]] || [[ -n "${LEADV2_ASYNC_QUESTIONS:-}" ]] || [[ -n "${LEADV2_TASK_ID:-}" ]] || [[ "$_tpath" == *"/subagents/"* ]]; then
   printf '{}'
   exit 0
 fi
