@@ -27,6 +27,12 @@ FLEET_STATE_ROOT="${LEADV2_FLEET_STATE_ROOT:-${HOME}/.claude/leadv2-state/fleet}
 FLEET_STOP_FLAG="${LEADV2_FLEET_STOP_FLAG:-${HOME}/.claude/leadv2-state/FLEET-STOP}"
 FLEET_ZAI_ENV="${LEADV2_FLEET_ZAI_ENV:-${HOME}/.claude/secrets/zai.env}"
 FLEET_CLAUDE_CREDENTIALS="${LEADV2_CLAUDE_CREDENTIALS_FILE:-${HOME}/.claude/.credentials.json}"
+# Token-file auth: a headless host (VPS) has no ~/.claude/.credentials.json at all —
+# `claude setup-token` prints a long-lived OAuth token that is installed as an env
+# file. Space-separated list; the first readable one carrying a non-empty
+# CLAUDE_CODE_OAUTH_TOKEN= line counts. Measured 2026-09-18: without this the
+# VPS fleet reported `degrade: claude unusable` while `claude -p` ran fine.
+FLEET_CLAUDE_TOKEN_ENVS="${LEADV2_FLEET_CLAUDE_TOKEN_ENVS:-${HOME}/.claude/secrets/claude-a.env ${HOME}/.claude/secrets/claude-b.env}"
 FLEET_QUOTA_STATUS_BIN="${LEADV2_FLEET_QUOTA_STATUS_BIN:-${FLEET_LIB_DIR}/../leadv2-quota-status.sh}"
 FLEET_DISK_FLOOR_KB_DEFAULT=2097152   # 2 GiB in KiB — df -Pk reports KiB on both macOS and Linux
 
@@ -74,8 +80,21 @@ fleet_disk_floor_ok() { # <path> [floor_kb]
 # and compares against now. Absent/unreadable file or unparsable field =
 # unusable (fail closed, never assume usable). Never prints the file's
 # other contents (token/refresh token).
+# A non-empty CLAUDE_CODE_OAUTH_TOKEN in the live env, or in any configured
+# token env file, is a usable credential. Never prints the value.
+fleet_claude_token_present() {
+  local f
+  [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && return 0
+  for f in ${FLEET_CLAUDE_TOKEN_ENVS}; do
+    [[ -r "${f}" ]] || continue
+    grep -q '^CLAUDE_CODE_OAUTH_TOKEN=..*' "${f}" 2>/dev/null && return 0
+  done
+  return 1
+}
+
 fleet_claude_usable() {
   local f="${FLEET_CLAUDE_CREDENTIALS}" exp_ms now_ms
+  fleet_claude_token_present && return 0
   [[ -r "${f}" ]] || return 1
   exp_ms="$(grep -o '"expiresAt"[[:space:]]*:[[:space:]]*[0-9]*' "${f}" 2>/dev/null \
             | head -1 | grep -o '[0-9]*$')"

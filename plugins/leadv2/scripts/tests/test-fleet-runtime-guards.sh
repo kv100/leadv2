@@ -866,5 +866,40 @@ else
   fi
 fi
 
+printf 'group L: claude-arm credential probe accepts a token env file\n'
+# A headless host has no ~/.claude/.credentials.json — `claude setup-token`
+# prints a long-lived OAuth token that is installed as an env file. Measured
+# 2026-09-18 on the VPS: the expiry-only probe reported `degrade: claude
+# unusable` while `claude -p` ran fine, i.e. the instrument lied about a
+# working arm. Each case names its own credential surface, so a green here
+# cannot come from the developer's own logged-in machine.
+L_DIR="${TMP_ROOT}/creds-l"; rm -rf "${L_DIR}"; mkdir -p "${L_DIR}"
+(
+  unset CLAUDE_CODE_OAUTH_TOKEN
+  export LEADV2_FLEET_CLAUDE_TOKEN_ENVS="${L_DIR}/none.env"
+  export LEADV2_CLAUDE_CREDENTIALS_FILE="${L_DIR}/absent.json"
+  # shellcheck source=/dev/null
+  source "${FLEET_DIR}/leadv2-fleet-lib.sh"
+
+  if fleet_claude_usable; then echo "L-FAIL no-creds"; else echo "L-PASS no-creds"; fi
+
+  printf 'CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test\n' > "${L_DIR}/tok.env"
+  FLEET_CLAUDE_TOKEN_ENVS="${L_DIR}/tok.env"
+  if fleet_claude_usable; then echo "L-PASS token-file"; else echo "L-FAIL token-file"; fi
+
+  printf 'CLAUDE_CODE_OAUTH_TOKEN=\n' > "${L_DIR}/tok.env"
+  if fleet_claude_usable; then echo "L-FAIL empty-value"; else echo "L-PASS empty-value"; fi
+) > "${L_DIR}/out.txt" 2>&1
+while read -r l_line; do
+  case "${l_line}" in
+    "L-PASS no-creds")    pass "claude probe: no credential surface at all -> unusable (fail closed)" ;;
+    "L-PASS token-file")  pass "claude probe: a token env file alone is a usable credential" ;;
+    "L-PASS empty-value") pass "claude probe: CLAUDE_CODE_OAUTH_TOKEN= with an empty value does not count" ;;
+    "L-FAIL no-creds")    fail "claude probe called itself usable with no credential surface" ;;
+    "L-FAIL token-file")  fail "claude probe rejected a valid token env file (the VPS false-degrade defect)" ;;
+    "L-FAIL empty-value") fail "claude probe accepted an empty CLAUDE_CODE_OAUTH_TOKEN value" ;;
+  esac
+done < "${L_DIR}/out.txt"
+
 printf '\n%s of %s passed (fleet guard suite, macOS Darwin, no systemd — unit layer stubbed per mission)\n' "${PASS}" "$((PASS + FAIL))"
 [[ "${FAIL}" -eq 0 ]]
