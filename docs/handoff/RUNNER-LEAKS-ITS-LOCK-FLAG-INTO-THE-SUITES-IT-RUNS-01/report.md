@@ -388,10 +388,31 @@ lane re-verified each claim independently instead of trusting the dead session's
 - **Syntax.** `bash -n` clean on all four changed/added shell files (runner, lock suite, both
   probes). No Python files changed.
 
-## Full end-to-end runner run
+## Second resume re-verification (2026-09-17, final HEAD `7bcdc8f1`)
 
-Command: `bash plugins/leadv2/scripts/tests/run-core-offline.sh` (bare, full battery, no
-`LEADV2_SUITE_DEFS_OVERRIDE`, no `--scope changed`).
+The lane died again after the closing docs commit; the second resumed session verified the
+committed state without redoing the battery:
+
+```
+$ _LV2_CORE_OFFLINE_LOCK_HELD=1 bash .../test-core-offline-lock-01.sh
+[LOCK-01] pass=3 fail=0        acceptance rc=0
+$ bash .../test-core-offline-lock-01.sh            (clean, normal shell)
+[LOCK-01] pass=3 fail=0        clean rc=0
+$ bash -n run-core-offline.sh test-core-offline-lock-01.sh probe-runner-noleak.sh probe-realhome-suites.sh
+bash -n: all clean
+```
+
+All three final-HEAD mutation-control artifacts (`20260917T014101Z/014246Z/014259Z`) carry
+`baseline_rc=0`, `mutated_rc=1`, and `lane_diff_hash=1abe5bc4…`. Working tree clean; lane diff is
+exactly `run-core-offline.sh`, `test-core-offline-lock-01.sh`, and this report directory.
+
+Probe artifact noted for honesty: an `env -i PATH=/usr/bin:/bin:…` clean-env run is red
+(`pass=1 fail=2`) — that is the probe's own artifact, not a suite defect: `flock` resolves from
+`/opt/homebrew/bin` on this host and is absent from the stripped PATH, so the suite's lock-holder
+subprocess cannot hold the lock. The meaningful clean control is a normal shell without the flag,
+which is green (above).
+
+## Full end-to-end runner run
 
 Command: `bash plugins/leadv2/scripts/tests/run-core-offline.sh` (bare, full battery, no
 `LEADV2_SUITE_DEFS_OVERRIDE`, no `--scope changed`), run detached (`nohup`) on this lane's HEAD
