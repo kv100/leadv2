@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-burn-governor.sh
+file=plugins/leadv2/scripts/leadv2-burn-governor.sh
+anchor=s/elif (( used >= soft )); then verdict=soft; reason=over_soft; fi/elif (( used >= soft )); then verdict=hard; reason=over_soft; fi/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 23: --provider claude over soft -- verdict=hard burn24h=0 soft=85 hard=95 reason=over_soft provider=claude used_pct=90 unit=pct
+diff_hash=40bb3fe59f52e15e5a86da533bb3af58542115492449c5047f122abf387c2a19
+lane_diff_hash=eaebfbfec942a8cb97b55fe3589c81bd723ed1ad51550ef7b76bf97f0b6bca46
