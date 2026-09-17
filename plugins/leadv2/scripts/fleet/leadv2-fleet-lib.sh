@@ -55,7 +55,7 @@ fleet_free_kb() { # <path>
 fleet_disk_floor_ok() { # <path> [floor_kb]
   local p="$1" floor="${2:-${FLEET_DISK_FLOOR_KB_DEFAULT}}" free
   free="$(fleet_free_kb "${p}")"
-  if [[ "${free}" -lt "${floor}" ]]; then
+  if [[ "${free}" -lt "${floor}" ]]; then # c3-mut: disk-floor gate
     printf 'disk_floor free_kb=%s floor_kb=%s\n' "${free}" "${floor}"
     return 1
   fi
@@ -106,7 +106,7 @@ fleet_arm_available() { # <claude|glm>
 fleet_configured_arms() { printf '%s\n' "${LEADV2_FLEET_ARMS:-claude glm}"; }
 
 # Prints the first available configured arm and returns 0, or returns 1 if
-# every configured arm refuses (the quota_window self-stop condition).
+# every configured arm refuses (the quota_window/no_arm self-stop condition).
 fleet_any_arm_available() {
   local arm
   for arm in $(fleet_configured_arms); do
@@ -116,6 +116,50 @@ fleet_any_arm_available() {
     fi
   done
   return 1
+}
+
+# Per-arm unusability cause, distinct from "no quota" (M1): a missing or
+# expired credential is a different diagnosis than a live credential whose
+# quota window is shut, and conflating them under one "quota_window" label
+# makes the two indistinguishable in the state file. Never prints token
+# values — only the credential file's presence/expiry shape.
+fleet_arm_reason() { # <claude|glm> -> ok|credentials_missing|auth_expired|quota_exhausted|key_missing|unknown
+  case "$1" in
+    claude)
+      [[ -r "${FLEET_CLAUDE_CREDENTIALS}" ]] || { printf 'credentials_missing\n'; return; }
+      fleet_claude_usable || { printf 'auth_expired\n'; return; }
+      fleet_claude_quota_ok || { printf 'quota_exhausted\n'; return; }
+      printf 'ok\n'
+      ;;
+    glm)
+      fleet_glm_usable && printf 'ok\n' || printf 'key_missing\n'
+      ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+# "claude=auth_expired glm=key_missing" style per-arm causes for every
+# configured, currently-unusable arm (M1 required fix).
+fleet_no_arm_reasons() {
+  local arm r out=""
+  for arm in $(fleet_configured_arms); do
+    r="$(fleet_arm_reason "${arm}")"
+    [[ "${r}" == "ok" ]] && continue
+    out="${out}${out:+ }${arm}=${r}"
+  done
+  printf '%s\n' "${out}"
+}
+
+# quota_window is reserved for "a credential is live but its quota window is
+# shut" (leadv2-quota-status.sh --check failed); every other no-arm cause
+# (missing/expired credential, missing key file) is reported as no_arm so the
+# two are never conflated in the state file's stop reason (M1).
+fleet_stop_kind_for_no_arm() {
+  local arm
+  for arm in $(fleet_configured_arms); do
+    [[ "$(fleet_arm_reason "${arm}")" == "quota_exhausted" ]] && { printf 'quota_window\n'; return; }
+  done
+  printf 'no_arm\n'
 }
 
 fleet_stop_flag_present() { [[ -f "${FLEET_STOP_FLAG}" ]]; }
