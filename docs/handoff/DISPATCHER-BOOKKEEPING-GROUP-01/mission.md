@@ -2,9 +2,9 @@
 
 Standing rules: `docs/handoff/MAIN-RED-SUITES-CENSUS-01/lane-rules.md`. Read them first.
 
-**Two filed rows, one lane**, because both edit `plugins/leadv2/scripts/leadv2-dispatch-code.sh` and
-cannot run in parallel. Report on them separately; a half-fix closes one row and leaves the other
-open with its cause named.
+**Three filed rows, one lane**, because all three edit `plugins/leadv2/scripts/leadv2-dispatch-code.sh`
+and cannot run in parallel. Report on them separately; fixing two of three is a good outcome and is
+recorded as such, with the third left open and its cause named.
 
 - `DISPATCHER-DOES-NOT-DECLARE-ITS-OWN-HANDOFF-DIR-01` (`701565625ee1`)
 - `DISPATCHER-DOES-NOT-PERSIST-WRITES-INTO-THE-REGISTRY-ROW-01` (`e0a3caf252c8`)
@@ -94,6 +94,7 @@ the mutation target string is present before running.
 ## Deliverable
 
 `docs/handoff/DISPATCHER-BOOKKEEPING-GROUP-01/report.md` — per-row verdict, the concurrency
-reproduction with its numbers, the chosen fix for each with the rejected alternative named, both
-controls with pasted output, and the suites that now guard `leadv2-dispatch-code.sh` for these two
-behaviours with how CI selects them on a change to that file.
+reproduction with its numbers, the chosen fix for each with the rejected alternative named, all three
+controls with pasted output, the list of consumers you checked before adding `founder_task=`, and the
+suites that now guard `leadv2-dispatch-code.sh` for these three behaviours with how CI selects them
+on a change to that file.
