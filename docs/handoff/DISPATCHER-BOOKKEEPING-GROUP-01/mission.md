@@ -8,10 +8,28 @@ open with its cause named.
 
 - `DISPATCHER-DOES-NOT-DECLARE-ITS-OWN-HANDOFF-DIR-01` (`701565625ee1`)
 - `DISPATCHER-DOES-NOT-PERSIST-WRITES-INTO-THE-REGISTRY-ROW-01` (`e0a3caf252c8`)
+- `TERMINAL-JOURNAL-LINES-DO-NOT-CARRY-THE-FOUNDER-ROW-ID-01` (`840f143363d2`)
 
-They share a theme worth stating once: **the dispatcher does things it does not record, and the
-write-set gate then judges it for them.** Both failures land on innocent third-party lanes, which is
-why they were expensive to diagnose — the refusal always names someone who did nothing wrong.
+They share a theme worth stating once: **the dispatcher does things it does not record, and someone
+else is then judged for them.** The first two land on innocent third-party lanes, which is why they
+were expensive to diagnose — the refusal always names someone who did nothing wrong. The third lands
+on the lead.
+
+## Row three — terminal journal lines are unaddressable by the id the lead holds
+
+Journal lines are keyed by the dispatch sig8 (`task=904f2448`) while the lead knows the work by its
+backlog row id (`7c6299dd7f02`). Only a few lines carry both — notably
+`dispatch_task_bound task=<sig8> founder_task=<row-id>`. The **terminal-class** lines
+(`dispatch_terminal`, `review_gate`, `premise_dead`, `dispatch_refused`) carry the sig alone.
+
+Measured 2026-09-17: a watcher armed over six live lanes ran a full 30 minutes and delivered **zero
+events** while all six were healthy and writing `product_close status=waiting_worker`, because its
+filter grepped row ids that cannot appear in those lines. An empty watcher is indistinguishable from
+a quiet board — the exact failure shape that cost this session six hours the day before.
+
+Fix: emit `founder_task=<row-id>` on every terminal-class journal line. Additive, one field; no
+existing sig-keyed consumer breaks. **Check that claim rather than assuming it** — grep the
+consumers of those lines before you add the field, and say in the report which ones you checked.
 
 ## Row one — the dispatcher's own scratch is an undeclared write
 
@@ -59,13 +77,16 @@ board seizes again the first time a row fails to record for some new reason.
 
 ## Controls
 
-Two independent claims → **two** negative controls minimum, each RUN, both outputs pasted:
+Three independent claims → **three** negative controls minimum, each RUN, all outputs pasted:
 
 1. the handoff dir no longer reads as an undeclared write by the lane → revert and confirm the
    board-wide refusal returns;
 2. a concurrently-dispatched lane records its `--writes` → mutate the persistence you added and
    confirm the suite goes red. A control that only exercises a *single* dispatch does not test this
    claim at all — the single case already worked.
+3. a terminal-class line carries `founder_task=` → remove the field again and confirm a watcher
+   keyed by the row id stops matching. Baseline the grep at arming: a pattern that matches nothing
+   at arming time will match nothing later, which is how this defect hid for 30 minutes.
 
 Apply each mutation inside the function body **in the lane worktree**, never a scratch copy. Assert
 the mutation target string is present before running.
