@@ -19,10 +19,16 @@
 #   leadv2-fleet-state.sh inc-field   --name <instance> --field <f> [--by N]
 #
 # Fields: status, reason, mode, lanes_in_flight, landed_today,
-#         rows_filed_today, consecutive_no_landing, last_change
+#         rows_filed_today, consecutive_no_landing, day, stalled, last_change
 #
-# Locking: mkdir-based (portable, no flock dependency on macOS). A lock
-# older than 30s is treated as abandoned and broken.
+# `day` (YYYY-MM-DD) backs the "today" rollover (round-2 fix M3): every load
+# compares the stored day to the current one and zeroes landed_today /
+# rows_filed_today when they differ, so a fleet that runs past midnight does
+# not keep reporting yesterday's counts as today's forever.
+#
+# Locking: mkdir-based (portable, no flock dependency on macOS). The lock
+# dir carries the holder's pid (round-2 fix M7); a lock is broken only when
+# its pid is provably dead, with a 30s-no-pid-file fallback for robustness.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,15 +38,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _fs_file() { printf '%s/%s.state\n' "${FLEET_STATE_ROOT}" "$1"; }
 _fs_lock() { printf '%s/%s.state.lock\n' "${FLEET_STATE_ROOT}" "$1"; }
 
-_fs_acquire() { # <lockdir> -> blocks up to ~5s, breaks locks older than 30s
-  local lock="$1" tries=0 age
+_fs_acquire() { # <lockdir> -> blocks up to ~5s; breaks a lock whose recorded pid is dead
+  local lock="$1" tries=0 age lpid
   while ! mkdir "${lock}" 2>/dev/null; do
     tries=$((tries + 1))
     if [[ -d "${lock}" ]]; then
-      age=$(( $(fleet_now_epoch) - $(fleet_mtime_epoch "${lock}") ))
-      if [[ "${age}" -gt 30 ]]; then
-        rmdir "${lock}" 2>/dev/null || true
-        continue
+      lpid="$(cat "${lock}/pid" 2>/dev/null)"
+      if [[ -n "${lpid}" ]]; then
+        if ! kill -0 "${lpid}" 2>/dev/null; then
+          rm -rf "${lock}" 2>/dev/null
+          continue
+        fi
+      else
+        # No pid file (race, or a lock dir predating this fix) — fall back
+        # to the age-based break so a genuinely abandoned lock cannot wedge
+        # every writer forever.
+        age=$(( $(fleet_now_epoch) - $(fleet_mtime_epoch "${lock}") ))
+        if [[ "${age}" -gt 30 ]]; then
+          rm -rf "${lock}" 2>/dev/null
+          continue
+        fi
       fi
     fi
     if [[ "${tries}" -ge 50 ]]; then
@@ -49,10 +66,11 @@ _fs_acquire() { # <lockdir> -> blocks up to ~5s, breaks locks older than 30s
     fi
     sleep 0.1
   done
+  echo $$ > "${lock}/pid" 2>/dev/null || true
   return 0
 }
 
-_fs_release() { rmdir "$1" 2>/dev/null || true; }
+_fs_release() { rm -rf "$1" 2>/dev/null || true; }
 
 _fs_get() { # <file> <field> -> value or ""
   local f="$1" k="$2"
@@ -60,7 +78,7 @@ _fs_get() { # <file> <field> -> value or ""
   grep -m1 "^${k}=" "${f}" 2>/dev/null | cut -d= -f2-
 }
 
-_fs_write_all() { # <file> <status> <reason> <mode> <lif> <landed> <rows> <streak> <last_change>
+_fs_write_all() { # <file> <status> <reason> <mode> <lif> <landed> <rows> <streak> <day> <stalled> <last_change>
   local tmp="$1.tmp.$$"
   {
     printf 'status=%s\n' "$2"
@@ -70,12 +88,18 @@ _fs_write_all() { # <file> <status> <reason> <mode> <lif> <landed> <rows> <strea
     printf 'landed_today=%s\n' "$6"
     printf 'rows_filed_today=%s\n' "$7"
     printf 'consecutive_no_landing=%s\n' "$8"
-    printf 'last_change=%s\n' "$9"
+    printf 'day=%s\n' "$9"
+    printf 'stalled=%s\n' "${10}"
+    printf 'last_change=%s\n' "${11}"
   } > "${tmp}"
   mv -f "${tmp}" "$1"
 }
 
-_fs_load_or_default() { # <file> -> sets globals _S_STATUS.._S_LAST
+_fs_today() { date -u +%Y-%m-%d; }
+
+_fs_load_or_default() { # <file> -> sets globals _S_STATUS.._S_LAST, rolls landed/rows over on a new day (M3)
+  local today
+  today="$(_fs_today)"
   _S_STATUS="$(_fs_get "$1" status)"; [[ -n "${_S_STATUS}" ]] || _S_STATUS="alive"
   _S_REASON="$(_fs_get "$1" reason)"
   _S_MODE="$(_fs_get "$1" mode)"; [[ -n "${_S_MODE}" ]] || _S_MODE="normal"
@@ -83,7 +107,14 @@ _fs_load_or_default() { # <file> -> sets globals _S_STATUS.._S_LAST
   _S_LANDED="$(_fs_get "$1" landed_today)"; [[ -n "${_S_LANDED}" ]] || _S_LANDED=0
   _S_ROWS="$(_fs_get "$1" rows_filed_today)"; [[ -n "${_S_ROWS}" ]] || _S_ROWS=0
   _S_STREAK="$(_fs_get "$1" consecutive_no_landing)"; [[ -n "${_S_STREAK}" ]] || _S_STREAK=0
+  _S_DAY="$(_fs_get "$1" day)"; [[ -n "${_S_DAY}" ]] || _S_DAY="${today}"
+  _S_STALLED="$(_fs_get "$1" stalled)"; [[ -n "${_S_STALLED}" ]] || _S_STALLED=0
   _S_LAST="$(_fs_get "$1" last_change)"; [[ -n "${_S_LAST}" ]] || _S_LAST="-"
+  if [[ "${_S_DAY}" != "${today}" ]]; then
+    _S_LANDED=0
+    _S_ROWS=0
+    _S_DAY="${today}"
+  fi
 }
 
 cmd_init() { # --name X
@@ -93,7 +124,7 @@ cmd_init() { # --name X
   mkdir -p "${FLEET_STATE_ROOT}"
   file="$(_fs_file "${name}")"; lock="$(_fs_lock "${name}")"
   _fs_acquire "${lock}" || return 1
-  _fs_write_all "${file}" alive "" normal 0 0 0 0 "$(fleet_now_iso)"
+  _fs_write_all "${file}" alive "" normal 0 0 0 0 "$(_fs_today)" 0 "$(fleet_now_iso)"
   _fs_release "${lock}"
 }
 
@@ -142,7 +173,7 @@ cmd_set_status() { # --name X --status alive|stopped --reason r [--mode m]
   _fs_load_or_default "${file}"
   [[ -n "${mode}" ]] && _S_MODE="${mode}"
   _fs_write_all "${file}" "${status}" "${reason}" "${_S_MODE}" \
-    "${_S_LIF}" "${_S_LANDED}" "${_S_ROWS}" "${_S_STREAK}" "$(fleet_now_iso)"
+    "${_S_LIF}" "${_S_LANDED}" "${_S_ROWS}" "${_S_STREAK}" "${_S_DAY}" "${_S_STALLED}" "$(fleet_now_iso)"
   _fs_release "${lock}"
 }
 
@@ -167,10 +198,11 @@ cmd_set_field() { # --name X --field f --value v
     rows_filed_today) _S_ROWS="${value}" ;;
     consecutive_no_landing) _S_STREAK="${value}" ;;
     mode) _S_MODE="${value}" ;;
+    stalled) _S_STALLED="${value}" ;;
     *) _fs_release "${lock}"; echo "set-field: unknown field ${field}" >&2; return 2 ;;
   esac
   _fs_write_all "${file}" "${_S_STATUS}" "${_S_REASON}" "${_S_MODE}" \
-    "${_S_LIF}" "${_S_LANDED}" "${_S_ROWS}" "${_S_STREAK}" "$(fleet_now_iso)"
+    "${_S_LIF}" "${_S_LANDED}" "${_S_ROWS}" "${_S_STREAK}" "${_S_DAY}" "${_S_STALLED}" "$(fleet_now_iso)"
   _fs_release "${lock}"
 }
 
@@ -194,10 +226,11 @@ cmd_inc_field() { # --name X --field f [--by N]
     landed_today) cur="${_S_LANDED}"; _S_LANDED=$((cur + by)) ;;
     rows_filed_today) cur="${_S_ROWS}"; _S_ROWS=$((cur + by)) ;;
     consecutive_no_landing) cur="${_S_STREAK}"; _S_STREAK=$((cur + by)) ;;
+    stalled) cur="${_S_STALLED}"; _S_STALLED=$((cur + by)) ;;
     *) _fs_release "${lock}"; echo "inc-field: unknown field ${field}" >&2; return 2 ;;
   esac
   _fs_write_all "${file}" "${_S_STATUS}" "${_S_REASON}" "${_S_MODE}" \
-    "${_S_LIF}" "${_S_LANDED}" "${_S_ROWS}" "${_S_STREAK}" "$(fleet_now_iso)"
+    "${_S_LIF}" "${_S_LANDED}" "${_S_ROWS}" "${_S_STREAK}" "${_S_DAY}" "${_S_STALLED}" "$(fleet_now_iso)"
   _fs_release "${lock}"
 }
 

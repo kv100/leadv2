@@ -20,10 +20,21 @@
 # executing systemctl/loginctl at all — this is what lets the guard suite
 # (macOS, no systemd) inspect generated content deterministically.
 #
+# --lane-cmd (round-2 fix H2): renders `Environment=LEADV2_FLEET_LANE_CMD=...`
+# into the service unit so a real install can actually take a lane — round 1
+# shipped a unit with zero Environment= lines, so leadv2-fleet-runner.sh
+# self-stopped as "unwired" on every boot. Optional because the real
+# dispatch entry point is owned by another lane this session (mission
+# off-limits); omitting it installs a unit that runs and self-stops with a
+# named, truthful reason (`unwired`) instead of silently doing nothing —
+# `install` without it prints a loud warning and the exact re-install
+# command to wire it later.
+#
 # Usage:
 #   leadv2-fleet-unit.sh install --repo <path> --name <instance> --cap <N>
-#                                 [--restart always|no] [--dry-run]
-#   leadv2-fleet-unit.sh print-unit --repo <path> --name <instance> --cap <N> [--restart always|no]
+#                                 [--lane-cmd <cmd>] [--restart always|no] [--dry-run]
+#   leadv2-fleet-unit.sh print-unit --repo <path> --name <instance> --cap <N>
+#                                    [--lane-cmd <cmd>] [--restart always|no]
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,13 +46,14 @@ REPO=""
 NAME=""
 CAP=1
 RESTART="always"
+LANE_CMD=""
 DRY_RUN=0
 SUB=""
 
 usage() {
   cat <<'EOF'
 usage: leadv2-fleet-unit.sh {install|print-unit} --repo <path> --name <instance>
-                             [--cap N] [--restart always|no] [--dry-run]
+                             [--cap N] [--lane-cmd <cmd>] [--restart always|no] [--dry-run]
 EOF
 }
 
@@ -53,6 +65,7 @@ while [[ $# -gt 0 ]]; do
     --repo) REPO="$2"; shift 2 ;;
     --name) NAME="$2"; shift 2 ;;
     --cap) CAP="$2"; shift 2 ;;
+    --lane-cmd) LANE_CMD="$2"; shift 2 ;;
     --restart) RESTART="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -66,18 +79,22 @@ _service_name() { printf 'leadv2-fleet-%s.service\n' "$1"; }
 _timer_name() { printf 'leadv2-fleet-%s-guard.timer\n' "$1"; }
 _guard_service_name() { printf 'leadv2-fleet-%s-guard.service\n' "$1"; }
 
-_render_service() { # <name> <repo> <cap> <restart>
+_render_service() { # <name> <repo> <cap> <restart> [<lane_cmd>]
+  local env_line=""
+  [[ -n "${5:-}" ]] && env_line="Environment=LEADV2_FLEET_LANE_CMD=${5}"
   cat <<EOF
 [Unit]
 Description=leadv2 fleet runner (${1})
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=${2}
-ExecStart=${SCRIPT_DIR}/leadv2-fleet-runner.sh --repo ${2} --name ${1} --cap ${3}
-Restart=${4}
-RestartSec=5
+WorkingDirectory="${2}"
+${env_line}
+ExecStart="${SCRIPT_DIR}/leadv2-fleet-runner.sh" --repo "${2}" --name "${1}" --cap "${3}"
+Restart=${4} # c1-mut: restart policy passthrough
+RestartSec=30
 
 [Install]
 WantedBy=default.target
@@ -112,7 +129,7 @@ EOF
 
 cmd_print_unit() {
   printf '# %s\n' "$(_service_name "${NAME}")"
-  _render_service "${NAME}" "${REPO}" "${CAP}" "${RESTART}"
+  _render_service "${NAME}" "${REPO}" "${CAP}" "${RESTART}" "${LANE_CMD}"
   printf '\n# %s\n' "$(_guard_service_name "${NAME}")"
   _render_guard_service "${NAME}" "${REPO}"
   printf '\n# %s\n' "$(_timer_name "${NAME}")"
@@ -128,9 +145,13 @@ cmd_install() {
   guard_path="${UNIT_DIR}/${guard_svc}"
   timer_path="${UNIT_DIR}/${timer}"
 
+  if [[ -z "${LANE_CMD}" ]]; then
+    echo "[fleet-unit] WARNING: --lane-cmd not given — installed unit will self-stop (reason: unwired) until wired. Re-run with --lane-cmd '<dispatch entry point>' to fix without a fresh reboot: 'leadv2-fleet-unit.sh install --repo ${REPO} --name ${NAME} --cap ${CAP} --lane-cmd <cmd>'" >&2
+  fi
+
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     echo "[dry-run] would write ${svc_path}"
-    _render_service "${NAME}" "${REPO}" "${CAP}" "${RESTART}"
+    _render_service "${NAME}" "${REPO}" "${CAP}" "${RESTART}" "${LANE_CMD}"
     echo "[dry-run] would write ${guard_path}"
     _render_guard_service "${NAME}" "${REPO}"
     echo "[dry-run] would write ${timer_path}"
@@ -143,7 +164,7 @@ cmd_install() {
   fi
 
   mkdir -p "${UNIT_DIR}"
-  _render_service "${NAME}" "${REPO}" "${CAP}" "${RESTART}" > "${svc_path}"
+  _render_service "${NAME}" "${REPO}" "${CAP}" "${RESTART}" "${LANE_CMD}" > "${svc_path}"
   _render_guard_service "${NAME}" "${REPO}" > "${guard_path}"
   _render_guard_timer "${NAME}" > "${timer_path}"
 

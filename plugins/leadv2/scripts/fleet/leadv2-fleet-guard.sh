@@ -52,10 +52,18 @@ done
 [[ -n "${REPO}" && -n "${NAME}" ]] || { usage; exit 2; }
 
 WORKTREE_ROOT="${REPO}/.claude/worktrees"
+STALL_LOG="${FLEET_STATE_ROOT}/${NAME}.stalled.log"
+mkdir -p "${FLEET_STATE_ROOT}"
 reaped=0
 stalled=0
 
-# 1. Reap terminal-marked lane worktrees.
+# 1. Reap terminal-marked lane worktrees. `git worktree remove --force`
+#    refuses on a locked/submodule-carrying tree; round-1 fell back to
+#    `rm -rf` on refusal, which can destroy an in-flight lane's uncommitted
+#    work and leaves a dangling `.git/worktrees` entry — the mission's own
+#    "a half-merged lane is worse than a running one" rule. Round-2 fix
+#    (H4): on refusal, record `reap_refused` and leave the tree untouched;
+#    a human/next pass decides, this script never deletes on a refusal.
 if [[ -d "${WORKTREE_ROOT}" ]]; then
   for wt in "${WORKTREE_ROOT}"/*/; do
     [[ -d "${wt}" ]] || continue
@@ -65,9 +73,8 @@ if [[ -d "${WORKTREE_ROOT}" ]]; then
         reaped=$((reaped + 1))
         printf '[fleet-guard] reaped terminal worktree %s\n' "${wt_trim}"
       else
-        rm -rf "${wt_trim}"
-        reaped=$((reaped + 1))
-        printf '[fleet-guard] force-removed terminal worktree %s (git worktree remove refused)\n' "${wt_trim}"
+        printf '%s reap_refused worktree=%s\n' "$(fleet_now_iso)" "${wt_trim}" >> "${STALL_LOG}"
+        printf '[fleet-guard] reap_refused: git worktree remove refused for %s (left in place, not force-deleted)\n' "${wt_trim}" >&2
       fi
     fi
   done
@@ -79,22 +86,19 @@ if ! floor_reason="$(fleet_disk_floor_ok "${REPO}" "${FLOOR_KB}")"; then
   printf '[fleet-guard] self-stop disk_floor: %s\n' "${floor_reason}"
 fi
 
-# 3. Stalled-lane detection: newest mtime under a remaining worktree older
-#    than STALL_MINUTES is recorded (not itself a self-stop — the mission
-#    asks only that it be "detected and recorded").
-STALL_LOG="${FLEET_STATE_ROOT}/${NAME}.stalled.log"
-mkdir -p "${FLEET_STATE_ROOT}"
+# 3. Stalled-lane detection (round-2 fix M6): the worktree ROOT directory's
+#    own mtime only — round 1 walked every file under every worktree with
+#    `find -type f` each pass, which is O(files) on every timer tick for no
+#    added precision the founder surface uses. A directory's mtime already
+#    advances on any direct create/rename/delete under it; that is enough
+#    signal for "untouched for N minutes".
 if [[ -d "${WORKTREE_ROOT}" ]]; then
   now="$(fleet_now_epoch)"
   for wt in "${WORKTREE_ROOT}"/*/; do
     [[ -d "${wt}" ]] || continue
     wt_trim="${wt%/}"
-    newest=0
-    while IFS= read -r f; do
-      m="$(fleet_mtime_epoch "${f}")"
-      [[ -n "${m}" && "${m}" -gt "${newest}" ]] && newest="${m}"
-    done < <(find "${wt_trim}" -type f 2>/dev/null)
-    [[ "${newest}" -gt 0 ]] || continue
+    newest="$(fleet_mtime_epoch "${wt_trim}")"
+    [[ -n "${newest}" && "${newest}" -gt 0 ]] || continue
     age_min=$(( (now - newest) / 60 ))
     if [[ "${age_min}" -ge "${STALL_MINUTES}" ]]; then
       stalled=$((stalled + 1))
@@ -104,4 +108,5 @@ if [[ -d "${WORKTREE_ROOT}" ]]; then
   done
 fi
 
+"${STATE_BIN}" set-field --name "${NAME}" --field stalled --value "${stalled}" >/dev/null
 printf '[fleet-guard] pass complete reaped=%s stalled=%s\n' "${reaped}" "${stalled}"
