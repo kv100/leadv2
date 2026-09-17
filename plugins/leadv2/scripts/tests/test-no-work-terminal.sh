@@ -426,7 +426,14 @@ case_revived_status_is_terminal_for_handle() {
     # total to exactly max_wait_s (2 s) even though pc_worker_alive returned
     # promptly — the intent is "did NOT hit the worker_timeout ceiling", which
     # is proven by the no_work gate + absence of dead/timeout, not by elapsed.
-    if [[ "${elapsed}" -le 2 ]] && grep -q '^reason: no_work$' "${gate}" 2>/dev/null; then
+    # REDSUITE-D-TERMINAL-STATE (2026-09-17): measured elapsed=3s with the gate
+    # already at no_work under ordinary concurrent-session load, i.e. the close
+    # finalized promptly and only the knife-edge bound failed (standalone 6-run
+    # probe: elapsed 1-3s, gate no_work every time). The bound below is there-
+    # fore a hang guard with startup headroom (max_wait 2s + 8s), while the
+    # ceiling proof stays where the author put it: the no_work grep here and
+    # the dead/timeout ledger assertion that follows.
+    if [[ "${elapsed}" -le 10 ]] && grep -q '^reason: no_work$' "${gate}" 2>/dev/null; then
       ok "${status} ignores stale original registry handle"
     else bad "${status} waited to timeout instead of finalizing original handle"
     fi

@@ -1973,13 +1973,24 @@ _pc_candidate_roots() {
 
 _pc_resolve_write() { # <normalised-write> -> <toplevel>\t<relative>\t<shared>, rc1 unresolved
   local write="$1" candidate root real_abs repo rel shared present
+  local esc_abs=""
   for candidate in "${_PC_CAND_ROOT[@]:-}"; do
     root="$(_pc_candidate_abs "${candidate}")"
     [[ -n "${root}" ]] || continue
     real_abs="$(_pc_realpath "${root}/${write}")"
     case "${real_abs}" in
       "${root}"|"${root}"/*) ;;
-      *) return 1 ;; # A declared path escaped this candidate; never guess another repo.
+      *)
+        # REDSUITE-D-TERMINAL-STATE (2026-09-17): the declared path is a symlink
+        # pointing OUT of this candidate. Follow the link, not the name -- stop
+        # walking candidates (a later candidate holding an unrelated namesake
+        # must never claim these bytes) and resolve the repo the link physically
+        # lives in, below. 48550f5a bailed straight to unresolved here, which
+        # swallowed the deliberate mixed-group partial_diff verdict behind a
+        # false cross_repo_elsewhere (measured: test-no-work-terminal
+        # case_partial_stays_refused red since 48550f5a).
+        esc_abs="${real_abs}"
+        break ;;
     esac
     present=0
     [[ -e "${root}/${write}" || -d "${root}/${write}" ]] && present=1
@@ -1999,7 +2010,29 @@ _pc_resolve_write() { # <normalised-write> -> <toplevel>\t<relative>\t<shared>, 
     printf '%s\t%s\t%s' "${repo}" "${rel}" "${shared}"
     return 0
   done
-  return 1
+  if [[ -z "${esc_abs}" ]]; then
+    return 1
+  fi
+  # The link's physical location decides the repo (REVIEW-GATE-INFRA-01 D-A(iv)
+  # wording: "resolves outside any git work tree" is what stays unresolved -- a
+  # path that DOES live inside a work tree resolves to THAT work tree, which is
+  # what the pre-48550f5a mapper did). A git-repo target joins repo_order as
+  # foreign (shared=0) so its bytes are counted by the mixed-group partial_diff
+  # classifier; a link into the shared canonical checkout resolves shared=1
+  # exactly like a direct canonical write. A non-git target stays unresolved ->
+  # cross_repo_elsewhere (test-review-gate-scope-evidence case 4 unchanged).
+  repo="$(git -C "$(dirname "${esc_abs}")" rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "${repo}" ]] || return 1
+  repo="$(_pc_candidate_abs "${repo}")"
+  [[ -n "${repo}" ]] || return 1
+  rel="${esc_abs#"${repo}"/}"
+  shared=0
+  local i
+  for i in "${!_PC_CAND_ROOT[@]}"; do
+    [[ "${_PC_CAND_SHARED[$i]}" == "1" && "$(_pc_candidate_abs "${_PC_CAND_ROOT[$i]}")" == "${repo}" ]] && shared=1
+  done
+  printf '%s\t%s\t%s' "${repo}" "${rel}" "${shared}"
+  return 0
 }
 
 _pc_git_truth_across_repos() { # reads candidate arrays; sets _PC_GIT_TRUTH_* and survey
