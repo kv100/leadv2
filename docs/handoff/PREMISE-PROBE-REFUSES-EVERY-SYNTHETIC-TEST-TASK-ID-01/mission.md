@@ -28,6 +28,41 @@ stderr to `/dev/null`, so the refusal could not be observed; only the shape matc
 lane by removing that redirect locally and *looking*. If the cause turns out to be different, say
 so and treat it as its own failure — do not fold it into the group to make the count tidier.
 
+## ROUND 2 — read this first
+
+Round 1 (lane `904f2448`, 2026-09-17) was killed by review: `critical=0 high=2`,
+`terminal=dead cause=review_verdict_fail`. Full text:
+`docs/handoff/dispatch-904f2448-review/critic.full.md`. **Round 1 did real work — do not throw it
+away.** `test-phase-precondition.sh` went from `pass=72 fail=10` to **PASS**. Keep that.
+
+**H1 — three of the four acceptance suites are still red, and the cause class is DIFFERENT from
+this lane's.** From the lane's own e2e gate (`docs/handoff/dispatch-904f2448/e2e-gate.log`):
+
+| suite | after round 1 | mission baseline |
+|---|---|---|
+| `test-routing-enforcement-p1.sh` | FAIL (quota gate reroute marker, launcher crash remains failure, racing reserve exclusivity) | PASS=3 FAIL=15 |
+| `test-glm-deferred-ladder.sh` | FAIL (park row missing, list missing, stamp/lines, count/park rows) | 6 PASS / 10 FAIL |
+| `test-dispatch-arm-vocabulary.sh` | FAIL PASS=6 FAIL=4 (case2/3/4 trailing freepool, case9) | PASS=8 FAIL=2 |
+| `test-phase-precondition.sh` | **PASS** | pass=72 fail=10 |
+
+The remaining failures carry `util_codex=99` and `arm_excluded=codex:capped,freepool:untrusted` —
+**they are reading live provider quota.** Codex is at 99% of its weekly window until
+2026-09-22, so those cases cannot go green today no matter how correct the fix. That is filed
+separately as `SUITES-READ-LIVE-QUOTA-SO-THE-CENSUS-IS-CONTAMINATED-01`.
+
+**What that means for you, precisely.** You are *not* required to make quota-dependent cases green.
+You *are* required to establish, per failing case, whether it is quota-dependent or a real
+remaining defect, and to **name each still-red case with its observed cause and counts**. The gate
+wrote `status: fail_foreign` and called them `pre_existing_suites`; that label is not available to
+you — these are the suites this lane exists to fix, so "pre-existing" is not a pass. A case you
+cannot fix stays red **and is named**, which the rules have always allowed; silence about it is
+what failed round 1.
+
+**H2 — the deliverable was simply absent.** The handoff directory contained only `mission.md`, in
+both main and the lane worktree. No report, no controls. The report and **both** negative controls,
+run in the lane worktree with outputs pasted, are not optional and are not a follow-up. The cheap
+one — re-remove one fixture's seeding and confirm that suite goes red — was not done.
+
 ## The knot this sits inside — read before choosing a fix
 
 There is already a filed row, `NO-PROBE-YET-MEANS-TWO-DIFFERENT-THINGS-01`, about the same seam:
