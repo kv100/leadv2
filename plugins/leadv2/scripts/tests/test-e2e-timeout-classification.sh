@@ -19,8 +19,13 @@
 #        write survives as a checkpoint commit (pc_stop_gate_autocommit runs
 #        BEFORE the e2e gate, unconditionally of its verdict).
 #   R2 — a real failing suite (rc=1, no timeout involved) must still classify
-#        as terminal=dead cause=e2e_regression, exit 8 -- proving this fix did
-#        not soften genuine regression handling.
+#        as reason=e2e_regression in e2e-gate.md (measured, journalled) -- but
+#        since E2E-GATE-BECOMES-ADVISORY-NOT-BLOCKING-01 (founder decision,
+#        2026-09-17; recorded at leadv2-dispatch-product-close.sh's failing
+#        branch) it is ADVISORY: no terminal=dead, no exit 8; with
+#        REVIEW_ON=0 in this harness the lane falls through and lands
+#        review_gate_disabled at exit 0. The terminal-kill guard now lives in
+#        test-e2e-gate-is-advisory.sh (A2: a failing review still kills).
 #
 # Drives the REAL leadv2-dispatch-product-close.sh (never a reimplementation
 # of its gate logic). Portable: no GNU-only date/sed/timeout(1). Never git
@@ -182,23 +187,27 @@ else
   fail "R1: no checkpoint commit found after timeout -- log=<${r1_log}>"
 fi
 
-# ── R2: negative control -- a REAL failing suite still kills the lane ───────
+# ── R2: a REAL failing suite is still REPORTED as e2e_regression (advisory) ─
+# E2E-GATE-BECOMES-ADVISORY-NOT-BLOCKING-01 (founder decision, 2026-09-17):
+# the classification survives, the terminal does not. This case used to assert
+# terminal=dead + exit 8; it now asserts the verdict artifact + the advisory
+# fall-through. The review-kill guard lives in test-e2e-gate-is-advisory.sh A2.
 R2="${TMP}/r2"; mkdir -p "${R2}"
 build_fixture "${R2}" "A-changed" "${REDSUITE}"
 lv2_assert_scratch_repo "${R2}"
 
 run_gate "${R2}" "r2sig001" "bash ${R2}/fake-e2e.sh" "900" "${STUB_LEDGER}"
 
-if [[ "${RC}" -eq 8 ]] && grep -q 'reason: e2e_regression' <<<"${MD}"; then
-  pass "R2 (negative control): a real rc=1 failure still classifies as e2e_regression, exit 8"
+if [[ "${RC}" -eq 0 ]] && grep -q 'reason: e2e_regression' <<<"${MD}"; then
+  pass "R2: a real rc=1 failure is classified e2e_regression and is advisory (exit 0, not 8)"
 else
-  fail "R2 (negative control): expected exit 8 + e2e_regression, got rc=${RC} md=<${MD}>"
+  fail "R2: expected exit 0 + e2e_regression verdict, got rc=${RC} md=<${MD}>"
 fi
 
 if grep -qE '^write-terminal r2sig001 .*dead e2e_regression' "${LEDGER_LOG}"; then
-  pass "R2: ledger terminal is still dead/e2e_regression for a genuine failure"
+  fail "R2: ledger still recorded dead/e2e_regression -- terminal was not made advisory"
 else
-  fail "R2: ledger call did not record dead/e2e_regression -- $(cat "${LEDGER_LOG}")"
+  pass "R2: no dead/e2e_regression terminal (advisory, per E2E-GATE-BECOMES-ADVISORY-NOT-BLOCKING-01)"
 fi
 
 # ── R3: standalone phase-8 gate records the same timeout as unknown ─────────
