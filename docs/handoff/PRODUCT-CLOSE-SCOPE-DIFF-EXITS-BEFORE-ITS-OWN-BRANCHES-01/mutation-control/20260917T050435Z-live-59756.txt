@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-lane-diff-single-repo.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+anchor=s/_anchor_c}" || _prod/_anchor_c}" \&\& _prod/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST][post-fix] FAIL C5-registered-arm-silent
+diff_hash=8cf45fa283fce8a96be1f9d7d57a57e5f4ee9c92b565881ad3741e5c0d113347
+lane_diff_hash=cf9035a4e8f323a7201b505810a5edd914f99829feb6d9469509b29d2cd04909
+porcelain_clean=yes
+restored=yes

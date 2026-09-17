@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-stop-gate.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+anchor=s/"${_sg_r}" != "${_sg_lane_phys}"/"${_sg_r}" != "${_sg_r}"/
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: foreign-repo-journaled -- post-fix rc=1, expected 0
+diff_hash=f2bd7089d0fde19b64a3582cc53c56638f24800f974b501a04812818532b8764
+lane_diff_hash=cf9035a4e8f323a7201b505810a5edd914f99829feb6d9469509b29d2cd04909
+porcelain_clean=yes
+restored=yes
