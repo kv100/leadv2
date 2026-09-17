@@ -216,7 +216,15 @@ _lane_dir="$("${SCRIPT_DIR}/leadv2-lane-worktree.sh" ensure "$TASK_ID" "$CLS")"
 # --cwd explicitly and were reading PROJECT_ROOT (shared root), not this worktree.
 export LEADV2_LANE_WORK_ROOT="$_lane_dir"
 
-declare -a dc_args=("$MISSION" --kind "fanout-class-funnel" --task-id "$TASK_ID")
+# No --kind here: "fanout-class-funnel" is a launch-mechanism label, not a work
+# kind, and dispatch-code's strict argv validation (14fa47bf, 2026-09-15) refuses
+# any kind outside product|plugin|tooling|... -- every funnel launch died at
+# argv parse with rc=1 before reaching the worker spawn (LANE-WRITES-C1-
+# LAUNCHER-CWD-SUBJECT-TRACE-01). An absent kind is dispatch-code's documented
+# conservative default ("an absent/unknown kind is PRODUCT, never fast-path",
+# leadv2-dispatch-code.sh PRODUCT-READINESS-GATES-01 header) and is what the
+# launch registry coerced the unmapped label to anyway (normalize_kind -> code).
+declare -a dc_args=("$MISSION" --task-id "$TASK_ID")
 dc_args+=(--task-class "$CLS")
 [[ -n "$LANE_WRITES" ]] && dc_args+=(--writes "$LANE_WRITES")
 [[ -n "$LANE_ACCEPTANCE" ]] && dc_args+=(--acceptance-cmd "$LANE_ACCEPTANCE")
