@@ -14,6 +14,12 @@ __pycache__/
 .claude/anatomy.md
 .claude/worktrees/
 docs/leadv2/.pulse-*
+# Session bookkeeping the plugin writes into EVERY lane worktree it creates: the
+# anti-silence pulse arms itself there, and lane liveness is shared through a
+# content-addressed dir. Untracked, they read to the write-set admission gate as an
+# "undeclared write" and refuse every subsequent dispatch on the board.
+docs/leadv2/anti-silence-pulse.*
+docs/leadv2/.lane-liveness-share/
 docs/leadv2/.broad-status-prev.json
 .repowise/
 docs/leadv2/glm-deferred.jsonl
