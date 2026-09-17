@@ -6,12 +6,29 @@
 # "everything finished".  Nothing prevented this (audit defect 3).
 #
 # This hook fires on Stop: if an active task exists (active.yaml sessions
-# non-empty, or LEADV2_TASK_ID env with no phase8-passed.flag) AND the ending
-# turn made no tool calls, it BLOCKS once with a message
+# non-empty, or LEADV2_TASK_ID env with no phase8-passed.flag) AND nothing
+# will wake this session while it sleeps, it BLOCKS once with a message
 # naming the active task + its phase and demanding either:
-#   (a) a tool call / dispatched worker / armed watcher this turn, or
+#   (a) a WAKER — something that fires without the lead:
+#         w1  a live lane/worker/dispatcher process attributable to this
+#             session (registry row not stale/dead/terminal, pid alive with
+#             pid_birth matching `ps -o lstart=`, pid outside this hook's
+#             ancestry, process cwd under the row's worktree);
+#         w2  a live harness-tracked background command (a tasks/*.output
+#             under this session's tasks dir still open for WRITE — its
+#             completion will notify);
+#         w3  a fresh armed-watcher sentinel file (the lead's attestation
+#             that a Monitor is armed; JSON with armed_at/expires_at whose
+#             horizon is capped so a forgotten sentinel self-destructs); or
 #   (b) only the missing continuation/close line — never a restatement of
 #       already-rendered text.
+#
+# A tool call is NOT a waker (CONTINUATION-GUARD-PASSES-ANY-TURN-THAT-
+# TOUCHED-A-TOOL-01, 2026-09-17): work proves the turn acted, not that
+# anything will wake the session again. Measured that day: the lead ran a
+# full turn of tool calls, passed this guard, and three finished lanes sat
+# dead for six hours — every Monitor had expired and no background job was
+# live.
 #
 # Kill switch: LEADV2_CONTINUATION_GUARD=0.
 # Loop safety: never blocks twice in a row for the same turn — uses
@@ -89,13 +106,16 @@ fi
 #   active_task: bool    — an active, non-closed leadv2 task exists
 #   task_id: str         — the task id (for the block message)
 #   phase: str           — the task's current phase
-#   has_tool_call: bool  — the ending turn made ≥1 tool call
+#   has_tool_call: bool  — the ending turn made ≥1 tool call (context only —
+#                          no longer a pass by itself, see header)
 #   has_continuation: bool — final text contains an explicit continuation/close line
-VERDICT="$(python3 - "$CWD" "$TRANSCRIPT" <<'PYEOF' 2>/dev/null || true
-import sys, os, json, re
+#   waker_any: bool      — w1|w2|w3: something will wake this session
+VERDICT="$(python3 - "$CWD" "$TRANSCRIPT" "$SESSION_ID" <<'PYEOF' 2>/dev/null || true
+import sys, os, json, re, subprocess, time, glob
 
 cwd       = sys.argv[1]
 jsonl_path = sys.argv[2]
+session_id = sys.argv[3] if len(sys.argv) > 3 else ""
 
 # ── 1. Active-task detection ──────────────────────────────────────────────
 task_id  = ""
@@ -294,12 +314,199 @@ CONTINUATION_RE = re.compile(
 
 has_continuation = bool(final_text and CONTINUATION_RE.search(final_text))
 
+# ── 4. Waker probe (CONTINUATION-GUARD-PASSES-ANY-TURN-THAT-TOUCHED-A-TOOL-01)
+# A tool call proves the ending turn did work; it does not prove the session
+# will ever wake again. Waking requires something that FIRES while the
+# session sleeps: a background command completing, a Monitor event, a
+# Monitor expiry. Three wakers are recognisable from a Stop hook:
+#   w1  live lane/worker/dispatcher process attributable to this session —
+#       registry row not stale/dead/terminal, pid alive, pid_birth matching
+#       `ps -o lstart=` (a reused pid cannot ghost a lane alive), pid not in
+#       this hook's ancestry, process cwd under the row's worktree;
+#   w2  live harness-tracked background command — a *.output under this
+#       session's tasks dir still held open for WRITE by a live process
+#       (its completion will notify). Read-mode holders (monitor tails) and
+#       producer heartbeats attest nothing: an expired Monitor leaves no
+#       relay, and a live producer nobody relays IS the 2026-09-17
+#       six-hour silence;
+#   w3  fresh armed-watcher sentinel — the lead's attestation that a Monitor
+#       is armed: JSON {kind, watching, armed_at, expires_at} at
+#       $LEADV2_GUARD_WATCH_DIR (default ~/.claude/leadv2-state/leadv2/
+#       watchers — control plane, never the repo) / <session_id>.watch.json.
+#       Fresh = expires_at in the future AND expires_at <= armed_at +
+#       LEADV2_GUARD_SENTINEL_MAX_HORIZON_S (default 3600), so a forgotten
+#       sentinel self-destructs instead of re-creating this bug elsewhere.
+# Every probe step fails toward "no waker" — never toward pass: the escapes
+# (sentinel/continuation line, one-block-max anti-loop sentinel) keep a
+# false block recoverable, while a false pass is the six-hour silence.
+
+w1 = False
+w2 = False
+w3 = False
+waker_detail = ""
+
+_probe_deadline = time.monotonic() + 2.0
+
+def _probe_left():
+    return time.monotonic() < _probe_deadline
+
+def _probe_run(cmd, timeout=1.0):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout).stdout or ""
+    except Exception:
+        return ""
+
+def _norm_ws(s):
+    return " ".join((s or "").split())
+
+# This hook's ancestry: registry rows naming our own harness process are the
+# session itself, not a lane working on its behalf.
+_ancestry = set()
+_ap = os.getpid()
+for _ in range(32):
+    if _ap <= 1:
+        break
+    _ancestry.add(_ap)
+    _ppid_out = _probe_run(["ps", "-o", "ppid=", "-p", str(_ap)])
+    try:
+        _ap = int(_ppid_out.split()[0])
+    except Exception:
+        break
+
+# ── w1: live lane/worker/dispatcher process ───────────────────────────────
+_env_regs = os.environ.get("LEADV2_GUARD_REGISTRIES", "").strip()
+if _env_regs:
+    _reg_paths = [p for p in _env_regs.split(":") if p]
+else:
+    _reg_paths = [
+        os.path.join(os.path.expanduser("~"), ".claude", "leadv2-state",
+                     "leadv2", "active.yaml"),
+        os.path.join(cwd, "docs", "leadv2", "active.yaml"),
+        os.path.join(cwd, ".claude", "leadv2-tasks", "active.yaml"),
+    ]
+try:
+    import yaml as _wy
+except Exception:
+    _wy = None
+if _wy is not None:
+    for _rp in _reg_paths:
+        if w1 or not _probe_left():
+            break
+        try:
+            with open(_rp, encoding="utf-8") as _fh:
+                _rows = (_wy.safe_load(_fh) or {}).get("sessions") or []
+        except Exception:
+            continue
+        for _row in _rows[:200]:
+            if w1 or not _probe_left():
+                break
+            try:
+                if (_row.get("terminal_status") or "").strip() \
+                        or _row.get("dead_at") or _row.get("stale"):
+                    continue
+                _pid = int(_row.get("pid") or 0)
+                if _pid <= 1 or _pid in _ancestry:
+                    continue
+                _lstart = _norm_ws(_probe_run(
+                    ["ps", "-o", "lstart=", "-p", str(_pid)]))
+                if not _lstart:
+                    continue  # pid not alive
+                _birth = _norm_ws(_row.get("pid_birth") or "")
+                if _birth and _birth != _lstart:  # cg-mut-M3: reused-pid ghost gate
+                    continue
+                _wt = (_row.get("worktree") or "").strip()
+                if not _wt:
+                    continue
+                _pcwd = ""
+                for _ln in _probe_run(["lsof", "-a", "-p", str(_pid),
+                                       "-d", "cwd", "-Fn"]).splitlines():
+                    if _ln.startswith("n"):
+                        _pcwd = _ln[1:].strip()
+                # lsof reports the RESOLVED cwd (/private/var/... on macOS);
+                # registry rows often carry the symlinked form (/var/...).
+                # Compare both sides resolved.
+                _wt = os.path.realpath(_wt)
+                _pcwd = os.path.realpath(_pcwd) if _pcwd else ""
+                if not (_pcwd == _wt or _pcwd.startswith(_wt.rstrip("/") + "/")):
+                    continue
+                w1 = True
+                waker_detail = "w1: live lane/worker %s (pid %s)" % (
+                    (_row.get("task_id") or "?"), _pid)
+            except Exception:
+                continue
+
+# ── w2: live harness-tracked background command ───────────────────────────
+_tasks_dir = os.environ.get("LEADV2_GUARD_TASKS_DIR", "").strip()
+if not _tasks_dir and session_id and session_id != "unknown":
+    _slug = os.path.basename(os.path.dirname(jsonl_path))
+    _uid = os.getuid()
+    for _base in ("/private/tmp", "/tmp", os.environ.get("TMPDIR", "")):
+        _base = _base.rstrip("/")
+        if not _base:
+            continue
+        _cand = os.path.join(_base, "claude-%d" % _uid, _slug,
+                             session_id, "tasks")
+        if os.path.isdir(_cand):
+            _tasks_dir = _cand
+            break
+if _tasks_dir and os.path.isdir(_tasks_dir) and _probe_left():
+    for _of in sorted(glob.glob(os.path.join(_tasks_dir, "*.output")))[:20]:
+        if w2 or not _probe_left():
+            break
+        for _ln in _probe_run(["lsof", "-w", _of],
+                              timeout=1.5).splitlines()[1:]:
+            _parts = _ln.split()
+            if len(_parts) < 4:
+                continue
+            # fd column like 1w / 2w / 3u — WRITE-holders only; a plain
+            # reader (a monitor tail) is not a completion notification.
+            _fd = _parts[3]
+            _is_write = len(_fd) >= 2 and _fd[0].isdigit() and _fd[1] in ("w", "u")  # cg-mut-M4: write-holder gate
+            if _is_write:
+                w2 = True
+                waker_detail = ("w2: live background task output %s"
+                                % os.path.basename(_of))
+                break
+
+# ── w3: fresh armed-watcher sentinel ──────────────────────────────────────
+_watch_dir = os.environ.get("LEADV2_GUARD_WATCH_DIR", "").strip() or os.path.join(
+    os.path.expanduser("~"), ".claude", "leadv2-state", "leadv2", "watchers")
+_sent_path = os.path.join(_watch_dir, "%s.watch.json" % (session_id or "unknown"))
+try:
+    from datetime import datetime, timedelta, timezone
+    with open(_sent_path, encoding="utf-8") as _fh:
+        _sent = json.loads(_fh.read())
+    _now_dt = datetime.now(timezone.utc)
+
+    def _parse_iso(s):
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+
+    _armed = _parse_iso(_sent.get("armed_at", ""))
+    _exp = _parse_iso(_sent.get("expires_at", ""))
+    _horizon = float(os.environ.get("LEADV2_GUARD_SENTINEL_MAX_HORIZON_S",
+                                    "3600"))
+    _fresh = (_exp > _now_dt) and (_exp.timestamp() <= _armed.timestamp() + _horizon) and (_armed <= _now_dt + timedelta(seconds=300))  # cg-mut-M2: sentinel freshness gate
+    if _fresh:
+        w3 = True
+        waker_detail = "w3: armed-watcher sentinel %s (expires %s)" % (
+            os.path.basename(_sent_path), _sent.get("expires_at"))
+except Exception:
+    w3 = False
+
+waker_any = w1 or w2 or w3  # cg-mut-M1: waker aggregation
+
 print(json.dumps({
     "active_task": True,
     "task_id": task_id,
     "phase": phase,
     "has_tool_call": has_tool_call,
     "has_continuation": has_continuation,
+    "w1": w1,
+    "w2": w2,
+    "w3": w3,
+    "waker_any": waker_any,
+    "waker_detail": waker_detail,
 }, ensure_ascii=False))
 PYEOF
 )"
@@ -318,6 +525,8 @@ print(d.get("task_id", "") or "")
 print(d.get("phase", "") or "")
 print("yes" if d.get("has_tool_call") else "no")
 print("yes" if d.get("has_continuation") else "no")
+print("yes" if d.get("waker_any") else "no")
+print(d.get("waker_detail", "") or "")
 ' 2>/dev/null || true)"
 
 ACTIVE_TASK="$(printf '%s' "$VF" | sed -n '1p')"
@@ -325,12 +534,19 @@ TASK_ID_OUT="$(printf '%s' "$VF" | sed -n '2p')"
 PHASE_OUT="$(printf '%s' "$VF" | sed -n '3p')"
 HAS_TOOL_CALL="$(printf '%s' "$VF" | sed -n '4p')"
 HAS_CONTINUATION="$(printf '%s' "$VF" | sed -n '5p')"
+WAKER_ANY="$(printf '%s' "$VF" | sed -n '6p')"
+WAKER_DETAIL="$(printf '%s' "$VF" | sed -n '7p')"
 
 # No active task → pass through.
 [[ "$ACTIVE_TASK" == "yes" ]] || exit 0
 
-# Had a tool call → pass through. A measured/reported turn is not silent.
-[[ "$HAS_TOOL_CALL" == "yes" ]] && exit 0
+# A waker exists → pass through. Something will fire while the session
+# sleeps: a live lane/worker process (w1), a live background command whose
+# completion will notify (w2), or a fresh armed-watcher sentinel (w3).
+# CONTINUATION-GUARD-PASSES-ANY-TURN-THAT-TOUCHED-A-TOOL-01: a tool call is
+# deliberately NOT on this list any more — work proves the turn acted, not
+# that anything will wake the session again.
+[[ "$WAKER_ANY" == "yes" ]] && exit 0
 
 # Ended with an explicit continuation/close line → pass through.
 [[ "$HAS_CONTINUATION" == "yes" ]] && exit 0
@@ -338,22 +554,44 @@ HAS_CONTINUATION="$(printf '%s' "$VF" | sed -n '5p')"
 # --- BLOCK: write sentinel, emit decision ------------------------------------
 printf '1\n' > "$SENTINEL" 2>/dev/null || true
 
-python3 - "$TASK_ID_OUT" "$PHASE_OUT" <<'PYEOF'
+WATCH_DIR="${LEADV2_GUARD_WATCH_DIR:-$HOME/.claude/leadv2-state/leadv2/watchers}"
+if [[ "$HAS_TOOL_CALL" == "yes" ]]; then
+  TOOL_NOTE=" Этот ход делал вызовы инструментов — но работа не будит: будит только завершение фоновой задачи или событие/истечение Monitor."
+else
+  TOOL_NOTE=""
+fi
+
+python3 - "$TASK_ID_OUT" "$PHASE_OUT" "$TOOL_NOTE" "$WATCH_DIR" "$SESSION_ID" "$WAKER_DETAIL" <<'PYEOF'
 import sys, json
 
-task_id = sys.argv[1]
-phase   = sys.argv[2]
-phase_str = (" (фаза: %s)" % phase) if phase else ""
+task_id     = sys.argv[1]
+phase       = sys.argv[2]
+tool_note   = sys.argv[3]
+watch_dir   = sys.argv[4]
+session_id  = sys.argv[5] or "unknown"
+waker_note  = (" — сильнейший сигнал был: %s" % sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else ""
+phase_str   = (" (фаза: %s)" % phase) if phase else ""
+
+arm_cmd = ("mkdir -p '" + watch_dir + "' && python3 -c 'import json,datetime as dt;"
+           "n=dt.datetime.now(dt.timezone.utc);"
+           "print(json.dumps({\"kind\":\"monitor\",\"watching\":\"<what the Monitor watches>\","
+           "\"armed_at\":n.isoformat(),"
+           "\"expires_at\":(n+dt.timedelta(minutes=10)).isoformat()}))'"
+           " > '" + watch_dir + "/" + session_id + ".watch.json'")
 
 reason = (
-    "CONTINUATION-GUARD: активная задача %s%s ещё не закрыта, "
-    "но этот ход не сделал ни одного вызова инструмента.\n\n"
-    " Silence ≠ done. Сделайте одно из двух:\n"
-    "  (a) сделайте вызов сейчас (dispatch / edit / watcher), или\n"
+    "CONTINUATION-GUARD: активная задача %s%s ещё не закрыта, но когда сессия "
+    "заснёт — никто её не разбудит.%s\n\n"
+    " Не armed ни один пробудитель: w1 (живой процесс лейна/воркера), "
+    "w2 (живая фоновая задача), w3 (свежий sentinel вотчера)%s.\n"
+    " Silence ≠ done. Сделайте одно из:\n"
+    "  (a) вооружите waker: фоновую задачу (run_in_background) или Monitor на "
+    "событие лейна — и запишите sentinel под этот session id:\n"
+    "      %s\n"
     "  (b) emit only the missing line; do not restate anything already said:\n"
     '      "работа продолжается: <что ждём>" или\n'
     '      "задача закрыта: <артефакт>"\n'
-    % (task_id, phase_str)
+    % (task_id, phase_str, tool_note, waker_note, arm_cmd)
 )
 print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
 PYEOF
