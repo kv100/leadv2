@@ -406,3 +406,130 @@ above, not `py_compile`).
 `tests/run-all.sh --scope changed` was run for the changed-scope self-check; its output is pasted
 in the developer.full.md deliverable rather than duplicated here (long-running, background-run
 per this session's token-discipline rule).
+
+## Round 4 — four defects fixed (verified 2026-09-17)
+
+Rounds 1-3 each reported the same four defects still present. This round fixes exactly these four,
+nothing else, inside the declared write set (`leadv2-fleet-unit.sh`, `leadv2-fleet-guard.sh`,
+`leadv2-fleet-state.sh` (untouched — no change needed), `leadv2-fleet-runner.sh`,
+`leadv2-fleet-lib.sh`, `test-fleet-runtime-guards.sh`, this report).
+
+### Edit 1 — a controlled stop must not be restarted
+
+`leadv2-fleet-lib.sh` now defines a shared constant `FLEET_STOP_EXIT_CODE=42`. `leadv2-fleet-unit.sh`
+renders `Restart=on-failure` (new default; `--restart` still accepts `always`/`no` for
+testing/back-compat) plus `SuccessExitStatus=${FLEET_STOP_EXIT_CODE}`. `leadv2-fleet-runner.sh`'s
+four self-stop sites (`stop_flag`, `disk_floor`, `no_landing_streak`, `no_arm`/`quota_window` — the
+"FLEET-STOP and the three self-stops" the mission named) now `exit "${FLEET_STOP_EXIT_CODE}"`
+instead of `exit 0`. The runner-level wiring gap (`unwired`) is unchanged: it stays plain `exit 2`,
+which is *meant* to be retried by `Restart=on-failure`.
+
+### Edit 2 — the unit file loads
+
+`WorkingDirectory=${2}` is now unquoted (quotes there are literal characters to systemd, not
+shell-style quoting, and make the directive invalid). `Environment="LEADV2_FLEET_LANE_CMD=${5}"` now
+quotes the WHOLE assignment (systemd's own documented syntax for a value containing spaces),
+fixing a lane command with a space breaking the line.
+
+### Edit 3 — no control mutation ships inside the product
+
+All three `c1-mut`/`c2-mut`/`c3-mut` trailing comments are removed from `leadv2-fleet-unit.sh`,
+`leadv2-fleet-runner.sh`, `leadv2-fleet-lib.sh`. `test-fleet-runtime-guards.sh`'s Group 0 and Group H
+mutation controls now target the bare code lines directly (no comment-marker dependency), and a new
+Group 0 case asserts `grep -rn 'c[0-9]-mut' plugins/leadv2/scripts/fleet/` is empty — a control that
+cannot rot back in without the suite catching it.
+
+### Edit 4 — the reaper no longer forces, AND the marker-file bug this fix exposed
+
+Both occurrences of `git worktree remove --force` (the command and the comment describing it) are
+gone from `leadv2-fleet-guard.sh`; on refusal it records `reap_refused` and leaves the tree in place,
+same as before.
+
+**A real regression surfaced by removing `--force`, fixed in the same edit (still inside
+`leadv2-fleet-guard.sh` + `leadv2-fleet-runner.sh`, both already in the declared write set):**
+`leadv2-fleet-runner.sh` wrote its own `.fleet-terminal` completion marker *inside* the lane
+worktree. `git worktree remove` without `--force` refuses on **any** untracked file — including our
+own marker — so every cleanly-landed lane would have been permanently unreapable the moment
+`--force` was removed (verified below with a throwaway reproduction before touching the fix). Fix:
+the marker is now a SIBLING file (`<worktree-dir>.fleet-terminal`, next to the directory, not inside
+it), written by the runner and read/removed by the guard; git's dirty-check never sees it since it
+is outside the worktree's own file tree.
+
+Reproduction of the marker-file bug, before the fix (throwaway repro, not part of the suite):
+```
+$ git worktree add -q wt2 -b wt2-branch && : > wt2/.fleet-terminal
+$ git worktree remove wt2
+fatal: 'wt2' contains modified or untracked files, use --force to delete it
+```
+
+### Controls (mission's own two, both RUN)
+
+**Control 1 — controlled stop not restarted, negative = Restart=always restarts it.** New Group I
+in the test suite: runs the REAL `leadv2-fleet-runner.sh` with the stop flag pre-set (self-stops on
+the very first check), captures its real exit code, and feeds the REAL generated unit's
+`Restart=`/`SuccessExitStatus=` values (extracted from `print-unit` output, not hardcoded) into a
+mini-systemd decision function (`always`→always restart, `no`→never, `on-failure`→restart unless the
+exit code is in `SuccessExitStatus`). Positive: on-failure + SuccessExitStatus=42, rc=42 → NO
+restart. Negative control (same real script, `--restart always`): rc=42 → YES, restart — reproducing
+the round-2/3 defect.
+
+**Control 2 — generated unit passes verification, negative = quoted WorkingDirectory fails it.** New
+Group J: `systemd-analyze verify` is used when present on PATH, else a structural parser stub (per
+the mission's own wording) checks WorkingDirectory is unquoted and any Environment= line is fully
+quoted. Positive: the real generated unit → VALID. Negative control: a scratch copy of
+`leadv2-fleet-unit.sh` with the pre-round-4 quoted `WorkingDirectory="${2}"` reinstated → INVALID.
+
+Both controls assert their mutation-target text is present before running (FLEET_STOP_EXIT_CODE
+defined; the `--force`-free guard.sh) so neither can rot into a permanent green.
+
+**Additional control for edit 4 (Group K, not one of the mission's named two, but the direct proof
+of the claim "the reaper no longer forces"):** a worktree with a real uncommitted tracked-file
+change, marked terminal. Positive: the fixed (non-forcing) guard refuses and leaves it in place,
+file intact. Negative control: a scratch copy of `leadv2-fleet-guard.sh` with `--force` reinstated,
+run against a fresh identical dirty worktree → the worktree is deleted, reproducing the exact
+data-loss defect edit 4 removes.
+
+### Done-means greps (all four, pasted, clean)
+
+```
+$ grep -n 'Restart='                 plugins/leadv2/scripts/fleet/leadv2-fleet-unit.sh
+104:Restart=${4}
+$ grep -rn 'c[0-9]-mut'              plugins/leadv2/scripts/fleet/
+(no output)
+$ grep -n 'WorkingDirectory'         plugins/leadv2/scripts/fleet/leadv2-fleet-unit.sh
+101:WorkingDirectory=${2}
+$ grep -n 'worktree remove --force'  plugins/leadv2/scripts/fleet/leadv2-fleet-guard.sh
+(no output)
+```
+
+### Full suite run (round 4)
+
+```
+$ bash -n plugins/leadv2/scripts/fleet/leadv2-fleet-unit.sh plugins/leadv2/scripts/fleet/leadv2-fleet-guard.sh \
+    plugins/leadv2/scripts/fleet/leadv2-fleet-runner.sh plugins/leadv2/scripts/fleet/leadv2-fleet-lib.sh \
+    plugins/leadv2/scripts/tests/test-fleet-runtime-guards.sh
+(all OK, no output)
+
+$ bash plugins/leadv2/scripts/tests/test-fleet-runtime-guards.sh
+group 0: mutation-target markers present .. 4/4 PASS (incl. new "no c*-mut marker survives" case)
+group A: generated unit content ................ 11/11 PASS (incl. 3 new round-4 assertions)
+group B: Claim 1 — restart-on-kill .............. 2/2 PASS
+group C: Claim 2 — stop flag between lanes ...... 1/1 PASS
+group D: Claim 3 — disk floor refusal ........... 2/2 PASS
+group E: state file contract .................... 4/4 PASS
+group F: runner self-stop reasons and degrade ... 4/4 PASS
+group G: guard reap / reap_refused / stall ...... 3/3 PASS
+group H: mutation controls (scratch-copy) ....... 3/3 PASS
+group I: Claim 4 (round-4) restart control ...... 4/4 PASS
+group J: Claim 4 (round-4) unit verification .... 2/2 PASS
+group K: Claim 4 (round-4) reaper never forces .. 3/3 PASS
+
+42 of 42 passed (fleet guard suite, macOS Darwin, no systemd — unit layer stubbed per mission)
+```
+rc=0. macOS Darwin 25.6.0, worktree `583d804d01e5`, commit base `c0b1653a`.
+
+### Left alone
+
+Nothing else in the fleet dir was touched. `leadv2-fleet-state.sh` needed no change for any of the
+four edits. `tests/mutations/catalog.yaml` (touched by round 3, outside the declared set) was left
+untouched this round — not in the write set, not needed by any of the four edits.

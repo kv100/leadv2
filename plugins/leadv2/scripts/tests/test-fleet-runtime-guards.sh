@@ -16,11 +16,16 @@
 #
 # DECLARED NEGATIVE CONTROL for Claim 2 (stop flag), applied by
 # leadv2-mutation-control.sh to the marked line inside
-# leadv2-fleet-runner.sh's main loop:
+# leadv2-fleet-runner.sh's main loop. Round-4 removed the `c2-mut` comment
+# marker from the shipped script (a trailing comment on a code line is
+# harmless in bash, but the equivalent markers in leadv2-fleet-unit.sh sat
+# on a systemd directive line and made systemd ignore it — see edit 3 in
+# the round-4 mission; all three markers were removed together so none of
+# them could regrow). The mutation now targets the bare line text:
 #   bash plugins/leadv2/scripts/leadv2-mutation-control.sh \
 #     plugins/leadv2/scripts/tests/test-fleet-runtime-guards.sh \
 #     plugins/leadv2/scripts/fleet/leadv2-fleet-runner.sh \
-#     's|if fleet_stop_flag_present; then # c2-mut: stop-flag gate|if false; then # c2-mut: stop-flag gate|' \
+#     's|if fleet_stop_flag_present; then|if false; then|' \
 #     plugins/leadv2/scripts/tests
 # Must turn the "stop flag: only one lane runs, status stopped" case red
 # (a second lane starts after the flag is touched).
@@ -56,20 +61,30 @@ fail() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1" >&2; }
 # before that can happen.
 # ---------------------------------------------------------------------------
 printf 'group 0: mutation-target markers present\n'
-if grep -q 'if fleet_stop_flag_present; then # c2-mut: stop-flag gate' "${RUNNER_SH}"; then
+if grep -q 'if fleet_stop_flag_present; then$' "${RUNNER_SH}"; then
   pass "Claim 2 mutation target present in leadv2-fleet-runner.sh"
 else
   fail "Claim 2 mutation target MISSING — control has rotted"
 fi
-if grep -q 'Restart=\${4} # c1-mut: restart policy passthrough' "${UNIT_SH}"; then
+if grep -q '^Restart=\${4}$' "${UNIT_SH}"; then
   pass "Claim 1 mutation target present in leadv2-fleet-unit.sh"
 else
   fail "Claim 1 mutation target MISSING — control has rotted"
 fi
-if grep -q 'then # c3-mut: disk-floor gate' "${FLEET_DIR}/leadv2-fleet-lib.sh"; then
+if grep -q 'if \[\[ "\${free}" -lt "\${floor}" \]\]; then$' "${FLEET_DIR}/leadv2-fleet-lib.sh"; then
   pass "Claim 3 mutation target present in leadv2-fleet-lib.sh"
 else
   fail "Claim 3 mutation target MISSING — control has rotted"
+fi
+
+# round-4 edit 3: the c1/c2/c3-mut comment markers themselves must never
+# survive in the shipped fleet/ scripts — a trailing comment on the
+# Restart= directive line in the generated unit made systemd ignore that
+# directive entirely (the concrete defect edit 3 removes).
+if ! grep -rn 'c[0-9]-mut' "${FLEET_DIR}"/*.sh >/dev/null 2>&1; then
+  pass "no c*-mut marker survives anywhere under plugins/leadv2/scripts/fleet/"
+else
+  fail "c*-mut marker still present: $(grep -rn 'c[0-9]-mut' "${FLEET_DIR}"/*.sh)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -106,10 +121,39 @@ else
   pass "no --lane-cmd given: no Environment=LEADV2_FLEET_LANE_CMD line emitted"
 fi
 unit_with_lane_cmd="$(bash "${UNIT_SH}" print-unit --repo "${REPO_A}" --name a1 --cap 2 --restart always --lane-cmd 'echo hi')"
-if printf '%s\n' "${unit_with_lane_cmd}" | grep -q '^Environment=LEADV2_FLEET_LANE_CMD=echo hi$'; then
-  pass "--lane-cmd renders Environment=LEADV2_FLEET_LANE_CMD= (H2 fix)"
+if printf '%s\n' "${unit_with_lane_cmd}" | grep -q '^Environment="LEADV2_FLEET_LANE_CMD=echo hi"$'; then
+  pass "--lane-cmd renders a quoted Environment= assignment (H2 fix + round-4 edit 2)"
 else
-  fail "--lane-cmd did not render an Environment= line"
+  fail "--lane-cmd did not render a quoted Environment= line: $(printf '%s\n' "${unit_with_lane_cmd}" | grep Environment=)"
+fi
+
+# round-4 edit 2: WorkingDirectory must NEVER be quoted — systemd takes the
+# rest of the line literally for this directive, so quotes become part of
+# the path value instead of being stripped, and a repo path containing a
+# space needs the quoted form to survive unit-with-space repos too.
+REPO_SPACE="${TMP_ROOT}/repo with space"
+mkdir -p "${REPO_SPACE}"
+unit_space="$(bash "${UNIT_SH}" print-unit --repo "${REPO_SPACE}" --name a1 --cap 2)"
+if printf '%s\n' "${unit_space}" | grep -q "^WorkingDirectory=${REPO_SPACE}\$"; then
+  pass "WorkingDirectory is unquoted (round-4 edit 2 — quotes there are invalid systemd syntax)"
+else
+  fail "WorkingDirectory malformed: $(printf '%s\n' "${unit_space}" | grep WorkingDirectory=)"
+fi
+
+# round-4 edit 1: default restart policy is on-failure, paired with
+# SuccessExitStatus=<FLEET_STOP_EXIT_CODE> so a controlled stop is never
+# respawned (Restart=always respawns after ANY exit, controlled or not).
+FLEET_STOP_EXIT_CODE_A="$(grep -m1 '^FLEET_STOP_EXIT_CODE=' "${FLEET_DIR}/leadv2-fleet-lib.sh" | cut -d= -f2)"
+unit_default="$(bash "${UNIT_SH}" print-unit --repo "${REPO_A}" --name a1 --cap 2)"
+if printf '%s\n' "${unit_default}" | grep -q '^Restart=on-failure$'; then
+  pass "print-unit default restart policy is on-failure (round-4 edit 1)"
+else
+  fail "default restart policy is not on-failure: $(printf '%s\n' "${unit_default}" | grep Restart=)"
+fi
+if printf '%s\n' "${unit_default}" | grep -q "^SuccessExitStatus=${FLEET_STOP_EXIT_CODE_A}\$"; then
+  pass "print-unit emits SuccessExitStatus=${FLEET_STOP_EXIT_CODE_A} matching leadv2-fleet-lib.sh's FLEET_STOP_EXIT_CODE"
+else
+  fail "SuccessExitStatus missing/mismatched: $(printf '%s\n' "${unit_default}" | grep SuccessExitStatus=)"
 fi
 
 if printf '%s\n' "${unit_always}" | grep -q '^leadv2-fleet-a1-guard.timer$' \
@@ -490,10 +534,14 @@ git -C "${REPO_G}" -c user.email=t@example.com -c user.name=t commit --allow-emp
 WT_ROOT_G="${REPO_G}/.claude/worktrees"
 mkdir -p "${WT_ROOT_G}"
 
-# (positive) a worktree with .fleet-terminal must be reaped.
+# (positive) a worktree with a SIBLING .fleet-terminal marker must be
+# reaped. The marker lives next to the worktree dir, never inside it
+# (round-4 fix): guard's reaper is now non-forcing, and a non-forcing
+# `git worktree remove` refuses on ANY untracked file in the tree — an
+# in-tree marker would itself have permanently blocked every reap.
 WT_TERMINAL="${WT_ROOT_G}/wt-terminal"
 git -C "${REPO_G}" worktree add -q "${WT_TERMINAL}" -b wt-terminal-branch >/dev/null 2>&1
-: > "${WT_TERMINAL}/.fleet-terminal"
+: > "${WT_TERMINAL%/}.fleet-terminal"
 STATE_ROOT_G="${TMP_ROOT}/state-g"
 rm -rf "${STATE_ROOT_G}"; mkdir -p "${STATE_ROOT_G}"
 guard_out_g1="$(LEADV2_FLEET_STATE_ROOT="${STATE_ROOT_G}" LEADV2_FLEET_STATE_BIN="${STATE_SH}" \
@@ -509,7 +557,7 @@ fi
 # the worktree so `git worktree remove` itself refuses/errors.
 WT_REFUSED="${WT_ROOT_G}/wt-refused"
 git -C "${REPO_G}" worktree add -q "${WT_REFUSED}" -b wt-refused-branch >/dev/null 2>&1
-: > "${WT_REFUSED}/.fleet-terminal"
+: > "${WT_REFUSED%/}.fleet-terminal"
 rm -f "${WT_REFUSED}/.git"
 echo "gitdir: /nonexistent/path/that/does/not/exist" > "${WT_REFUSED}/.git"
 guard_out_g2="$(LEADV2_FLEET_STATE_ROOT="${STATE_ROOT_G}" LEADV2_FLEET_STATE_BIN="${STATE_SH}" \
@@ -556,7 +604,7 @@ cp "${FLEET_DIR}"/*.sh "${MUT_DIR}/"
 
 # c1-mut: Restart= passthrough neutered -> a --restart always unit must no
 # longer actually carry Restart=always.
-sed 's/Restart=\${4} # c1-mut: restart policy passthrough/Restart=no # c1-mut: restart policy passthrough (MUTATED)/' \
+sed 's/^Restart=\${4}$/Restart=no # (MUTATED)/' \
   "${FLEET_DIR}/leadv2-fleet-unit.sh" > "${MUT_DIR}/leadv2-fleet-unit.sh"
 mut_unit_always="$(bash "${MUT_DIR}/leadv2-fleet-unit.sh" print-unit --repo "${REPO_A}" --name a1 --cap 2 --restart always)"
 if printf '%s\n' "${mut_unit_always}" | grep -q '^Restart=always'; then
@@ -567,7 +615,7 @@ fi
 
 # c2-mut: stop-flag gate neutered (`if false; then` instead of the real
 # check) -> the runner must ignore FLEET-STOP and keep running lanes.
-sed 's/if fleet_stop_flag_present; then # c2-mut: stop-flag gate/if false; then # c2-mut: stop-flag gate (MUTATED)/' \
+sed 's/if fleet_stop_flag_present; then$/if false; then # (MUTATED)/' \
   "${FLEET_DIR}/leadv2-fleet-runner.sh" > "${MUT_DIR}/leadv2-fleet-runner.sh"
 STOP_FLAG_MUT="${TMP_ROOT}/FLEET-STOP-mut"
 touch "${STOP_FLAG_MUT}"
@@ -594,7 +642,7 @@ fi
 # Restore an unmutated runner first: the c2-mut step above overwrote
 # MUT_DIR's copy, and this case must isolate the c3-mut lib change only.
 cp "${FLEET_DIR}/leadv2-fleet-runner.sh" "${MUT_DIR}/leadv2-fleet-runner.sh"
-sed 's/if \[\[ "\${free}" -lt "\${floor}" \]\]; then # c3-mut: disk-floor gate/if false; then # c3-mut: disk-floor gate (MUTATED)/' \
+sed 's/if \[\[ "\${free}" -lt "\${floor}" \]\]; then$/if false; then # (MUTATED)/' \
   "${FLEET_DIR}/leadv2-fleet-lib.sh" > "${MUT_DIR}/leadv2-fleet-lib.sh"
 STATE_ROOT_MUT2="${TMP_ROOT}/state-mut2"
 rm -rf "${STATE_ROOT_MUT2}"; mkdir -p "${STATE_ROOT_MUT2}"
@@ -614,6 +662,208 @@ if [[ -f "${LANE_RAN_MUT}" ]]; then
   pass "c3-mut control: mutating the c3-mut line defeats the disk floor (RED as required — a lane ran past an impossible floor)"
 else
   fail "c3-mut control did not redden: mutated lib still refused past the impossible floor"
+fi
+
+# ---------------------------------------------------------------------------
+# Group I: round-4 edit 1 — a controlled stop exits with FLEET_STOP_EXIT_CODE,
+# and Restart=on-failure + SuccessExitStatus=<code> (from the REAL generated
+# unit) means systemd would never respawn it — a mini-systemd decision
+# function, not a live systemd instance (none on this host).
+# ---------------------------------------------------------------------------
+printf 'group I: Claim 4 (round-4) — controlled stop is not restarted\n'
+
+FLEET_STOP_EXIT_CODE_I="$(grep -m1 '^FLEET_STOP_EXIT_CODE=' "${FLEET_DIR}/leadv2-fleet-lib.sh" | cut -d= -f2)"
+if [[ -n "${FLEET_STOP_EXIT_CODE_I}" ]]; then
+  pass "mutation target present: FLEET_STOP_EXIT_CODE=${FLEET_STOP_EXIT_CODE_I} defined in leadv2-fleet-lib.sh"
+else
+  fail "FLEET_STOP_EXIT_CODE missing from leadv2-fleet-lib.sh — control has rotted"
+fi
+
+# would systemd, given Restart=<policy> and SuccessExitStatus=<csv>, respawn
+# a process that just exited with <code>? Prints YES/NO.
+mini_systemd_would_restart() { # <restart-policy> <success-exit-status-csv> <exit-code>
+  local policy="$1" success_csv="$2" code="$3" s
+  case "${policy}" in
+    always) echo YES; return ;;
+    no) echo NO; return ;;
+    on-failure)
+      [[ "${code}" -eq 0 ]] && { echo NO; return; }
+      for s in ${success_csv//,/ }; do
+        [[ "${code}" -eq "${s}" ]] && { echo NO; return; }
+      done
+      echo YES
+      ;;
+    *) echo UNKNOWN ;;
+  esac
+}
+
+REPO_I="${TMP_ROOT}/repo-i"
+mkdir -p "${REPO_I}"
+STOP_FLAG_I="${TMP_ROOT}/FLEET-STOP-i"
+touch "${STOP_FLAG_I}"   # pre-set: runner must self-stop on its very first check
+STATE_ROOT_I="${TMP_ROOT}/state-i"
+rm -rf "${STATE_ROOT_I}"; mkdir -p "${STATE_ROOT_I}"
+(
+  export LEADV2_FLEET_STATE_ROOT="${STATE_ROOT_I}"
+  export LEADV2_FLEET_STOP_FLAG="${STOP_FLAG_I}"
+  export LEADV2_FLEET_STATE_BIN="${STATE_SH}"
+  bash "${RUNNER_SH}" --repo "${REPO_I}" --name i1 >/dev/null 2>&1
+)
+runner_rc_i=$?
+
+unit_i_onfailure="$(bash "${UNIT_SH}" print-unit --repo "${REPO_I}" --name i1)"
+restart_i_onfailure="$(printf '%s\n' "${unit_i_onfailure}" | grep -m1 '^Restart=' | cut -d= -f2-)"
+success_i="$(printf '%s\n' "${unit_i_onfailure}" | grep -m1 '^SuccessExitStatus=' | cut -d= -f2-)"
+
+if [[ "${runner_rc_i}" == "${FLEET_STOP_EXIT_CODE_I}" ]]; then
+  pass "controlled stop (FLEET-STOP) exits with FLEET_STOP_EXIT_CODE=${runner_rc_i}"
+else
+  fail "controlled stop exited rc=${runner_rc_i}, expected FLEET_STOP_EXIT_CODE=${FLEET_STOP_EXIT_CODE_I}"
+fi
+
+decision_i="$(mini_systemd_would_restart "${restart_i_onfailure}" "${success_i}" "${runner_rc_i}")"
+if [[ "${decision_i}" == "NO" ]]; then
+  pass "Restart=${restart_i_onfailure} + SuccessExitStatus=${success_i}: a controlled stop (rc=${runner_rc_i}) would NOT be respawned"
+else
+  fail "expected NO respawn for a controlled stop, mini-systemd says: ${decision_i} (restart=${restart_i_onfailure} success=${success_i} rc=${runner_rc_i})"
+fi
+
+# Negative control (mission's own suggestion): put Restart=always back
+# (same REAL unit.sh, just --restart always) and show the SAME controlled-
+# stop exit code WOULD be respawned.
+unit_i_always="$(bash "${UNIT_SH}" print-unit --repo "${REPO_I}" --name i1 --restart always)"
+restart_i_always="$(printf '%s\n' "${unit_i_always}" | grep -m1 '^Restart=' | cut -d= -f2-)"
+decision_i_neg="$(mini_systemd_would_restart "${restart_i_always}" "${success_i}" "${runner_rc_i}")"
+if [[ "${decision_i_neg}" == "YES" ]]; then
+  pass "negative control: Restart=always respawns the SAME controlled-stop exit (rc=${runner_rc_i}) — reproduces the round-2/3 defect (RED as required)"
+else
+  fail "negative control did not redden: Restart=always unexpectedly did not respawn (${decision_i_neg})"
+fi
+
+# ---------------------------------------------------------------------------
+# Group J: round-4 edit 2 — the generated unit passes verification. No
+# systemd on this host, so systemd-analyze is used when present and a
+# structural parser stub otherwise (per the mission's own wording); either
+# way this is a real syntax check, not a string-equality echo of the fix.
+# ---------------------------------------------------------------------------
+printf 'group J: Claim 4 (round-4) — generated unit passes verification\n'
+
+verify_unit_stub() { # <unit-text-file> -> prints VALID or an INVALID reason; rc 0/1
+  local f="$1" wd_line env_line
+  wd_line="$(grep -m1 '^WorkingDirectory=' "${f}")"
+  if [[ "${wd_line}" == *'="'* || "${wd_line}" == *'"' ]]; then
+    echo "INVALID: WorkingDirectory value is quoted — systemd takes the rest of the line literally for this directive, so the quotes become part of the path"
+    return 1
+  fi
+  env_line="$(grep -m1 '^Environment=' "${f}")"
+  if [[ -n "${env_line}" ]] && [[ "${env_line}" != 'Environment="'*'"' ]]; then
+    echo "INVALID: Environment= assignment is not fully quoted — a value containing a space splits into extra directive tokens"
+    return 1
+  fi
+  echo "VALID"
+  return 0
+}
+
+verify_unit() { # <unit-text-file>
+  if command -v systemd-analyze >/dev/null 2>&1; then
+    systemd-analyze verify "$1" 2>&1 && echo VALID || echo "INVALID: systemd-analyze verify failed"
+  else
+    verify_unit_stub "$1"
+  fi
+}
+
+UNIT_TEXT_J="${TMP_ROOT}/unit-j.txt"
+printf '%s\n' "${unit_i_onfailure}" > "${UNIT_TEXT_J}"
+verify_j="$(verify_unit "${UNIT_TEXT_J}")"
+if [[ "${verify_j}" == "VALID" ]]; then
+  pass "generated unit passes verification: ${verify_j}"
+else
+  fail "generated unit failed verification: ${verify_j}"
+fi
+
+# Negative control: reintroduce the quoted WorkingDirectory (the round-1..3
+# shape) in a scratch copy of leadv2-fleet-unit.sh and show verification
+# rejects it.
+MUT_DIR_WD="${TMP_ROOT}/fleet-mut-wd"
+rm -rf "${MUT_DIR_WD}"; mkdir -p "${MUT_DIR_WD}"
+cp "${FLEET_DIR}"/*.sh "${MUT_DIR_WD}/"
+sed 's/^WorkingDirectory=\${2}$/WorkingDirectory="\${2}"/' \
+  "${FLEET_DIR}/leadv2-fleet-unit.sh" > "${MUT_DIR_WD}/leadv2-fleet-unit.sh"
+if ! grep -q '^WorkingDirectory="\${2}"$' "${MUT_DIR_WD}/leadv2-fleet-unit.sh"; then
+  fail "WorkingDirectory mutation did not land — control target text missing"
+else
+  mut_unit_j="$(bash "${MUT_DIR_WD}/leadv2-fleet-unit.sh" print-unit --repo "${REPO_I}" --name i1)"
+  UNIT_TEXT_J_MUT="${TMP_ROOT}/unit-j-mut.txt"
+  printf '%s\n' "${mut_unit_j}" > "${UNIT_TEXT_J_MUT}"
+  verify_j_mut="$(verify_unit "${UNIT_TEXT_J_MUT}")"
+  if [[ "${verify_j_mut}" == VALID ]]; then
+    fail "negative control did not redden: quoted WorkingDirectory still verified VALID"
+  else
+    pass "negative control: reintroducing quoted WorkingDirectory fails verification (RED as required): ${verify_j_mut}"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Group K: round-4 edit 4 — the reaper must refuse (never force) removal of
+# an uncommitted lane worktree. `--force` silently overrides the exact git
+# safety check "leave it in place on refusal" depends on, so it can destroy
+# in-flight work — worse than no reaper at all.
+# ---------------------------------------------------------------------------
+printf 'group K: Claim 4 (round-4) — reaper never force-deletes a dirty worktree\n'
+
+if ! grep -n 'worktree remove --force' "${FLEET_DIR}/leadv2-fleet-guard.sh" >/dev/null 2>&1; then
+  pass "mutation target present: leadv2-fleet-guard.sh no longer runs 'worktree remove --force'"
+else
+  fail "leadv2-fleet-guard.sh still runs worktree remove --force: $(grep -n 'worktree remove --force' "${FLEET_DIR}/leadv2-fleet-guard.sh")"
+fi
+
+REPO_K="${TMP_ROOT}/repo-k"
+mkdir -p "${REPO_K}"
+git -C "${REPO_K}" init -q
+git -C "${REPO_K}" -c user.email=t@example.com -c user.name=t commit --allow-empty -q -m init
+WT_ROOT_K="${REPO_K}/.claude/worktrees"
+mkdir -p "${WT_ROOT_K}"
+
+make_dirty_worktree() { # <path> <branch>
+  git -C "${REPO_K}" worktree add -q "$1" -b "$2" >/dev/null 2>&1
+  echo "uncommitted work — must never be deleted" >> "$1/UNCOMMITTED.txt"
+  git -C "$1" add UNCOMMITTED.txt >/dev/null 2>&1
+  : > "${1%/}.fleet-terminal"
+}
+
+WT_DIRTY="${WT_ROOT_K}/wt-dirty"
+make_dirty_worktree "${WT_DIRTY}" wt-dirty-branch
+STATE_ROOT_K="${TMP_ROOT}/state-k"
+rm -rf "${STATE_ROOT_K}"; mkdir -p "${STATE_ROOT_K}"
+LEADV2_FLEET_STATE_ROOT="${STATE_ROOT_K}" LEADV2_FLEET_STATE_BIN="${STATE_SH}" \
+  bash "${GUARD_SH}" --repo "${REPO_K}" --name k1 >/dev/null 2>&1
+if [[ -f "${WT_DIRTY}/UNCOMMITTED.txt" ]] && grep -q 'reap_refused' "${STATE_ROOT_K}/k1.stalled.log" 2>/dev/null; then
+  pass "guard (fixed, non-forcing): a dirty terminal-marked worktree is refused and left in place, uncommitted work intact"
+else
+  fail "guard reap must-refuse case failed: file_exists=$([[ -f "${WT_DIRTY}/UNCOMMITTED.txt" ]] && echo yes || echo no) log=$(cat "${STATE_ROOT_K}/k1.stalled.log" 2>/dev/null)"
+fi
+git -C "${REPO_K}" worktree remove --force "${WT_DIRTY}" >/dev/null 2>&1 || rm -rf "${REPO_K}/.git/worktrees/wt-dirty" 2>/dev/null
+
+# Negative control: reintroduce --force (the round-1..3 shape) on a scratch
+# copy of guard.sh — must delete the dirty worktree, reproducing the exact
+# data-loss regression edit 4 removes.
+sed 's/worktree remove "\${wt_trim}"/worktree remove --force "\${wt_trim}"/' \
+  "${FLEET_DIR}/leadv2-fleet-guard.sh" > "${MUT_DIR}/leadv2-fleet-guard.sh"
+if ! grep -q -- '--force "\${wt_trim}"' "${MUT_DIR}/leadv2-fleet-guard.sh"; then
+  fail "guard --force mutation did not land — control target text missing"
+else
+  WT_DIRTY2="${WT_ROOT_K}/wt-dirty2"
+  make_dirty_worktree "${WT_DIRTY2}" wt-dirty2-branch
+  STATE_ROOT_K2="${TMP_ROOT}/state-k2"
+  rm -rf "${STATE_ROOT_K2}"; mkdir -p "${STATE_ROOT_K2}"
+  LEADV2_FLEET_STATE_ROOT="${STATE_ROOT_K2}" LEADV2_FLEET_STATE_BIN="${STATE_SH}" \
+    bash "${MUT_DIR}/leadv2-fleet-guard.sh" --repo "${REPO_K}" --name k2 >/dev/null 2>&1
+  if [[ ! -d "${WT_DIRTY2}" ]]; then
+    pass "guard --force mutation control: reintroducing --force deletes the dirty worktree (RED as required — reproduces the pre-fix data-loss defect)"
+  else
+    fail "guard --force mutation control did not redden: dirty worktree survived even with --force reintroduced"
+    git -C "${REPO_K}" worktree remove --force "${WT_DIRTY2}" >/dev/null 2>&1 || rm -rf "${REPO_K}/.git/worktrees/wt-dirty2" 2>/dev/null
+  fi
 fi
 
 printf '\n%s of %s passed (fleet guard suite, macOS Darwin, no systemd — unit layer stubbed per mission)\n' "${PASS}" "$((PASS + FAIL))"

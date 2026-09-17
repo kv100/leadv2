@@ -2,10 +2,16 @@
 # leadv2-fleet-unit.sh — FLEET-RUNTIME-UNATTENDED-01
 #
 # Installs/updates a systemd USER unit + timer per lead-session instance,
-# parameterised by repo path and lane cap. `Restart=always` on the service;
-# reboot/disconnect survival via `loginctl enable-linger`. Two instances on
-# the target host per the plan: ~/leadv2 cap 2, ~/pe-fleet cap 1 — this
-# script installs ONE instance per invocation; call it twice for the pair.
+# parameterised by repo path and lane cap. `Restart=on-failure` on the
+# service, paired with `SuccessExitStatus=<FLEET_STOP_EXIT_CODE>` (shared
+# constant from leadv2-fleet-lib.sh) so a controlled stop (FLEET-STOP or any
+# of leadv2-fleet-runner.sh's three self-stops, all of which exit with that
+# code) is never respawned — round-2/3 shipped `Restart=always`, which
+# respawns after ANY exit including a deliberate one (round-2 review finding
+# H1); reboot/disconnect survival via `loginctl enable-linger`. Two
+# instances on the target host per the plan: ~/leadv2 cap 2, ~/pe-fleet cap
+# 1 — this script installs ONE instance per invocation; call it twice for
+# the pair.
 #
 # No `while true` polling loop lives in this file or in the unit it writes:
 # the unit's ExecStart is leadv2-fleet-runner.sh (sequential lane taker,
@@ -32,12 +38,14 @@
 #
 # Usage:
 #   leadv2-fleet-unit.sh install --repo <path> --name <instance> --cap <N>
-#                                 [--lane-cmd <cmd>] [--restart always|no] [--dry-run]
+#                                 [--lane-cmd <cmd>] [--restart on-failure|always|no] [--dry-run]
 #   leadv2-fleet-unit.sh print-unit --repo <path> --name <instance> --cap <N>
-#                                    [--lane-cmd <cmd>] [--restart always|no]
+#                                    [--lane-cmd <cmd>] [--restart on-failure|always|no]
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=leadv2-fleet-lib.sh
+. "${SCRIPT_DIR}/leadv2-fleet-lib.sh"
 SYSTEMCTL_BIN="${LEADV2_FLEET_SYSTEMCTL_BIN:-systemctl}"
 LOGINCTL_BIN="${LEADV2_FLEET_LOGINCTL_BIN:-loginctl}"
 UNIT_DIR="${LEADV2_FLEET_UNIT_DIR:-${HOME}/.config/systemd/user}"
@@ -45,7 +53,7 @@ UNIT_DIR="${LEADV2_FLEET_UNIT_DIR:-${HOME}/.config/systemd/user}"
 REPO=""
 NAME=""
 CAP=1
-RESTART="always"
+RESTART="on-failure"
 LANE_CMD=""
 DRY_RUN=0
 SUB=""
@@ -53,7 +61,7 @@ SUB=""
 usage() {
   cat <<'EOF'
 usage: leadv2-fleet-unit.sh {install|print-unit} --repo <path> --name <instance>
-                             [--cap N] [--lane-cmd <cmd>] [--restart always|no] [--dry-run]
+                             [--cap N] [--lane-cmd <cmd>] [--restart on-failure|always|no] [--dry-run]
 EOF
 }
 
@@ -81,7 +89,7 @@ _guard_service_name() { printf 'leadv2-fleet-%s-guard.service\n' "$1"; }
 
 _render_service() { # <name> <repo> <cap> <restart> [<lane_cmd>]
   local env_line=""
-  [[ -n "${5:-}" ]] && env_line="Environment=LEADV2_FLEET_LANE_CMD=${5}"
+  [[ -n "${5:-}" ]] && env_line="Environment=\"LEADV2_FLEET_LANE_CMD=${5}\""
   cat <<EOF
 [Unit]
 Description=leadv2 fleet runner (${1})
@@ -90,10 +98,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory="${2}"
+WorkingDirectory=${2}
 ${env_line}
 ExecStart="${SCRIPT_DIR}/leadv2-fleet-runner.sh" --repo "${2}" --name "${1}" --cap "${3}"
-Restart=${4} # c1-mut: restart policy passthrough
+Restart=${4}
+SuccessExitStatus=${FLEET_STOP_EXIT_CODE}
 RestartSec=30
 
 [Install]

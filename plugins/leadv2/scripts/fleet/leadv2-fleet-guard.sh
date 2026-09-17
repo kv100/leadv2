@@ -16,10 +16,14 @@
 # internal schema (docs/leadv2/active.yaml / the live registry) — that file
 # is owned by other lanes under concurrent edit this session and is
 # off-limits to depend on here. Instead, leadv2-fleet-runner.sh (this same
-# deliverable) writes a `.fleet-terminal` marker file into a lane worktree
-# the moment its own lane command returns a terminal rc; this guard only
-# reaps worktrees carrying that marker. This keeps the fleet runtime
-# self-contained and decoupled from the registry's internal shape.
+# deliverable) writes a `<worktree-dir>.fleet-terminal` marker file — a
+# SIBLING of the lane worktree directory, never inside it (round-4 fix: a
+# non-forcing `git worktree remove`, see edit 4 below, refuses on ANY
+# untracked file in the tree, so an in-tree marker would have permanently
+# blocked reaping every cleanly-landed lane) — the moment its own lane
+# command returns a terminal rc; this guard only reaps worktrees carrying
+# that sibling marker. This keeps the fleet runtime self-contained and
+# decoupled from the registry's internal shape.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,19 +61,22 @@ mkdir -p "${FLEET_STATE_ROOT}"
 reaped=0
 stalled=0
 
-# 1. Reap terminal-marked lane worktrees. `git worktree remove --force`
-#    refuses on a locked/submodule-carrying tree; round-1 fell back to
-#    `rm -rf` on refusal, which can destroy an in-flight lane's uncommitted
-#    work and leaves a dangling `.git/worktrees` entry — the mission's own
-#    "a half-merged lane is worse than a running one" rule. Round-2 fix
-#    (H4): on refusal, record `reap_refused` and leave the tree untouched;
-#    a human/next pass decides, this script never deletes on a refusal.
+# 1. Reap terminal-marked lane worktrees. Plain (non-forcing)
+#    `git worktree remove` refuses on a dirty/locked/submodule-carrying
+#    tree; round-1 passed `--force`, which overrides that refusal and can
+#    delete an in-flight lane's uncommitted work — worse than the "a
+#    half-merged lane is worse than a running one" rule it was meant to
+#    honor, since `--force` silently bypasses the exact safety check that
+#    rule depends on. Round-4 fix: never pass `--force`; on refusal, record
+#    `reap_refused` and leave the tree untouched — a human/next pass
+#    decides, this script never deletes on a refusal.
 if [[ -d "${WORKTREE_ROOT}" ]]; then
   for wt in "${WORKTREE_ROOT}"/*/; do
     [[ -d "${wt}" ]] || continue
-    if [[ -f "${wt}.fleet-terminal" ]]; then
-      wt_trim="${wt%/}"
-      if git -C "${REPO}" worktree remove --force "${wt_trim}" >/dev/null 2>&1; then
+    wt_trim="${wt%/}"
+    if [[ -f "${wt_trim}.fleet-terminal" ]]; then
+      if git -C "${REPO}" worktree remove "${wt_trim}" >/dev/null 2>&1; then
+        rm -f "${wt_trim}.fleet-terminal"
         reaped=$((reaped + 1))
         printf '[fleet-guard] reaped terminal worktree %s\n' "${wt_trim}"
       else

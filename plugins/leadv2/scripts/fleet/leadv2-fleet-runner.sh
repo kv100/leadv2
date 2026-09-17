@@ -7,17 +7,22 @@
 # supervision (bring the process back if it dies) is systemd's job
 # (Restart=always in the generated unit, see leadv2-fleet-unit.sh).
 #
-# Restart=always means exactly that: systemd relaunches this script after
-# ANY exit, clean or not — a controlled stop is not exempt (round-2 fix:
-# H1 in the round-1 review found the runner's header claiming otherwise,
-# and the resulting flap: set alive, re-detect the same stop condition,
-# set stopped, exit, repeat every RestartSec). The fix is on THIS side, not
-# systemd's: the loop below never writes status=alive until EVERY
-# self-stop check has already passed for this iteration, so a restarted
-# process that finds the same stop condition still true goes straight back
-# to `stopped` with the same reason and never visibly flaps through
-# `alive`. Removing the stop flag (or the disk/streak/quota condition
-# clearing) lets the next restart proceed normally — no reinstall needed.
+# Restart=on-failure with SuccessExitStatus=<FLEET_STOP_EXIT_CODE> (see
+# leadv2-fleet-unit.sh, leadv2-fleet-lib.sh) — round-2/3 shipped
+# Restart=always, which relaunches this script after ANY exit, clean or not
+# (round-2 review finding H1), producing a flap: set alive, re-detect the
+# same stop condition, set stopped, exit, repeat every RestartSec. Round-4
+# fixes it on BOTH sides: FLEET-STOP and each of the three self-stops below
+# exit with FLEET_STOP_EXIT_CODE, which SuccessExitStatus= tells systemd to
+# treat as a clean stop, so Restart=on-failure never respawns it. The loop
+# below still never writes status=alive until EVERY self-stop check has
+# already passed for this iteration — defense in depth for a genuine
+# failure exit (e.g. `unwired` below, plain exit 2, which IS meant to be
+# retried by Restart=on-failure): a restarted process that finds the same
+# stop condition still true goes straight back to `stopped` with the same
+# reason and never visibly flaps through `alive`. Removing the stop flag
+# (or the disk/streak/quota condition clearing) lets the next restart
+# proceed normally — no reinstall needed.
 #
 # This is deliberately NOT the supervisor daemon retired 2026-08-17
 # (leadv2-fanout.sh / leadv2-supervise-loop.sh): it holds no health-check
@@ -36,16 +41,21 @@
 #   rc != 0     lane reached a terminal without landing — increments the streak
 #   stdout      an optional line `FLEET_WORKTREE=<path>` names the lane's
 #               worktree; when present, this script touches
-#               `<path>/.fleet-terminal` the moment the lane cmd returns
+#               `<path>.fleet-terminal` (a SIBLING file next to the worktree
+#               directory, never inside it — round-4 fix: guard.sh's
+#               reaper no longer passes `--force`, and a non-forcing
+#               `git worktree remove` refuses on any untracked file, so an
+#               in-tree marker would have blocked reaping every cleanly-
+#               landed lane forever) the moment the lane cmd returns
 #               (either rc), which is the marker leadv2-fleet-guard.sh reaps
 #               on (round-2 fix: H5 — nothing wrote this marker in round 1,
 #               so the guard's reap step was dead code in production).
 # `LEADV2_FLEET_LANE_CMD` unset/empty is a runner-level wiring gap, not a
 # lane outcome: it is detected BEFORE any lane is attempted (never counted
 # against the no-landing streak, round-2 fix H2) and self-stops immediately
-# with reason `unwired`, exit 2, so Restart=always keeps retrying it (and
-# keeps reporting `unwired` truthfully) rather than a fresh install silently
-# racking up a false `no_landing_streak` diagnosis.
+# with reason `unwired`, exit 2, so Restart=on-failure keeps retrying it
+# (and keeps reporting `unwired` truthfully) rather than a fresh install
+# silently racking up a false `no_landing_streak` diagnosis.
 #
 # --cap (round-2 fix H3): this runner is deliberately sequential (never two
 # lanes in flight per instance — see above) — "cap" is not this script's own
@@ -119,14 +129,14 @@ _run_lane_cmd() { # (LEADV2_FLEET_LANE_CMD already validated non-empty by the ca
 iterations=0
 
 while true; do
-  if fleet_stop_flag_present; then # c2-mut: stop-flag gate
+  if fleet_stop_flag_present; then
     _stop "stop_flag"
-    exit 0
+    exit "${FLEET_STOP_EXIT_CODE}"
   fi
 
   if ! floor_reason="$(fleet_disk_floor_ok "${REPO}" "${FLOOR_KB}")"; then
     _stop "disk_floor: ${floor_reason}"
-    exit 0
+    exit "${FLEET_STOP_EXIT_CODE}"
   fi
 
   if [[ -z "${LEADV2_FLEET_LANE_CMD:-}" ]]; then
@@ -139,12 +149,12 @@ while true; do
   streak="${streak:-0}"
   if [[ "${streak}" -ge "${MAX_STREAK}" ]]; then
     _stop "no_landing_streak: ${streak} consecutive lanes without landing (max ${MAX_STREAK})"
-    exit 0
+    exit "${FLEET_STOP_EXIT_CODE}"
   fi
 
   if ! arm="$(fleet_any_arm_available)"; then
     _stop "$(fleet_stop_kind_for_no_arm): $(fleet_no_arm_reasons)"
-    exit 0
+    exit "${FLEET_STOP_EXIT_CODE}"
   fi
 
   # All self-stop checks passed for this iteration — only now is it true.
@@ -161,7 +171,13 @@ while true; do
   "${STATE_BIN}" inc-field --name "${NAME}" --field lanes_in_flight --by -1 >/dev/null
 
   if [[ -n "${LANE_WORKTREE}" && -d "${LANE_WORKTREE}" ]]; then
-    : > "${LANE_WORKTREE}/.fleet-terminal"
+    # Sibling file (round-4 fix), never inside the worktree: guard.sh's
+    # reaper now uses a non-forcing `git worktree remove` (edit 4), and a
+    # non-forcing remove refuses on ANY untracked file in the tree — our own
+    # in-tree marker would have permanently blocked reaping every cleanly-
+    # landed lane. Naming it "<worktree-dir>.fleet-terminal" next to the
+    # worktree directory keeps it out of git's dirty-check entirely.
+    : > "${LANE_WORKTREE%/}.fleet-terminal"
   fi
 
   if [[ "${lane_rc}" -eq 0 ]]; then

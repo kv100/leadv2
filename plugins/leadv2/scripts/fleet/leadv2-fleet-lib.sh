@@ -30,6 +30,13 @@ FLEET_CLAUDE_CREDENTIALS="${LEADV2_CLAUDE_CREDENTIALS_FILE:-${HOME}/.claude/.cre
 FLEET_QUOTA_STATUS_BIN="${LEADV2_FLEET_QUOTA_STATUS_BIN:-${FLEET_LIB_DIR}/../leadv2-quota-status.sh}"
 FLEET_DISK_FLOOR_KB_DEFAULT=2097152   # 2 GiB in KiB — df -Pk reports KiB on both macOS and Linux
 
+# Deliberate self-stop exit code (FLEET-STOP or any of the three self-stop
+# conditions in leadv2-fleet-runner.sh). leadv2-fleet-unit.sh renders this
+# same value into the generated unit's SuccessExitStatus= so Restart=on-
+# failure never respawns a controlled stop (round-4 fix — round-2/3 shipped
+# Restart=always, which respawns after ANY exit, controlled or not).
+FLEET_STOP_EXIT_CODE=42
+
 fleet_now_epoch() { date +%s; }
 fleet_now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -55,7 +62,7 @@ fleet_free_kb() { # <path>
 fleet_disk_floor_ok() { # <path> [floor_kb]
   local p="$1" floor="${2:-${FLEET_DISK_FLOOR_KB_DEFAULT}}" free
   free="$(fleet_free_kb "${p}")"
-  if [[ "${free}" -lt "${floor}" ]]; then # c3-mut: disk-floor gate
+  if [[ "${free}" -lt "${floor}" ]]; then
     printf 'disk_floor free_kb=%s floor_kb=%s\n' "${free}" "${floor}"
     return 1
   fi
