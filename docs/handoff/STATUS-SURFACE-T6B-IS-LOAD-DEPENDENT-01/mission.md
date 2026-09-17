@@ -4,7 +4,7 @@ Standing rules: `docs/handoff/MAIN-RED-SUITES-CENSUS-01/lane-rules.md`. Read the
 
 ## The defect, observed
 
-`_t6b` in `plugins/leadv2/scripts/tests/test-status-surface-bash32.sh` takes **two independent
+`_t6b` in `tests/test-status-surface-bash32.sh` (repo-root `tests/`, NOT `plugins/leadv2/scripts/tests/`) takes **two independent
 live renders** of the status surface — one under a minimal environment, one full — and asserts
 that their lane-row counts are equal.
 
