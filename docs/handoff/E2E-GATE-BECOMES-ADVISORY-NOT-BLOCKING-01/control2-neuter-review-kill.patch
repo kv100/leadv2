@@ -1,0 +1,14 @@
+--- a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+@@ -4688,9 +4688,8 @@
+   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+   _rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
+   emit decision "review_gate task=${TASK} status=fail author=${AUTHOR} reviewer=${reviewer} critical=${FINDINGS_CRITICAL} high=${FINDINGS_HIGH}${_rgf_dnm}"
+-  _dl_note dead review_verdict_fail "critical=${FINDINGS_CRITICAL} high=${FINDINGS_HIGH}"
+-  _stamp_review_terminal fail
+-  exit 7
++  emit decision "control2-mutation review_verdict_fail kill neutered"
++  :
+ fi
+ # C5-BLOCK-BEGIN -- explicit sentinel, not a "slice to the first `fi`" heuristic: round-3
+ # review finding, the old heuristic silently truncated at whatever `fi` came first and so

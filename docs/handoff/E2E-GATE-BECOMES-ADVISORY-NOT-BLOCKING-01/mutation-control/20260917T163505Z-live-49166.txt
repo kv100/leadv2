@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-e2e-gate-is-advisory.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+anchor=docs/handoff/E2E-GATE-BECOMES-ADVISORY-NOT-BLOCKING-01/control2-neuter-review-kill.patch
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] PASS: A1: e2e-gate.md still reports status: fail / reason: e2e_regression with the failing suite named
+diff_hash=7df4559ca545a9800a81630d144c0688a4c9f1213b82178dac557a1e01a331de
+lane_diff_hash=09468a7a32d8699a7a5757a54e5ab34858cd5d7e24ae38312e5c1d6acada7876
+porcelain_clean=yes
+restored=yes

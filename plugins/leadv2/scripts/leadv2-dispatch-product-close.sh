@@ -4130,13 +4130,22 @@ else
       done
       # NOT dead, NOT exit 8 -- falls through to the review gate below.
     else
-      # wave2 finding 6: an e2e regression is a `dead` outcome in the ledger taxonomy --
-      # falling through into the review gate below (which CAN end in `landed`) let a real
-      # regression be finalized as delivered. Distinct from the kill-switch branch above
-      # (E2E_ON!=1 is a deliberate disabled state, never a failure) -- this only fires when
-      # the gate actually RAN and reported a real non-zero verdict.
+      # E2E-GATE-BECOMES-ADVISORY-NOT-BLOCKING-01 (founder decision, 2026-09-17):
+      # a red e2e verdict is REPORTED -- the e2e-gate.md write below plus the
+      # advisory journal line -- and the lane FALLS THROUGH to the review gate,
+      # which remains the judge and keeps its kill. Supersedes the wave2
+      # finding 6 rule that made this branch a `dead` terminal + exit 8
+      # (measured basis: of 24 lanes killed with e2e_regression, 22 were
+      # resolvable and 22/22 reproduced red on main -- zero confirmed genuine
+      # catches -- at 101.1 wall-hours, ~12.7% of lane wall-clock, an 11% gate
+      # pass rate; review stayed fatal throughout: 18 review_gate status=fail,
+      # 11 review_verdict_fail + 3 review_dod_fail terminals). Distinct from
+      # the kill-switch branch above (E2E_ON!=1 is a deliberate disabled state,
+      # never a failure) -- this only fires when the gate actually RAN and
+      # reported a real non-zero verdict. e2e_timeout is a separate row and
+      # keeps its own parked cause.
       # THE-E2E-RUNG-CALLS-PRE-EXISTING-RED-A-REGRESSION-01 item 2: name the
-      # failing suites in the terminal line itself -- previously only
+      # failing suites in the artifact -- previously only
       # cause=e2e_regression rc=<n> reached the journal, and reading which
       # suite(s) blocked required opening e2e-gate.log/e2e-gate.md separately.
       _failing_suites_csv="${_own_csv}"
@@ -4152,8 +4161,12 @@ else
       else
         printf 'status: fail\nreason: e2e_regression\nrc: %s\nfailing_suites: %s\n' "${e2e_rc}" "${_failing_suites_csv}" > "${HANDOFF}/e2e-gate.md"
       fi
-      _dl_note dead e2e_regression "rc=${e2e_rc} failing_suites=${_failing_suites_csv}"
-      exit 8
+      # Advisory journal line -- a decision EVENT, not a dispatch_terminal row:
+      # this lane's terminal is whichever review-gate branch below ends it
+      # (landed / dead review_* / parked). Advisory means reported and not
+      # fatal, never not measured.
+      emit decision "e2e_regression task=${TASK} status=advisory rc=${e2e_rc} failing_suites=${_failing_suites_csv} note=e2e_gate_is_advisory_not_blocking falls_through=review_gate"
+      # NOT dead, NOT exit 8 -- falls through to the review gate below.
     fi
   fi
 fi

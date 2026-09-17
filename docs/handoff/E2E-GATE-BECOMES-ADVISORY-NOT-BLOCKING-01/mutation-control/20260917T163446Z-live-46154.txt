@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-e2e-gate-is-advisory.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+anchor=docs/handoff/E2E-GATE-BECOMES-ADVISORY-NOT-BLOCKING-01/control1-reinsert-dead-exit8.patch
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: advisory branch NOT found in product-close — decision comment or emit line missing
+diff_hash=70a0bf800b60be284e6e4f20e10a7784cb2e182fb951dd238973e02b5193d7c1
+lane_diff_hash=09468a7a32d8699a7a5757a54e5ab34858cd5d7e24ae38312e5c1d6acada7876
+porcelain_clean=yes
+restored=yes

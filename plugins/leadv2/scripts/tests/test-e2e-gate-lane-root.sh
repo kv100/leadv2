@@ -5,7 +5,10 @@
 # suite family), C4 (machine-readable failure block), C5 (classifier suite
 # location), and case (g) (other-repo no-op). Seven cases:
 #   (a) green plugin-suite lane → e2e-root line names the worktree, pass
-#   (b) lane's own suite fails → dead/e2e_regression (real failures still die)
+#   (b) lane's own suite fails → e2e_regression verdict, advisory since
+#       E2E-GATE-BECOMES-ADVISORY-NOT-BLOCKING-01 (founder 2026-09-17):
+#       exit 0, no dead terminal; the dead-guard lives in
+#       test-e2e-gate-is-advisory.sh
 #   (c) foreign suite fails → foreign_failure, parked not dead
 #   (d) root escape → blocked with named reason, no suite executed
 #   (e) D2 regression guard → run-all SKIP out_of_tree / plugins/ preferred
@@ -145,7 +148,9 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
-# Case (b): lane's OWN suite fails → dead/e2e_regression
+# Case (b): lane's OWN suite fails → e2e_regression verdict (advisory:
+# E2E-GATE-BECOMES-ADVISORY-NOT-BLOCKING-01, founder 2026-09-17 — the old
+# dead/exit-8 assertion is superseded; no dead terminal may regrow here)
 # ════════════════════════════════════════════════════════════════════════════
 CB="${TMP}/case-b"; CB_WT="${CB}-wt"
 mkdir -p "${CB}"
@@ -153,10 +158,10 @@ build_worktree_fixture "${CB}" "${CB_WT}" "broken-A" "B-fixed"
 lv2_assert_scratch_repo "${CB}"
 
 run_gate "${CB}" "${CB_WT}" "cb00sig1" "A.txt" "1"
-if [[ "${RC}" -eq 8 ]] && grep -q 'reason: e2e_regression' <<<"${MD}"; then
-  pass "(b) own regression: dead/e2e_regression (real failures still die)"
+if [[ "${RC}" -eq 0 ]] && grep -q 'reason: e2e_regression' <<<"${MD}"; then
+  pass "(b) own regression: e2e_regression verdict reported, advisory fall-through (exit 0, not 8)"
 else
-  fail "(b) own regression: expected exit 8 + e2e_regression, got rc=${RC} md=<${MD}>"
+  fail "(b) own regression: expected exit 0 + e2e_regression verdict, got rc=${RC} md=<${MD}>"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
