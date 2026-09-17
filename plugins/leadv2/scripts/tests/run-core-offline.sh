@@ -210,6 +210,21 @@ if [[ "${_LV2_CORE_OFFLINE_LOCK_HELD:-0}" == "1" ]]; then
   printf 'pid=%s host=%s since=%s\n' "$$" "$(hostname 2>/dev/null || printf unknown)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$LEADV2_SUITE_LOCK_FILE" 2>/dev/null || true
 fi
+# RUNNER-LEAKS-ITS-LOCK-FLAG-INTO-THE-SUITES-IT-RUNS-01: this flag's only job
+# is telling THIS process it is the flock-held re-exec child (checked above,
+# nowhere below). It is exported into this process's environment by the
+# parent's `env _LV2_CORE_OFFLINE_LOCK_HELD=1 bash ...` re-exec, which means
+# every suite body run_check later launches -- including a suite that itself
+# invokes this very script as ITS subject under test, e.g.
+# test-core-offline-lock-01.sh probing real flock acquisition -- inherits it
+# too, and silently believes IT already holds the lock, skipping real
+# acquisition. Unset it now, once its job is done and before any suite runs,
+# so it cannot leak past this point. Not caught by the CRITICAL-1 round-2
+# scrub below: that denylist matches `LEADV2_*`/`CLAUDE_*`/`GIT_CONFIG*`, and
+# this flag is named `_LV2_*` (a different prefix), so it survives the scrub
+# untouched unless unset here explicitly.
+# MUTATION-CONTROL: unset disabled
+unset _LV2_CORE_OFFLINE_LOCK_HELD
 
 if [ -n "${LEADV2_SUITE_LOCK_PROBE:-}" ]; then
   printf -- '[CORE-OFFLINE] lock-probe acquired file=%s\n' "$LEADV2_SUITE_LOCK_FILE"
@@ -298,6 +313,32 @@ _core_offline_suite_is_owned() {
   return 1
 }
 
+# RUNNER-LEAKS-ITS-LOCK-FLAG-INTO-THE-SUITES-IT-RUNS-01: these two suites'
+# own acceptance cases deliberately read the REAL, non-sandboxed
+# ~/.claude/cache and ~/Projects state as ground truth (case (g) reads the
+# real persona-engine repo; cases 6/8/13 read the real journal/ledger).
+# Confirmed by reproduction (LEADV2_SUITE_SHARDS=2 vs =1, same suites,
+# LEADV2_SUITE_LOCK_DISABLE=1): under sharding (>1) every suite gets an
+# empty HOME rooted in its own private fixture dir for isolation (see the
+# comment above suite_home below); these two then resolve their real-path
+# reads against that empty sandbox instead of the true $HOME and always
+# fail to find the files, deterministically, not as a flake. Both suites
+# are read-only against the real paths (copies/reads, never writes outside
+# their own internally-managed fake homes), so exempting just these two
+# from the sandbox does not reopen the pollution risk the sandbox exists to
+# prevent for suites that do write.
+_CORE_OFFLINE_REAL_HOME_SUITES=(
+  "dod gate suite registration (both map forms + run-all selection)"
+  "shared-sink test guard (TESTS-POLLUTE-REAL-JOURNAL-01)"
+)
+_core_offline_suite_needs_real_home() {
+  local name="$1" o
+  for o in "${_CORE_OFFLINE_REAL_HOME_SUITES[@]}"; do
+    [[ "$name" == "$o" ]] && return 0
+  done
+  return 1
+}
+
 run_check() {
   local name="$1"
   shift
@@ -322,7 +363,7 @@ run_check() {
   # so give every sharded suite an otherwise-empty HOME rooted in its
   # already-private fixture directory.  Keep serial mode byte-for-byte and
   # environment-compatible with the pre-sharding runner.
-  if [[ "${LEADV2_SUITE_SHARDS:-1}" -gt 1 ]]; then
+  if [[ "${LEADV2_SUITE_SHARDS:-1}" -gt 1 ]] && ! _core_offline_suite_needs_real_home "$name"; then
     local suite_tmp
     suite_tmp="$(mktemp -d "$RUN_TMP/suite.XXXXXX")"
     suite_home="$suite_tmp/home"
