@@ -105,6 +105,14 @@ print(any(s.get('task_id')=='$2' for s in d.get('sessions', [])))
 
 _fixture_row() { # <active.yaml> <task_id> <pid> <repo> [log_path]
   local active="$1" tid="$2" pid="$3" repo="$4" log_path="${5:-}"
+  # E0 (D2-M5) rejects a row whose worktree realpaths to the project root as a
+  # structural contradiction -- unknown:contradictory_rows / worktree_is_project_root
+  # -- BEFORE any other rung. A live lane never has that shape: it registers the
+  # per-task worktree under <root>/.claude/worktrees/. Fixture rows must do the
+  # same, or every rung below E0 is unreachable (the 14/17
+  # unknown:contradictory_rows collapse this suite measured 2026-09-17).
+  local lane_wt="${repo}/.claude/worktrees/${tid}"
+  mkdir -p "$lane_wt"
   cat > "$active" <<YAML
 sessions:
   - task_id: ${tid}
@@ -113,7 +121,7 @@ sessions:
     phase: build
     pid: ${pid}
     pid_birth: null
-    worktree: "${repo}"
+    worktree: "${lane_wt}"
     protocol_version: 2
     backend: terminal
     ${log_path:+log_path: "${log_path}"}
@@ -544,11 +552,18 @@ test_12_unreadable_dispatch_dir_is_unknown() {
   fi
 }
 
-# ── Test 13: fix round 2b — MULTIPLE registry rows, pointer on a NON-last row ──
+# ── Test 13: MULTIPLE registry rows for one task_id are an explicit E0
+# contradiction. Pre-E0 this case asserted that E4 reaches a dispatch pointer
+# sitting on a NON-last row through last-row-wins; D2-M5 (D2-SINGLE-LIVENESS-
+# VERDICT #14/#15, leadv2-lane-liveness.sh resolve() E0 rung) made duplicate
+# rows a structural contradiction that no lower rung may promote past, so the
+# case now asserts that verdict DELIBERATELY instead of tripping over the
+# guard. The deliverable setup is kept: it proves real finished evidence was
+# present and E0 still refuses to promote it. ──
 
-test_13_multi_row_pointer_only_on_nonlast_row() {
-  log "Test 13: founder-shaped id, 2 rows — dispatch pointer on row 1, NO log_path on the LAST row -> finished_unlanded:*"
-  local repo state active_path tid dead_pid verdict
+test_13_multi_row_registry_is_explicit_e0_contradiction() {
+  log "Test 13: founder-shaped id, 2 rows — dispatch pointer + deliverable present, but multi-row is E0-contradictory (never promoted)"
+  local repo state active_path tid dead_pid verdict lane_wt src reason
   read -r repo state < <(_new_fixture) || { fail "Test 13: fixture"; return; }
   active_path="$(_active_yaml "$repo" "$state")"
   mkdir -p "$(dirname "$active_path")"
@@ -560,7 +575,8 @@ test_13_multi_row_pointer_only_on_nonlast_row() {
   # output). `sessions` (last-row-wins) handed E4 that pointerless row, the
   # dispatch dir was unreachable, and the lane read dead:no_log_artifact with
   # its deliverable on disk.
-  mkdir -p "$repo/docs/handoff/${tid}" "$repo/docs/handoff/dispatch-4e19b2c8"
+  lane_wt="${repo}/.claude/worktrees/${tid}"
+  mkdir -p "$lane_wt" "$repo/docs/handoff/${tid}" "$repo/docs/handoff/dispatch-4e19b2c8"
   printf -- 'planning note\n' > "$repo/docs/handoff/${tid}/brain.yaml"
   printf -- '# developer.full.md\nRound complete; nothing committed.\n' \
     > "$repo/docs/handoff/dispatch-4e19b2c8/developer.full.md"
@@ -572,7 +588,7 @@ sessions:
     phase: review
     pid: ${dead_pid}
     pid_birth: null
-    worktree: "${repo}"
+    worktree: "${lane_wt}"
     protocol_version: 2
     backend: terminal
     log_path: "docs/handoff/dispatch-4e19b2c8/developer.stream.jsonl"
@@ -584,7 +600,7 @@ sessions:
     phase: spawning
     pid: ${dead_pid}
     pid_birth: null
-    worktree: "${repo}"
+    worktree: "${lane_wt}"
     protocol_version: 2
     backend: terminal
     last_pulse_at: "2020-01-01T00:00:00+00:00"
@@ -596,10 +612,57 @@ YAML
     || { fail "Test 13: setup — tid dir must hold no deliverable"; return; }
 
   verdict="$(_verdict "$repo" "$state" "$tid")"
-  if [[ "$verdict" =~ ^finished_unlanded:[0-9]+s$ ]]; then
-    pass "Test 13: verdict=$verdict (pointer on a non-last row still reaches the deliverable)"
+  src="$(_json_field "$repo" "$state" "$tid" "d.get('source')")"
+  reason="$(_json_field "$repo" "$state" "$tid" "d.get('reason')")"
+  if [[ "$verdict" == "unknown:contradictory_rows" && "$src" == "e0_contradiction_guard" && "$reason" == "multiple_rows" ]]; then
+    pass "Test 13: verdict=$verdict source=$src reason=$reason (multi-row registry is an explicit E0 contradiction; deliverable present but never promoted past it)"
   else
-    fail "Test 13: verdict=$verdict (must be finished_unlanded:<age>s — last-row-wins hid the dispatch pointer)"
+    fail "Test 13: verdict=$verdict source=$src reason=$reason (must be unknown:contradictory_rows / e0_contradiction_guard / multiple_rows — no rung may promote past E0)"
+  fi
+}
+
+# ── Test 14: E0 worktree==project-root contract, asserted DELIBERATELY ──
+# The E0 rung also rejects the single-row shape whose worktree realpaths to
+# the project root (reason worktree_is_project_root). No live lane has that
+# shape, and no other case in this suite may register it — it is kept here as
+# an explicit, positive assertion of the contradiction so a future fixture
+# regression collapses loudly here instead of silently blinding every rung.
+
+test_14_worktree_is_project_root_is_explicit_e0_contradiction() {
+  log "Test 14: row with worktree == project root -> unknown:contradictory_rows / e0_contradiction_guard / worktree_is_project_root"
+  local repo state active_path tid dead_pid verdict src reason
+  read -r repo state < <(_new_fixture) || { fail "Test 14: fixture"; return; }
+  active_path="$(_active_yaml "$repo" "$state")"
+  mkdir -p "$(dirname "$active_path")"
+  dead_pid="$(_dead_pid)"
+  tid="D2-WT-IS-ROOT"
+  mkdir -p "$repo/docs/handoff/${tid}"
+  printf -- '# developer.full.md\nRound complete; nothing committed.\n' \
+    > "$repo/docs/handoff/${tid}/developer.full.md"
+  # Deliberately the ILLEGAL shape: worktree == project root. Deliverable is
+  # present and non-empty, so the only thing standing between this lane and
+  # finished_unlanded is E0 — which is exactly what is under assertion.
+  cat > "$active_path" <<YAML
+sessions:
+  - task_id: ${tid}
+    session_id: d2-${tid}
+    started_at: "2020-01-01T00:00:00+00:00"
+    phase: build
+    pid: ${dead_pid}
+    pid_birth: null
+    worktree: "${repo}"
+    protocol_version: 2
+    backend: terminal
+    last_pulse_at: "2020-01-01T00:00:00+00:00"
+    stale: false
+YAML
+  verdict="$(_verdict "$repo" "$state" "$tid")"
+  src="$(_json_field "$repo" "$state" "$tid" "d.get('source')")"
+  reason="$(_json_field "$repo" "$state" "$tid" "d.get('reason')")"
+  if [[ "$verdict" == "unknown:contradictory_rows" && "$src" == "e0_contradiction_guard" && "$reason" == "worktree_is_project_root" ]]; then
+    pass "Test 14: verdict=$verdict source=$src reason=$reason (worktree==project-root asserted explicitly, never resolved)"
+  else
+    fail "Test 14: verdict=$verdict source=$src reason=$reason (must be unknown:contradictory_rows / e0_contradiction_guard / worktree_is_project_root)"
   fi
 }
 
@@ -617,7 +680,8 @@ test_9_json_evidence_trail
 test_10_founder_id_finds_dispatch_dir_deliverable
 test_11_founder_id_no_deliverable_anywhere_still_dead
 test_12_unreadable_dispatch_dir_is_unknown
-test_13_multi_row_pointer_only_on_nonlast_row
+test_13_multi_row_registry_is_explicit_e0_contradiction
+test_14_worktree_is_project_root_is_explicit_e0_contradiction
 
 echo
 log "==================================================================="

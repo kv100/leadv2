@@ -26,6 +26,15 @@ PLUGIN_DIR="$tmp/plugin"
 mkdir -p "$PLUGIN_DIR"
 cp -a "${REAL_PLUGIN_DIR}/scripts" "$PLUGIN_DIR/"
 cp -a "${REAL_PLUGIN_DIR}/workflows" "$PLUGIN_DIR/"
+# ENVIRONMENT-DEPENDENT fixture gap (measured 2026-09-17): without config/,
+# leadv2-routing-config's plugin-local canonical candidate is missing, so the
+# gate's tenant delta falls through to ${LEADV2_CANONICAL_ROOT:-$HOME/Projects/
+# leadv2} -- ambient host state. Under core-offline's sandboxed HOME that
+# canonical does not exist and dispatch REFUSEs (unresolvable routing config),
+# so the gate's registration never happens and Row 2/MUT-MUTANT pass for the
+# wrong reason (dispatch-glob stream fallback) while MUT-HEAD reds with
+# registry_unreadable. Copy config/ so the resolver stays inside the fixture.
+cp -a "${REAL_PLUGIN_DIR}/config" "$PLUGIN_DIR/"
 case "$PLUGIN_DIR" in
   "$tmp"/*) ;;
   *) printf '[TEST-SAFETY] ABORT: PLUGIN_DIR %s did not resolve under the scratch root %s\n' "$PLUGIN_DIR" "$tmp" >&2; exit 90 ;;
@@ -71,7 +80,11 @@ check() {
 # path, liveness must resolve via the new path.
 
 source "$REGISTRY" 2>/dev/null
-leadv2_active_register "FOO-123" "Standard" "$repo" "main" 2>/dev/null || true
+# E0 (D2-M5) rejects a row whose worktree realpaths to the project root as a
+# structural contradiction BEFORE any other rung, so the row must register the
+# per-task worktree shape a live lane has -- never "$repo" itself.
+foo_lane_wt="$repo/.claude/worktrees/foo-lane"; mkdir -p "$foo_lane_wt"
+leadv2_active_register "FOO-123" "Standard" "$foo_lane_wt" "main" 2>/dev/null || true
 
 reg_read="$(cat "$active")"
 check "$reg_read" 'pulse\.md' 'register sets default log_path to pulse.md'
@@ -120,7 +133,12 @@ run_dispatch_liveness_gate() { # <dispatch-copy> [task-id] -> liveness JSON
   sig8="$(printf '%s' 'behavioral lane liveness gate' | sha256sum | cut -c1-8)"
   lane_id="${task_id:-dispatch-${sig8}}"
   gate_root="$tmp/dispatch-gate-${lane_id}"
-  mkdir -p "$gate_root/.claude/ref" "$gate_root/docs/handoff" "$gate_root/scripts"
+  # E0 (D2-M5): worktree == project root is rejected as a structural
+  # contradiction before any rung; register the per-task worktree a live
+  # lane has. Verified 2026-09-17: HEAD then resolves alive via log_fresh,
+  # the pulse.md mutant stays registered_no_stream.
+  local gate_wt="$gate_root/.claude/worktrees/gate-lane"
+  mkdir -p "$gate_root/.claude/ref" "$gate_root/docs/handoff" "$gate_root/scripts" "$gate_wt"
   cp "$PLUGIN_DIR/scripts/leadv2-state-path.sh" "$gate_root/scripts/"
   chmod +x "$gate_root/scripts/leadv2-state-path.sh"
   printf 'glm_policy:\n  sonnet_exceptions:\n    - id: safety_gate_publish_payments\n' \
@@ -134,7 +152,7 @@ run_dispatch_liveness_gate() { # <dispatch-copy> [task-id] -> liveness JSON
   [[ -n "$task_id" ]] && task_arg=(--task-id "$task_id")
   CLAUDE_PROJECT_ROOT="$gate_root" PROJECT_ROOT="$gate_root" LEADV2_PROJECT_ROOT="$gate_root" LEADV2_STATE_ROOT="$gate_root/state" LEADV2_DISPATCH_CACHE_DIR="$gate_root/cache" \
     LEADV2_DISPATCH_SPAWN=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_DISPATCH_TERMINAL_LEDGER=0 \
-    bash "$dispatch_copy" --no-spawn --kind tooling --worktree "$gate_root" "${task_arg[@]}" \
+    bash "$dispatch_copy" --no-spawn --kind tooling --worktree "$gate_wt" "${task_arg[@]}" \
     'behavioral lane liveness gate' >/dev/null 2>&1 || true
 
   local stream_dir="$gate_root/docs/handoff/dispatch-${sig8}"

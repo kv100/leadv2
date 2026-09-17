@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-lane-truth-batch-01.sh
+file=plugins/leadv2/scripts/tests/test-lane-truth-batch-01.sh
+anchor=/tmp/e0-ctl-b1.patch
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: Row 1: lane with set_log_path resolves alive via real stream
+diff_hash=35d25244d155044ddcd12b3a02e1a29e500065484b7a01c52e97ad2dc6e0b131
+lane_diff_hash=59c1762ca190d180da9eec6f2fefcf6e993ee9023b71a56eaee8d14f271905da
+porcelain_clean=yes
+restored=yes
