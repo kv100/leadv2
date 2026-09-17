@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-writes-persist-under-concurrency.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=s/LEADV2_PROJECT_ROOT="\${LEADV2_PROJECT_ROOT:-\${PROJECT_ROOT}}" leadv2_active_register/LEADV2_PROJECT_ROOT="\${PROJECT_ROOT}" leadv2_active_register/
+baseline_rc=0
+mutated_rc=1
+red_line=[FAIL] claim 1: kept=1/6 own_set=0/6
+diff_hash=d05c789380e05f235a765be227fb16aea84405e93cb79aff2433a603681e58c0
+lane_diff_hash=b455ec46f4f71f0a87c5385f9ee32cb0ca45af1e16232404ad2446eb093c98a8
