@@ -93,9 +93,24 @@ if case1 "$ARBITER"; then pass "allowed_arms excludes glm/freepool from pick and
 
 # Negative control: a scratch arbiter copy with the allowed_arms filter
 # clause stripped must let case1 fail (glm/freepool re-enter the pool).
+# SELF-CHECK (T13-SLICE2-NEGATIVE-CONTROL-MUTATES-A-CLAUSE-THAT-NO-LONGER-EXISTS-01):
+# the control must fail loudly when its mutation target is absent from the
+# subject — a no-op sed previously produced a byte-identical "mutant" and the
+# control silently reported a colour instead of proving anything.
+MUT_TARGET='if allowed is not None: return arm in allowed'
 MUT1="${TMP}/route-arbiter.mutated.sh"
-sed 's/ and (allowed is None or c\.get(.arm.) in allowed)//' "$ARBITER" > "$MUT1"
-if case1 "$MUT1"; then fail "NEGATIVE CONTROL 1: mutated arbiter (no allowed_arms filter) unexpectedly still passed"; else pass "NEGATIVE CONTROL 1: mutated arbiter (no allowed_arms filter) correctly fails case1"; fi
+if grep -qF "$MUT_TARGET" "$ARBITER"; then
+  grep -vF "$MUT_TARGET" "$ARBITER" > "$MUT1"
+  if grep -qF "$MUT_TARGET" "$MUT1"; then
+    fail "NEGATIVE CONTROL 1: mutation did not land — allowed_arms filter clause still present in mutant"
+  elif case1 "$MUT1"; then
+    fail "NEGATIVE CONTROL 1: mutated arbiter (no allowed_arms filter) unexpectedly still passed"
+  else
+    pass "NEGATIVE CONTROL 1: mutated arbiter (no allowed_arms filter) correctly fails case1"
+  fi
+else
+  fail "NEGATIVE CONTROL 1: mutation target absent from arbiter (${MUT_TARGET}) — control cannot bite, refactor moved the allowed_arms filter"
+fi
 
 # ── Case 2: dispatch-code.sh bench-fallback block calls route_arbiter ──────
 extract_bench_fallback() { # <script>
