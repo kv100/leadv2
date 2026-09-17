@@ -163,6 +163,25 @@ lane_diff_hash=36ec8d0427fde307f42e10b4f0afbc4696d9a4335deaa07e6bb9a9b960cb8487
 ```
 `leadv2-mutation-control.sh` exit code 0: baseline green, mutant red, mutation confirmed landed.
 
+### Re-run on the final committed HEAD (2026-09-17, resumed lane)
+
+All three controls were re-executed after the last non-artifact commit (`ea306b5f`) so
+`lane_diff_hash` binds to the final tree (`1abe5bc4…` in all three artifacts). Same anchors, same
+outcomes — baseline green (`baseline_rc=0`), mutant red (`mutated_rc=1`), `MUTATION-CONTROL ok`
+on all three:
+
+```
+20260917T014101Z-75252.txt  probe-runner-noleak.sh      <- runner-side forward-leak fix
+20260917T014246Z-73442.txt  test-core-offline-lock-01   <- suite-side ambient scrub (flag exported ambiently, as above)
+20260917T014259Z-96933.txt  probe-realhome-suites.sh    <- real-$HOME exemption
+```
+
+Method note recorded for reproducibility: the suite-side control is only meaningful with
+`_LV2_CORE_OFFLINE_LOCK_HELD=1` exported in the caller's environment (that is the contamination
+it guards against); run without it, the mutant harmlessly survives because there is nothing
+ambient to scrub — the control invocation must supply the flag, exactly as the original
+2026-09-16 run did.
+
 ### Final suite run (boundary)
 `test-core-offline-lock-01.sh`: 3 of 3 cases pass, at no ceiling (suite runs in well under a
 second per case; it uses `LEADV2_SUITE_LOCK_PROBE=1` acquire-then-exit, not the full 57-suite
