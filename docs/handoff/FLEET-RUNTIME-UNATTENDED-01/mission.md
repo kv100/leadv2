@@ -73,3 +73,47 @@ green. A control that cannot fail on the unfixed code proves nothing.
 must run on a machine without systemd (this repo's CI and the lead's macOS) — stub the unit
 layer rather than skipping the case, because a suite that skips on the dev machine is a suite
 nobody ever sees fail. State how CI selects it, with the selection output.
+
+---
+
+# ROUND 2 — review failed round 1 on merit (2026-09-17)
+
+Round 1 landed 1257 insertions and was killed by review: **2 critical, 5 high**. The work is on
+`worktree-583d804d01e5`; build on it, do not restart from zero. Full verdict:
+`docs/handoff/dispatch-c7527bac-review/critic.full.md`.
+
+Three findings are not defects in the code — they mean the thing does not do what it exists for.
+Fix these first and prove each:
+
+1. **`Restart=always` undoes every controlled stop.** systemd restarts the runner after a
+   deliberate stop, so the FLEET-STOP flag and all three self-stops are cosmetic: the fleet
+   cannot actually be stopped. The unit and the runner need one shared model of "stopped on
+   purpose" versus "crashed" — a controlled stop must exit in a way systemd does not restart.
+   This is the founder-facing promise; nothing else in this lane matters if it is wrong.
+2. **`--cap` is accepted, rendered into ExecStart, and ignored** (`runner.sh:46,62`). The lane
+   cap is the entire reason two sessions exist rather than one. An ignored cap means unbounded
+   lanes on a 4-core host.
+3. **The guard falls back to `rm -rf` on a lane worktree.** Never. A reaper that can delete
+   unlanded work is worse than no reaper. Use the sanctioned worktree removal path, and refuse
+   rather than force when it declines.
+
+Then the rest, in the reviewer's own words:
+- **Reaping is dead code — nothing writes `.fleet-terminal`.** A loop over zero items prints
+  success; that is not a reaper.
+- **A real install can never run a lane:** no `Environment=` for `LEADV2_FLEET_LANE_CMD`.
+- `quota_window` conflates auth expiry with quota — different states, and the plan requires
+  different behaviour (degrade versus stop). Give each its own name.
+- `fleet_claude_usable` is fail-closed on the credentials file, so it is wrong on macOS
+  (keychain) — and macOS is where this suite runs in development.
+- `landed_today` / `rows_filed_today` never roll over. `rows_filed_today` is the plan's one
+  convergence indicator; a counter that never resets cannot report it.
+
+## Tests — this is what actually failed
+
+**Two of the three self-stops and the whole degrade path have zero tests**, the guard has none
+at all, and **the Claim-2 negative control is not run by the suite, with its target-string
+assertion absent.** That last one is the failure this repo has a standing rule about: a control
+that is not run, or that asserts nothing, rots into a permanent green.
+
+Every claim in the mission needs its control RUN and its output pasted. A suite that skips on
+the dev machine is a suite nobody ever sees fail — stub the unit layer, do not skip the case.
