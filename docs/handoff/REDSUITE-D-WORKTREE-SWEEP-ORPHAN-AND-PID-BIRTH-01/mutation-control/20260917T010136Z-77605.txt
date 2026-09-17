@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+file=plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+anchor=s|cp "${SCRIPT_DIR}/../leadv2-portable-lock.sh" "$drift/"|: # mutation-control: portable-lock copy removed|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] GREEN-PRE-FIX: P9-failed-removal-never-guts(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+diff_hash=b4df2c802922b6125808413df1666973d54ab4b186720499ef84ac775693632b
+lane_diff_hash=b6bd8c2815e5ae8d8b89af7c8d0cfcb96f16c76de17cf542900cd433596a35ec
