@@ -1,0 +1,17 @@
+--- a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+@@ -4161,12 +4161,8 @@
+       else
+         printf 'status: fail\nreason: e2e_regression\nrc: %s\nfailing_suites: %s\n' "${e2e_rc}" "${_failing_suites_csv}" > "${HANDOFF}/e2e-gate.md"
+       fi
+-      # Advisory journal line -- a decision EVENT, not a dispatch_terminal row:
+-      # this lane's terminal is whichever review-gate branch below ends it
+-      # (landed / dead review_* / parked). Advisory means reported and not
+-      # fatal, never not measured.
+-      emit decision "e2e_regression task=${TASK} status=advisory rc=${e2e_rc} failing_suites=${_failing_suites_csv} note=e2e_gate_is_advisory_not_blocking falls_through=review_gate"
+-      # NOT dead, NOT exit 8 -- falls through to the review gate below.
++      _dl_note dead e2e_regression "rc=${e2e_rc} failing_suites=${_failing_suites_csv}"
++      exit 8
+     fi
+   fi
+ fi

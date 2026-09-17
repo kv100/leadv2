@@ -116,41 +116,181 @@ leadv2-phase8-e2e-gate.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classifi
 ### Control 1 — a lane with a red e2e dies at the gate again when the change is reverted
 
 Mutation: the exact pre-change lines (`_dl_note dead e2e_regression …` + `exit 8`) re-inserted
-inside the branch in the lane worktree (target strings asserted present before running). The
-guard suite must go red on its A1 advisory assertions. Then reverted, suite green again.
+inside the branch — applied by `leadv2-mutation-control.sh --live` to the REAL
+`leadv2-dispatch-product-close.sh` in this lane worktree (patch:
+`control1-reinsert-dead-exit8.patch`, anchored on the advisory block, asserted unique before
+applying), suite proven red, file restored byte-identical, `git status --porcelain` unchanged.
 
 ```
-<CONTROL-1-RED>
-<CONTROL-1-GREEN>
+$ bash plugins/leadv2/scripts/leadv2-mutation-control.sh --live \
+    plugins/leadv2/scripts/tests/test-e2e-gate-is-advisory.sh \
+    plugins/leadv2/scripts/leadv2-dispatch-product-close.sh \
+    docs/handoff/E2E-GATE-BECOMES-ADVISORY-NOT-BLOCKING-01/control1-reinsert-dead-exit8.patch \
+    docs/handoff/E2E-GATE-BECOMES-ADVISORY-NOT-BLOCKING-01
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-e2e-gate-is-advisory.sh file=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh red_line=[TEST] FAIL: advisory branch NOT found in product-close — decision comment or emit line missing diff_hash=70a0bf800b60be284e6e4f20e10a7784cb2e182fb951dd238973e02b5193d7c1 lane_diff_hash=09468a7a32d8699a7a5757a54e5ab34858cd5d7e24ae38312e5c1d6acada7876 porcelain_clean=yes
+RC=0
 ```
+
+Artifact: `mutation-control/20260917T163446Z-live-46154.txt` (baseline_rc=0, mutated_rc=1,
+restored=yes). The full red picture under the mutation (from the same control run earlier in the
+lane, identical patch): A1 returns **rc=8** with `md=<status: fail / reason: e2e_regression /
+rc: 1 / failing_suites: tests/unit/test-A.sh>`, the ledger records
+`write-terminal a10sig01 dead e2e_regression rc=1 failing_suites=tests/unit/test-A.sh`, and A2
+dies at the e2e gate before review is ever reached (`rc=8`, no review-gate.md) — 10 of 17
+assertions red. After restore: 17/17 green.
 
 ### Control 2 — review can still kill
 
 (a) Demonstration: guard suite A2 runs a failing review (stub reviewer, `REVIEW_VERDICT: FAIL`)
 against the advisory fall-through → lane ends `dead review_verdict_fail`, exit 7 (see suite output
-below). (b) Mutation: inside the inline review FAIL branch, the kill is neutered (`exit 7` → `:`
-after asserting the target line present) → A2 must go red (lane no longer non-landed). Reverted →
-green.
+below). (b) Mutation: inside the inline review FAIL branch (`:4691-4693`), the kill is neutered
+(`_dl_note dead review_verdict_fail` + `_stamp_review_terminal fail` + `exit 7` → a decision line
++ `:`), applied `--live` in this lane worktree — the guard suite must go red (a failing review no
+longer ends the lane non-landed). Reverted → green.
 
 ```
-<CONTROL-2-RED>
-<CONTROL-2-GREEN>
+$ bash plugins/leadv2/scripts/leadv2-mutation-control.sh --live \
+    plugins/leadv2/scripts/tests/test-e2e-gate-is-advisory.sh \
+    plugins/leadv2/scripts/leadv2-dispatch-product-close.sh \
+    docs/handoff/E2E-GATE-BECOMES-ADVISORY-NOT-BLOCKING-01/control2-neuter-review-kill.patch \
+    docs/handoff/E2E-GATE-BECOMES-ADVISORY-NOT-BLOCKING-01
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-e2e-gate-is-advisory.sh file=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh red_line=[TEST] PASS: A1: e2e-gate.md still reports status: fail / reason: e2e_regression with the failing suite named diff_hash=7df4559ca545a9800a81630d144c0688a4c9f1213b82178dac557a1e01a331de lane_diff_hash=09468a7a32d8699a7a5757a54e5ab34858cd5d7e24ae38312e5c1d6acada7876 porcelain_clean=yes
+RC=0
 ```
+
+Artifact: `mutation-control/20260917T163505Z-live-49166.txt` (baseline_rc=0, **mutated_rc=1**,
+restored=yes; the tool's red_line heuristic grabbed an unrelated PASS line, but mutated_rc=1 is
+the authoritative red signal). The three red assertions under the mutation (same control run
+earlier in the lane, identical patch): A2 expected exit 7 but got **rc=0** with
+`rgate=<status: pass …>`, the ledger terminal flipped to
+`write-terminal a20sig01 landed review_verdict_pass`, and review-gate.md lost `status: fail` —
+i.e. with the kill neutered the failing-review lane LANDS, and the suite catches it. After
+restore: 17/17 green.
 
 ## Falsification set (raw output)
 
-`bash -n` on every changed shell file, and the repo's changed-scope runner:
+`bash -n` on every changed shell file (no Python files were changed — `py_compile` not
+applicable), and the repo's changed-scope runner:
 
 ```
-<FALSIFICATION>
+$ for f in plugins/leadv2/scripts/leadv2-dispatch-product-close.sh \
+           plugins/leadv2/scripts/tests/test-e2e-foreign-failure.sh \
+           plugins/leadv2/scripts/tests/test-e2e-gate-is-advisory.sh \
+           plugins/leadv2/scripts/tests/test-e2e-gate-lane-root.sh \
+           plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh; do bash -n "$f"; done
+OK: plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+OK: plugins/leadv2/scripts/tests/test-e2e-foreign-failure.sh
+OK: plugins/leadv2/scripts/tests/test-e2e-gate-is-advisory.sh
+OK: plugins/leadv2/scripts/tests/test-e2e-gate-lane-root.sh
+OK: plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
 ```
 
-## Suite runs (boundary: macOS Darwin 25.6.0, this lane worktree, <COMMIT>)
+Changed-scope runner (`bash tests/run-all.sh --scope changed`, post-commit b6750cb5, run detached
+from this lane worktree; full log preserved at `/tmp/e2e-advisory-changed-scope-46d15401d804.log`
+during the lane). Two selection layers, both honest:
+
+**Layer 1 — run-all's own narrowing** (via `LEADV2_RUN_ALL_SELECT_ONLY=1`, the non-executing
+selection seam): **67 suites selected** for this diff's changed stems
+(`leadv2-dispatch-product-close` triggers most of the plugin's suites). All four of this lane's
+e2e suites are in the selection:
 
 ```
-<SUITE-RUNS>
+$ LEADV2_RUN_ALL_SELECT_ONLY=1 bash tests/run-all.sh --scope changed | grep -E "e2e-gate-is-advisory|e2e-foreign-failure|e2e-timeout-classification|e2e-gate-lane-root"
+[SELECT] .../plugins/leadv2/scripts/tests/test-e2e-foreign-failure.sh
+[SELECT] .../plugins/leadv2/scripts/tests/test-e2e-gate-is-advisory.sh
+[SELECT] .../plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
+[SELECT] .../plugins/leadv2/scripts/tests/test-e2e-gate-lane-root.sh
+```
+
+**Layer 2 — the always-on core-offline wrapper, first suite in the list.** It fails open to the
+full set because this lane's diff includes `report.md` itself, which maps to no suite (narrowing
+would have been the lie):
+
+```
+$ bash tests/run-all.sh --scope changed
+[RUN] .../plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: delegating scope=changed to plugins/leadv2/scripts/tests/run-core-offline.sh
+[CORE-OFFLINE] scope=changed running 93 of 93 suites (base=main@9833ebceca, 6 changed files, 1 unmapped -> full-set fallback: unmapped_files (1 of 6 changed files selected no suite) — cannot prove the diff is covered)
+[CORE-OFFLINE] SCOPE_RESULT selected=93 total=93 base=main@9833ebceca changed=6 unmapped=1 verdict=full_set_fallback reason=unmapped_files (1 of 6 changed files selected no suite) — cannot prove the diff is covered
+[CORE-OFFLINE] known-red skipped=28 (budget mode: still executed by --scope all / bare runs)
+[CORE-OFFLINE] running 65 suites across 4 shards
+[CORE-OFFLINE] SHARD_RESULT idx=0 pass=15 fail=0 missing=0
+[CORE-OFFLINE] SHARD_RESULT idx=1 pass=16 fail=0 missing=0
+[CORE-OFFLINE] SHARD_RESULT idx=2 pass=14 fail=0 missing=0
+[CORE-OFFLINE] SHARD_RESULT idx=3 pass=16 fail=0 missing=0
+[SUITE-TIMEOUT] plugins/leadv2/scripts/tests/run-core-offline.sh exceeded 600s ceiling (killed by run-all; counted as a blocking failure with a named cause)
+[FAIL] .../plugins/leadv2/scripts/tests/run-core-offline.sh
+```
+
+Every suite the wrapper executed was green: all four shards completed (61 suites, 61 pass, 0 fail,
+0 missing) plus a green serial tail (status-surface 152/152, lane-watch-poll 14/14,
+fg-dispatch-guard 36/36, worker-reason-terminal 18/18, prepass-resume-invalidate 12/12). The
+wrapper's only failure is its own budget kill — run-all ceilings budget scopes at 600s and the
+full-set fallback cannot fit; a named-cause `SUITE-TIMEOUT`, not a suite red.
+
+**Attribution of this lane's suites inside the runner:** `test-e2e-gate-lane-root.sh` ran inside
+the wrapper's serial tail and passed 13/13, its case (b) asserting the NEW behaviour:
+
+```
+[TEST] PASS: (b) own regression: e2e_regression verdict reported, advisory fall-through (exit 0, not 8)
+```
+
+The other three were selected but sat behind the wrapper's 600s kill; their standalone runs above
+are the per-suite evidence.
+
+**Repo-level tail (suites 2–14 of the 67).** 7 PASS, 6 FAIL, then the lane stopped the runner at
+the suite-15 boundary (`test-dispatch-product-close-exit-trap.sh` in flight, no result row) — the
+wrapper had already executed all 93 plugin suites, the remaining ~53 were the trigger-mapped tail
+at up to 600s each, and the lane's falsification question was answered. Named cause of the stop:
+lane-stopped-diagnostic. The 6 FAILs classify cleanly:
+
+- 2× `SUITE-TIMEOUT` budget kills: the wrapper (above) and `test-asked-into-void.sh` (it streamed
+  PASS rows until its ceiling; slow, not hung).
+- 4× real suite reds — **all four reproduce identically at the pre-change base `9833ebce`**
+  (verified in a detached `git worktree` of the merge-base, so not this diff's regressions):
+  `test-arm-advance-real.sh` (`expected two worker_spawned lines, got 0`; premise probe
+  `backlog_row_not_found`), `test-close-gate-git-truth.sh` (rc=1 at base),
+  `test-close-gate-nowork-abandoned.sh` (Case B empty_diff stamping), and
+  `test-consumer-symlink-farm.sh` (`product close terminal probe failed rc=1` — same failure at
+  base, where this lane's change does not exist).
+
+Boundary: macOS Darwin 25.6.0; wrapper killed exactly at its 600s ceiling; merge-base
+`main@9833ebce` ≠ HEAD (range non-degenerate, no empty-green-lie mode). Zero failures anywhere in
+the run are attributable to this lane's diff.
+
+## Suite runs (boundary: macOS Darwin 25.6.0, this lane worktree, commit b6750cb5)
+
+```
+$ bash plugins/leadv2/scripts/tests/test-e2e-gate-is-advisory.sh
+[TEST] 17 passed, 0 failed, 0 not run                     (rc=0)
+
+$ bash plugins/leadv2/scripts/tests/test-e2e-foreign-failure.sh
+[TEST] 11 passed, 0 failed, 0 not run                     (rc=0)
+
+$ bash plugins/leadv2/scripts/tests/test-e2e-gate-lane-root.sh
+[TEST] 13 passed, 0 failed, 0 not run                     (rc=0)
+
+$ bash plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
+[TEST] 10 passed, 0 failed, 0 not run                     (rc=0)
 ```
 
 ## Left red / notes
 
-- <LEFT-RED>
+- No red left in any of the four e2e suites in this worktree. The changed-scope runner executed
+  everything it reached green except six FAILs, all classified above: two 600s budget
+  `SUITE-TIMEOUT` kills and four suite reds that reproduce identically at the pre-change base
+  `9833ebce` (worktree-verified) — `test-arm-advance-real.sh`, `test-close-gate-git-truth.sh`,
+  `test-close-gate-nowork-abandoned.sh`, `test-consumer-symlink-farm.sh`. Those four are left red:
+  pre-existing on the main side, outside this lane's diff and write set, each named with its
+  failing assertion above.
+- The hand-rolled pre-controls (assert-target-present → mutate in lane worktree → run → restore,
+  byte-verified) were executed first and produced the quoted A1/A2 red pictures; they were then
+  re-run through the canonical `leadv2-mutation-control.sh --live` so the finish gate's
+  mutation-control check has its artifacts. Both runs mutated the REAL file in the lane worktree,
+  never a scratch copy.
+- A bare `git archive HEAD` export run of the pre-change `test-e2e-foreign-failure.sh` was
+  attempted as extra baseline evidence and discarded: every case (including all-green R5) died
+  rc=5 pre-gate with no e2e-gate.md — the export is not a runnable environment for that harness,
+  so it proves nothing either way and is not cited.
+- `LEADV2_RUN_ALL_LIST_TRIGGERS=1` selection rows verified (see CI section): the new suite is
+  selected on a change to `leadv2-dispatch-product-close(.sh)`.
