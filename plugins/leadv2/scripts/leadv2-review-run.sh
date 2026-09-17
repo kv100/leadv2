@@ -673,6 +673,80 @@ _review_resolve_codex_base() {
 }
 
 # ---------------------------------------------------------------------------
+# REVIEW-DIFF-IS-SCOPED-TO-THE-DECLARED-WRITE-SET-01 (2026-09-17)
+# The diff this engine is handed via --diff is built by the CALLER from the
+# lane's DECLARED --writes pathspec (dispatch lanes: `git diff <start-sha> --
+# <lane_writes>`; leadv2-dispatch-code.sh LANE-START-SHA-01). Measured on lane
+# 18dfa6f6 (2026-09-15): the lane had COMMITTED a file its declaration did not
+# admit, the path-filtered diff did not contain it, and the reviewer honestly
+# returned REVIEW_VERDICT=FAIL with a High about a file "missing ... does not
+# exist in the repository" — a verdict about a repository state that did not
+# exist. A reviewer shown nothing cannot judge.
+#
+# Property enforced here: a file the lane actually COMMITTED is visible to the
+# reviewer even when it sits outside the declared write set, and when the
+# handed diff and the committed set differ, the difference is NAMED in the
+# review input instead of being silently resolved. The write-set admission
+# gate itself is dispatch-side and deliberately untouched: declaring a write
+# set and reviewing a diff are two different jobs that happen to read the
+# same field.
+#
+# Committed set is range-based (`<base>..HEAD`), never `git diff HEAD` /
+# status: working-tree churn this lane did not commit can never leak into
+# review (the property the declared-set scoping exists to keep). Fail-open on
+# every degenerate input (no repo, no base, empty committed set) — those keep
+# today's exact behaviour, never a new refusal. The caller's artifact is never
+# modified: reviewers are re-pointed at an augmented SIBLING file so
+# build-feedback.sh's later rounds keep re-reading the true build diff.
+# ---------------------------------------------------------------------------
+_review_diff_visible_paths() { # <diff-file> -> sorted unique paths with a +++ b/ hunk
+  sed -n 's|^+++ b/||p' "$1" 2>/dev/null | sed '/^$/d' | sort -u
+}
+_review_augment_diff_to_committed() {
+  REVIEW_DIFF_AUGMENTED=0
+  REVIEW_DIFF_AUGMENTED_PATHS=""
+  [[ -f "${DIFF_FILE}" ]] || return 0
+  git -C "${ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  local base committed visible missing aug tmp f
+  base="$(_review_resolve_codex_base)" || return 0
+  committed="$(git -C "${ROOT}" diff --name-only "${base}" HEAD 2>/dev/null || true)"
+  [[ -n "${committed}" ]] || return 0
+  visible="$(_review_diff_visible_paths "${DIFF_FILE}")"
+  missing="$(comm -23 \
+    <(printf '%s\n' "${committed}" | sed '/^$/d' | sort -u) \
+    <(printf '%s\n' "${visible}" | sed '/^$/d' | sort -u))"
+  [[ -n "${missing}" ]] || return 0
+  aug="${DIFF_FILE%.diff}.review.diff"
+  [[ "${aug}" != "${DIFF_FILE}" ]] || aug="${DIFF_FILE}.review"
+  tmp="${aug}.tmp.$$"
+  {
+    printf '%s\n' "REVIEW-DIFF-IS-SCOPED-TO-THE-DECLARED-WRITE-SET-01: COMMITTED FILES THE SUPPLIED DIFF DID NOT SHOW ARE APPENDED BELOW."
+    printf '%s\n' "Range ${base}..HEAD in the caller's --root. The supplied diff was scoped to the lane's declared write set; the files below were committed OUTSIDE it, which is why they were absent. Their absence above is a scoping artefact, never evidence that a file does not exist."
+    printf '%s\n' "Declared write set: ${WRITES_CSV:-(none supplied to this engine)}"
+    printf '%s\n' "Appended committed files:"
+    printf '%s\n' "${missing}"
+    printf '%s\n' "--- begin caller-supplied diff ---"
+    cat "${DIFF_FILE}"
+    printf '%s\n' "--- begin appended committed diffs ---"
+    while IFS= read -r f; do
+      [[ -n "${f}" ]] || continue
+      git -C "${ROOT}" diff "${base}" HEAD -- "${f}"
+    done <<< "${missing}"
+  } > "${tmp}" 2>/dev/null || { rm -f "${tmp}" 2>/dev/null; return 0; }
+  mv -f "${tmp}" "${aug}" 2>/dev/null || { rm -f "${tmp}" 2>/dev/null; return 0; }
+  DIFF_FILE="${aug}"
+  REVIEW_DIFF_AUGMENTED=1
+  REVIEW_DIFF_AUGMENTED_PATHS="${missing}"
+  # Keep the gate-artifact byte counts truthful (diff_bytes / review_input_bytes).
+  REVIEW_DIFF_BYTES="$(wc -c < "${DIFF_FILE}" 2>/dev/null | tr -d '[:space:]')"
+  REVIEW_DIFF_BYTES="${REVIEW_DIFF_BYTES:-0}"
+  [[ -n "${REVIEW_MISSION_BYTES:-}" ]] && REVIEW_INPUT_TOTAL_BYTES=$((REVIEW_DIFF_BYTES + REVIEW_MISSION_BYTES))
+  emit decision "review_diff_scope task=${TASK} base=${base} appended=$(printf '%s\n' "${missing}" | wc -l | tr -d ' ') files=$(printf '%s\n' "${missing}" | tr '\n' ',' | sed 's/,$//')"
+  return 0
+}
+_review_augment_diff_to_committed
+
+# ---------------------------------------------------------------------------
 # 4. run_reviewer_arm — lifted verbatim (KIMI-CHANNEL-01b §2.3.1-2.3.2 /
 #    dispatch-00629379). One behaviour change from the lane copy: output/err
 #    filenames are keyed per fan-out slot (arm name is already unique per
