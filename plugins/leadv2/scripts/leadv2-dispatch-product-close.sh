@@ -119,21 +119,58 @@ _pc_record_rung() { # <phase> <artifact-rel> <owner-tag> [extra record args...] 
 # dispatch-code beside the lane mission) verbatim and record the outcome. No
 # declared probe → n/a with the reason on the record (n/a is legal and satisfies
 # the ladder — nothing was promised, nothing was skipped silently).
+# A-LANE-LANDED-ITSELF-WITH-A-RED-ACCEPTANCE-01: a DECLARED probe that yields no
+# verdict is never a pass. Each silence refuses under its own name so the next
+# diagnosis starts from the right question:
+#   acceptance_declared_not_run — the rung was skipped outright (phase store unusable)
+#   acceptance_could_not_run    — declared, but the probe could not execute at all
+#   acceptance_no_exit_code     — ran, but no exit code came back to gate on
+# A probe that ran and failed keeps its existing name: live_verify_fail.
 _pc_run_live_verify() {
-  [[ -x "${PHASE_RECORD}" ]] || return 0
   local _lv_out="${HANDOFF}/live-verify.out"
   local _lv_cmd_f="${LEADV2_DISPATCH_LANE_ACCEPTANCE_CMD:-${HANDOFF}/lane-acceptance-cmd}"
   if [[ ! -s "${_lv_cmd_f}" ]]; then
+    # No declared probe: n/a stays legal (nothing promised). The phase-store
+    # usability check moved BELOW the declaration check — under the old order a
+    # declared probe with an unusable store silently skipped the rung, which was
+    # an acceptance-never-ran hole, not a legal n/a.
+    [[ -x "${PHASE_RECORD}" ]] || return 0
     LEADV2_PROJECT_ROOT="${ROOT}" bash "${PHASE_RECORD}" record "${TASK}" live_verify --status n/a \
       --reason "no_acceptance_block" --task-id "${FOUNDER_TASK_ID}" \
       --owner "$(basename "$0"):live_verify" 2>/dev/null \
       || emit decision "phase_record_failed task=${TASK} phase=live_verify rc=n/a_record"
     return 0
   fi
-  local _lv_rc=0
-  { ( cd "${ROOT}" 2>/dev/null && bash -c "$(cat "${_lv_cmd_f}")" ); printf 'probe_rc: %s\n' "$?"; } > "${_lv_out}" 2>&1
+  # A probe WAS declared — every path below ends in a verdict or a named refusal.
+  if [[ ! -x "${PHASE_RECORD}" ]]; then
+    emit decision "live_verify task=${TASK} status=refused reason=acceptance_declared_not_run detail=phase_record_unavailable"
+    _dl_note dead acceptance_declared_not_run "phase_record_unavailable"
+    _stamp_review_terminal blocked
+    return 1
+  fi
+  local _lv_cmd
+  _lv_cmd="$(cat "${_lv_cmd_f}" 2>/dev/null)"
+  if [[ -z "$(printf '%s' "${_lv_cmd}" | tr -d '[:space:]')" ]]; then
+    emit decision "live_verify task=${TASK} status=refused reason=acceptance_could_not_run detail=probe_empty"
+    _dl_note dead acceptance_could_not_run "probe_empty"
+    _stamp_review_terminal blocked
+    return 1
+  fi
+  if ! ( cd "${ROOT}" 2>/dev/null ); then
+    emit decision "live_verify task=${TASK} status=refused reason=acceptance_could_not_run detail=root_uncdable"
+    _dl_note dead acceptance_could_not_run "root_uncdable"
+    _stamp_review_terminal blocked
+    return 1
+  fi
+  { ( cd "${ROOT}" 2>/dev/null && bash -c "${_lv_cmd}" ); printf 'probe_rc: %s\n' "$?"; } > "${_lv_out}" 2>&1
+  local _lv_rc
   _lv_rc="$(sed -nE 's/^probe_rc: ([0-9]+)$/\1/p' "${_lv_out}" | tail -1)"
-  [[ "${_lv_rc}" =~ ^[0-9]+$ ]] || _lv_rc=1
+  if ! [[ "${_lv_rc}" =~ ^[0-9]+$ ]]; then
+    emit decision "live_verify task=${TASK} status=refused reason=acceptance_no_exit_code out=docs/handoff/dispatch-${TASK}/live-verify.out"
+    _dl_note dead acceptance_no_exit_code "no_probe_rc_line"
+    _stamp_review_terminal blocked
+    return 1
+  fi
   if [[ "${_lv_rc}" -eq 0 ]]; then
     _pc_record_rung live_verify "docs/handoff/dispatch-${TASK}/live-verify.out" "live_verify" || {
       _stamp_review_terminal blocked; return 1; }
@@ -3540,6 +3577,13 @@ if [[ "${blocked_reason}" == "unscopable_diff" ]]; then
       # other string); landed_foreign is a cause under the existing `landed` terminal,
       # the same relationship unscoped_lane_work has to `refused` above.
       blocked_reason=""
+      # A-LANE-LANDED-ITSELF-WITH-A-RED-ACCEPTANCE-01: landed is landed — the
+      # escape hatch walks the same acceptance gate before it may use it. The
+      # probe runs in ROOT; a lane whose work lives elsewhere declares a probe
+      # that cd's to its own target (as lane-acceptance-cmd always could).
+      if ! _pc_run_live_verify; then
+        exit 1
+      fi
       printf 'status: passed\nreason: landed_foreign\nforeign_repo: %s\ngrep: %s\ncommits:\n%s\n' \
         "${_pc_foreign_repo}" "${_pc_foreign_grep}" "${_pc_foreign_hits}" > "${HANDOFF}/review-gate.md"
       emit decision "review_gate task=${TASK} status=passed reason=landed_foreign terminal=landed cause=landed_foreign foreign_repo=$(basename "${_pc_foreign_repo}")"
@@ -4269,6 +4313,14 @@ if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" && "${_pc_kind:-diff}" != "report" ]];
   _engine_rc=$?
   case ${_engine_rc} in
     0)
+      # A-LANE-LANDED-ITSELF-WITH-A-RED-ACCEPTANCE-01: the acceptance verdict is
+      # gated BEFORE the landed terminal — the terminal is write-once, so a red
+      # probe stamped after landed is dedup-refused and the lie stands (the
+      # c4776136 shape). Refusal exits non-zero; the review itself passed, so
+      # what refuses here is the lane's own acceptance alone.
+      if ! _pc_run_live_verify; then
+        exit 1
+      fi
       _dl_note landed review_verdict_pass "engine=1"
       _stamp_review_terminal pass
       # THE-LADDER-IS-DECLARED-AND-NEVER-WALKED-01: the engine path used to stop
@@ -4293,10 +4345,9 @@ if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" && "${_pc_kind:-diff}" != "report" ]];
         _stamp_review_terminal blocked
       fi
       unset _eng_diff_hash _eng_verdict _eng_reviewer _eng_rec_rc
-      # live_verify rung walks on this path too (n/a when no acceptance probe
-      # was declared) — a review-only engine pass never leaves the lane half-
-      # laddered.
-      _pc_run_live_verify || true
+      # A-LANE-LANDED-ITSELF-WITH-A-RED-ACCEPTANCE-01: the live_verify rung no
+      # longer walks here — it moved ABOVE the landed stamp in this case arm.
+      # Post-landing it could only emit a verdict nothing could consume.
       ;;
     7) _dl_note dead review_verdict_fail "engine=1"; _stamp_review_terminal fail ;;
     8) _dl_note dead review_roundcap "engine=1 rc=${_engine_rc}"; _stamp_review_terminal blocked ;;
@@ -4732,6 +4783,18 @@ fi
 _rgf_rel="docs/handoff/dispatch-${TASK}/review-${reviewer}.md"
 [[ -n "${REVIEW_SOURCE:-}" ]] && _rgf_rel="${REVIEW_SOURCE#artifact:}"
 _rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
+# A-LANE-LANDED-ITSELF-WITH-A-RED-ACCEPTANCE-01: the acceptance verdict must be
+# on record BEFORE anything in this funnel can land. The terminal is write-once:
+# stamped landed first, a red probe's later dead row is dedup-refused
+# (terminal_already_recorded) and the lie stands — measured live on c4776136:
+# T11 merge in main 03:52:33Z, terminal landed 03:52:36Z, probe fail rc=1 only
+# 03:56:16Z. A red probe, a probe that could not run, or a probe that returned
+# no exit code each refuse HERE with its own name — before the report harvest,
+# before the T11 merge, before any landed row. Review itself passed (the gate
+# artifact above is true); what refuses is the lane's own acceptance.
+if ! _pc_run_live_verify; then
+  exit 1
+fi
 if [[ "${_pc_kind}" == "report" ]]; then
   # REPORT-ONLY-GATE-01: the report lane's pass shape — kind/deliverable/bytes/review
   # name the file a human can open in the main checkout after the lane worktree is gone.
@@ -4852,5 +4915,10 @@ _stamp_review_terminal pass
 if ! _pc_record_rung review "docs/handoff/dispatch-${TASK}/review-gate.md" "review_gate"; then
   _stamp_review_terminal blocked
 fi
-# The live_verify rung completes the post-build ladder on this path too.
-_pc_run_live_verify || true
+# A-LANE-LANDED-ITSELF-WITH-A-RED-ACCEPTANCE-01: the rung used to be walked
+# HERE — after the merge, after the landed row, as the script's last statement
+# with `|| true` eating its refusal. That ordering is the defect this row fixes
+# (c4776136): the walk now happens in the gate above, before anything can land.
+# Nothing after the landing funnel may run the probe again, and the close's
+# exit code stays 0 for a genuinely completed close.
+exit 0
