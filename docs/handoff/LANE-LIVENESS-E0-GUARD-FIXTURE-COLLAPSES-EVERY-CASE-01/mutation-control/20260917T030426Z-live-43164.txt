@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-lane-verdict-three-states.sh
+file=plugins/leadv2/scripts/tests/test-lane-verdict-three-states.sh
+anchor=/tmp/e0-ctl-t1.patch
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: Test 1: verdict=unknown:contradictory_rows (must match finished_unlanded:<age>s, never dead:*)
+diff_hash=80e924b32af5fdec2974e7c567b708e14fb63bdefdb39005782ca4f31b28ce4f
+lane_diff_hash=59c1762ca190d180da9eec6f2fefcf6e993ee9023b71a56eaee8d14f271905da
+porcelain_clean=yes
+restored=yes
