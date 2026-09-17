@@ -26,6 +26,15 @@ PLUGIN_DIR="$tmp/plugin"
 mkdir -p "$PLUGIN_DIR"
 cp -a "${REAL_PLUGIN_DIR}/scripts" "$PLUGIN_DIR/"
 cp -a "${REAL_PLUGIN_DIR}/workflows" "$PLUGIN_DIR/"
+# ENVIRONMENT-DEPENDENT fixture gap (measured 2026-09-17): without config/,
+# leadv2-routing-config's plugin-local canonical candidate is missing, so the
+# gate's tenant delta falls through to ${LEADV2_CANONICAL_ROOT:-$HOME/Projects/
+# leadv2} -- ambient host state. Under core-offline's sandboxed HOME that
+# canonical does not exist and dispatch REFUSEs (unresolvable routing config),
+# so the gate's registration never happens and Row 2/MUT-MUTANT pass for the
+# wrong reason (dispatch-glob stream fallback) while MUT-HEAD reds with
+# registry_unreadable. Copy config/ so the resolver stays inside the fixture.
+cp -a "${REAL_PLUGIN_DIR}/config" "$PLUGIN_DIR/"
 case "$PLUGIN_DIR" in
   "$tmp"/*) ;;
   *) printf '[TEST-SAFETY] ABORT: PLUGIN_DIR %s did not resolve under the scratch root %s\n' "$PLUGIN_DIR" "$tmp" >&2; exit 90 ;;
