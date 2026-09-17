@@ -1286,9 +1286,44 @@ _resolve_pinned_placement() {
 _resume_mission_visibility_preflight() { # <raw-mission> <resume-ref>
   local raw="$1" ref="$2" candidate="" p="" main_has=0
   RESUME_MISSION_WORKTREE=""
+  # GROUP-A1-01: the converted repository-relative tree path (an absolute
+  # @mission under PROJECT_ROOT is rewritten above). Empty when no conversion
+  # happened; the cmd_resolve consumer then falls back to the raw path.
+  RESUME_MISSION_TREE_PATH=""
   [[ "${raw}" == @* && -n "${ref}" ]] || return 0
   p="${raw#@}"
   [[ -n "${p}" ]] || return 0
+
+  if [[ "${p}" == /* ]]; then
+    # RESUME-LANE-REJECTS-AN-ABSOLUTE-MISSION-PATH-01: git ls-tree, the
+    # untracked-file check below, and `cat-file -e main:<path>` all want a
+    # repository-relative tree path, not an absolute filesystem path -- an
+    # absolute @mission was being sent through unconverted and always missed.
+    # Compare PHYSICAL paths (cd + pwd -P): a bare string-prefix test would
+    # miss the /var vs /private/var alias on macOS.
+    local _p_dir="" _p_base="" _p_dir_phys="" _proot_phys=""
+    _p_base="$(basename -- "${p}")"
+    _p_dir="$(dirname -- "${p}")"
+    _proot_phys="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P || true)"
+    _p_dir_phys="$(cd "${_p_dir}" 2>/dev/null && pwd -P || true)"
+    if [[ -z "${_proot_phys}" || -z "${_p_dir_phys}" ]]; then
+      printf '[leadv2-dispatch-code] REFUSE mission: path=%s has a directory that does not exist; an absolute mission path must resolve to a real directory\n' "${p}" >&2
+      exit 5
+    fi
+    if [[ "${_p_dir_phys}" == "${_proot_phys}" || "${_p_dir_phys}" == "${_proot_phys}"/* ]]; then
+      if [[ "${_p_dir_phys}" == "${_proot_phys}" ]]; then
+        p="${_p_base}"
+      else
+        p="${_p_dir_phys#${_proot_phys}/}/${_p_base}"
+      fi
+    else
+      # Outside PROJECT_ROOT can never become a Git tree path -- say that,
+      # not "absent from both", which was the wrong-cause refusal this row
+      # (RESUME-LANE-REJECTS-AN-ABSOLUTE-MISSION-PATH-01) exists to fix.
+      printf '[leadv2-dispatch-code] REFUSE mission: path=%s resolves outside repository root=%s; an absolute mission path cannot become a Git tree path unless it lives under the repository\n' "${p}" "${_proot_phys}" >&2
+      exit 5
+    fi
+  fi
 
   if [[ "${ref}" == /* ]]; then
     [[ -d "${ref}" ]] || return 0
@@ -1302,6 +1337,7 @@ _resume_mission_visibility_preflight() { # <raw-mission> <resume-ref>
 
   if git -C "${candidate}" ls-tree --name-only HEAD -- "${p}" 2>/dev/null | grep -Fx -- "${p}" >/dev/null 2>&1; then
     RESUME_MISSION_WORKTREE="${candidate}"
+    RESUME_MISSION_TREE_PATH="${p}"
     return 0
   fi
 
@@ -6965,7 +7001,6 @@ _spawn_worker_body() {
     *) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=none reason=arm_unwired cause=${_ci_cause}" ;;
   esac
   [[ -z "${_ci_txt}" ]] || mission="${_ci_txt}"$'\n\n'"${mission}"
-  [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
   # NESTED-AGENTS-AND-FORKS-01: delegation + fork contract for dispatched workers.
   read -r -d '' _DELEGATION_CONTRACT <<'CONTRACT_EOF' || true
 ## Delegation (nested agents)
@@ -6997,6 +7032,14 @@ after a review verdict, Agent(subagent_type="fork") to apply the fix -- it alrea
 the findings, and the mission in context.
 CONTRACT_EOF
   mission="${_DELEGATION_CONTRACT}"$'\n\n'"${mission}"
+  # LANE-PLACEMENT-PIN-RED-01: the pin prepend must be the LAST one on this
+  # path -- prepending is LIFO, so the final prepend is the worker's literal
+  # first line, which is exactly what test-lane-placement-pin.sh's P-h cases
+  # assert (`head -1`). The NESTED-AGENTS-AND-FORKS-01 prepend above was
+  # originally inserted AFTER this line and silently demoted the pin line on
+  # every dispatch (GROUP-A1-01, 2026-09-17): same defect shape the
+  # code-intel block above was already fixed for.
+  [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
   # W1-BALANCER-COVERS-EVERY-ARM-01 §1.1: --requested-profile targets the
   # Anthropic account registry, so it can only ever apply to a Claude arm.
   # On every other arm it used to be dropped in silence -- the header at
@@ -8993,7 +9036,11 @@ cmd_resolve() {
   if [[ "${raw}" == @* ]]; then
     local p="${raw#@}"
     if [[ -n "${RESUME_MISSION_WORKTREE:-}" ]]; then
-      mission="$(git -C "${RESUME_MISSION_WORKTREE}" show "HEAD:${p}")"
+      # GROUP-A1-01: read the CONVERTED tree path, not the raw @arg -- for an
+      # absolute @mission the raw value is a filesystem path, which is not a
+      # legal git tree path and made `git show HEAD:<path>` return an empty
+      # mission ("mission is empty after whitespace strip", exit 1).
+      mission="$(git -C "${RESUME_MISSION_WORKTREE}" show "HEAD:${RESUME_MISSION_TREE_PATH:-${p}}")"
       mission_file="${p}"
     else
       [[ -r "$p" ]] || { log_err "cannot read mission file: $p"; exit 1; }

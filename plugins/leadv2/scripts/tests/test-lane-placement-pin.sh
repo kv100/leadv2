@@ -227,6 +227,29 @@ setup_env() {
   export LEADV2_DISPATCH_REVIEW_GATE=0
   export LEADV2_DISPATCH_PENDING_TTL_S=5
   export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
+  # GROUP-A1-01: same never_reaches_subject-adjacent hang class documented for
+  # test-landed-at-spawn.sh. This suite's admitted (non-refused) dispatches
+  # (P-a/P-b/P-g/D3/P-i) reach cmd_resolve's pre-admission ledger sweep
+  # (leadv2-dispatch-ledger.sh sweep -> leadv2-lane-liveness.sh --all ->
+  # REAL, unstubbed codex-task.sh) and _admission_classify() (REAL, unstubbed
+  # leadv2-task-judge.sh, a GLM/Haiku model call). Both are live external
+  # dependencies unrelated to this suite's placement/pin-line assertions;
+  # under host contention both were observed to hang the suite past its
+  # 240s budget (rc=124, only a handful of PASS lines emitted). Disable both
+  # via their own documented rollback flags, exactly as
+  # test-landed-at-spawn.sh does for the same reason.
+  export LEADV2_LEDGER_SWEEP_ENABLE=0
+  export LEADV2_JUDGE_DISABLE=1
+  # GROUP-A1-01: the arbiter's capability_fit sorts by mission-text-classified
+  # fit, so the chosen arm varies WITH THE MISSION STRING -- P-b's
+  # "refactor the validator" text classified fit_pick=codex, and the real
+  # codex launcher (the only unstubbed arm) bypassed LEADV2_STUB_CWD_OUT:
+  # P-b/P-h(b) went red AND a live external spawn leaked out of the sandbox
+  # (route_resolved ... arm=codex reason=capability_fit fit_pick=codex,
+  # worker_spawned handle=task-mu4xbk20-...). Pin the documented rollback
+  # (leadv2-route-arbiter.sh:1696-1697): fit off restores the deterministic
+  # cost-key sort, which lands on the stubbed glm at the pinned 10% quota.
+  export LEADV2_ARBITER_CAPABILITY_FIT=off
 }
 
 # Resolve the reservation ledger path for a given slug.
@@ -276,7 +299,7 @@ export LEADV2_STUB_CWD_OUT="${SANDBOX}/pb-cwd.txt"
 export LEADV2_STUB_MISSION_OUT="${SANDBOX}/pb-mission.txt"
 dispatch_rc=0
 bash "${DC}" --kind tooling --worktree "${RESUME_WT}" \
-  "P-b placement worktree path test refactor the validator" >/dev/null 2>&1 || dispatch_rc=$?
+  "P-b placement worktree path test refactor the validator" >/dev/null 2>"${SANDBOX}/pb-stderr.txt" || dispatch_rc=$?
 
 if [[ ${dispatch_rc} -eq 0 ]]; then
   ok "P-b: dispatch exited 0"
@@ -297,6 +320,72 @@ if head -1 "${SANDBOX}/pb-mission.txt" 2>/dev/null | grep -q '^WORKTREE PIN: all
   ok "P-h(b): prompt pin line present with --worktree"
 else
   bad "P-h(b): prompt pin line MISSING with --worktree"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# P-j: absolute @mission UNDER PROJECT_ROOT → accepted (RESUME-LANE-REJECTS-
+#      AN-ABSOLUTE-MISSION-PATH-01). git ls-tree needs a repository-relative
+#      tree path; the preflight must convert the absolute filesystem path
+#      (physically resolved, for the /var vs /private/var alias) before the
+#      lane-HEAD lookup, else the dispatch dies rc=5 "absent from both".
+#      Incident shape: the brief existed on disk in the lane branch AND on
+#      main, so the fixture commits it in both, and the @path goes through
+#      the MAIN checkout (PROJECT_ROOT), which is what the caller actually
+#      types.
+# P-k: absolute @mission OUTSIDE PROJECT_ROOT (exists on disk, in the FOREIGN
+#      repo) → rc=5 whose reason names the out-of-root cause, NOT "absent
+#      from both" — a refusal that names the wrong cause is the defect class
+#      this row exists to fix.
+# P-k2: absolute @mission whose directory does not exist → rc=5 naming the
+#      nonexistent-directory cause (the physical cd + pwd -P check).
+# ════════════════════════════════════════════════════════════════════════════
+P_J_DIR="docs/handoff/GROUP-A1-MISSION-PATH"
+mkdir -p "${TARGET}/${P_J_DIR}" "${RESUME_WT}/${P_J_DIR}" "${FOREIGN}/docs/outside-check"
+printf 'P-j body sentinel GROUP-A1-MISSION-PATH-CONTENT\n' > "${TARGET}/${P_J_DIR}/mission.md"
+printf 'P-j body sentinel GROUP-A1-MISSION-PATH-CONTENT\n' > "${RESUME_WT}/${P_J_DIR}/mission.md"
+printf 'outside\n' > "${FOREIGN}/docs/outside-check/mission.md"
+( cd "${TARGET}" && git add "${P_J_DIR}/mission.md" && git commit -qm 'P-j absolute @mission fixture (main)' ) 2>/dev/null
+( cd "${RESUME_WT}" && git add "${P_J_DIR}/mission.md" && git commit -qm 'P-j absolute @mission fixture (lane)' ) 2>/dev/null
+
+setup_env
+export LEADV2_STUB_CWD_OUT="${SANDBOX}/pj-cwd.txt"
+export LEADV2_STUB_MISSION_OUT="${SANDBOX}/pj-mission.txt"
+dispatch_rc=0
+bash "${DC}" --kind tooling --resume-lane RESUME-ME-01 \
+  "@${TARGET}/${P_J_DIR}/mission.md" >/dev/null 2>"${SANDBOX}/pj-stderr.txt" || dispatch_rc=$?
+
+if [[ ${dispatch_rc} -eq 0 ]]; then
+  ok "P-j: dispatch accepted an absolute @mission under PROJECT_ROOT"
+else
+  bad "P-j: dispatch exited ${dispatch_rc} (expected 0; stderr: $(tail -1 "${SANDBOX}/pj-stderr.txt" 2>/dev/null))"
+fi
+
+if grep -q 'GROUP-A1-MISSION-PATH-CONTENT' "${SANDBOX}/pj-mission.txt" 2>/dev/null; then
+  ok "P-j: worker received the committed mission body (tree-path conversion worked)"
+else
+  bad "P-j: worker did NOT receive the committed mission body"
+fi
+
+setup_env
+dispatch_rc=0
+bash "${DC}" --kind tooling --resume-lane RESUME-ME-01 \
+  "@${FOREIGN}/docs/outside-check/mission.md" >/dev/null 2>"${SANDBOX}/pk-stderr.txt" || dispatch_rc=$?
+
+if [[ ${dispatch_rc} -eq 5 ]] && grep -q 'resolves outside repository root' "${SANDBOX}/pk-stderr.txt" 2>/dev/null; then
+  ok "P-k: out-of-root absolute @mission refused rc=5 naming the out-of-root cause"
+else
+  bad "P-k: out-of-root absolute @mission rc=${dispatch_rc} (expected 5 + 'resolves outside repository root'; stderr: $(tail -1 "${SANDBOX}/pk-stderr.txt" 2>/dev/null))"
+fi
+
+setup_env
+dispatch_rc=0
+bash "${DC}" --kind tooling --resume-lane RESUME-ME-01 \
+  "@/nope/outside-any-repo/mission.md" >/dev/null 2>"${SANDBOX}/pk2-stderr.txt" || dispatch_rc=$?
+
+if [[ ${dispatch_rc} -eq 5 ]] && grep -q 'directory that does not exist' "${SANDBOX}/pk2-stderr.txt" 2>/dev/null; then
+  ok "P-k2: nonexistent absolute @mission directory refused rc=5 naming that cause"
+else
+  bad "P-k2: nonexistent absolute @mission rc=${dispatch_rc} (expected 5 + 'directory that does not exist')"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -429,7 +518,12 @@ dispatch_rc=0
 # PROJECT_ROOT away from TARGET, so `ensure` operates on the wrong repo entirely and
 # the WORK_ROOT != PROJECT_ROOT precondition the pin-line assertions depend on never
 # holds for the right reason.
-( cd "${TARGET}" && bash "${DC}" --kind tooling \
+# GROUP-A1-01: this ad-hoc mission text has no backlog row, so
+# _premise_probe_gate refuses (exit 8, reason=backlog_row_not_found) before
+# placement/pin-line logic is ever reached -- the same never_reaches_subject
+# cause fixed in test-landed-at-spawn.sh. --no-probe-yet is the audited
+# escape hatch for exactly this fixture shape.
+( cd "${TARGET}" && bash "${DC}" --kind tooling --no-probe-yet \
   "P-g regression no flag fresh tree test fix the linter" >/dev/null 2>&1 ) || dispatch_rc=$?
 
 if [[ ${dispatch_rc} -eq 0 ]]; then
@@ -471,7 +565,9 @@ setup_env
 export LEADV2_STUB_CWD_OUT="${SANDBOX}/plan-cwd.txt"
 export LEADV2_STUB_MISSION_OUT="${SANDBOX}/plan-mission.txt"
 dispatch_rc=0
-( cd "${TARGET}" && bash "${DC}" --kind tooling --task-id "${PLAN_TASK}" \
+# GROUP-A1-01: same premise-gate refusal as P-g above -- this mission text
+# has no backlog row either.
+( cd "${TARGET}" && bash "${DC}" --kind tooling --no-probe-yet --task-id "${PLAN_TASK}" \
   "D3 ensure-created plan delivery test" >/dev/null 2>&1 ) || dispatch_rc=$?
 PLAN_CWD="$(cat "${SANDBOX}/plan-cwd.txt" 2>/dev/null || printf '')"
 if [[ ${dispatch_rc} -eq 0 && -f "${PLAN_CWD}/docs/handoff/${PLAN_TASK}/context.yaml" ]] \
@@ -508,8 +604,9 @@ export LEADV2_DISPATCH_LANE_WORKTREE_BIN="${LANE_WT_STUB}"
 # without this cd the guard sees cwd's real git root (this worktree checkout) as foreign
 # to TARGET and swaps PROJECT_ROOT away from TARGET, breaking the WORK_ROOT==PROJECT_ROOT
 # equality this assertion depends on.
+# GROUP-A1-01: same premise-gate refusal as P-g/D3 above.
 dispatch_rc=0
-( cd "${TARGET}" && bash "${DC}" --kind tooling \
+( cd "${TARGET}" && bash "${DC}" --kind tooling --no-probe-yet \
   "P-i shared tree no pin test fix the validator" >/dev/null 2>&1 ) || dispatch_rc=$?
 
 if [[ ${dispatch_rc} -eq 0 ]]; then
