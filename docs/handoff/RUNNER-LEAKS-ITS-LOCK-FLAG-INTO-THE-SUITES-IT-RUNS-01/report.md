@@ -319,19 +319,148 @@ second full end-to-end `run-core-offline.sh` run with all three fixes in place i
 verification — see "Full end-to-end runner run" below for its `SHARD_RESULT` lines and whether these
 two suites' names still appear in any `FAILED:` line.
 
+## Re-verification by the resumed lane (2026-09-17)
+
+The worker that produced everything above died before the closing full-battery run. The resumed
+lane re-verified each claim independently instead of trusting the dead session's transcript:
+
+- **Lane diff hygiene.** The STOP-GATE auto-checkpoints had swept `docs/leadv2` runtime state
+  (lane-liveness share `rc`/`result`/`ts`, the `.compact-freeze.md` marker) and a
+  `test-core-offline-lock-01.sh.bak_suite_fix` backup into the branch. All reverted/removed; the
+  committed lane diff is now exactly `run-core-offline.sh`, `test-core-offline-lock-01.sh`, and
+  this report directory.
+- **Paired control, re-run by this lane.** Pre-fix blobs restored in place from dispatch base
+  `2fd2c635` (`git restore --source=2fd2c635 …`), acceptance command run, blobs restored to HEAD
+  (clean `git status` after):
+
+  ```
+  === PRE-FIX blobs, acceptance command (red side) ===
+  [LOCK-01]   (a)/(b) FAILED rc=0 out=<<<[CORE-OFFLINE] lock-probe acquired file=/var/folders/.../lv2-lock-test.sIhnQo>>>
+  [LOCK-01]   (c)     FAILED rc=0 out=<<<[CORE-OFFLINE] lock-probe acquired file=/var/folders/.../lv2-lock-test.sIhnQo>>>
+  [LOCK-01] pass=1 fail=2
+  rc=1
+
+  === HEAD (fixed), acceptance command, flag injected ===
+  [LOCK-01] pass=3 fail=0
+  ACCEPTANCE(flag-set) rc=0
+
+  === HEAD (fixed), clean env (paired control) ===
+  [LOCK-01] pass=3 fail=0
+  CLEAN-CONTROL rc=0
+  ```
+- **Both probe harnesses re-run, green.** `probe-runner-noleak.sh` → `LEAK_CHECK=UNSET`,
+  `suites passed=1 failed=0`, rc=0. `probe-realhome-suites.sh` → `SHARD_RESULT idx=1 pass=1`,
+  `suites passed=2 failed=0`, rc=0.
+- **Per-variable audit independently re-confirmed** (previously taken from the table above; now
+  verified against the code by this lane): both dump variables are read-only in the runner and each
+  dump path `exit 0`s before any suite launch (`run-core-offline.sh:1030` scope-dump,
+  `:1156` shards-dump); both are also excluded from the lock guard at `:170-171`, so neither even
+  produces a re-exec child. `LEADV2_TEST_CONTEXT` is exported at `:131` but stripped per-suite by
+  the `LEADV2_*` denylist arm of `_core_offline_build_scrub_args` (`:273`), and
+  `lib/leadv2-test-context.sh:51-59` re-derives test context via a 12-hop `ps` ancestor walk when
+  the variable is absent. Verdicts unchanged: **no leak** for either dump variable; scrub-by-design
+  for `LEADV2_TEST_CONTEXT`.
+- **Mechanism spot-check for suites 3-4.** The `$HOME`-rooted real-path reads exist at exactly the
+  cited lines: `test-dod-gate-suite-registration.sh:188`
+  (`PE_ROOT="${LEADV2_DOD_LIVE_REPO:-${HOME}/Projects/persona-engine}"`) and
+  `test-shared-sink-test-guard.sh:42-45` (`REAL_EVENTS_DIR`, `REAL_FP_STATE`, `REAL_LEDGER` all
+  `$HOME`-rooted) — which the sharding sandbox at `run-core-offline.sh:388-391` replaces with a
+  fresh empty directory for every suite when `LEADV2_SUITE_SHARDS > 1`.
+- **Syntax.** `bash -n` clean on all four changed/added shell files (runner, lock suite, both
+  probes). No Python files changed.
+
 ## Full end-to-end runner run
 
 Command: `bash plugins/leadv2/scripts/tests/run-core-offline.sh` (bare, full battery, no
 `LEADV2_SUITE_DEFS_OVERRIDE`, no `--scope changed`).
 
-<!-- FULL_RUN_RESULTS_PLACEHOLDER -->
+Command: `bash plugins/leadv2/scripts/tests/run-core-offline.sh` (bare, full battery, no
+`LEADV2_SUITE_DEFS_OVERRIDE`, no `--scope changed`), run detached (`nohup`) on this lane's HEAD
+`48150574`, macOS Darwin 25.6.0, 2026-09-17.
+
+Result: **69 passed / 24 failed / 0 missing**, `known_red_skipped=0`, wall time **1833 s**
+(~30.5 min), 93 suites across 4 parallel shards + 1 serial shard.
+
+```
+[CORE-OFFLINE] SHARD_RESULT idx=0 pass=16 fail=5 missing=0
+[CORE-OFFLINE] SHARD_RESULT idx=1 pass=15 fail=6 missing=0
+[CORE-OFFLINE] SHARD_RESULT idx=2 pass=19 fail=4 missing=0
+[CORE-OFFLINE] SHARD_RESULT idx=3 pass=17 fail=3 missing=0
+[CORE-OFFLINE] SHARD_RESULT idx=serial pass=2 fail=6 missing=0
+[CORE-OFFLINE] suites passed=69 failed=24 missing=0 known_red_skipped=0 repo=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/3f44760b3faa
+```
+
+None of this lane's three suites appears in any `FAILED:` line. Their own in-log summaries are
+visible in the battery replay: `[LOCK-01] pass=3 fail=0` (the lock suite green **in situ**, i.e.
+under exactly the gate condition that used to make it permanently red) and
+`shared-sink test guard: PASS=35 FAIL=0`; the dod-gate suite's replay block ends in an all-PASS
+tail (its failure signature from the pre-fix run — `(g) live repo not found at .../home/...` —
+appears nowhere in the log).
+
+### Attribution of the 24 failures: exactly the census population minus this lane's three fixes
+
+The census (`docs/handoff/MAIN-RED-SUITES-CENSUS-01/report.md`, "The 27, named") measured 27 red
+suites at plan start. This battery's 24 failures are **exactly** that population minus this lane's
+three (the only census-red suites now green under the gate: `core-offline cross-run exclusive
+lock`, `dod gate suite registration`, `shared-sink test guard`). No suite outside the census
+population went red, and no census-red unexpectedly went green.
+
+Two honest bookkeeping notes for the lead, neither a defect of this lane's diff:
+
+- 21 of the 24 are on the `tests/known-red-suites.txt` allow-list; 3 are census-red but **missing
+  from the allow-list file** (`burn governor`, `product-close waits for worker exit`,
+  `stop-gate autocommit on worker exit`) — an allow-list staleness gap in
+  `tests/known-red-suites.txt`, not a new failure (all three names are in the census list at
+  `report.md:87/107/111`, which predates this lane).
+- The 5 `HERMETIC-VIOLATION (WARN, follow-up)` lines are WARN-class (non-lane-owned suites that
+  dirty `docs/leadv2`), a pre-existing property of those suites; none of this lane's three suites
+  produced a hermeticity line.
+
+## Changed-scope runner (`tests/run-all.sh --scope changed`)
+
+Run on the same HEAD, same host, 2026-09-17:
+
+```
+[CORE-OFFLINE] SCOPE_RESULT selected=9 total=93 base=main@a5af120f42 changed=2 unmapped=0 verdict=selected
+[CORE-OFFLINE] suites passed=6 failed=1 missing=0 known_red_skipped=2
+[NOT-KNOWN-RED] core:tests/test-run-all-forwards-scope.sh (scope-selected ad-hoc)
+```
+
+The scope machinery suites around the changed runner are green
+(`scope-changed passed=38 failed=0`, `scope-excludes-nested-housekeeping passed=10 failed=0`,
+`known-red-skip` cases pass), and both of this lane's allow-listed suites are correctly skipped in
+budget mode (`KNOWN-RED-SKIP` lines above — the full battery just proved them green out of band).
+
+The single `NOT-KNOWN-RED` failure is **inherited, not this lane's diff**:
+
+- Reproduced standalone on this tree: the suite's scratch tree lacks
+  `plugins/leadv2/scripts/lib/leadv2-suite-discovery.sh` (`.../run-all-scope-fix.CS7isJ/.../lib/leadv2-suite-discovery.sh:
+  No such file or directory` ×5), then `FAIL: scope=all forwards all: fake core-offline stub was
+  never invoked`, `1 passed, 1 failed`, rc=1.
+- The introducing commit `f206d3ed` ("C5 GATE-DISCOVERS-246-UNTRACKED-SUITES-01: tracked-admission
+  lib for suite discovery") is an **ancestor of this lane's merge-base** `a5af120f`
+  (`git merge-base --is-ancestor` → true), so the red predates the lane.
+- This lane's diff does not touch `tests/run-all.sh` or
+  `tests/test-run-all-forwards-scope.sh` (`git diff main...HEAD --stat` over both paths is
+  empty). This matches the previously recorded inherited population ("scratch lacks
+  lib/leadv2-suite-discovery.sh" reds). Fixing it belongs to whatever lane owns
+  `tests/run-all.sh`'s scratch copy-list — outside this lane's write set.
 
 ## Left red / anything not fixed
-Nothing in the write set is left red. All four suites this mission covers are confirmed green:
-`test-core-offline-lock-01.sh` (both leak fixes; standalone and under the mission's exact acceptance
-command), and `test-dod-gate-suite-registration.sh` / `test-shared-sink-test-guard.sh` (the
-shard-mode real-`$HOME` exemption fix; standalone and under the targeted `SHARDS=2` repro that
-matches the failing full-run condition). All three fixes live inside the declared write set
-(`run-core-offline.sh` plus the two suites' own names in its new exemption list — no edit to either
-suite file itself was needed). See "Full end-to-end runner run" below for the closing full-battery
-confirmation.
+Nothing in this lane's write set is left red. All three mission suites are confirmed green under
+the closing full battery (69/24, see above): `test-core-offline-lock-01.sh` (both leak fixes;
+standalone, under the mission's exact acceptance command, and in situ under the gate),
+`test-dod-gate-suite-registration.sh` and `test-shared-sink-test-guard.sh` (the shard-mode
+real-`$HOME` exemption; standalone, under the targeted `SHARDS=2` repro, and in situ). All fixes
+live inside the declared write set (`run-core-offline.sh` and `test-core-offline-lock-01.sh`; the
+two mystery suites needed no edit to their own files — only their names in the runner's exemption
+list).
+
+Still red, by name, with cause — none of it this lane's to fix:
+
+- 24 suites in the full battery, all pre-existing census-red ("The 27" minus this lane's three).
+  Owners: the respective lanes of the 93/93 plan. Three of the 24 are additionally missing from
+  `tests/known-red-suites.txt` (allow-list staleness, noted above).
+- `tests/test-run-all-forwards-scope.sh` under `--scope changed` — inherited scratch copy-list gap
+  (missing `lib/leadv2-suite-discovery.sh` in the scratch tree), red since `f206d3ed`, which
+  predates this lane's merge-base; owner: the lane holding `tests/run-all.sh`'s scratch logic.
