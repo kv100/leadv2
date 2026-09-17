@@ -39,7 +39,10 @@ unset LEADV2_PROJECT_ROOT LEADV2_LANE_WORK_ROOT LEADV2_TASK_ID \
 
 # Dispatcher rows below use synthetic task text and test only the burn seam;
 # the premise probe is a separate product gate and would reject that fixture.
-LEADV2_PREMISE_PROBE=0
+# _premise_probe_gate skips unless the value is exactly "1", and the gate runs
+# in a CHILD process (leadv2-dispatch-code.sh), so the disable must be
+# exported or the probe fires and refuses rc=8 backlog_row_not_found.
+export LEADV2_PREMISE_PROBE=0
 
 tmp="$(lv2_mktemp_dir "burn-governor-test")"; trap 'rm -rf "$tmp"' EXIT
 
@@ -367,9 +370,15 @@ esac
 EOF
 chmod +x "${FAKE_LIVE_PROV}"
 
-# 21: glm under soft -> verdict=ok, ceiling-derived soft/hard (80 -> soft=70 hard=80)
+# 21: glm under soft -> verdict=ok, ceiling-derived soft/hard. Same rule as
+# case 22 (SERIAL-SHARD-SIX-REDS-UNTRIAGED-01): the ceiling lives in
+# config/leadv2-quota-ceilings.sh, not in this test -- derive the expectation
+# from the SAME source the product reads. soft is hard-minus-10 by the
+# governor's ceiling-derivation.
+_ceil_glm="$(bash -c '. "${1}/../../config/leadv2-quota-ceilings.sh" 2>/dev/null && leadv2_quota_ceiling glm build 2>/dev/null' _ "${SCRIPT_DIR}")"
+[[ "${_ceil_glm}" =~ ^[0-9]+$ ]] || _ceil_glm=80
 out21="$(FAKE_GLM_PCT=10 LEADV2_QUOTA_LIVE="${FAKE_LIVE_PROV}" bash "${GOVERNOR_BIN}" --provider glm 2>&1)"
-if grep -q '^verdict=ok ' <<<"${out21}" && grep -q 'soft=70' <<<"${out21}" && grep -q 'hard=80' <<<"${out21}" && grep -q 'unit=pct' <<<"${out21}"; then
+if grep -q '^verdict=ok ' <<<"${out21}" && grep -q "soft=$(( _ceil_glm - 10 ))" <<<"${out21}" && grep -q "hard=${_ceil_glm}" <<<"${out21}" && grep -q 'unit=pct' <<<"${out21}"; then
   pass "21: --provider glm under soft -> ok, soft/hard from ceiling"
 else
   fail "21: --provider glm under soft" "${out21}"
@@ -420,7 +429,7 @@ fi
 # 26: --provider ignores LEADV2_BURN_SOFT_24H/HARD_24H (ceiling-derived only)
 out26="$(FAKE_GLM_PCT=10 LEADV2_QUOTA_LIVE="${FAKE_LIVE_PROV}" LEADV2_BURN_SOFT_24H=1 LEADV2_BURN_HARD_24H=2 \
   bash "${GOVERNOR_BIN}" --provider glm 2>&1)"
-if grep -q 'soft=70' <<<"${out26}" && grep -q 'hard=80' <<<"${out26}"; then
+if grep -q "soft=$(( _ceil_glm - 10 ))" <<<"${out26}" && grep -q "hard=${_ceil_glm}" <<<"${out26}"; then
   pass "26: --provider ignores LEADV2_BURN_SOFT_24H/HARD_24H env"
 else
   fail "26: --provider env-ignore" "${out26}"

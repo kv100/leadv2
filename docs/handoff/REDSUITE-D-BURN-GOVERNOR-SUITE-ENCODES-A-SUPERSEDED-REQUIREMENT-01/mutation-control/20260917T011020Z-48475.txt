@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-burn-governor.sh
+file=plugins/leadv2/scripts/tests/test-burn-governor.sh
+anchor=s/env -u LEADV2_BURN_GOVERNOR LEADV2_CLAUDE_BURN_DIR/LEADV2_BURN_GOVERNOR=1 LEADV2_CLAUDE_BURN_DIR/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 8: BURN-GOVERNOR-OFF-BY-FOUNDER-ORDER-01 default off -- verdict=hard burn24h=500 soft=200 hard=300 reason=over_hard
+diff_hash=6e406e9114c17ed389b7c0375b393502f805adf50dc2cbc3d665e9237fe2c142
+lane_diff_hash=eaebfbfec942a8cb97b55fe3589c81bd723ed1ad51550ef7b76bf97f0b6bca46
