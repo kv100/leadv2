@@ -40,15 +40,54 @@ Fixing (1) would hide (2) rather than remove it: as soon as any row fails to rec
 reason — a crash between registration and the write, an older row format, a foreign tool — the board
 seizes again. The gate must be safe under an unknown set without being useless.
 
+## ROUND 2 — read this before anything else
+
+Round 1 (lane `c5db1e4e`, 2026-09-17) was **killed by review** with `critical=1 high=2`, and the
+findings were correct and measured. Do not repeat that attempt. The full review is at
+`docs/handoff/dispatch-c5db1e4e-review/critic.full.md`; the three that bind you:
+
+- **C1 (measured, not argued).** The reviewer exported the plugin at `0c033894` into two scratch
+  trees, applied the diff to one, and ran the five suites that pin the `pending_resolution`
+  contract: **5/5 green on base, 5/5 red with the diff** —
+  `test-writeset-pending-overlap`, `test-writeset-refusal-names-blocker`,
+  `test-lane-adopt-writeset-refusal`, `test-writeset-admission-block`, `test-writeset-carousel`.
+  Every failure is one shape: a live write-less incumbent whose worktree has no dirt is now admitted
+  `rc=0` where the suites pin `rc=5`. Worse, in `refusal-names-blocker` case 3 the dispatch-side
+  refusal degrades to `reason=writeset_conflict` because the parser at
+  `leadv2-dispatch-code.sh:4513` finds no `writeset conflict: other=` line — so the two refusal
+  kinds that suite exists to *distinguish* become indistinguishable. **Whatever you change, those
+  five suites are part of the contract: either they stay green, or they are updated in the same diff
+  to pin the new contract deliberately, with the reasoning stated.**
+
+- **H1 — and this one invalidates the option the original mission suggested.** "Refuse only on
+  overlap with the incumbent's working-tree dirt" **reopens the TOCTOU that the unconditional
+  refusal exists to close**. Dirt measures what the incumbent has *already touched*, which during
+  the guarded window is by construction **nothing**: a row mid architect-prepass has a fresh
+  checkout, so dirt is `[]`, the candidate registers `rc=0` under the default
+  `LEADV2_WRITESET_ENFORCE=warn` (`:545`), and moments later the incumbent's prepass calls
+  `set_writes` with an overlapping set. `set_writes` "makes no liveness/collision judgement itself"
+  (its own comment, `:1050-1056`) — so you end with two live lanes holding intersecting declared
+  sets and no refusal on either side. **Dirt alone is not admissible evidence.** If you use it, the
+  other side of the window must close too: `set_writes` (or its dispatch-code call site) has to run
+  the same intersection against every non-stale, non-dead row and exit 5 when a late-declared set
+  collides — second declarer loses — with a test that registers A (pending, live pid, no writes),
+  registers B with `x/a`, then `set_writes A x/a` and asserts `rc=5`.
+
+- **H2.** When the pending row's recorded `worktree` is the **shared main checkout**, the lead's own
+  dirt is attributed to the incumbent, producing false refusals on unrelated paths. This is not
+  hypothetical: it is exactly the 2026-09-16 incident where a foreign live session's pulse artifacts
+  in a shared tree serialised the board.
+
 ## The design question you must answer, not assume
 
 An unknown write set genuinely *might* overlap. So "just allow it" is wrong, and "refuse everyone"
 is what we have. State in the report which of these you chose and why, and name what you rejected:
 
-- refuse only lanes whose declared set intersects the blocker's **working-tree dirt** (the paths it
-  is observably touching right now), rather than its undeclared intent;
 - refuse only within a much shorter window, and downgrade to a warning after it;
-- attribute the unknown row a set derived from its worktree diff at gate time.
+- attribute the unknown row a set derived from its worktree diff at gate time — subject to H2:
+  a row whose worktree *is* the shared checkout must not inherit that tree's dirt;
+- dirt-overlap **plus** a symmetric late-declaration check in `set_writes`, per H1. If you take this
+  one, the `set_writes` half is not optional and is not a follow-up row.
 
 Whatever you pick, this property must hold and must be the thing your first control proves:
 **a lane whose declared set is disjoint from everything observable is admitted.** And this one must
@@ -72,6 +111,12 @@ Two independent claims, two negative controls, each RUN, both outputs pasted:
 Apply each mutation **inside the function body in the lane worktree**, never a scratch copy — this
 family was measured to behave differently in a detached worktree at the same commit. Assert the
 mutation target string is present before running, so a control cannot rot into a permanent green.
+
+**A third check, non-negotiable after round 1:** before you report, run all five contract suites
+(`test-writeset-pending-overlap`, `test-writeset-refusal-names-blocker`,
+`test-lane-adopt-writeset-refusal`, `test-writeset-admission-block`, `test-writeset-carousel`)
+against your diff and paste the rc of each. Round 1 broke all five and shipped no test of its own;
+a diff that does that again is refused on sight.
 
 ## Deliverable
 
