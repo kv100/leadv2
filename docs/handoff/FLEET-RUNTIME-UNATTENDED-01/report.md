@@ -125,8 +125,25 @@ $ LEADV2_LANE_START_SHA=fa27042a bash plugins/leadv2/scripts/leadv2-mutation-con
     plugins/leadv2/scripts/fleet/leadv2-fleet-runner.sh \
     's|if fleet_stop_flag_present; then # c2-mut: stop-flag gate|if false; then # c2-mut: stop-flag gate|' \
     /tmp/fleet-mc-out
-<PASTE_MUTATION_CONTROL_OUTPUT_HERE>
+leadv2-mutation-control: snapshot=head_plus_declared declared=2 excluded_dirty=0
+MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-fleet-runtime-guards.sh file=plugins/leadv2/scripts/fleet/leadv2-fleet-runner.sh red_line=FAIL: stop flag positive case: expected exactly 1 lane + status stopped/stop_flag, got: lanes_started=4 status_line=status: alive (degraded: glm) diff_hash=cebfb8dad6b01ee09f3e285f6aed86e689976456973054ac6e2a503fd12525c0 lane_diff_hash=66d970e30bcd38aa9f0f4e666d02fc3725b1e8825e4bf83e1d11d4e866d671d8
 ```
+
+Artifact: `/tmp/fleet-mc-out/mutation-control/20260917T173715Z-59174.txt` (worker mode — mutates a
+scratch copy only; `git status --short` on this lane checkout was empty before and after, and the
+suite was re-run green afterward, confirming the real lane files were never touched):
+```
+suite=plugins/leadv2/scripts/tests/test-fleet-runtime-guards.sh
+file=plugins/leadv2/scripts/fleet/leadv2-fleet-runner.sh
+anchor=s|if fleet_stop_flag_present; then # c2-mut: stop-flag gate|if false; then # c2-mut: stop-flag gate|
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: stop flag positive case: expected exactly 1 lane + status stopped/stop_flag, got: lanes_started=4 status_line=status: alive (degraded: glm)
+diff_hash=cebfb8dad6b01ee09f3e285f6aed86e689976456973054ac6e2a503fd12525c0
+lane_diff_hash=66d970e30bcd38aa9f0f4e666d02fc3725b1e8825e4bf83e1d11d4e866d671d8
+```
+Without the gate, the runner ran 4 lanes back-to-back on the fake 1s lane command and never
+reached `stopped` — the control proves the gate is load-bearing, not decorative.
 
 ### Claim 3 — the disk floor refuses a new lane start
 
@@ -163,7 +180,10 @@ PASS: Claim 3 negative control — floor-kb=0: a lane starts (disk floor does no
 
 10 of 10 passed (fleet guard suite, macOS Darwin, no systemd — unit layer stubbed per mission)
 ```
-rc=0 at a ~5s wall time on macOS Darwin 25.6.0, commit `c218e901` base `fa27042a`.
+rc=0 at a ~5s wall time on macOS Darwin 25.6.0, commit `c218e901` base `fa27042a`. Also re-run
+against `/bin/bash` (the system's real Bash 3.2.57, not the Homebrew 5.3.9 default) to satisfy the
+mission's Bash-3.2-compatibility requirement — `bash -n` clean on all 6 files and the suite is
+10 of 10 green there too, same output.
 
 10 of 10 passed, macOS Darwin 25.6.0, ~5s wall time, no systemd on this host — the unit layer is
 stubbed throughout (mini-systemd harness in group B; `print-unit`/`--dry-run` never shell out to
