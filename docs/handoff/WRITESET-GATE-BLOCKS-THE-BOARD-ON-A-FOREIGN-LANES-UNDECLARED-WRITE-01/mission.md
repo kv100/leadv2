@@ -83,11 +83,32 @@ findings were correct and measured. Do not repeat that attempt. The full review 
 An unknown write set genuinely *might* overlap. So "just allow it" is wrong, and "refuse everyone"
 is what we have. State in the report which of these you chose and why, and name what you rejected:
 
-- refuse only within a much shorter window, and downgrade to a warning after it;
-- attribute the unknown row a set derived from its worktree diff at gate time — subject to H2:
-  a row whose worktree *is* the shared checkout must not inherit that tree's dirt;
-- dirt-overlap **plus** a symmetric late-declaration check in `set_writes`, per H1. If you take this
-  one, the `set_writes` half is not optional and is not a follow-up row.
+## ROUND 3 — the tree-based options are now PROVEN UNAVAILABLE. Take the window.
+
+Round 2 wrote the report (which cleared H2) but changed no code, so the review deduped the identical
+diff `2110b7c9` and failed again with `high=1`. That surviving H1 settles the design question for
+you, and it is not a matter of taste:
+
+> `_lv2_ws_dirt(other.get("worktree"))` (registry `:616`) trusts the row's `worktree` field. **Both
+> registration sites in `leadv2-dispatch-code.sh` pass `"${PROJECT_ROOT}"`** — the shared main
+> checkout, not the lane's worktree (first phase ~`:9441` via `_dispatch_register_writes_row`,
+> second phase ~`:9707`). Measured on main 2026-09-17: `git status --porcelain -z -uall` = **1605
+> entries**.
+
+So every option that reads the incumbent's tree is comparing the candidate against the churn of the
+entire repository, including other sessions' artifacts. And the field cannot be fixed here:
+`leadv2-dispatch-code.sh` is held by another lane. It is filed as
+`REGISTRY-ROW-WORKTREE-FIELD-POINTS-AT-THE-SHARED-CHECKOUT-01` and folded into the dispatcher
+bookkeeping group.
+
+**Therefore: implement the window-only option.** Refuse an unknown-write-set incumbent for a much
+shorter period than the current 900s, and after it downgrade to a warning and admit. No tree reads,
+no dirt, no `_lv2_ws_dirt`. Pick the window length from evidence — how long a real row actually
+takes between registration and `set_writes` — and state the measurement in the report rather than
+choosing a round number.
+
+This also means the five contract suites should stay green rather than be rewritten: the
+`pending_resolution` refusal keeps its shape, it just stops lasting 900s.
 
 Whatever you pick, this property must hold and must be the thing your first control proves:
 **a lane whose declared set is disjoint from everything observable is admitted.** And this one must
