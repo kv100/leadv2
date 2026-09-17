@@ -79,6 +79,13 @@
           },
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-lane-watch-v2.sh\" --arm-from-hook",
+            "timeout": 6,
+            "continueOnBlock": true,
+            "statusMessage": "Arming lane watch..."
+          },
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-hook-registration-guard.sh\"",
             "timeout": 8,
             "continueOnBlock": true,
@@ -579,13 +586,6 @@
             "timeout": 5,
             "continueOnBlock": true,
             "statusMessage": "Continuation-guard: checking for silent stops..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-idle-lead-guard.sh\"",
-            "timeout": 10,
-            "continueOnBlock": true,
-            "statusMessage": "Idle-guard: checking queued work vs live lanes..."
           }
         ]
       }
@@ -656,6 +656,18 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-task-created.sh\"",
             "timeout": 5,
             "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-lane-watch-v2.sh\" --disarm-from-hook",
+            "timeout": 6,
+            "statusMessage": "Disarming lane watch..."
           }
         ]
       }
