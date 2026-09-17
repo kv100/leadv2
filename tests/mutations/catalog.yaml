@@ -930,22 +930,22 @@ mutations:
     file: plugins/leadv2/scripts/fleet/leadv2-fleet-runner.sh
     suite: plugins/leadv2/scripts/tests/test-fleet-runtime-guards.sh
     anchor: |
-      if fleet_stop_flag_present; then # c2-mut: stop-flag gate
+      if fleet_stop_flag_present; then
     patch: |
-      s|if fleet_stop_flag_present; then # c2-mut: stop-flag gate|if false; then # c2-mut: stop-flag gate|
+      s|if fleet_stop_flag_present; then|if false; then|
       -- group C's "stop flag: current lane finished... status stopped/stop_flag" case goes
       red (a second lane starts after the flag is touched; status never reaches stopped).
       Measured 1/1 killed locally 2026-09-17 (also exercised in-suite as Group H).
     expected: killed
 
   - id: fleet-unit-restart-passthrough-c1
-    product_flow: "FLEET-RUNTIME-UNATTENDED-01 round 2: the generated systemd unit's Restart= field must literally carry the caller's --restart value through to the rendered unit file -- this is the only thing standing between 'the founder asked for Restart=always' and a unit that silently never restarts after a crash."
+    product_flow: "FLEET-RUNTIME-UNATTENDED-01 round 2: the generated systemd unit's Restart= field must literally carry the caller's --restart value through to the rendered unit file -- this is the only thing standing between the caller's chosen restart policy (round 4: Restart=on-failure plus SuccessExitStatus, so a deliberate stop is never respawned) and a unit that silently never restarts after a genuine crash."
     file: plugins/leadv2/scripts/fleet/leadv2-fleet-unit.sh
     suite: plugins/leadv2/scripts/tests/test-fleet-runtime-guards.sh
     anchor: |
-      Restart=${4} # c1-mut: restart policy passthrough
+      Restart=${4}
     patch: |
-      s|Restart=\${4} # c1-mut: restart policy passthrough|Restart=no # c1-mut: restart policy passthrough|
+      s|Restart=\${4}|Restart=no|
       -- Group A's "print-unit --restart always emits Restart=always" case goes red, and
       Group H's dedicated c1-mut control (a fresh print-unit call against the mutated
       script) asserts the same defeat directly. Measured 1/1 killed locally 2026-09-17.
@@ -956,9 +956,9 @@ mutations:
     file: plugins/leadv2/scripts/fleet/leadv2-fleet-lib.sh
     suite: plugins/leadv2/scripts/tests/test-fleet-runtime-guards.sh
     anchor: |
-      if [[ "${free}" -lt "${floor}" ]]; then # c3-mut: disk-floor gate
+      if [[ "${free}" -lt "${floor}" ]]; then
     patch: |
-      s|if \[\[ "\${free}" -lt "\${floor}" \]\]; then # c3-mut: disk-floor gate|if false; then # c3-mut: disk-floor gate|
+      s|if \[\[ "\${free}" -lt "\${floor}" \]\]; then|if false; then|
       -- Group D's "disk floor (impossible floor-kb) refuses" positive case goes red (a
       lane starts past an impossible floor-kb), and Group H's dedicated c3-mut control
       asserts the same defeat directly. Measured 1/1 killed locally 2026-09-17.
