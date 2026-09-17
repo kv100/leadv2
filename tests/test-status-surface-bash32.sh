@@ -248,8 +248,37 @@ echo "== T6: STATUS-SURFACE-R5-01 round 2 — minimal-env parity (PyYAML-optiona
 # (Xcode python3, no PyYAML). The reader now falls back to a pure-python
 # mini-parser, so the minimal-PATH render must (a) contain none of the broken
 # substrings and (b) match the full-env render's lane row-count AND urgent count.
-_t6_min="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin LEADV2_STATUS_SYNC=1 /bin/bash "$WRAPPER" 2>&1 || true)"
-_t6_full="$(bash "$WRAPPER" 2>&1 || true)"
+#
+# STATUS-SURFACE-T6B-IS-LOAD-DEPENDENT-01: the two captures used to be two
+# LIVE renders minutes-of-wall-clock apart, so the parity assertion demanded a
+# load-independent outcome from a load-dependent measurement — a lane dying or
+# spawning between the captures flipped the case (observed 2026-09-16,
+# min=2 full=3 on a 3-lane board). The fix freezes the INPUT: both renders
+# read ONE sandbox lane set below via the renderer's LEADV2_STATUS_* pins, so
+# the comparison is two renderers over identical input, not two moments.
+# Rejected alternative: comparing a board-state-invariant projection of the
+# render (e.g. header shape only) — it keeps a weaker claim and still lets a
+# real reader disagreement hide in the un-projected remainder.
+T6_STATE="$FIX/t6-state"; T6_LED="$FIX/t6-led"; T6_RUNS="$FIX/t6-runs"
+mkdir -p "$T6_STATE" "$T6_LED" "$T6_RUNS"
+printf 'meta: {}\nsessions:\n  - { task_id: t6feedbac, phase: build, pid: '"$$"', log_path: "" }\n' > "$T6_STATE/active.yaml"
+printf '{"task_sig":"t6feedbabfffffffffffffffffffffffffffffffffffffffffffff","arm":"glm","state":"confirmed","handle":"t6h1","created_epoch":%s}\n' "$((F_NOW-120))" > "$T6_LED/${REPO_FIX}.jsonl"
+mkdir -p "$T6_RUNS/glm-runs/t6h1"
+printf 'status: complete\nexit_code: 0\nmodel: glm-5.2\npid: 0\n' > "$T6_RUNS/glm-runs/t6h1/meta.yaml"
+: > "$T6_RUNS/glm-runs/t6h1/journal.jsonl"
+_t6_min="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin LEADV2_STATUS_SYNC=1 \
+  LEADV2_STATUS_STATE_DIR="$T6_STATE" LEADV2_STATUS_LEDGER_DIR="$T6_LED" \
+  LEADV2_STATUS_RUNS_ROOT="$T6_RUNS" LEADV2_STATUS_REPO="$REPO_FIX" \
+  LEADV2_STATUS_NOW="$F_NOW" LEADV2_STATUS_TASKS_YAML="$FIX/nope.yaml" \
+  LEADV2_STATUS_HANDOFF_DIR="$F_HAND" \
+  LEADV2_STATUS_SINGLE_LEAD="${LEADV2_STATUS_SINGLE_LEAD:-0}" \
+  /bin/bash "$WRAPPER" 2>&1 || true)"
+_t6_full="$(LEADV2_STATUS_STATE_DIR="$T6_STATE" LEADV2_STATUS_LEDGER_DIR="$T6_LED" \
+  LEADV2_STATUS_RUNS_ROOT="$T6_RUNS" LEADV2_STATUS_REPO="$REPO_FIX" \
+  LEADV2_STATUS_NOW="$F_NOW" LEADV2_STATUS_TASKS_YAML="$FIX/nope.yaml" \
+  LEADV2_STATUS_HANDOFF_DIR="$F_HAND" \
+  LEADV2_STATUS_SINGLE_LEAD="${LEADV2_STATUS_SINGLE_LEAD:-0}" \
+  bash "$WRAPPER" 2>&1 || true)"
 _t6_rc=0
 # (a) no broken substring under the SwiftBar launch shape. "active.yaml
 # unreadable" is the specific PyYAML-fallback failure signature this test
@@ -275,7 +304,11 @@ if [ "$_t6_rc" -eq 0 ]; then
 else
   : # already bad()'d above
 fi
-if [ "$_min_rows" = "$_full_rows" ]; then
+if [ "$_full_rows" -eq 0 ] || [ "$_min_rows" -eq 0 ]; then
+  # 0 == 0 is a vacuous pass: the frozen fixture must render rows in BOTH
+  # envs or the parity claim asserts nothing.
+  bad "_t6b: frozen fixture rendered 0 lane rows (min=$_min_rows full=$_full_rows) — parity vacuous, fixture or reader broken"; _t6_rc=1
+elif [ "$_min_rows" = "$_full_rows" ]; then
   ok "_t6b: lane row-count parity (min=$_min_rows full=$_full_rows)"
 else
   bad "_t6b: lane row-count drift (min=$_min_rows full=$_full_rows)"; _t6_rc=1
