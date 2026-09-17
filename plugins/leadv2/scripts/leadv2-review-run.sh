@@ -123,7 +123,14 @@ if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then
   LEADV2_TRACE_ID="${LEADV2_TRACE_ID:-${TASK}}"
   export LEADV2_TRACE_ID
 fi
-lv2_trace_arm_exit "review"
+# lv2_trace_arm_exit itself is called further below, AFTER this script's own
+# `trap ... EXIT` (_review_gate_terminal_fallback) is installed -- bash has a
+# single EXIT-trap slot, so arming the tracer here (before that trap exists)
+# would let the later `trap ... EXIT` silently clobber the tracer's own trap
+# and the span would never flush. See lib/leadv2-trace.sh:175-184 (MUST be
+# called after any host-owned EXIT trap) and the 5b lint in
+# tests/test-leadv2-trace.sh, which greps every arm_exit host for exactly
+# this ordering mistake.
 
 # V3 core: one independent review is the ordinary path. Wider fan-out remains
 # an explicit override for callers that need it.
@@ -250,6 +257,11 @@ trap '_REVIEW_GATE_ST=$?; _review_gate_terminal_fallback "${_REVIEW_GATE_ST}"; e
 trap 'exit 143' TERM
 trap 'exit 130' INT
 trap 'exit 129' HUP
+
+# Now that this script's own EXIT trap is installed, arm the tracer: it reads
+# the current EXIT trap via `trap -p EXIT` and chains onto it, so it must run
+# last (see the ordering note above and lib/leadv2-trace.sh:175-184).
+lv2_trace_arm_exit "review"
 
 WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
 

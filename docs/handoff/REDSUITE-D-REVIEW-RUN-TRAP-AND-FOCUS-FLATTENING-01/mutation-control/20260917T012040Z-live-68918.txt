@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-leadv2-trace.sh
+file=plugins/leadv2/scripts/leadv2-review-run.sh
+anchor=/tmp/ctrlB.patch
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 5b no host installs its own EXIT trap after lv2_trace_arm_exit
+diff_hash=7630212f448921df1406fc7637b0127854e53e6cd0a98d7beb3b835dae826fc8
+lane_diff_hash=f2d8a6053070bbc652c0f339a97de944159823ee6ce69fc9d052bcaa62e207ac
+porcelain_clean=yes
+restored=yes

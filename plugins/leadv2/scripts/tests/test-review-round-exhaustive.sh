@@ -297,8 +297,11 @@ PY
   # `"`/backtick are forbidden only in the NEW round-mode text (R6/T6) — the
   # surrounding boilerplate ("Authoritative surfaces for this repo: `...`")
   # is pre-existing and untouched by this lane, and legitimately uses both.
+  # dimension enum below tracks _review_contract_base (leadv2-review-run.sh)
+  # — 4410095a added `mission_alignment` as a fifth option; match it as
+  # optional so this extraction keeps working across future additions too.
   local round_text
-  round_text="$(sed -nE 's/.*(EXHAUSTIVE ROUND 1.*FINDING: severity=<Critical\|High>[^ ]* file=<path> line=<n> dimension=<correctness\|security\|design\|perf> desc=<one line>).*/\1/p' "${CODEX_FOCUS_CAPTURE}")"
+  round_text="$(sed -nE 's/.*(EXHAUSTIVE ROUND 1.*FINDING: severity=<Critical\|High>[^ ]* file=<path> line=<n> dimension=<correctness\|security\|design\|perf(\|[a-z_]+)?> desc=<one line>).*/\1/p' "${CODEX_FOCUS_CAPTURE}")"
   [[ -n "${round_text}" ]] || return 1
   printf '%s' "${round_text}" | grep -q '"' && return 1
   printf '%s' "${round_text}" | grep -q '`' && return 1
