@@ -117,3 +117,69 @@ that is not run, or that asserts nothing, rots into a permanent green.
 
 Every claim in the mission needs its control RUN and its output pasted. A suite that skips on
 the dev machine is a suite nobody ever sees fail — stub the unit layer, do not skip the case.
+
+---
+
+# ROUND 3 — scope cut to four things (2026-09-17, lead)
+
+Round 2 grew the branch to 1663 insertions and failed review with **4 critical, 4 high**. Two
+rounds have now missed the same central item, so this round is deliberately narrow. **Do only
+the four things below.** Everything else on the branch stays as it is; the rest of the review's
+findings are being split into their own rows and are NOT yours.
+
+Judge yourself by one question: *if I install this on the VPS right now, does the unit load,
+run a lane, and stop when told?* Nothing else counts this round.
+
+## 1. The controlled stop — asked twice, still not in the diff
+
+`Restart=always` restarts the runner after a deliberate stop, so FLEET-STOP and all three
+self-stops remain decorative. The unit and the runner need ONE shared model of "stopped on
+purpose" versus "crashed": a controlled stop must exit in a way systemd does not restart
+(`SuccessExitStatus` / `Restart=on-failure` with a distinct code — your choice, but pick one and
+make both sides agree).
+
+This is the founder-facing promise. If it is not in the diff, the round has failed regardless of
+what else is.
+
+## 2. The unit file does not load
+
+- `leadv2-fleet-unit.sh:473` — `WorkingDirectory="${2}"` is a fatal unit error.
+- `leadv2-fleet-unit.sh:464` — `Environment=LEADV2_FLEET_LANE_CMD=${5}` is unquoted.
+
+Prove it by generating a unit and running `systemd-analyze verify` on it (or, where systemd is
+absent, a parser stub that rejects exactly these two shapes). A unit that cannot load is not a
+runtime.
+
+## 3. A control mutation shipped in the product file
+
+`leadv2-fleet-unit.sh:476` carries a trailing `# c1-mut:` comment which makes systemd ignore the
+line. That is a negative-control marker left inside shipped code. Remove it, and make the suite
+assert that no `c*-mut` marker survives in any file under `plugins/leadv2/scripts/fleet/` — a
+control that can leak into the product must be caught by the suite, not by a reviewer.
+
+## 4. The reaper still forces
+
+`leadv2-fleet-guard.sh:78` still runs `git worktree remove --force`. Forbidden in round 2 and
+still there. Use the non-forcing path and **refuse** when it declines. A reaper that can delete
+unlanded work is worse than no reaper.
+
+## Why the reviewer could not see your work
+
+Round 2's review said: *"The diff under review is not the code that passes the suite: runner/lib
+round-2 edits are [absent]"*. The review diff is built from the lane's **declared write set**, so
+anything you edit outside it is invisible to the judge. The declared set for this round is
+exactly: `leadv2-fleet-unit.sh`, `leadv2-fleet-guard.sh`, `leadv2-fleet-state.sh`, `runner.sh`,
+`lib.sh`, `test-fleet-runtime-guards.sh`, and this row's `report.md`. **If a fix needs a file
+outside that list, stop and say so in the report instead of editing it silently.**
+
+## Controls
+
+Two claims, both RUN, both outputs pasted:
+
+1. A controlled stop does not get restarted by systemd. Negative control: revert to the old exit
+   path and show the restart returning.
+2. A generated unit passes verification. Negative control: reintroduce the unquoted
+   `WorkingDirectory` and show verification failing.
+
+Assert the mutation target string is present before each control runs. Then assert no marker
+remains — see item 3.
