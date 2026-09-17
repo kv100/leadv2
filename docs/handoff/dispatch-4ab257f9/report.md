@@ -31,5 +31,22 @@ Evidence chain (all probed live in this lane session):
 
 ## Lane self-check
 - No `.sh`/`.py` files changed by this lane → `bash -n` / `py_compile` n/a.
-- Changed-scope runner: see chat report for pasted raw output (worktree had
-  three pre-modified test suites from parallel work, not this lane's diff).
+- Changed-scope runner (`bash tests/run-all.sh --scope changed`, exit 0, budget mode):
+
+```
+test-resume-lane-arg-shapes: 39 passed, 1 failed
+[TEST] FAIL: A8: dispatch exited 8 (expected 0)
+shadow-control-plane: PASS=17 FAIL=0
+  Failures (blocking):
+    - plugins/leadv2/scripts/tests/run-core-offline.sh
+    - plugins/leadv2/scripts/tests/test-resume-lane-arg-shapes.sh
+run-all: 6 passed, 2 failed, 0 known-red, 28 known-red-skipped, scope=changed
+```
+
+  Both reds are **not this lane's diff** (lane changed zero `.sh`/`.py` files):
+  - `test-resume-lane-arg-shapes.sh` was already modified in the worktree
+    before this lane started (`git status: M`) — case A8 expectation is part of
+    that foreign edit.
+  - `run-core-offline.sh` flips NOT-KNOWN-RED under concurrent runners; a
+    foreign lane was live during the run (`ps`: `test-status-surface-bash32.sh`
+    in `.claude/worktrees/fe674d7918f3`).
