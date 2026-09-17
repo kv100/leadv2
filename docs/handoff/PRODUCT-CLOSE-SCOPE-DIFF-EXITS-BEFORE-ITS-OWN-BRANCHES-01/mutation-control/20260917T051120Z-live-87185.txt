@@ -6,6 +6,6 @@ baseline_rc=0
 mutated_rc=1
 red_line=[TEST] FAIL: Test (a): expected exit 0, got rc=5 -- out=[leadv2-dispatch-product-close] stop_gate_autocommit_skipped task=a1a1a1a1 reason=writes_csv_empty
 diff_hash=85c841bf80002faea3e589eb15fc87cddfe2608a58dc2d286685a538f90c14d8
-lane_diff_hash=cf9035a4e8f323a7201b505810a5edd914f99829feb6d9469509b29d2cd04909
+lane_diff_hash=d7ba33d5f7df90058d595dc06835a02fef19bb18e5e1dc9f57a5466d63f97f1f
 porcelain_clean=yes
 restored=yes
