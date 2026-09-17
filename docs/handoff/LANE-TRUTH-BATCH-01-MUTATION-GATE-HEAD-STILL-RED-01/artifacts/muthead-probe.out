@@ -1,0 +1,117 @@
+=== gate_root: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD ===
+
+=== liveness JSON for lane MUT-HEAD (gate fn output, verbatim fixture) ===
+{"lane":"MUT-HEAD","verdict":"alive","age_s":2,"source":"/private/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/docs/handoff/dispatch-89291c44/developer.stream.jsonl","log_path":"/private/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/docs/handoff/dispatch-89291c44/developer.stream.jsonl","raw_log_path":"docs/handoff/dispatch-89291c44/developer.stream.jsonl","pid":57943,"pid_alive":false,"reason":"log_fresh","attempt":null,"child_of":null,"pid_source":"lead_durable","pid_identity":"verified","stream_end":"truncated"}
+
+=== disk: full handoff tree under gate_root ===
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/docs/handoff/MUT-HEAD
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/docs/handoff/MUT-HEAD/brain.yaml
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/docs/handoff/MUT-HEAD/cost-estimate.yaml
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/docs/handoff/MUT-HEAD/task-class.yaml
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/docs/handoff/dispatch-89291c44
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/docs/handoff/dispatch-89291c44/admission-receipt.yaml
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/docs/handoff/dispatch-89291c44/developer.stream.jsonl
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/docs/handoff/dispatch-89291c44/phases.d
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/docs/handoff/dispatch-89291c44/phases.d/.bootstrap-admit
+
+=== disk: stamped stream dir dispatch-89291c44 ===
+total 16
+drwx------  5 kostiantyn.vlasenko  staff  160 Sep 17 12:07 .
+drwx------  4 kostiantyn.vlasenko  staff  128 Sep 17 12:07 ..
+-rw-------  1 kostiantyn.vlasenko  staff  229 Sep 17 12:07 admission-receipt.yaml
+-rw-------  1 kostiantyn.vlasenko  staff   38 Sep 17 12:07 developer.stream.jsonl
+drwx------  3 kostiantyn.vlasenko  staff   96 Sep 17 12:07 phases.d
+
+=== registry rows: every active.yaml under gate_root ===
+--- /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/docs/leadv2/active.yaml
+meta:
+  rendered_at: '2026-09-17T09:07:15Z'
+sessions:
+- session_id: s-20260917T090714Z-57943-81843
+  task_id: MUT-HEAD
+  worktree: /private/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/.claude/worktrees/gate-lane
+  branch: MUT-HEAD
+  started_at: '2026-09-17T09:07:14Z'
+  phase: build
+  class: Standard
+  pulse_log: docs/leadv2/tasks/MUT-HEAD/pulse.md
+  pid: 57943
+  pid_birth: Thu Sep 17 11:43:17 2026
+  proc_kind: worker
+  pid_role: lead_durable
+  parent_session_id: null
+  daemon_mode: false
+  last_pulse_at: '2026-09-17T09:07:14Z'
+  stale: false
+  note: ''
+  group_key: null
+  risk_tags: null
+  writes: null
+  writes_reason: prepass_pending
+  first_seen_at: '2026-09-17T09:07:14Z'
+  protocol_version: 2
+  backend: terminal
+  phase_started_at: '2026-09-17T09:07:23Z'
+  updated_at: '2026-09-17T09:07:24Z'
+  tmux_window: null
+  tmux_pane: null
+  log_path: docs/handoff/dispatch-89291c44/developer.stream.jsonl
+  provider_receipts: []
+  pid_start_time: Thu Sep 17 11:43:17 2026
+  lead_session_id: lead-57943-121375118
+  dead_at: '2026-09-17T09:07:24Z'
+  lane_events:
+  - at: '2026-09-17T09:07:16Z'
+    event: registered_refresh
+  - at: '2026-09-17T09:07:23Z'
+    event: transition:build
+  - at: '2026-09-17T09:07:24Z'
+    event: deregistered
+    detail: dispatcher_exit
+--- /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/state/active.yaml
+meta:
+  rendered_at: '2026-09-17T09:07:15Z'
+sessions:
+- session_id: s-20260917T090714Z-57943-81843
+  task_id: MUT-HEAD
+  worktree: /private/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/muthead-probe.0dvwKP/dispatch-gate-MUT-HEAD/.claude/worktrees/gate-lane
+  branch: MUT-HEAD
+  started_at: '2026-09-17T09:07:14Z'
+  phase: build
+  class: Standard
+  pulse_log: docs/leadv2/tasks/MUT-HEAD/pulse.md
+  pid: 57943
+  pid_birth: Thu Sep 17 11:43:17 2026
+  proc_kind: worker
+  pid_role: lead_durable
+  parent_session_id: null
+  daemon_mode: false
+  last_pulse_at: '2026-09-17T09:07:14Z'
+  stale: false
+  note: ''
+  group_key: null
+  risk_tags: null
+  writes: null
+  writes_reason: prepass_pending
+  first_seen_at: '2026-09-17T09:07:14Z'
+  protocol_version: 2
+  backend: terminal
+  phase_started_at: '2026-09-17T09:07:23Z'
+  updated_at: '2026-09-17T09:07:24Z'
+  tmux_window: null
+  tmux_pane: null
+  log_path: docs/handoff/dispatch-89291c44/developer.stream.jsonl
+  provider_receipts: []
+  pid_start_time: Thu Sep 17 11:43:17 2026
+  lead_session_id: lead-57943-121375118
+  dead_at: '2026-09-17T09:07:24Z'
+  lane_events:
+  - at: '2026-09-17T09:07:16Z'
+    event: registered_refresh
+  - at: '2026-09-17T09:07:23Z'
+    event: transition:build
+  - at: '2026-09-17T09:07:24Z'
+    event: deregistered
+    detail: dispatcher_exit
+
+PROBE_ROOT=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//muthead-probe.0dvwKP

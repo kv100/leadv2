@@ -1,0 +1,68 @@
+s-20260917T091027Z-57943-34927
+[registry] rendered /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//harness-env-run.5T1O1a/tmp/lane-truth.ncmPiZ/state/LEAD_V2_STATE.md (1 sessions, history_preserved=False)
+[TEST] PASS: register sets default log_path to pulse.md
+[TEST] PASS: set_log_path stamps the real stream path
+[TEST] PASS: log_path no longer defaults to pulse.md
+[TEST] PASS: Row 1: lane with set_log_path resolves alive via real stream
+[TEST] PASS: Row 1: liveness source is the stamped log_path
+[TEST] PASS: set_log_path on unregistered task returns non-zero
+[TEST] PASS: Row 2: unregistered dispatch lane discoverable via glob
+[TEST] PASS: Row 2: direct dispatch registers its dispatch-<sig8> lane
+[TEST] FAIL: Row 1 mutation gate HEAD must resolve stamped stream alive
+  got: {"lane":"MUT-HEAD","verdict":"unknown:yaml_unreadable","age_s":null,"source":"handoff","log_path":null,"raw_log_path":null,"pid":null,"pid_alive":null,"reason":"registry_unreadable","attempt":null,"child_of":null,"pid_source":null,"pid_identity":null}
+[TEST] PASS: Row 1 mutation gate mutant: registry read does not treat pulse.md as live stream
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+[TEST] PASS: Row 3: dry-run reports block without writing quarantine
+[TEST] PASS: Row 3: dry-run writes no quarantine files
+rsync(43894): warning: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//harness-env-run.5T1O1a/tmp/lane-truth.ncmPiZ/home/.claude/leadv2-shared/scripts/./leadv2-test-target.sh: skipping symlink (5)
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-ledger.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[TEST] PASS: Row 3: divergent user-script quarantined in exclude mode
+[TEST] PASS: Row 3: quarantined copy preserves the un-landed fix
+rsync(44632): warning: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//harness-env-run.5T1O1a/tmp/lane-truth.ncmPiZ/home/.claude/leadv2-shared/scripts/./leadv2-test-target.sh: skipping symlink (5)
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-ledger.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+rsync(45346): warning: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//harness-env-run.5T1O1a/tmp/lane-truth.ncmPiZ/home/.claude/leadv2-shared/scripts/./leadv2-test-target.sh: skipping symlink (5)
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-ledger.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+rsync(46088): warning: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//harness-env-run.5T1O1a/tmp/lane-truth.ncmPiZ/home/.claude/leadv2-shared/scripts/./leadv2-test-target.sh: skipping symlink (5)
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-ledger.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[TEST] PASS: Row 3 convergence: 3 additional syncs produced 1 quarantine files (no duplicates)
+rsync(46761): warning: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//harness-env-run.5T1O1a/tmp/lane-truth.ncmPiZ/home/.claude/leadv2-shared/scripts/./leadv2-test-target.sh: skipping symlink (5)
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-ledger.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[TEST] PASS: Row 3 convergence: changed content produces new quarantine (1 → 2)
+
+[LANE-TRUTH-BATCH-01] pass=15 fail=1

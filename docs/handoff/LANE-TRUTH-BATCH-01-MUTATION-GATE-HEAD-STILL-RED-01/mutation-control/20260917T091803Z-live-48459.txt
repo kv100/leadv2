@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-lane-truth-batch-01.sh
+file=plugins/leadv2/scripts/tests/test-lane-truth-batch-01.sh
+anchor=s|^cp -a "${REAL_PLUGIN_DIR}/config" "\$PLUGIN_DIR/"|# CONTROL-MUTATION disabled: \&|
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: Row 1 mutation gate HEAD must resolve stamped stream alive
+diff_hash=213af1f6da32b945b36e0a0092252fc546a373b372242c96b2f4d1cb7ba90c0d
+lane_diff_hash=39568b4c12d87ef8bd71495e10b39c0ac4292b13ac55c5a384ffdfd74d3c911e
+porcelain_clean=yes
+restored=yes
