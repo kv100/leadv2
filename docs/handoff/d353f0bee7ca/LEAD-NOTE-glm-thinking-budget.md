@@ -40,3 +40,24 @@ Something returns, and what it returns is empty.
 Also recorded from the same run: the reviewer pool showed `glm=blocked:lockout` on every
 attempt today, so GLM was excluded from review by quota while this row is about GLM as a
 reviewer. Any re-measurement has to wait for the lockout to clear, or it measures the lockout.
+
+## CORRECTION, same evening — this was NOT GLM
+
+The paragraph above reads the `empty_response` verdict as corroboration of the GLM
+thinking-budget probe. **It is not.** The gate names the arm:
+
+```
+status: blocked
+reason: empty_response
+arm_rc: fable=0
+unreadable: fable=unparsable_verdict
+```
+
+GLM was locked out of the pool at the time, so **fable** did the review, exited 0, and
+produced a verdict the parser could not read. That is a different defect wearing the same
+word, and it is arguably the larger one: the verdict parser fails on a Claude arm too, so
+"arm returned nothing readable" is not GLM-specific.
+
+What survives unchanged: the direct API probe at the top of this file. That was measured
+against GLM itself and does not depend on this review run. What does NOT survive: the claim
+that this run reproduced it.
