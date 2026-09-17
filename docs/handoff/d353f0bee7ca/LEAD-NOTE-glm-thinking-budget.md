@@ -61,3 +61,23 @@ word, and it is arguably the larger one: the verdict parser fails on a Claude ar
 What survives unchanged: the direct API probe at the top of this file. That was measured
 against GLM itself and does not depend on this review run. What does NOT survive: the claim
 that this run reproduced it.
+
+## Live reproduction WITH GLM, 2026-09-17 19:56Z
+
+The lockout expired at 18:48Z, so GLM re-entered the reviewer pool and was picked on merit:
+
+```
+route_resolved role=reviewer arm=glm reason=cheapest_capable
+review_pool_resolve rc=0 reviewer=glm pool_n=6
+review_gate status=arm_no_verdict arm=glm reason=no_verdict_marker tried=glm remaining=2
+```
+
+This is the first clean reproduction of this row with GLM itself as the arm — the earlier
+`empty_response` was fable and was corrected above. The engine fell through to the remaining
+arms rather than stalling, so the cost of the defect is a wasted reviewer slot per lane, not a
+dead lane.
+
+It does NOT settle the cause. `no_verdict_marker` says the parser found no marker; it does not
+say whether the arm emitted none, emitted one the parser cannot match, or spent its budget on
+a thinking block as the direct probe showed. The two cheap checks named at the top of this file
+are still the way to decide, and they are still unrun.
