@@ -1,0 +1,11 @@
+suite=plugins/leadv2/scripts/tests/test-review-round-exhaustive.sh
+file=plugins/leadv2/scripts/tests/test-review-round-exhaustive.sh
+anchor=/tmp/ctrlA.patch
+mode=live
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: T6 codex focus flattening
+diff_hash=910163c81d296b3a14b99a638951fab9805a432620f03f3de1c5e430fef8183e
+lane_diff_hash=f2d8a6053070bbc652c0f339a97de944159823ee6ce69fc9d052bcaa62e207ac
+porcelain_clean=yes
+restored=yes

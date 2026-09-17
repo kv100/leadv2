@@ -82,14 +82,23 @@ Scanned all 11 scripts under plugins/leadv2/scripts/ referencing lv2_trace_arm_e
 
 Non-invoking references only (mention/source, no arm call): leadv2-backlog-pump.sh, freepool-coder.sh, codex-task.sh, glm-coder.sh, kimi-coder.sh. Parked/scratch: .dbg-funcs.sh (arm :2890 after trap :2888 — correct order anyway), .test-dispatch-ppf-r5-funcs.*.sh (stale scratch copies). **No host currently has the defect shape.**
 
-## 4. Mutation-control artifacts (to be appended after the report commit)
+## 4. Mutation-control artifacts (run 2026-09-17, after report commit f79add85; both `--live` mode: mutation applied to the real lane file, suite proven red, file restored byte-identical)
 
-Per the DOD gate, each control claim is backed by a leadv2-mutation-control.sh run (worker mode, scratch copy of the lane; run AFTER this commit so lane_diff_hash binds to committed HEAD):
+Note: a first worker-mode (scratch-copy) attempt for Control A was discarded — the tool's fresh scratch repo lacks baseline object 85ae886, so the suite red at `T7 red-first: git archive extraction failed` (PASS=16 FAIL=1), a scratch-environment red that proves nothing about T6. A `--live` sed-anchor attempt then failed `control_not_applied reason=anchor_count` (BSD-sed degenerate anchor — known class), so both controls use the tool's unified-diff form. Final runs:
 
-- Control A: close-enum sed on the exhaustive suite's own regex (§1 mutation), target suite = the exhaustive suite itself.
-- Control B: unified-diff patch restoring the defect ordering in leadv2-review-run.sh (§2 mutation), target suite = test-leadv2-trace.sh.
+### 4.1 Control A — exhaustive suite, T6 enum re-closure
 
-§4.1/§4.2 with run-ids and pasted outputs follow in a controls commit.
+```
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-review-round-exhaustive.sh file=plugins/leadv2/scripts/tests/test-review-round-exhaustive.sh red_line=FAIL: T6 codex focus flattening diff_hash=910163c8...8183e lane_diff_hash=f2d8a605...207ac porcelain_clean=yes
+artifact: mutation-control/20260917T011957Z-live-97974.txt  (baseline_rc=0, mutated_rc=1, restored=yes)
+```
+
+### 4.2 Control B — trace suite, defect trap ordering restored in leadv2-review-run.sh
+
+```
+MUTATION-CONTROL ok mode=live suite=plugins/leadv2/scripts/tests/test-leadv2-trace.sh file=plugins/leadv2/scripts/leadv2-review-run.sh red_line=[TEST] FAIL: 5b no host installs its own EXIT trap after lv2_trace_arm_exit diff_hash=7630212f...26fc8 lane_diff_hash=f2d8a605...207ac porcelain_clean=yes
+artifact: mutation-control/20260917T012040Z-live-68918.txt  (baseline_rc=0, mutated_rc=1, restored=yes)
+```
 
 ## 5. Falsification set
 
@@ -101,7 +110,19 @@ bash -n OK: plugins/leadv2/scripts/tests/test-review-round-exhaustive.sh
 bash -n OK: plugins/leadv2/scripts/lib/leadv2-trace.sh
 ```
 
-python3 -m py_compile: N/A — no Python files changed by this lane. Changed-scope runner (bash tests/run-all.sh --scope changed): exceeded its 600s foreground ceiling at 2026-09-17, moved to background; verdict to be appended in §5.1 when it lands.
+python3 -m py_compile: N/A — no Python files changed by this lane.
+
+### 5.1 Changed-scope runner
+
+`bash tests/run-all.sh --scope changed` (2026-09-17, exceeded its 600s foreground ceiling, completed detached, exit 0, wall >600s — timeout is a different verdict from failure and is reported as such):
+
+```
+run-all: 30 passed, 11 failed, 0 known-red (allow-listed, non-blocking), 3 known-red-skipped (budget mode, still run by --scope all), 0 gone-green (remove from allow-list), scope=changed
+```
+
+The 11 failures (all selected by the `leadv2-review-run` trigger — the lane's wip commit touched leadv2-review-run.sh, so ~38 suites on that trigger ran): run-core-offline.sh, test-codex-doc-pointer.sh, test-fable-think-tier.sh, test-fp07-verification.sh, test-review-body-lost-retry-distinct-arm.sh, test-review-gate-names-the-unreadable.sh, test-review-gate-shows-findings.sh, test-review-machine-round0.sh, test-review-single-owner-census.sh, test-review-union-verdict.sh, test-review-unreviewed-artifact.sh.
+
+**Attribution check (sampled)**: `test-review-union-verdict.sh` fails IDENTICALLY at pre-wip commit 95a5255a^ (rc=1, same three FAIL lines: "union-late-fail-blocks / primary-fail-still-fails / both-fail: expected fail, got blocked"). So the 11 reds are inherited from the lane branch's wider diff vs its base — not caused by wip 95a5255a or by this lane's report commit. They are outside this lane's write set (subjects belong to other lanes); named here as still-red per lane rules. The two subject suites both pass their direct acceptance runs at final HEAD (boundary below).
 
 ## 6. Anything left red
 
