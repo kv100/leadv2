@@ -153,7 +153,7 @@ YAML
   # omitting it made every probe fail on THAT missing file, never reaching
   # the R4 pid-birth-import contract this case exists to pin. Only
   # lib/leadv2_pid_birth.py is meant to be absent here.
-  : # MUTATION-CONTROL-P14 (portable-lock copy removed)
+  cp "${SCRIPT_DIR}/../leadv2-portable-lock.sh" "$drift/"
   export LEADV2_STATE_ROOT="$repo/state"
   source "$drift/lib/leadv2-worktree-protected.sh"
   lv2_wt_protect_prime "$repo"
