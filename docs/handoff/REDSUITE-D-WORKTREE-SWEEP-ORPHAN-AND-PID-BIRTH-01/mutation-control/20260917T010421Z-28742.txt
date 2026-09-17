@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+file=plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+anchor=s|bash "${SCRIPT_DIR}/../leadv2-journal.sh" path "$1"|printf "%s/docs/leadv2/tasks/%s/journal.md" "$2" "$1"|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: P6-orphan-swept-and-journaled(hook) -- post-fix rc=2, expected 0
+diff_hash=e7742d711368f354b8d112bb3b2234d32fb747bfae887a6d4a8e6cfcb7a85a0a
+lane_diff_hash=b6bd8c2815e5ae8d8b89af7c8d0cfcb96f16c76de17cf542900cd433596a35ec
