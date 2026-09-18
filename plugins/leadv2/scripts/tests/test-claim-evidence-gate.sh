@@ -450,7 +450,22 @@ SH
     export LEADV2_LANE_SHAPE=off
     export LEADV2_DISPATCH_E2E_GATE=0
     export LEADV2_DISPATCH_REVIEW_GATE=0
-    bash "${dc}" --kind tooling "C8 rendered dispatch mission probe fix the build" >/dev/null 2>&1
+    # Hermetic premise: pre-fix this call silently probed the REAL checkout's
+    # backlog (the reroot made cwd the leadv2 repo); pinned inside the fixture
+    # there is no backlog row, so disable the premise gate like the other
+    # gates above -- C8's assertion is mission-text injection, not premise.
+    export LEADV2_PREMISE_PROBE=0
+    # cd into the fixture (LEAK-GUARD-MISSES-THE-SHAPE-THAT-BIT-US-01,
+    # 2026-09-04): with cwd left at the real checkout this suite was invoked
+    # from, the foreign-root guard silently discarded ${target} and rerooted
+    # the dispatch there, while LEADV2_STATE_BASE stayed ${sandbox}/state --
+    # state-path's migration block then re-pointed the REAL checkout's
+    # docs/leadv2/* control-plane links into ${sandbox}/state/leadv2 and the
+    # cleanup below deleted them (committed evidence: a06c0335 repairing
+    # core-offline-run.SCfsXo/suite.uL1Q83/leadv2-ceg-c8-de104I/state/leadv2/
+    # targets). cd makes root env and cwd agree, so the dispatch is genuinely
+    # hermetic; test-fixture-state-leak-guard.sh Test 7 pins the shape.
+    ( cd "${target}" && bash "${dc}" --kind tooling "C8 rendered dispatch mission probe fix the build" >/dev/null 2>&1 )
   )
 
   local result=1

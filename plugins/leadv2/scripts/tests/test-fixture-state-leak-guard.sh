@@ -38,6 +38,26 @@
 # call in `( cd "$fixture" && ... )`, threads LEADV2_STATE_ROOT/
 # LEADV2_STATE_BASE inline, or exports one of those two earlier in the file.
 # That is a snapshot, not a guarantee -- this suite is what keeps it true.
+#
+# ── Second incident (2026-09-04, LEAK-GUARD-MISSES-THE-SHAPE-THAT-BIT-US-01,
+#    fixed 2026-09-18): the clearance "a LEADV2_STATE_ROOT/BASE override makes
+#    the call safe regardless of cd" was UNSOUND. A state override sandboxes
+#    STATE_ROOT only; it says nothing about LINK_ROOT. When the fixture root
+#    is set but the call never cd's, the foreign-root guard discards the
+#    fixture and reroots at cwd -- the REAL checkout -- while the state
+#    override stays under the fixture's temp dir. leadv2-state-path.sh then
+#    resolves STATE_ROOT=<tmp>/state/leadv2 and its migration block re-points
+#    the REAL checkout's docs/leadv2/* control-plane links into the temp dir;
+#    deleting the temp dir deletes the targets. Live instance:
+#    test-claim-evidence-gate.sh case_c8_dispatch_mission_glm -- committed
+#    evidence a06c0335 (2026-09-04) repairing docs/leadv2/{open-threads.md,
+#    active.yaml,bus.jsonl,merge-queue.jsonl,questions,.bus-offsets} out of
+#    .../core-offline-run.SCfsXo/suite.uL1Q83/leadv2-ceg-c8-de104I/state/
+#    leadv2/. The detector therefore now treats "root env var set + git-init
+#    fixture + no cd" as hazardous REGARDLESS of any state override (inline
+#    or file-level export); only a real cd clears it. The call match is also
+#    case-insensitive: the culprit invoked `bash "${dc}"`, which the old
+#    case-sensitive ${DC} pattern never saw.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -81,7 +101,7 @@ def find_hazards(text):
     func_starts = [
         m.start() for m in re.finditer(r'(^|\n)[ \t]*[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*\{', text)
     ]
-    call_re = re.compile(r'\bbash\s+"\$\{?DC\}?"|\bbash\s+"\$\{?DISPATCH_CODE(_SH)?\}?"')
+    call_re = re.compile(r'\bbash\s+"\$\{?(DC|DISPATCH_CODE(_SH)?)\}?"', re.IGNORECASE)
     for m in call_re.finditer(text):
         pos = m.start()
         line_start = text.rfind('\n', 0, pos) + 1
@@ -114,11 +134,24 @@ def find_hazards(text):
         if not has_git_init:
             continue
         has_cd = bool(re.search(r'(^|[\s;&|])cd\s+["\'$]', seg))
+        # SUITES-MUTATE-LIVE-CONTROL-PLANE-01 #2 (2026-09-04): a state
+        # override does NOT clear a no-cd call. After the foreign-root guard
+        # discards the fixture root, LINK_ROOT is the real cwd checkout while
+        # LEADV2_STATE_ROOT/BASE stays under the fixture's temp dir -- the
+        # resolver's migration block re-points the REAL checkout's
+        # docs/leadv2/* control-plane links into that temp dir and the temp
+        # cleanup deletes the targets (test-claim-evidence-gate.sh
+        # case_c8_dispatch_mission_glm; committed evidence a06c0335). Only an
+        # actual cd (root env and cwd agreeing) clears a call.
         has_state_override = bool(re.search(r'LEADV2_STATE_(ROOT|BASE)=', seg))
         has_earlier_export = any(e < pos for e in exported_state_pos)
-        if not has_cd and not has_state_override and not has_earlier_export:
+        if not has_cd:
             line_no = text[:pos].count('\n') + 1
-            hazards.append((line_no, full_line.strip()[:160]))
+            if not has_state_override and not has_earlier_export:
+                hazards.append((line_no, full_line.strip()[:160]))
+            else:
+                hazards.append((line_no, "state-override-no-cd (2026-09-04 leak shape) "
+                                + full_line.strip()[:120]))
     return hazards
 
 if __name__ == "__main__":
@@ -161,31 +194,37 @@ else
   bad "cd-wrapped call was flagged as a false positive: ${SAFE_CD_OUT}"
 fi
 
-# ── Test 3: an inline LEADV2_STATE_ROOT override clears it, cd or not ──────
+# ── Test 3: cd + an inline LEADV2_STATE_ROOT override clears it ────────────
+# (The no-cd form of this fixture was RETIRED 2026-09-18: it encoded exactly
+# the unsound clearance that produced the 2026-09-04 leak -- see Test 7. A
+# state override sandboxes STATE_ROOT only; with no cd the discarded-env-root
+# reroot leaves LINK_ROOT at the real checkout, so the override does not
+# sandbox the call.)
 cat > "${WORK}/safe-stateroot.sh" <<'FIX'
 d="$(mktemp -d)"
 git -C "$d" init -q
-CLAUDE_PROJECT_ROOT="$d" LEADV2_STATE_ROOT="$d/state" bash "${DC}" "mission" --kind product
+( cd "$d" && CLAUDE_PROJECT_ROOT="$d" LEADV2_STATE_ROOT="$d/state" bash "${DC}" "mission" --kind product )
 FIX
 SAFE_SR_OUT="$(run_detector "${WORK}/safe-stateroot.sh")"
 if [[ -z "${SAFE_SR_OUT}" ]]; then
-  ok "inline LEADV2_STATE_ROOT= is NOT flagged (fully sandboxed regardless of cwd)"
+  ok "cd + inline LEADV2_STATE_ROOT= is NOT flagged (root env and cwd agree, state fully sandboxed)"
 else
-  bad "inline LEADV2_STATE_ROOT= was flagged as a false positive: ${SAFE_SR_OUT}"
+  bad "cd + inline LEADV2_STATE_ROOT= was flagged as a false positive: ${SAFE_SR_OUT}"
 fi
 
-# ── Test 4: an earlier file-level `export LEADV2_STATE_BASE=` clears it ───
+# ── Test 4: an earlier file-level `export LEADV2_STATE_BASE=` clears it,
+#    provided the call is cd'd into the fixture it points the root var at ──
 cat > "${WORK}/safe-export.sh" <<'FIX'
 export LEADV2_STATE_BASE="/tmp/whatever/state"
 d="$(mktemp -d)"
 git -C "$d" init -q
-CLAUDE_PROJECT_ROOT="$d" bash "${DC}" "mission" --kind product
+( cd "$d" && CLAUDE_PROJECT_ROOT="$d" bash "${DC}" "mission" --kind product )
 FIX
 SAFE_EXP_OUT="$(run_detector "${WORK}/safe-export.sh")"
 if [[ -z "${SAFE_EXP_OUT}" ]]; then
-  ok "earlier 'export LEADV2_STATE_BASE=' is NOT flagged (inherited by the call's env)"
+  ok "earlier 'export LEADV2_STATE_BASE=' + cd is NOT flagged (inherited env, cwd agrees with root env)"
 else
-  bad "earlier export was flagged as a false positive: ${SAFE_EXP_OUT}"
+  bad "earlier export + cd was flagged as a false positive: ${SAFE_EXP_OUT}"
 fi
 
 # ── Test 5: a call with NO project-root override at all is not this hazard
@@ -200,6 +239,37 @@ if [[ -z "${NO_ROOT_OUT}" ]]; then
   ok "no project-root override at all is NOT flagged (out of this detector's scope)"
 else
   bad "no-override call was flagged as a false positive: ${NO_ROOT_OUT}"
+fi
+
+# ── Test 7 (regression, 2026-09-04): the shape that BIT US. env-root fixture
+#    + inline LEADV2_STATE_BASE + NO cd -- the state override does NOT clear
+#    it. This is test-claim-evidence-gate.sh case_c8_dispatch_mission_glm
+#    verbatim: leadv2-dispatch-code.sh's FOREIGN-PROJECT-ROOT-GUARD discards
+#    the fixture root (cwd git-toplevel != env root, no cd, no pin) and
+#    reroots the run at cwd -- the REAL checkout -- while LEADV2_STATE_BASE
+#    stays ${sandbox}/state. leadv2-state-path.sh then resolves
+#    STATE_ROOT=<sandbox>/state/leadv2 and its migration block re-points the
+#    REAL checkout's docs/leadv2/{active.yaml,questions,bus.jsonl,
+#    merge-queue.jsonl,.bus-offsets,open-threads.md} into the sandbox; the
+#    sandbox cleanup (rm -rf, or run-core-offline.sh's `trap rm -rf RUN_TMP`
+#    EXIT) deletes the targets with it. Recorded live: commit a06c0335
+#    (2026-09-04) repairing docs/leadv2/* symlinks that pointed into
+#    core-offline-run.SCfsXo/suite.uL1Q83/leadv2-ceg-c8-de104I/state/leadv2/.
+cat > "${WORK}/hazard-stateroot-nocd.sh" <<'FIX'
+d="$(mktemp -d)"
+git -C "$d" init -q
+(
+  export CLAUDE_PROJECT_DIR="${d}"
+  export CLAUDE_PROJECT_ROOT="${d}"
+  export LEADV2_STATE_BASE="${d}/state"
+  bash "${dc}" --kind tooling "C8 rendered dispatch mission probe fix the build"
+)
+FIX
+HAZARD_SR_OUT="$(run_detector "${WORK}/hazard-stateroot-nocd.sh")"
+if [[ -n "${HAZARD_SR_OUT}" ]]; then
+  ok "2026-09-04 shape (root var + state override + NO cd) IS flagged: ${HAZARD_SR_OUT}"
+else
+  bad "2026-09-04 shape (root var + state override + NO cd) was NOT flagged -- the exact clearance gap that leaked the live control plane on 2026-09-04"
 fi
 
 # ── Test 6 (integration): the REAL fleet is clean today. This is the
