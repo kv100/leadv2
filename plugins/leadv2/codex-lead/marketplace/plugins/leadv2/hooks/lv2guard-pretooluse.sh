@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Typed Codex PreToolUse adapter: only a shell command is sent to lv2guard.
 set -u
 json_escape() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"; printf '%s' "$s" | tr -d '\000-\037'; }

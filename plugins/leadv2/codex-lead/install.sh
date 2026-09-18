@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # install.sh — idempotent installer for the Codex-lead tooling.
 #
 # Runs OUTSIDE this repo (writes to $HOME/.codex/ and a target project repo)

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # repowise-launch.sh — host-global launcher for the per-repo repowise MCP.
 #
 # A plugin is host-global, so a per-target-repo absolute path cannot be baked

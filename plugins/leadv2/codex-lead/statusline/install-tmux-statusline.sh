@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # install-tmux-statusline.sh — opt-in tmux statusline installer for leadv2.
 #
 # CODEX-TMUX-STATUSLINE-01. Fully opt-in: the main codex-lead install.sh

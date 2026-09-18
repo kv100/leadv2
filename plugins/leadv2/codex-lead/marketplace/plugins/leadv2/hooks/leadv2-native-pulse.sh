@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # leadv2-native-pulse.sh — event-driven founder pulse for the Codex lead.
 # CODEX-PULSE-HOOK-02. Registered as the SECOND PreToolUse entry and as the
 # second SubagentStart/Stop entry (--force). It never emits a permission

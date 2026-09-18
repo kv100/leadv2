@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # leadv2-codex-status.sh — statusline substitute for the Codex-lead pilot.
 # Codex has no statusline surface, so this renders the same information the
 # Claude statusline shows (~/.claude/burn/statusline.sh: "cc 32%·7d/4d12h ·

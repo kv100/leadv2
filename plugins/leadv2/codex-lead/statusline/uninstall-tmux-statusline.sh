@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # uninstall-tmux-statusline.sh — removes what install-tmux-statusline.sh added.
 #
 # Removes the generated activation conf and the status cache by default; with

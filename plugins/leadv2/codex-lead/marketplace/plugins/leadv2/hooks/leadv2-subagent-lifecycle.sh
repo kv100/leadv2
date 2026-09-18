@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Each agent owns one atomically replaced registry file; no shared RMW exists.
 set -u
 EVENT="${1:-}"; case "$EVENT" in start|stop) ;; *) exit 0;; esac

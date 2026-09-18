@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; HOOK="$ROOT/marketplace/plugins/leadv2/hooks/lv2guard-pretooluse.sh"; LIFE="$ROOT/marketplace/plugins/leadv2/hooks/leadv2-subagent-lifecycle.sh"; FIX="$(mktemp -d)"; trap 'rm -rf "$FIX"' EXIT; PASS=0; FAIL=0
 pass(){ PASS=$((PASS+1)); printf '[PASS] %s\n' "$1"; }; fail(){ FAIL=$((FAIL+1)); printf '[FAIL] %s\n' "$1"; }

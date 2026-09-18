@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # tests/test-codex-native-pulse.sh — CODEX-PULSE-HOOK-02.
 # Hermetic pulse-hook suite: no codex binary, no network. All producers are
 # fixtures under mktemp dirs (LEADV2_CODEX_PULSE_STATE, registry, repo root

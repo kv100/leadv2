@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # lv2guard.sh — Codex-lead bash reimplementation of the CATASTROPHIC-tier
 # deny-floor (see plugins/leadv2/hooks/leadv2-deny-floor.sh, the Claude-side
 # PreToolUse hook this mirrors). Codex HAS PreToolUse/blocking hooks since
