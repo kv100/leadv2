@@ -4040,11 +4040,16 @@ else
   [[ "${_pc_e2e_selected}" =~ ^[1-9][0-9]*$ ]] || _pc_e2e_selected="unknown"
   _pc_e2e_selected_for_budget="${_pc_e2e_selected}"
   [[ "${_pc_e2e_selected_for_budget}" =~ ^[1-9][0-9]*$ ]] || _pc_e2e_selected_for_budget=1
-  # Formula: min(3600, 1200 + 120 * (selected_suites - 1)).  1200 is the
+  # Formula: min(10800, 1200 + 120 * (selected_suites - 1)).  1200 is the
   # rounded 900s censored p95 plus a 300s reserve; each additional selected
   # suite buys 120s.  An explicit operator override remains authoritative.
+  # E2E-GATE-BUDGET-CAP-CONTRADICTS-ITS-OWN-FORMULA-01: the old 3600s cap
+  # truncated this same function's formula above 21 selected suites -- a
+  # 65-suite run computed 8880s, ran under 3600s, and was killed rc=124 at
+  # 37/65.  The cap is a runaway ceiling, not part of the budget: it engages
+  # only above 81 suites (1200 + 120*80 = 10800).
   _pc_e2e_budget_default=$(( 1200 + 120 * (_pc_e2e_selected_for_budget - 1) ))
-  [[ "${_pc_e2e_budget_default}" -gt 3600 ]] && _pc_e2e_budget_default=3600
+  [[ "${_pc_e2e_budget_default}" -gt 10800 ]] && _pc_e2e_budget_default=10800
   # PPC-G8: mirror leadv2-phase8-e2e-gate.sh's deadline enforcement here too --
   # this is the SAME "e2e_cmd --scope changed" invocation, just reached via the
   # dispatch-close path instead of the standalone gate. Without a deadline on
@@ -4058,7 +4063,7 @@ else
   # temp file and cat it back into the real log instead.
   _pc_e2e_run_log="$(mktemp "${TMPDIR:-/tmp}/e2e-run-log.XXXXXX")"
   if command -v _lv2_selfcheck_timeout_run >/dev/null 2>&1; then
-    ( printf 'e2e-root: %s\nselected-suites: %s\nbudget-formula: min(3600,1200+120*(selected-1))\nbudget-s: %s\n' "${_lv2_e2e_root}" "${_pc_e2e_selected}" "${_pc_e2e_timeout_s}"; ( cd "${_lv2_e2e_root}" && _lv2_selfcheck_timeout_run "${_pc_e2e_timeout_s}" "${_pc_e2e_run_log}" -- bash -c "${e2e_cmd} --scope changed" ); rc=$?; cat "${_pc_e2e_run_log}" 2>/dev/null; exit "${rc}" ) > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
+    ( printf 'e2e-root: %s\nselected-suites: %s\nbudget-formula: min(10800,1200+120*(selected-1))\nbudget-s: %s\n' "${_lv2_e2e_root}" "${_pc_e2e_selected}" "${_pc_e2e_timeout_s}"; ( cd "${_lv2_e2e_root}" && _lv2_selfcheck_timeout_run "${_pc_e2e_timeout_s}" "${_pc_e2e_run_log}" -- bash -c "${e2e_cmd} --scope changed" ); rc=$?; cat "${_pc_e2e_run_log}" 2>/dev/null; exit "${rc}" ) > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
     rm -f "${_pc_e2e_run_log}"
   else
     # Guarded-source lib absent (R1: infra fault, not lane fault) -- degrade to
