@@ -7297,6 +7297,13 @@ CONTRACT_EOF
         return 2
       fi
       # The arbiter's effort belongs to the winning cell; keep it when present.
+      # EFFORT-VOCABULARY-HAS-THREE-SOURCES-01: the vocabulary is
+      # router_v2.effort_scale in config/leadv2-routing.yaml -- never extend it
+      # here. Slot 5 is the value on Claude Code's `--effort` wire, which
+      # accepts only {low,medium,high,xhigh,max} (claude-subsession.sh usage);
+      # an effort_scale value outside that subset (none/minimal/ultra) must be
+      # downshifted before this line, as the codex arm does (ultra->xhigh in
+      # codex-task.sh).
       [[ -n "${RESOLVED_EFFORT:-}" ]] && _claude_launch_args[5]="${RESOLVED_EFFORT}"
       [[ -n "${requested_profile:-}" ]] && _claude_profile_args=(--requested-profile "${requested_profile}")
       emit decision "launch_model_resolved task=${sig8} task_id=dispatch-${sig8} arm=${arm} resolved_model=${_claude_model}"

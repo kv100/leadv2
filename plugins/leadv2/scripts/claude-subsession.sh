@@ -49,6 +49,14 @@ readonly PRICE_OPUS_OUTPUT=75
 readonly PRICE_SONNET_INPUT=3
 readonly PRICE_SONNET_OUTPUT=15
 
+# EFFORT-VOCABULARY-HAS-THREE-SOURCES-01 (2026-09-18): the effort vocabulary is
+# owned by `router_v2.effort_scale` in config/leadv2-routing.yaml ("no script
+# owns a second copy"). The list in the heredoc below is a DIFFERENT thing: the
+# subset Claude Code's `--effort` wire accepts. EFFORT is forwarded to `claude`
+# unvalidated (--effort "$EFFORT" at the CLAUDE_ARGS assembly); if effort_scale
+# ever emits a value outside {low,medium,high,xhigh,max} (none/minimal/ultra
+# exist in it), the dispatcher must downshift before the wire -- the codex
+# arm's ultra->xhigh pattern -- not by editing this usage string.
 usage() {
   cat >&2 <<EOF
 Usage: claude-subsession.sh --role <architect|critic|product-owner|strategist|developer|security-auditor> \\
