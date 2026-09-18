@@ -784,13 +784,16 @@ _pump_adopt_full_cycle() {
 }
 
 # cmd_async_dispatch — runs the actual dispatch call + its outcome handling
-# (pid-fill on success, task-unclaim + lane-release on anything else). The
-# lane reservation for $1 must ALREADY exist (written by the caller via
+# (pid-fill on success, task-unclaim + lane-release on anything else — except
+# the dispatch_ambiguous_live_worker shape, where the claim is released but
+# the lane row deliberately stays for the stale-sweeper; see the catch-all).
+# The lane reservation for $1 must ALREADY exist (written by the caller via
 # _pump_reserve_lane) before this runs. Callable either inline (synchronous
 # default) or as a detached re-invocation of this script (async opt-in,
 # MODE=_async-dispatch below) -- same function, same outcome semantics
 # either way, so the two modes can never drift apart.
-# rc: 0 = dispatched, nonzero = not (lane + claim already released).
+# rc: 0 = dispatched, nonzero = not (claim always released; the lane row is
+# released too, except on the dispatch_ambiguous_live_worker shape).
 cmd_async_dispatch() {  # $1=task_id $2=mission $3=lane $4=priority $5=rank (last 3 optional, logging only)
   local tid="$1" mission="$2" lane="${3:-}" priority="${4:-}" rank="${5:-}"
   local rc=0 dc_out=""
@@ -848,6 +851,23 @@ cmd_async_dispatch() {  # $1=task_id $2=mission $3=lane $4=priority $5=rank (las
       return 3
       ;;
     *)
+      # DISPATCH-AMBIGUOUS-ROW-RELEASE-01: dispatch-code.sh flags the
+      # rc=5/unknown-spawn-state shapes (spawn_worker positively verified a
+      # live worker but the confirm/ledger write failed) with a stdout marker
+      # and deliberately leaves the lane's active.yaml row for the
+      # stale-sweeper. This pump is the third caller of that contract: bare-
+      # calling _pump_release_lane (= leadv2_active_unregister) here deleted
+      # exactly that row, and the next pump tick re-dispatched the task onto
+      # the possibly-live worker -- two live workers on one lane. On the
+      # marker: release the claim only (task returns to pending; a later tick
+      # re-dispatches once the ambiguity is resolved) and leave the row
+      # alone. No marker -> the genuine "dispatch-code.sh never even ran"
+      # crash case keeps today's unconditional release below, unchanged.
+      if printf '%s\n' "$dc_out" | grep -q '^dispatch_ambiguous_live_worker=1$'; then
+        jemit decision "pump_park_ambiguous task=${tid} reason=dispatch_ambiguous_live_worker rc=${rc}"
+        leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+        return 1
+      fi
       jemit decision "pump_skip task=${tid} reason=spawn_failed rc=${rc}"
       leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
       _pump_release_lane "$tid"

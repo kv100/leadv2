@@ -10803,6 +10803,16 @@ ${mission}"
       # unrecorded) -- disarm the slot release; a genuinely dead row is the
       # sweep's to reap, never released on a guess.
       DISPATCH_SLOT_REG_ID=""
+      # DISPATCH-AMBIGUOUS-ROW-RELEASE-01: the disarm above only disarms THIS
+      # process's own EXIT trap. Our callers (leadv2-fanout-lane-launcher.sh,
+      # leadv2-fanout.sh's synchronous funnel) run this script as a SUBPROCESS
+      # holding their OWN active.yaml row for the lane; on any other rc they
+      # bare-unregister that row, which used to delete exactly the lane this
+      # rc deliberately left for the stale-sweeper and re-dispatch onto a
+      # possibly-live worker (two live workers). Flag the ambiguity on stdout
+      # (plain printf, not log(): log() is stderr-only) so a caller can leave
+      # the row alone.
+      printf 'dispatch_ambiguous_live_worker=1\n'
       exit 1
       ;;
     6)
@@ -10824,6 +10834,7 @@ ${mission}"
       _dl_note "${sig8}" dead "unexpected_rc_${arc}" "" "${founder_task_id}"
       # R5 §4: unknown spawn state -- disarm rather than release on a guess.
       DISPATCH_SLOT_REG_ID=""
+      printf 'dispatch_ambiguous_live_worker=1\n'   # DISPATCH-AMBIGUOUS-ROW-RELEASE-01: same caller contract as case 5 above
       exit 1
       ;;
     esac

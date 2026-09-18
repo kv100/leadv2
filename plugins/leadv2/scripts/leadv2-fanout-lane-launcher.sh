@@ -327,6 +327,24 @@ case "$dc_rc" in
     exit 3
     ;;
   *)
+    # DISPATCH-AMBIGUOUS-ROW-RELEASE-01: dispatch-code.sh flags the rc=5/unknown
+    # spawn-state shapes (spawn_worker positively verified a live worker but the
+    # confirm/ledger write failed) with a stdout marker and deliberately leaves
+    # the lane's active.yaml row for the stale-sweeper. Bare-unregistering our
+    # own row here used to delete exactly that row, so the task was re-claimed
+    # and re-dispatched onto a possibly-live worker (two live workers on one
+    # lane). On the marker: release the claim only, park (never `dead` -- the
+    # worker may be live), and leave BOTH the row and the lane worktree alone
+    # (the worker may still be writing it). The parked terminal is also what
+    # sets _TERMINAL_WRITTEN so our own EXIT trap cannot release the row
+    # either. No marker -> the genuine "dispatch-code.sh never even ran"
+    # crash case keeps today's unconditional cleanup below, unchanged.
+    if printf '%s\n' "$dc_out" | grep -q '^dispatch_ambiguous_live_worker=1$'; then
+      log "single-worker funnel: task=${TASK_ID} dispatch-code.sh rc=${dc_rc} flagged dispatch_ambiguous_live_worker=1 (a worker may be live but unrecorded) -- releasing claim only; the active.yaml row stays for the stale-sweeper, worktree left untouched, task returns to pending"
+      leadv2_tasks_unclaim "$TASK_ID" >/dev/null 2>&1 || true
+      _fanout_write_lane_terminal parked "dispatch_code_ambiguous_live_worker" "$(printf '%s' "$dc_out" | tail -20)"
+      exit 1
+    fi
     log_error "single-worker funnel: task=${TASK_ID} dispatch-code.sh failed (rc=${dc_rc}) -- releasing claim; NOT falling back to full-cycle from a detached launcher (out of reach) -- recording dead so the founder-picked task returns to pending, not silently dropped"
     leadv2_tasks_unclaim "$TASK_ID" >/dev/null 2>&1 || true
     leadv2_active_unregister "$TASK_ID" >/dev/null 2>&1 || true

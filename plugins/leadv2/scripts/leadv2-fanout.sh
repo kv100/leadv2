@@ -1748,6 +1748,25 @@ launch_via_dispatch_code() {
       _fanout_write_lane_terminal "$tid" parked "burn_hard_24h" ""
       ;;
     *)
+      # DISPATCH-AMBIGUOUS-ROW-RELEASE-01: dispatch-code.sh flags the
+      # rc=5/unknown spawn-state shapes (spawn_worker positively verified a
+      # live worker but the confirm/ledger write failed) with a stdout marker
+      # and deliberately leaves the lane's reservation row for the
+      # stale-sweeper. Unregistering our placeholder row here deleted exactly
+      # that row, and the full-cycle fallback below it re-dispatched the same
+      # lane onto the possibly-live worker -- the "second full cycle" half of
+      # the two-live-workers bug. On the marker: release the claim (task
+      # returns to pending, a LATER run re-dispatches once the ambiguity is
+      # resolved), park (never `dead` -- the worker may be live), and leave
+      # both the row and the re-launch alone. No marker -> the genuine
+      # "dispatch-code.sh never even ran" crash case keeps today's
+      # unconditional cleanup below, unchanged.
+      if printf '%s\n' "$dc_out" | grep -q '^dispatch_ambiguous_live_worker=1$'; then
+        log "single-worker funnel: task=${tid} dispatch-code.sh rc=${dc_rc} flagged dispatch_ambiguous_live_worker=1 (a worker may be live but unrecorded) -- releasing claim only; the reservation row stays for the stale-sweeper, no full-cycle fallback, task returns to pending"
+        leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+        _fanout_write_lane_terminal "$tid" parked "dispatch_code_ambiguous_live_worker" ""
+        return
+      fi
       log_error "single-worker funnel: task=${tid} dispatch-code.sh failed (rc=${dc_rc}) -- releasing claim and falling back to full-cycle launch so the founder-picked task is not silently dropped"
       leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
       [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1 || true
