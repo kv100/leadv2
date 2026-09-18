@@ -167,6 +167,17 @@ LEADV2_JOURNAL_ADDRESS_LIB="${LEADV2_JOURNAL_ADDRESS_LIB:-${PROJECT_ROOT}/.claud
 # The collector asks the writer's own CLI for the address instead; overridable
 # only so tests can point at fixtures, same seam shape as every other env here.
 LEADV2_JOURNAL_CLI="${LEADV2_JOURNAL_CLI:-$(dirname "$(dirname "${LEADV2_JOURNAL_ADDRESS_LIB}")")/leadv2-journal.sh}"
+# The documented off switch, honoured here as well as in the arming hook.
+# Measured 2026-09-18: in an unattended fleet session the pulse is armed by a
+# Bash command the MODEL runs at session start, before the repo overrides that
+# forbid it are even loaded — so a rule cannot stop it and the hook opt-out
+# never sees that path. The script refusing to start is the only place that
+# closes every caller. Exit 0: declining is not an error.
+if [[ "${LEADV2_PULSE_MODE:-1}" == "0" ]]; then
+  printf "[anti-silence-pulse] LEADV2_PULSE_MODE=0 — not arming\n" >&2
+  exit 0
+fi
+
 INTERVAL_S="${LEADV2_ANTI_SILENCE_INTERVAL_S:-1800}"
 HEARTBEAT_SLACK_S="${LEADV2_ANTI_SILENCE_HEARTBEAT_SLACK_S:-300}"
 
