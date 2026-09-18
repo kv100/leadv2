@@ -37,6 +37,14 @@
 # exception line) or refused (--apply precondition unmet), 2 = usage error.
 set -euo pipefail
 
+# Defined early: append_project_roots (called at top level below, before MODE
+# is even parsed) calls load_repo_roots, which logs a WARN when
+# cross-repo-paths.yaml is absent (the common case off the founder's Mac) --
+# that call happens before the script reaches its former log() definition
+# site, so `log` was undefined at the moment it was needed (rc 127, "log:
+# command not found"), aborting --check before it printed anything.
+log() { printf '[one-copy] %s\n' "$1"; }
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CANONICAL_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 BACKUP_DIR="${LEADV2_ONE_COPY_BACKUP_DIR:-${HOME}/.claude/leadv2-one-copy-backups}"
@@ -119,8 +127,6 @@ case "${1:-}" in
   --revert) MODE=revert ;;
   *) printf 'usage: %s --check|--apply|--revert\n' "$(basename "$0")" >&2; exit 2 ;;
 esac
-
-log() { printf '[one-copy] %s\n' "$1"; }
 
 # Build-artifact caches are excluded from comparison by an EXPLICIT list: a
 # __pycache__ shadow is not tenant drift (10 of 11 persona-engine
